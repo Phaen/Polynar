@@ -163,6 +163,9 @@ A few options are applicable to every type of data.
 ###Character set
 A character set is a set of characters that can be used for encoding and decoding purposes. There are a few ways to supply a character set to Polynar methods.
 
+##### Undefined
+When no character set is supplied, the Base64 character set (as can be found below) will be used instead.
+
 ##### String
 When supplying a string, its characters will be used as character set in the order they appear. No repeating characters are allowed.
 
@@ -183,5 +186,5 @@ When supplying an integer, the character set will be binary instead, starting fr
 
 Be aware that data processed this way may become corrupt or raise exceptions when using functions that are not binary safe. An example of this is XmlHttpRequest.
 
-#### Array
+##### Array
 By using an array that contains exactly two integers, the bounds of the binary range can be supplied.
