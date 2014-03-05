@@ -267,9 +267,6 @@
 						this.compose( pos - options.charset[ 0 ], size );
 						
 					}
-						
-				
-				this.write( items[ i ].split( '' ), { type: 'item', list: options.charset, limit: options.max } );
 				
 			} else if( options.type == 'object' ) {
 				
