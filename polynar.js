@@ -168,6 +168,9 @@
 			if( charset[ 0 ] > charset[ 1 ] )
 				charset.reverse();
 			
+			if( charset[ 1 ] - charset[ 0 ] < 2 )
+				throw Error( errChar );
+			
 		} else
 			throw TypeError( errChar );
 		
