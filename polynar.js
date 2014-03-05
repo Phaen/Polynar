@@ -13,6 +13,7 @@
 	
 	// registering useful character sets
 	obj.numeric = '0123456789';
+	obj.hex = obj.numeric + 'ABCDEF';
 	obj.alphaLower = 'abcdefghijklmnopqrstuvwxyz';
 	obj.alphaUpper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 	obj.alpha = obj.alphaLower + obj.alphaUpper;
@@ -90,7 +91,7 @@
 			
 			case 'string':
 				
-				if( typeof options.max != 'number' || options.max % 1 != 0 )
+				if( typeof options.max != 'number' || options.max % 1 != 0 || options.max < 0 )
 					throw TypeError( 'Invalid string limit' );
 				
 				options.charset = validateCharset( options.charset );
@@ -101,10 +102,13 @@
 				
 				if(
 					typeof options.list == 'undefined' ||
-					( !isArray( options.list ) && typeof options.list != 'string' ) ||
+					!isArray( options.list ) ||
 					options.list.length == 0
 				)
 					throw TypeError( 'Invalid or empty list' );
+				
+				if( typeof options.sort == 'bool' && options.sort === true )
+					options.list = options.list.slice( 0 ).sort(); // slice, so we don't alter the original array
 				
 				break;
 				
@@ -184,7 +188,7 @@
 	
 	obj.encoder.prototype.write = function( items, options ) {
 		
-		var i, pos, chr, tempInt, workTpl;
+		var i, pos, chr, size, tempInt, workTpl;
 		
 		options = validateOptions( options );
 		
@@ -196,6 +200,9 @@
 				throw RangeError( 'Item count exceeds limit' );
 			else
 				this.compose( items.length, options.limit + 1 );
+		
+		if( options.type == 'string' && typeof options.charset == 'string' )
+			size = options.charset[ 1 ] - options.charset[ 0 ] + 1;
 		
 		for( i in items )
 			if( options.type == 'item' ) {
@@ -218,7 +225,7 @@
 				tempInt = ( items[ i ] - options.min ) / options.step;
 				
 				if( tempInt % 1 > 0.0000000000000001 ) // fucking floats
-					throw RangeError( 'Item \'' + items[ i ] + '\' outside of step range' );
+					throw RangeError( 'Item \'' + items[ i ] + '\' outside step range' );
 				
 				this.compose( ~~tempInt, ( options.max - options.min ) / options.step + 1 );
 				
@@ -238,13 +245,42 @@
 				if( items[ i ].length > options.max )
 					throw RangeError( 'Item \'' + items[ i ] + '\' exceeds max length' );
 				
+				this.compose( items[ i ].length, options.max );
+				
+				for( chr = 0; chr < items[ i ].length; chr ++ )
+					if( typeof options.charset == 'string' ) {
+						
+						pos = options.charset.indexOf( items[ i ].charAt( chr ) );
+						
+						if( pos == -1 )
+							throw Error( 'String not compliant with character set' );
+						
+						this.compose( pos, options.charset.length );
+						
+					} else {
+						
+						pos = items[ i ].charCodeAt( chr );
+						
+						if( pos < options.charset[ 0 ] || pos > options.charset[ 1 ] )
+							throw Error( 'String not compliant with character set' );
+						
+						this.compose( pos - options.charset[ 0 ], size );
+						
+					}
+						
+				
 				this.write( items[ i ].split( '' ), { type: 'item', list: options.charset, limit: options.max } );
 				
 			} else if( options.type == 'object' ) {
 				
 				workTpl = function( obj, tpl ) {
 					
-					for( var key in tpl ) {
+					if( options.sort )
+						var keys = Object.keys( tpl ).sort();
+					else
+						var keys = tpl;
+
+					for( var key in keys ) {
 						
 						if( typeof obj[ key ] == 'undefined' )
 							throw ReferenceError( 'Object has no property \'' + key + '\'' );
@@ -427,7 +463,7 @@
 	
 	obj.decoder.prototype.read = function( options, count ) {
 		
-		var i, obj;
+		var i, obj, chr, size, len, str;
 		
 		if( typeof count == 'undefined' )
 			var count = 1;
@@ -438,6 +474,9 @@
 		
 		if( options.limit )
 			count = this.parse( options.limit + 1 );
+		
+		if( options.type == 'string' && typeof options.charset == 'string' )
+			size = options.charset[ 1 ] - options.charset[ 0 ] + 1;
 		
 		var items = new Array();
 		
@@ -456,18 +495,35 @@
 				
 			} else if( options.type == 'string' ) {
 				
-				items.push( this.read( { type: 'item', list: options.charset, limit: options.max } ).join( '' ) );
+				len = this.parse( options.max );
+				str = '';
+				
+				for( chr = 0; chr < len; chr ++ )
+					if( typeof options.charset == 'string' )
+						str += options.charset.charAt( this.parse( options.charset.length ) );
+					else
+						str += this.parse( size ) + options.charset[ 0 ];
+				
+				items.push( str );
 				
 			} else if( options.type == 'object' ) {
 				
-				if( typeof options.base == 'undefined' || typeof options.base != 'object' )
-					base = {};
+				if( typeof options.base == 'function' )
+					base = options.base();
 				else
 					base = options.base;
 				
+				if( typeof options.base == 'undefined' || typeof options.base != 'object' )
+					base = {};
+				
 				workTpl = function( obj, tpl ) {
 					
-					for( var key in tpl ) {
+					if( options.sort )
+						var keys = Object.keys( tpl );
+					else
+						var keys = tpl;
+
+					for( var key in keys ) {
 						
 						if( typeof tpl[ key ].type == 'string' )
 							obj[ key ] = this.read( tpl[ key ] );
