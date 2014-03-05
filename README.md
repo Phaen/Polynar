@@ -162,7 +162,7 @@ A few options are applicable to every type of data.
 * **limit** *(unsigned integer, optional)* <br/> The maximum amount of items encoded. When supplied, it will automatically decode all the items that were initially encoded by the same method call.
 
 ### Character sets
-A character set is a set of characters that can be used for encoding and decoding purposes. There are a few ways to supply a character set to Polynar methods. Every character set needs to cover at least two characters.
+A character set is a set of characters that can be used for encoding and decoding purposes. There are a few ways to supply a character set to Polynar methods. A character set needs to cover at least one character.
 
 ##### Undefined
 When no character set is supplied, the Base64 character set (as can be found below) will be used instead.
