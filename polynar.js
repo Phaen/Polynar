@@ -1,0 +1,500 @@
+//     Polynar.js 1.0
+//     http://srv2.blobtech.nl/Polynar
+//     (c) 2014 Pablo Kebees
+//     Polynar may be freely distributed under the MIT license.
+
+( function() {
+	
+	// the name of the Polynar object
+	var objName = 'Polynar';
+	
+	// the Polynar object
+	var obj = {};
+	
+	// registering useful character sets
+	obj.numeric = '0123456789';
+	obj.alphaLower = 'abcdefghijklmnopqrstuvwxyz';
+	obj.alphaUpper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+	obj.alpha = obj.alphaLower + obj.alphaUpper;
+	obj.alphanumeric = obj.numeric + obj.alpha;
+	obj.printable = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~';
+	obj.Base64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+	
+	// the default character set to use
+	var defaultCharset = obj.Base64;
+	
+	// registering our object name, both browser and server side
+	if( typeof exports == 'undefined' )
+		this[ objName ] = obj;
+	else {
+		
+		if ( typeof module !== 'undefined' && module.exports )
+			exports = module.exports = obj;
+		
+		exports[ objName ] = obj;
+		
+	}
+	
+	// define our own is[type] functions
+	var isArray = function( obj ) { return toString.call( obj ) === '[object Array]'; };
+	var isObject = function( obj ) { return toString.call( obj ) === '[object Object]'; };
+	
+	// validate encodingOptions
+	var validateOptions = function( options ) {
+		
+		if( typeof options == 'undefined' )
+			throw TypeError( 'Undefined encoding options' );
+		
+		if( !isObject( options ) )
+			throw TypeError( options + ' is not an object' );
+		
+		switch( options.type ) {
+			
+			case 'number':
+				
+				// no precision by default
+				if( typeof options.precision == 'undefined' )
+					options.precision = 1;
+				else if( typeof options.precision != 'number' )
+					throw TypeError( 'Invalid precision' );
+					
+				// 1 step by default
+				if( typeof options.step == 'undefined' )
+					options.step = 1;
+				else if( typeof options.step != 'number' || options.step < 0 )
+					throw TypeError( 'Invalid step size' );
+				
+				// if offset defined then set the upper bound regardless of sign
+				if( typeof options.offset != 'undefined' ) {
+					options.min = 0;
+					options.max = options.offset;
+				}
+				
+				// both bounds must be integer
+				if(
+					typeof options.min != 'number' ||
+					typeof options.max != 'number' ||
+					options.min % 1 != 0 ||
+					options.max % 1 != 0
+				)
+					throw TypeError( 'Invalid range bound' );
+				
+				// swap bounds if wrong order
+				if( options.min > options.max )
+					options.min = options.max + ( options.max = options.min, 0 );
+				
+				if( ( options.max - options.min ) / options.step % 1 > 0.0000000000000001 ) // fucking floats
+					throw TypeError( 'Range bound outside step range' );
+				
+				break;
+			
+			case 'string':
+				
+				if( typeof options.max != 'number' || options.max % 1 != 0 )
+					throw TypeError( 'Invalid string limit' );
+				
+				options.charset = validateCharset( options.charset );
+				
+				break;
+				
+			case 'item':
+				
+				if(
+					typeof options.list == 'undefined' ||
+					( !isArray( options.list ) && typeof options.list != 'string' ) ||
+					options.list.length == 0
+				)
+					throw TypeError( 'Invalid or empty list' );
+				
+				break;
+				
+			case 'boolean':
+				
+				break;
+			
+			case 'object':
+				
+				if(
+					typeof options.template == 'undefined' ||
+					options.template.toString() != '[object Object]'
+				)
+					throw TypeError( 'Invalid object template' );
+				
+				break;
+				
+			default:
+				
+				throw TypeError( 'Invalid encoding type' );
+			
+		}
+		
+		if( typeof options.limit != 'undefined' )
+			if( typeof options.limit != 'number' || options.limit % 1 != 0 || options.limit < 0 )
+				throw TypeError( 'Invalid item limit' );
+		
+		return options;
+		
+	}
+	
+	// validate character set
+	var validateCharset = function( charset ) {
+		
+		var errChar = 'Invalid character set', errBin = 'Invalid binary range';
+		
+		if( typeof charset == 'undefined' )
+			charset = defaultCharset;
+		else if( typeof charset == 'number' ) {
+			
+			if( charset % 1 != 0 || charset < 2 )
+				throw TypeError( errBin );
+			
+			charset = [ 0, charset ];
+			
+		} else if( typeof charset == 'string' ) {
+			
+			if( charset.match( /(.).*\1/ ) )
+				throw Error( errChar );
+			
+		} else if( isArray( charset ) ) {
+			
+			if( charset.length != 2 )
+				throw TypeError( errBin );
+			
+			// swap bounds if wrong order
+			if( charset[ 0 ] > charset[ 1 ] )
+				charset.reverse();
+			
+		} else
+			throw TypeError( errChar );
+		
+		return charset;
+		
+	}
+	
+	// our encoder class
+	obj.encoder = function() {
+		
+		if( !this instanceof obj.encoder )
+			return new obj.encoder();
+		
+		this.radii = new Array();
+		this.integers = new Array();
+		
+	}
+	
+	obj.encoder.prototype.write = function( items, options ) {
+		
+		var i, pos, chr, tempInt, workTpl;
+		
+		options = validateOptions( options );
+		
+		if( !isArray( items ) )
+			items = [ items ];
+		
+		if( options.limit )
+			if( items.length > options.limit )
+				throw RangeError( 'Item count exceeds limit' );
+			else
+				this.compose( items.length, options.limit + 1 );
+		
+		for( i in items )
+			if( options.type == 'item' ) {
+				
+				pos = options.list.indexOf( items[ i ] );
+				
+				if( pos == -1 )
+					throw Error( 'Item \'' + items[ i ] + '\' not found in list' );
+				
+				this.compose( pos, options.list.length );
+				
+			} else if( options.type == 'number' ) {
+				
+				if( typeof items[ i ] != 'number' )
+					throw TypeError( 'Item \'' + items[ i ] + '\' not a number' );
+				
+				if( items[ i ] < options.min || items[ i ] > options.max )
+					throw RangeError( 'Item \'' + items[ i ] + '\' exceeds range bounds' );
+				
+				tempInt = ( items[ i ] - options.min ) / options.step;
+				
+				if( tempInt % 1 > 0.0000000000000001 ) // fucking floats
+					throw RangeError( 'Item \'' + items[ i ] + '\' outside of step range' );
+				
+				this.compose( ~~tempInt, ( options.max - options.min ) / options.step + 1 );
+				
+			} else if( options.type == 'boolean' ) {
+				
+				if( typeof items[ i ] != 'boolean' )
+					throw TypeError( 'Item \'' + items[ i ] + '\' not boolean' );
+				
+				this.compose( +items[ i ], 2 );
+				
+			
+			} else if( options.type == 'string' ) {
+				
+				if( typeof items[ i ] != 'string' )
+					throw TypeError( 'Item \'' + items[ i ] + '\' not string' );
+				
+				if( items[ i ].length > options.max )
+					throw RangeError( 'Item \'' + items[ i ] + '\' exceeds max length' );
+				
+				this.write( items[ i ].split( '' ), { type: 'item', list: options.charset, limit: options.max } );
+				
+			} else if( options.type == 'object' ) {
+				
+				workTpl = function( obj, tpl ) {
+					
+					for( var key in tpl ) {
+						
+						if( typeof obj[ key ] == 'undefined' )
+							throw ReferenceError( 'Object has no property \'' + key + '\'' );
+						
+						if( typeof tpl[ key ].type == 'string' )						
+							this.write( obj[ key ], tpl[ key ] );
+						else if( isObject( tpl[ key ] ) )
+							workTpl( obj[ key ], tpl[ key ] );
+						else
+							throw TypeError( 'Invalid object template' );
+						
+					}
+				}
+				
+				workTpl.call( this, items[ i ], options.template );
+				
+			}
+		
+	}
+	
+	obj.encoder.prototype.compose = function( integer, radix ) {
+		
+		this.integers.push( integer );
+		this.radii.push( radix );
+		
+	}
+	
+	obj.encoder.prototype.toString = function( charset ) {
+		
+		var binary = false;
+		
+		charset = validateCharset( charset );
+		
+		if( typeof charset == 'string' )
+			var size = charset.length;
+		else
+			var size = charset[ 1 ] - charset[ 0 ] + 1;
+		
+		var radii = 1;
+		var current = 0;
+		
+		var build = function( integer, radix ) {
+			
+			var left = Math.floor( size / radii );
+			
+			if( left < 2 ) {
+				
+				if( typeof charset == 'string' )
+					str += charset.charAt( current );
+				else
+					str += String.fromCharCode( current + charset[ 0 ] );
+				
+				current = 0;
+				radii = 1;
+				left = size;
+				
+			}
+			
+			if( left >= radix ) {
+				
+				current += radii * integer;
+				radii *= radix;
+				
+			} else {
+				
+				var factor = Math.ceil( radix / left );
+				
+				current += radii * Math.floor( integer / factor );
+				radii *= left;
+				
+				build( integer % factor, factor );
+				
+			}
+			
+		}
+		
+		var str = '';
+		for( var i in this.radii )
+			build( this.integers[ i ], this.radii[ i ] );
+		
+		if( radii != 0 )
+			if( typeof charset == 'string' )
+				str += charset.charAt( current );
+			else
+				str += String.fromCharCode( current + charset[ 0 ] );
+		
+		return str;
+		
+	}
+	
+	// our decoder class
+	obj.decoder = function( str, charset ) {
+		
+		if( !this instanceof obj.decoder )
+			return new obj.decoder( str, charset );
+		
+		if( typeof str == 'undefined' )
+			throw Error( 'Missing first argument' );
+		
+		str = str.toString();
+		
+		charset = validateCharset( charset );
+		
+		if( typeof charset == 'string' )
+			this.size = charset.length;
+		else
+			this.size = charset[ 1 ] - charset[ 0 ] + 1;
+		
+		this.str = str;
+		this.charset = charset;
+		this._next();
+		
+	}
+	
+	obj.decoder.prototype._next = function() {
+		
+		if( typeof this.current == 'undefined' )
+			this.pointer = 0;
+		 else
+			this.pointer ++;
+		
+		if( this.pointer == this.str.length )
+			throw new Error( 'Unexpected EOD while parsing' );
+		
+		this.radii = 1;
+		
+		if( typeof this.charset == 'string' ) {
+			
+			this.current = this.charset.indexOf( this.str.charAt( this.pointer ) );
+			
+			if( this.current == -1 )
+				throw Error( 'Byte at ' + this.pointer + ' not found in character set' );
+			
+		} else {
+			
+			this.current = this.str.charCodeAt( this.pointer ) - this.charset[ 0 ];
+			
+			if( this.current > this.charset )
+				throw Error( 'Byte at ' + this.pointer + ' does not fit binary range' );
+			
+		}
+		
+	}
+	
+	obj.decoder.prototype.parse = function( radix ) {
+		
+		var left = Math.floor( this.size / this.radii );
+		
+		if( left == 1 ) {
+			
+			if( this.current != 0 )
+				throw Error( 'Oversaturated byte at byte ' + this.pointer );
+			
+			this._next();
+			left = this.size;
+			
+		}
+		
+		if( left >= radix ) {
+			
+			var integer = this.current % radix;
+			this.current = Math.floor( this.current / radix );
+			this.radii *= radix;
+			
+		} else {
+			
+			var factor = Math.ceil( radix / left );
+			
+			var integer = this.current * factor;
+			this.current = Math.floor( this.current / left );
+			this.radii *= left;
+			
+			integer += this.parse( factor );
+			
+		}
+		
+		return integer;
+
+	}
+	
+	obj.decoder.prototype.read = function( options, count ) {
+		
+		var i, obj;
+		
+		if( typeof count == 'undefined' )
+			var count = 1;
+		else if( typeof count != 'number' || count % 1 != 0 || count < 0 )
+			throw TypeError( 'Count must be positive integer' );
+		
+		options = validateOptions( options );
+		
+		if( options.limit )
+			count = this.parse( options.limit + 1 );
+		
+		var items = new Array();
+		
+		for( i = 0; i < count; i++ )
+			if( options.type == 'item' ) {
+				
+				items.push( options.list[ this.parse( options.list.length ) ] );
+				
+			} else if( options.type == 'number' ) {
+				
+				items.push( this.parse( ( options.max - options.min ) / options.step + 1 ) * options.step + options.min );
+				
+			} else if( options.type == 'boolean' ) {
+				
+				items.push( new Boolean( this.parse( 2 ) ) );
+				
+			} else if( options.type == 'string' ) {
+				
+				items.push( this.read( { type: 'item', list: options.charset, limit: options.max } ).join( '' ) );
+				
+			} else if( options.type == 'object' ) {
+				
+				if( typeof options.base == 'undefined' || typeof options.base != 'object' )
+					base = {};
+				else
+					base = options.base;
+				
+				workTpl = function( obj, tpl ) {
+					
+					for( var key in tpl ) {
+						
+						if( typeof tpl[ key ].type == 'string' )
+							obj[ key ] = this.read( tpl[ key ] );
+						else if( isObject( tpl[ key ] ) ) {
+							
+							if( typeof obj[ key ] == 'undefined' )
+								obj[ key ] = {};
+							
+							workTpl( obj[ key ], tpl[ key ] );
+							
+						} else
+							throw TypeError( 'Invalid object template' );
+						
+					}
+				}
+				
+				workTpl.call( this, base, options.template )
+				items.push( base );
+				
+			}
+		
+				
+		if( count == 1 )
+			items = items.pop();
+		
+		return items;
+		
+	}
+	
+} ).call( this );
