@@ -62,7 +62,7 @@ The underlaying method used by *encoder.write*. It accepts two arguments.
 * **integer** <br/> The unsigned integer to encode.
 * **radix** <br/> The radix to encode the integer under.
 
-No sanitizing or any processing is utilized and using this method can improve efficiency, but is discouraged when lacking expertise. When used improperly, the encoding process may raise exceptions or produce corrupt data.
+No sanitizing is utilized and using this method can improve efficiency, but is discouraged when lacking expertise. When used improperly, the encoding process may raise exceptions or produce corrupt data.
 
 ###.encoder.toString
 > ```Javascript
@@ -110,7 +110,7 @@ The underlaying method used by *decoder.read*. It parses and returns an integer.
 
 * **radix** <br/> The radix to decode the integer from.
 
-No sanitizing or any processing is utilized and using this method can improve efficiency, but is discouraged when lacking expertise. When used improperly, the decoding process may raise exceptions or produce corrupt data.
+No sanitizing is utilized and using this method can improve efficiency, but is discouraged when lacking expertise. When used improperly, the decoding process may raise exceptions or produce corrupt data.
 
 ###The encodingOptions object
 EncodingOptions is a plainObject containing the options as property-value pairs to be used in encoding and decoding processes. These options differ per data type that is encoded.
