@@ -4,6 +4,7 @@ Polynar
 Polynar is an easy to use encoding library for Javascript, utilizing polynary numbers for efficient and dynamic data storage, while even rivaling binary when similar storage is utilized.
 Be aware that this is by no means a way of encryption, encoded data can easily be recovered even without knowledge of the applied encoding options.
 		
+Most data storage tools either force your to either settle for data limits equal to a power of two, making you waste twice as much space when it barely doesn't fit, or use an obscene amount of space when you already have to figure out a proper way of composing and parsing your data (Base64). Polynar removes all these limitations by using its own algorithm to store data by exactly the limits you supply it, massively limiting the amount of storage space wasted and even taking away the need to compose and parse your own data.
 
 ### Usage
 
