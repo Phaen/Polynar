@@ -187,4 +187,4 @@ When supplying an integer, the character set will be binary instead, starting fr
 Be aware that data processed this way may become corrupt or raise exceptions when using functions that are not binary safe. An example of this is XmlHttpRequest.
 
 ##### Array
-By using an array that contains exactly two integers, the bounds of the binary range can be supplied.
+By using an array that contains exactly two integers, the bounds of the binary range can be supplied in arbitrary order.
