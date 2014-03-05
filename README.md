@@ -140,7 +140,7 @@ Despite their naming convention, *min* and *max* can accept either range bound.
 By supplying a list, any kind of item that appears in that list can be processed.
 
 * **type** *(string)* <br/> Must be set to *'item'*.
-* **list** *(array|string)* <br/> The list containing all items that can be processed.
+* **list** *(array)* <br/> The list containing all items that can be processed, it cannot be empty.
 * **sort** *(bool, optional)* <br/> If *true*, will sort the list before encoding ensuring that identical, but differently ordered lists will yield the same results. Will default to *false*.
 
 Be aware that items that are arrays must be supplied in a containing array at all times, regardless whether only one is supplied. Otherwise your item's contents will be mistaken for seperate items instead.
@@ -161,7 +161,7 @@ A few options are applicable to every type of data.
 * **limit** *(unsigned integer, optional)* <br/> The maximum amount of items encoded. When supplied, it will automatically decode all the items that were initially encoded by the same method call.
 
 ### Character sets
-A character set is a set of characters that can be used for encoding and decoding purposes. There are a few ways to supply a character set to Polynar methods.
+A character set is a set of characters that can be used for encoding and decoding purposes. There are a few ways to supply a character set to Polynar methods. Every character set needs to cover at least two characters.
 
 ##### Undefined
 When no character set is supplied, the Base64 character set (as can be found below) will be used instead.
