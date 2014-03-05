@@ -143,6 +143,8 @@ By supplying a list, any kind of item that appears in that list can be processed
 * **list** *(array|string)* <br/> The list containing all items that can be processed.
 * **sort** *(bool, optional)* <br/> If *true*, will sort the list before encoding ensuring that identical, but differently ordered lists will yield the same results. Will default to *false*.
 
+Be aware that items that are arrays must be supplied in a containing array at all times, regardless whether only one is supplied. Otherwise your item's contents will be mistaken for seperate items instead.
+
 ##### Objects
 
 Whole objects can be processed as well, allowing you to furfill most of your encoding and decoding needs through one function call.
@@ -151,3 +153,34 @@ Whole objects can be processed as well, allowing you to furfill most of your enc
 * **template** *(plainObject)* <br/> A plainObject containing all properties of the object to be processed and the [encodingOptions objects](#encodingoptions) to process them under as property-value pairs. Instead of supplying nested options, the template will be parsed recursively and can also contain nested objects.
 * **base** *(object/function, optional)* Decoding only. The object or object retrieved from function to assign the data to. If ommitted, an empty plainObject will be used instead.
 * **sort** *(bool, optional)* <br/> If true, will sort the keys before encoding ensuring that identical, but differently constructed objects will yield the same results.
+
+##### All
+
+A few options are applicable to every type of data.
+
+* **limit** *(unsigned integer, optional)* <br/> The maximum amount of items encoded. When supplied, it will automatically decode all the items that were initially encoded by the same method call.
+
+###Character set
+A character set is a set of characters that can be used for encoding and decoding purposes. There are a few ways to supply a character set to Polynar methods.
+
+##### String
+When supplying a string, its characters will be used as character set in the order they appear. No repeating characters are allowed.
+
+For your convenience, Polynar comes with a number of predefined character sets. They can be found as properties of the Polynar object.
+```
+numeric: 0123456789
+hex: 0123456789ABCDEF
+alphaLower: abcdefghijklmnopqrstuvwxyz
+alphaUpper: ABCDEFGHIJKLMNOPQRSTUVWXYZ
+alpha: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
+alphanumeric: 0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
+Base64: ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
+printable:  !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~'
+
+##### Unsigned integer
+When supplying an integer, the character set will be binary instead, starting from zero. The byte size will be equal to the number supplied.
+
+Be aware that data processed this way may become corrupt or raise exceptions when using functions that are not binary safe. An example of this is XmlHttpRequest.
+
+#### Array
+By using an array that contains exactly two integers, the bounds of the binary range can be supplied.
