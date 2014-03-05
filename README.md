@@ -1,0 +1,4 @@
+Polynar
+=======
+
+Data encoding library
