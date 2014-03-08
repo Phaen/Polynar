@@ -198,6 +198,10 @@
 		if( !isArray( items ) )
 			items = [ items ];
 		
+		if( typeof options.preProc == 'function' )
+			for( i in items )
+				items[ i ] = options.preProc( items[ i ] );
+		
 		if( options.limit )
 			if( items.length > options.limit )
 				throw RangeError( 'Item count exceeds limit' );
@@ -545,6 +549,9 @@
 				
 			}
 		
+		if( typeof options.postProc == 'function' )
+			for( i in items )
+				items[ i ] = options.postProc( items[ i ] );
 				
 		if( count == 1 )
 			items = items.pop();
