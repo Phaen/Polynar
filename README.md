@@ -159,7 +159,7 @@ Whole objects can be processed as well, allowing you to furfill most of your enc
 
 A few options are applicable to every type of data.
 
-* **limit** *(unsigned integer, optional)* <br/> The maximum amount of items encoded. When supplied, it will automatically decode all the items that were initially encoded by the same method call.
+* **limit** *(unsigned integer, optional)* <br/> The maximum amount of items encoded. When supplied, it will automatically keep track of and decode as many items as were initially encoded by the same method call.
 * **preProc** *(function, optional)* <br/> A function to pass the items through before encoding, the new items will be whatever the function returns. The initial items do not have to be compliant with the encoding options.
 * **postProc** *(function, optional)* <br/> A function to pass the items through after decoding, the new items will be whatever the function returns.
 
