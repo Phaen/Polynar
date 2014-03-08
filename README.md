@@ -13,7 +13,8 @@ Adding the library to your project creates a Polynar object (by default assigned
 
 ### Examples
 
-[JSFiddle object encoding/decoding example](http://jsfiddle.net/Phaen/JWHt5/)
+[JSFiddle Object Encoding/Decoding Example](http://jsfiddle.net/Phaen/JWHt5/)
+[JSFiddle Misc. Data Encoding/Decoding Example](http://jsfiddle.net/Phaen/VetvQ/)
 
 Documentation
 =
