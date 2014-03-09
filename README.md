@@ -176,15 +176,16 @@ When supplying a string, its characters will be used as character set in the ord
 
 For your convenience, Polynar comes with a number of predefined character sets. They can be found as properties of the Polynar object.
 ```
-numeric: 0123456789
+digit: 0123456789
 hex: 0123456789ABCDEF
-alphaLower: abcdefghijklmnopqrstuvwxyz
-alphaUpper: ABCDEFGHIJKLMNOPQRSTUVWXYZ
+lowalpha: abcdefghijklmnopqrstuvwxyz
+hialpha: ABCDEFGHIJKLMNOPQRSTUVWXYZ
 alpha: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
 alphanumeric: 0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
 Base64: ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
 printable:  !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~
 htmlSafe:  !#$%'()*+,-./0123456789:;=?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~
+urlSafe: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ$-_.+!*\'()
 ```
 
 ##### Unsigned integer

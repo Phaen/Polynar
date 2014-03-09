@@ -12,15 +12,16 @@
 	var obj = {};
 	
 	// registering useful character sets
-	obj.numeric = '0123456789';
-	obj.hex = obj.numeric + 'ABCDEF';
-	obj.alphaLower = 'abcdefghijklmnopqrstuvwxyz';
-	obj.alphaUpper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-	obj.alpha = obj.alphaLower + obj.alphaUpper;
-	obj.alphanumeric = obj.numeric + obj.alpha;
+	obj.digit = '0123456789';
+	obj.hex = obj.digit + 'ABCDEF';
+	obj.lowalpha = 'abcdefghijklmnopqrstuvwxyz';
+	obj.hialpha = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+	obj.alpha = obj.lowalpha + obj.hialpha;
+	obj.alphanumeric = obj.digit + obj.alpha;
 	obj.printable = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~';
 	obj.htmlSafe = ' !#$%\'()*+,-./0123456789:;=?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~';
 	obj.Base64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+	obj.urlSafe = obj.alpha + obj.digit + '$-_.+!*\'()'; // http://www.ietf.org/rfc/rfc1738.txt
 	
 	// the default character set to use
 	var defaultCharset = obj.Base64;
