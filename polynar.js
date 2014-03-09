@@ -19,6 +19,7 @@
 	obj.alpha = obj.alphaLower + obj.alphaUpper;
 	obj.alphanumeric = obj.numeric + obj.alpha;
 	obj.printable = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~';
+	obj.htmlSafe = ' !#$%\'()*+,-./0123456789:;=?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~';
 	obj.Base64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 	
 	// the default character set to use
