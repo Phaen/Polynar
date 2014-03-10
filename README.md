@@ -13,9 +13,83 @@ Adding the library to your project creates a Polynar object (by default assigned
 
 ### Examples
 
-[JSFiddle Object Encoding/Decoding Example](http://jsfiddle.net/Phaen/JWHt5/)
+###### JSFiddle Examples
 
-[JSFiddle Misc. Data Encoding/Decoding Example](http://jsfiddle.net/Phaen/VetvQ/)
+[Object Encoding/Decoding](http://jsfiddle.net/Phaen/JWHt5/)
+
+[Misc. Data Encoding/Decoding](http://jsfiddle.net/Phaen/VetvQ/)
+
+###### Step-by-step
+
+Let's walk through a simple object encoding example where we construct a template to encode parts of the [navigator object](https://developer.mozilla.org/en-US/docs/Web/API/Window.navigator).
+To encode an object, we need to define a template for it. Let's just define a plainObject for now and create an encoder instance.
+```Javascript
+var data = new Polynar.encoder();
+var tpl = {};
+```
+
+Let's start with the user agent, which can be found under the 'userAgent' property. User agents vary and some can be pretty long, let's settle for a maximum length of 2^12 (4096) as it's one of the hard limits that can be found.
+User agents can also contain any kind of characters, but they usually tend to exist out of just alphanumeric characters, space and '/():;.,'.
+```Javascript
+tpl.userAgent = {
+	type: 'string',
+	max: Math.pow( 2, 12 ),
+	charset: Polynar.alphanumeric + '/():;., '
+};
+```
+
+The 'appName' property is rather unique because in general, only three different values are found for it: 'Netscape', 'Microsoft Internet Explorer' and 'Opera'.
+With that in mind, we can just settle for a list of possible items for this property.
+```Javascript
+tpl.appName = {
+	type: 'item',
+	list: [ 'Netscape', 'Microsoft Internet Explorer', 'Opera' ]
+};
+```
+
+This becomes even easier for the 'cookieEnabled' property as it is a boolean, leaving us to only define it as such.
+```Javascript
+tpl.cookieEnabled = {
+	type: 'boolean'
+};
+```
+
+For the 'language' property, let's go with a little more functionality.
+It's value can be just an ISO 639-1 code for a language, which are two lowercase lettters like 'nl', or have an addition for the dialect like 'en-GB'.
+Say we are only interested in the initial two letter code, we can define an anonymous function to simply cut off anything past the initial two characters.
+From then on, we could actually pass it as an item on a list of all ISO 639-1 language codes, but let's slack off for now and just define it as a two character lowalpha string.
+```Javascript
+tpl.language = {
+	type: 'string',
+	preProc: function( s ) { return s.substr( 0, 2 ); },
+	max: 2,
+	charset: Polynar.lowalpha
+};
+```
+
+Having defined all of the template, we can now define the encoding options for the navigator object itself.
+For this particular case, we will want to enable sorting as we just randomly constructed the template and the property order is meaningless, while it may otherwise decode incorrectly if someone else slams the same template together in a different order.
+```Javascript
+var optionsNavigator = {
+	type: 'object',
+	template: tpl,
+	sort: true
+};
+```
+
+Say we want to append this data to an URL variable, we can pick an URL safe character set and append it to the URL just like that.
+For now, let's just display the string in a prompt instead, so we can easily copy it and hang it above our bed as a trophy.
+
+```Javascript
+data.write( navigator, optionsNavigator );
+prompt( 'Our encoded data string', data.toString( Polynar.urlSafe ) );
+```
+
+[A working JSFiddle of this example.](http://jsfiddle.net/Phaen/3N2s4/)
+
+Decoding in Polynar adds very little extra effort beyond encoding.
+The encoding options and complete template are already in place, the only thing left to do is to create a decoder instance with the encoded string and retrieve the data through the read method.
+[Here is a JSFiddle](http://jsfiddle.net/Phaen/MvGC5/) that displays all the data decoded this way. You can paste in your own data string and see the magic happen right in front of your eyes (mind the quote marks!).
 
 Documentation
 =

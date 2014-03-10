@@ -271,7 +271,7 @@
 				
 			case 'string':
 				
-				if( typeof options.charset == 'string' )
+				if( typeof options.charset != 'string' )
 					size = options.charset[ 1 ] - options.charset[ 0 ] + 1;
 				
 				for( i in items ) {
@@ -282,7 +282,7 @@
 					if( items[ i ].length > options.max )
 						throw RangeError( 'Item \'' + items[ i ] + '\' exceeds max length' );
 					
-					this.compose( items[ i ].length, options.max );
+					this.compose( items[ i ].length, options.max + 1 );
 					
 					for( chr = 0; chr < items[ i ].length; chr ++ )
 						if( typeof options.charset == 'string' ) {
@@ -544,12 +544,12 @@
 			
 			case 'string':
 				
-				if( typeof options.charset == 'string' )
+				if( typeof options.charset != 'string' )
 					size = options.charset[ 1 ] - options.charset[ 0 ] + 1;
 				
 				for( i = 0; i < count; i++ ) {
 					
-					len = this.parse( options.max );
+					len = this.parse( options.max + 1 );
 					str = '';
 					
 					for( chr = 0; chr < len; chr ++ )
@@ -588,12 +588,14 @@
 					
 					workTpl = function( obj, tpl ) {
 						
+						var key, keys = Object.keys( tpl );
+						
 						if( options.sort )
-							var keys = Object.keys( tpl );
-						else
-							var keys = tpl;
+							keys.sort();
 
-						for( var key in keys ) {
+						for( var k in keys ) {
+							
+							key = keys[ k ];
 							
 							if( typeof tpl[ key ].type == 'string' )
 								obj[ key ] = this.read( tpl[ key ] );
