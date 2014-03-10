@@ -29,7 +29,7 @@ var tpl = {};
 ```
 
 Let's start with the user agent, which can be found under the 'userAgent' property. User agents vary and some can be pretty long, let's settle for a maximum length of 2^12 (4096) as it's one of the hard limits that can be found.
-User agents can also contain any kind of characters, but they usually tend to exist out of just alphanumeric characters, space and '/():;.,'.
+As user agents can be customized and can thus contain pretty much any character, but in general they tend to exist out of just alphanumeric characters, space and '/():;.,'.
 ```Javascript
 tpl.userAgent = {
 	type: 'string',
@@ -55,7 +55,7 @@ tpl.cookieEnabled = {
 ```
 
 For the 'language' property, let's go with a little more functionality.
-It's value can be just an ISO 639-1 code for a language, which are two lowercase lettters like 'nl', or have an addition for the dialect like 'en-GB'.
+Its value can be just an ISO 639-1 code for a language, which are two lowercase lettters like 'nl', or have an addition for the dialect like 'en-GB'.
 Say we are only interested in the initial two letter code, we can define an anonymous function to simply cut off anything past the initial two characters.
 From then on, we could actually pass it as an item on a list of all ISO 639-1 language codes, but let's slack off for now and just define it as a two character lowalpha string.
 ```Javascript
@@ -90,6 +90,8 @@ prompt( 'Our encoded data string', data.toString( Polynar.urlSafe ) );
 Decoding in Polynar adds very little extra effort beyond encoding.
 The encoding options and complete template are already in place, the only thing left to do is to create a decoder instance with the encoded string and retrieve the data through the read method.
 [Here is a JSFiddle](http://jsfiddle.net/Phaen/MvGC5/) that displays all the data decoded this way. You can paste in your own data string and see the magic happen right in front of your eyes (mind the quote marks!).
+
+Keep in mind though that this is intended to serve only as an example. Browsers vary and can be completely customized, in this case possibly rendering our limits rather obstructive.
 
 Documentation
 =
