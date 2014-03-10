@@ -122,9 +122,17 @@
 				
 				if(
 					typeof options.template == 'undefined' ||
-					options.template.toString() != '[object Object]'
+					!isObject( options.template )
 				)
 					throw TypeError( 'Invalid object template' );
+				
+				if(
+					typeof options.base != 'undefined' &&
+					!isArray( options.base ) &&
+					!isObject( options.base ) &&
+					typeof options.base != 'function'
+				)
+					throw TypeError( 'Invalid object base' );
 				
 				break;
 				
@@ -210,74 +218,98 @@
 			else
 				this.compose( items.length, options.limit + 1 );
 		
-		if( options.type == 'string' && typeof options.charset == 'string' )
-			size = options.charset[ 1 ] - options.charset[ 0 ] + 1;
-		
-		for( i in items )
-			if( options.type == 'item' ) {
-				
-				pos = options.list.indexOf( items[ i ] );
-				
-				if( pos == -1 )
-					throw Error( 'Item \'' + items[ i ] + '\' not found in list' );
-				
-				this.compose( pos, options.list.length );
-				
-			} else if( options.type == 'number' ) {
-				
-				if( typeof items[ i ] != 'number' )
-					throw TypeError( 'Item \'' + items[ i ] + '\' not a number' );
-				
-				if( items[ i ] < options.min || items[ i ] > options.max )
-					throw RangeError( 'Item \'' + items[ i ] + '\' exceeds range bounds' );
-				
-				tempInt = ( items[ i ] - options.min ) / options.step;
-				
-				if( tempInt % 1 > 0.0000000000000001 ) // fucking floats
-					throw RangeError( 'Item \'' + items[ i ] + '\' outside step range' );
-				
-				this.compose( ~~tempInt, ( options.max - options.min ) / options.step + 1 );
-				
-			} else if( options.type == 'boolean' ) {
-				
-				if( typeof items[ i ] != 'boolean' )
-					throw TypeError( 'Item \'' + items[ i ] + '\' not boolean' );
-				
-				this.compose( +items[ i ], 2 );
-				
+		switch( options.type ) {
 			
-			} else if( options.type == 'string' ) {
+			case 'item':
 				
-				if( typeof items[ i ] != 'string' )
-					throw TypeError( 'Item \'' + items[ i ] + '\' not string' );
+				for( i in items ) {
+					
+					pos = options.list.indexOf( items[ i ] );
+					
+					if( pos == -1 )
+						throw Error( 'Item \'' + items[ i ] + '\' not found in list' );
+					
+					this.compose( pos, options.list.length );
+					
+				}
 				
-				if( items[ i ].length > options.max )
-					throw RangeError( 'Item \'' + items[ i ] + '\' exceeds max length' );
+				break;
+			
+			case 'number':
 				
-				this.compose( items[ i ].length, options.max );
+				for( i in items ) {
+					
+					if( typeof items[ i ] != 'number' )
+						throw TypeError( 'Item \'' + items[ i ] + '\' not a number' );
+					
+					if( items[ i ] < options.min || items[ i ] > options.max )
+						throw RangeError( 'Item \'' + items[ i ] + '\' exceeds range bounds' );
+					
+					tempInt = ( items[ i ] - options.min ) / options.step;
+					
+					if( tempInt % 1 > 0.0000000000000001 ) // fucking floats
+						throw RangeError( 'Item \'' + items[ i ] + '\' outside step range' );
+					
+					this.compose( ~~tempInt, ( options.max - options.min ) / options.step + 1 );
+					
+				}
 				
-				for( chr = 0; chr < items[ i ].length; chr ++ )
-					if( typeof options.charset == 'string' ) {
-						
-						pos = options.charset.indexOf( items[ i ].charAt( chr ) );
-						
-						if( pos == -1 )
-							throw Error( 'String not compliant with character set' );
-						
-						this.compose( pos, options.charset.length );
-						
-					} else {
-						
-						pos = items[ i ].charCodeAt( chr );
-						
-						if( pos < options.charset[ 0 ] || pos > options.charset[ 1 ] )
-							throw Error( 'String not compliant with character set' );
-						
-						this.compose( pos - options.charset[ 0 ], size );
-						
-					}
+				break;
 				
-			} else if( options.type == 'object' ) {
+			case 'boolean':
+				
+				for( i in items ) {
+					
+					if( typeof items[ i ] != 'boolean' )
+						throw TypeError( 'Item \'' + items[ i ] + '\' not boolean' );
+					
+					this.compose( +items[ i ], 2 );
+					
+				}
+				
+				break;
+				
+			case 'string':
+				
+				if( typeof options.charset == 'string' )
+					size = options.charset[ 1 ] - options.charset[ 0 ] + 1;
+				
+				for( i in items ) {
+					
+					if( typeof items[ i ] != 'string' )
+						throw TypeError( 'Item \'' + items[ i ] + '\' not string' );
+					
+					if( items[ i ].length > options.max )
+						throw RangeError( 'Item \'' + items[ i ] + '\' exceeds max length' );
+					
+					this.compose( items[ i ].length, options.max );
+					
+					for( chr = 0; chr < items[ i ].length; chr ++ )
+						if( typeof options.charset == 'string' ) {
+							
+							pos = options.charset.indexOf( items[ i ].charAt( chr ) );
+							
+							if( pos == -1 )
+								throw Error( 'String not compliant with character set' );
+							
+							this.compose( pos, options.charset.length );
+							
+						} else {
+							
+							pos = items[ i ].charCodeAt( chr );
+							
+							if( pos < options.charset[ 0 ] || pos > options.charset[ 1 ] )
+								throw Error( 'String not compliant with character set' );
+							
+							this.compose( pos - options.charset[ 0 ], size );
+							
+						}
+						
+				}
+				
+				break;
+				
+			case 'object':
 				
 				workTpl = function( obj, tpl ) {
 					
@@ -301,9 +333,11 @@
 					}
 				}
 				
-				workTpl.call( this, items[ i ], options.template );
+				for( i in items )
+					workTpl.call( this, items[ i ], options.template );
 				
-			}
+				break;
+		}
 		
 	}
 	
@@ -469,7 +503,7 @@
 	
 	obj.decoder.prototype.read = function( options, count ) {
 		
-		var i, obj, chr, size, len, str;
+		var i, obj, chr, size, len, str, ptr;
 		
 		if( typeof count == 'undefined' )
 			var count = 1;
@@ -481,75 +515,106 @@
 		if( options.limit )
 			count = this.parse( options.limit + 1 );
 		
-		if( options.type == 'string' && typeof options.charset == 'string' )
-			size = options.charset[ 1 ] - options.charset[ 0 ] + 1;
-		
 		var items = new Array();
 		
-		for( i = 0; i < count; i++ )
-			if( options.type == 'item' ) {
+		switch( options.type ) {
+			
+			case 'item':
 				
-				items.push( options.list[ this.parse( options.list.length ) ] );
+				for( i = 0; i < count; i++ )
+					items.push( options.list[ this.parse( options.list.length ) ] );
 				
-			} else if( options.type == 'number' ) {
+				break;
 				
-				items.push( this.parse( ( options.max - options.min ) / options.step + 1 ) * options.step + options.min );
+			case 'number':
 				
-			} else if( options.type == 'boolean' ) {
+				for( i = 0; i < count; i++ )
+					items.push( this.parse( ( options.max - options.min ) / options.step + 1 ) * options.step + options.min );
 				
-				items.push( new Boolean( this.parse( 2 ) ) );
+				break;
 				
-			} else if( options.type == 'string' ) {
+			case 'boolean':
 				
-				len = this.parse( options.max );
-				str = '';
+				for( i = 0; i < count; i++ )
+					items.push( new Boolean( this.parse( 2 ) ) );
 				
-				for( chr = 0; chr < len; chr ++ )
-					if( typeof options.charset == 'string' )
-						str += options.charset.charAt( this.parse( options.charset.length ) );
-					else
-						str += this.parse( size ) + options.charset[ 0 ];
+				break;
+			
+			case 'string':
 				
-				items.push( str );
+				if( typeof options.charset == 'string' )
+					size = options.charset[ 1 ] - options.charset[ 0 ] + 1;
 				
-			} else if( options.type == 'object' ) {
-				
-				if( typeof options.base == 'function' )
-					base = options.base();
-				else
-					base = options.base;
-				
-				if( typeof options.base == 'undefined' || typeof options.base != 'object' )
-					base = {};
-				
-				workTpl = function( obj, tpl ) {
+				for( i = 0; i < count; i++ ) {
 					
-					if( options.sort )
-						var keys = Object.keys( tpl );
-					else
-						var keys = tpl;
-
-					for( var key in keys ) {
-						
-						if( typeof tpl[ key ].type == 'string' )
-							obj[ key ] = this.read( tpl[ key ] );
-						else if( isObject( tpl[ key ] ) ) {
-							
-							if( typeof obj[ key ] == 'undefined' )
-								obj[ key ] = {};
-							
-							workTpl( obj[ key ], tpl[ key ] );
-							
-						} else
-							throw TypeError( 'Invalid object template' );
-						
-					}
+					len = this.parse( options.max );
+					str = '';
+					
+					for( chr = 0; chr < len; chr ++ )
+						if( typeof options.charset == 'string' )
+							str += options.charset.charAt( this.parse( options.charset.length ) );
+						else
+							str += this.parse( size ) + options.charset[ 0 ];
+					
+					items.push( str );
+					
 				}
 				
-				workTpl.call( this, base, options.template )
-				items.push( base );
+				break;
+			
+			case 'object':
 				
-			}
+				if( typeof options.base != 'undefined' && isArray( options.base ) && options.base.length != count )
+					throw Error( 'Items and base count mismatch' );
+				
+				for( i = 0; i < count; i++ ) {
+					
+					if( typeof options.base == 'undefined' )
+						base = {};
+					else if( isArray( options.base ) )
+						base = options.base[ i ];
+					else if( typeof options.base == 'function' )
+						if( options.base.name = '' )
+							base = options.base();
+						else
+							base = new options.base();
+					else
+						base = options.base;
+					
+					if( typeof base != 'object' )
+						throw TypeError( 'Invalid object base' );
+					
+					workTpl = function( obj, tpl ) {
+						
+						if( options.sort )
+							var keys = Object.keys( tpl );
+						else
+							var keys = tpl;
+
+						for( var key in keys ) {
+							
+							if( typeof tpl[ key ].type == 'string' )
+								obj[ key ] = this.read( tpl[ key ] );
+							else if( isObject( tpl[ key ] ) ) {
+								
+								if( typeof obj[ key ] == 'undefined' )
+									obj[ key ] = {};
+								
+								workTpl( obj[ key ], tpl[ key ] );
+								
+							} else
+								throw TypeError( 'Invalid object template' );
+							
+						}
+					}
+					
+					workTpl.call( this, base, options.template )
+					items.push( base );
+					
+				}
+				
+				break;
+		}
 		
 		if( typeof options.postProc == 'function' )
 			for( i in items )

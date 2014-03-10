@@ -154,7 +154,7 @@ Whole objects can be processed as well, allowing you to furfill most of your enc
 
 * **type** *(string)* <br/> Must be set to *'object'*.
 * **template** *(plainObject)* <br/> A plainObject containing all properties of the object to be processed and the [encodingOptions objects](#encodingoptions) to process them under as property-value pairs. Instead of supplying nested options, the template will be parsed recursively and can also contain nested objects.
-* **base** *(object/function, optional)* Decoding only. The object or object retrieved from function to assign the data to. If ommitted, an empty plainObject will be used instead.
+* **base** *(object/function/array, optional)* Decoding only. A base object to assign the properties and decoded values to. If ommited, a new plainObject will be created. If an anonymous function is supplied, it will be called to retrieve the object. If a named function is supplied, it will be called as a constructor to instantiate the object. If an array is supplied, the items will each be used as base for the decoded items. Array length must match the item count.
 * **sort** *(bool, optional)* <br/> If true, will sort the keys before encoding ensuring that identical, but differently constructed objects will yield the same results.
 
 ##### All
