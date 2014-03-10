@@ -313,12 +313,14 @@
 				
 				workTpl = function( obj, tpl ) {
 					
+					var key, keys = Object.keys( tpl );
+					
 					if( options.sort )
-						var keys = Object.keys( tpl ).sort();
-					else
-						var keys = tpl;
+						keys.sort();
 
-					for( var key in keys ) {
+					for( var k in keys ) {
+						
+						key = keys[ k ];
 						
 						if( typeof obj[ key ] == 'undefined' )
 							throw ReferenceError( 'Object has no property \'' + key + '\'' );
