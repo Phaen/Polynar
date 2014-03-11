@@ -26,6 +26,9 @@
 	// the default character set to use
 	var defaultCharset = obj.Base64;
 	
+	// strict mode by default
+	var defaultStrict = false;
+	
 	// registering our object name, both browser and server side
 	if( typeof exports == 'undefined' )
 		this[ objName ] = obj;
@@ -189,11 +192,17 @@
 	}
 	
 	// our encoder class
-	obj.encoder = function() {
+	obj.encoder = function( strict ) {
 		
 		if( !this instanceof obj.encoder )
-			return new obj.encoder();
+			return new obj.encoder( strict );
 		
+		if( typeof strict == 'undefined' )
+			strict = defaultStrict;
+			
+		strict = Boolean( strict );
+		
+		this.strict = strict;
 		this.radii = new Array();
 		this.integers = new Array();
 		
@@ -201,7 +210,7 @@
 	
 	obj.encoder.prototype.write = function( items, options ) {
 		
-		var i, pos, chr, size, tempInt, workTpl;
+		var i, pos, chr, size, item, workTpl;
 		
 		options = validateOptions( options );
 		
@@ -227,7 +236,10 @@
 					pos = options.list.indexOf( items[ i ] );
 					
 					if( pos == -1 )
-						throw Error( 'Item \'' + items[ i ] + '\' not found in list' );
+						if( strict )
+							throw Error( 'Item \'' + items[ i ] + '\' not found in list' );
+						else
+							pos = 0;
 					
 					this.compose( pos, options.list.length );
 					
@@ -239,18 +251,25 @@
 				
 				for( i in items ) {
 					
-					if( typeof items[ i ] != 'number' )
-						throw TypeError( 'Item \'' + items[ i ] + '\' not a number' );
+					item = items[ i ];
 					
-					if( items[ i ] < options.min || items[ i ] > options.max )
-						throw RangeError( 'Item \'' + items[ i ] + '\' exceeds range bounds' );
+					if( typeof item != 'number' )
+						if( this.strict )
+							throw TypeError( 'Item \'' + item + '\' not a number' );
+						else
+							item = Number[ item ] || 0; // cast it to number or settle for 0 if NaN
 					
-					tempInt = ( items[ i ] - options.min ) / options.step;
+					if( this.strict === false )
+						item = Math.min( options.max, Math.max( options.min, item ) ); // limit to bounds
+					else if( item < options.min || item > options.max )
+						throw RangeError( 'Item \'' + item + '\' exceeds range bounds' );
 					
-					if( tempInt % 1 > 0.0000000000000001 ) // fucking floats
+					item = ( item - options.min ) / options.step;
+					
+					if( this.strict && item % 1 > 0.0000000000000001 ) // fucking floats
 						throw RangeError( 'Item \'' + items[ i ] + '\' outside step range' );
 					
-					this.compose( ~~tempInt, ( options.max - options.min ) / options.step + 1 );
+					this.compose( ~~item, ( options.max - options.min ) / options.step + 1 ); // round anyway because f. floats
 					
 				}
 				
@@ -260,10 +279,15 @@
 				
 				for( i in items ) {
 					
-					if( typeof items[ i ] != 'boolean' )
-						throw TypeError( 'Item \'' + items[ i ] + '\' not boolean' );
+					item = items[ i ];
 					
-					this.compose( +items[ i ], 2 );
+					if( typeof item != 'boolean' )
+						if( this.strict )
+							throw TypeError( 'Item \'' + item + '\' not boolean' );
+						else
+							item = Boolean( item );
+					
+					this.compose( +item, 2 );
 					
 				}
 				
@@ -276,18 +300,26 @@
 				
 				for( i in items ) {
 					
-					if( typeof items[ i ] != 'string' )
-						throw TypeError( 'Item \'' + items[ i ] + '\' not string' );
+					item = items[ i ];
 					
-					if( items[ i ].length > options.max )
-						throw RangeError( 'Item \'' + items[ i ] + '\' exceeds max length' );
+					if( typeof item != 'string' )
+						if( this.strict )
+							throw TypeError( 'Item \'' + item + '\' not string' );
+						else
+							item = String( item );
 					
-					this.compose( items[ i ].length, options.max + 1 );
+					if( item.length > options.max )
+						if( this.strict )
+							throw RangeError( 'Item \'' + item + '\' exceeds max length' );
+						else
+							item = item.substr( 0, options.max ); // cut off to max length
 					
-					for( chr = 0; chr < items[ i ].length; chr ++ )
+					this.compose( item.length, options.max + 1 );
+					
+					for( chr = 0; chr < item.length; chr ++ )
 						if( typeof options.charset == 'string' ) {
 							
-							pos = options.charset.indexOf( items[ i ].charAt( chr ) );
+							pos = options.charset.indexOf( item.charAt( chr ) );
 							
 							if( pos == -1 )
 								throw Error( 'String not compliant with character set' );
@@ -296,7 +328,7 @@
 							
 						} else {
 							
-							pos = items[ i ].charCodeAt( chr );
+							pos = item.charCodeAt( chr );
 							
 							if( pos < options.charset[ 0 ] || pos > options.charset[ 1 ] )
 								throw Error( 'String not compliant with character set' );
@@ -414,15 +446,19 @@
 	}
 	
 	// our decoder class
-	obj.decoder = function( str, charset ) {
+	obj.decoder = function( str, charset, strict ) {
 		
 		if( !this instanceof obj.decoder )
-			return new obj.decoder( str, charset );
+			return new obj.decoder( str, charset, strict );
 		
 		if( typeof str == 'undefined' )
 			throw Error( 'Missing first argument' );
 		
-		str = str.toString();
+		if( typeof strict == 'undefined' )
+			strict = defaultStrict;
+			
+		strict = Boolean( strict );
+		str = String( str );
 		
 		charset = validateCharset( charset );
 		
@@ -431,53 +467,47 @@
 		else
 			this.size = charset[ 1 ] - charset[ 0 ] + 1;
 		
+		this.strict = strict;
 		this.str = str;
 		this.charset = charset;
-		this._next();
-		
-	}
-	
-	obj.decoder.prototype._next = function() {
-		
-		if( typeof this.current == 'undefined' )
-			this.pointer = 0;
-		 else
-			this.pointer ++;
-		
-		if( this.pointer == this.str.length )
-			throw new Error( 'Unexpected EOD while parsing' );
-		
-		this.radii = 1;
-		
-		if( typeof this.charset == 'string' ) {
-			
-			this.current = this.charset.indexOf( this.str.charAt( this.pointer ) );
-			
-			if( this.current == -1 )
-				throw Error( 'Byte at ' + this.pointer + ' not found in character set' );
-			
-		} else {
-			
-			this.current = this.str.charCodeAt( this.pointer ) - this.charset[ 0 ];
-			
-			if( this.current > this.charset )
-				throw Error( 'Byte at ' + this.pointer + ' does not fit binary range' );
-			
-		}
 		
 	}
 	
 	obj.decoder.prototype.parse = function( radix ) {
 		
-		var left = Math.floor( this.size / this.radii );
+		var left;
 		
-		if( left == 1 ) {
+		if( typeof this.current == 'undefined' || ( left = Math.floor( this.size / this.radii ) ) == 1 ) {
 			
-			if( this.current != 0 )
+			if( typeof this.current == 'undefined' )
+				this.pointer = 0;
+			else if( this.current != 0 )
 				throw Error( 'Oversaturated byte at byte ' + this.pointer );
+			else
+				this.pointer ++;
 			
-			this._next();
+			this.radii = 1;
 			left = this.size;
+			
+			if( this.pointer == this.str.length )
+				throw new Error( 'Unexpected end of input while parsing' );
+			
+			if( typeof this.charset == 'string' ) {
+				
+				this.current = this.charset.indexOf( this.str.charAt( this.pointer ) );
+				
+				if( this.current == -1 )
+					throw Error( 'Byte at ' + this.pointer + ' not found in character set' );
+				
+			} else {
+				
+				this.current = this.str.charCodeAt( this.pointer ) - this.charset[ 0 ];
+				
+				if( this.current > this.charset )
+					throw Error( 'Byte at ' + this.pointer + ' does not fit binary range' );
+				
+			}
+			
 			
 		}
 		
@@ -509,8 +539,12 @@
 		
 		if( typeof count == 'undefined' )
 			var count = 1;
-		else if( typeof count != 'number' || count % 1 != 0 || count < 0 )
-			throw TypeError( 'Count must be positive integer' );
+		
+		if( typeof count != 'number' || count % 1 != 0 || count < 0 )
+			if( this.strict )
+				throw TypeError( 'Count must be positive integer' );
+			else
+				count = Math.max( 0, Math.floor( Number( count ) ) );
 		
 		options = validateOptions( options );
 		
@@ -538,7 +572,7 @@
 			case 'boolean':
 				
 				for( i = 0; i < count; i++ )
-					items.push( new Boolean( this.parse( 2 ) ) );
+					items.push( Boolean( this.parse( 2 ) ) );
 				
 				break;
 			
