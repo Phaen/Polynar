@@ -119,7 +119,7 @@ var encoder = new Polynar.encoder( [ strict ] );
 
 Creates an encoder instance to which the data can be written. When not called as a constructor, it will do so itself instead and return the newly created instance. It accepts one argument.
 
-* **strict** *(optional)* <br/> A boolean to turn strict mode on or off, can be manually adjusted by changing the *strict* property of the instance. In strict mode, Polynar will try to improvise by typecasting, etc. instead of throwing exceptions.
+* **strict** *(optional)* <br/> A boolean to turn strict mode on or off (defaults to false), can be manually adjusted by changing the *strict* property of the instance. In strict mode, Polynar will try to improvise by typecasting, etc. instead of throwing exceptions.
 
 ###.encoder.write
 > ```Javascript
@@ -167,7 +167,7 @@ Returns a decoder instance from which the data can be read. When not called as a
 
 * **data** <br/> The encoded data string to decode.
 * **charset** <br/>  The [character set](#character-sets) under which to interpret the encoded data.
-* **strict** *(optional)* <br/> A boolean to turn strict mode on or off, can be manually adjusted by changing the *strict* property of the instance. In strict mode, Polynar will try to improvise by typecasting, etc. instead of throwing exceptions.
+* **strict** *(optional)* <br/> A boolean to turn strict mode on or off (defaults to false), can be manually adjusted by changing the *strict* property of the instance. In strict mode, Polynar will try to improvise by typecasting, etc. instead of throwing exceptions.
 
 
 Be aware that the encoded data fed to the decoder needs to be the exact same as was output by the encoder, no trailing spaces are allowed as they could all be part of the data.
