@@ -57,7 +57,7 @@ tpl.cookieEnabled = {
 For the 'language' property, let's go with a little more functionality.
 Its value can be just an ISO 639-1 code for a language, which are two lowercase lettters like 'nl', or have an addition for the dialect like 'en-GB'.
 Say we are only interested in the initial two letter code, we can define an anonymous function to simply cut off anything past the initial two characters.
-From then on, we could actually pass it as an item on a list of all ISO 639-1 language codes, but let's slack off for now and just define it as a two character lowalpha string.
+From then on, we could actually pass it as an item on a list of all ISO 639-1 language codes, but let's slack off for now and just define it as a two character lowalpha string. (Leaving strict mode off will already let Polynar cut it off at max length, but it's a bad practice.)
 ```Javascript
 tpl.language = {
 	type: 'string',
@@ -114,10 +114,12 @@ Documentation
 
 ###.encoder
 > ```Javascript
-var encoder = new Polynar.encoder();
+var encoder = new Polynar.encoder( [ strict ] );
 ```
 
-Creates an encoder instance to which the data can be written. When not called as a constructor, it will do so itself instead and return the newly created instance. It accepts no arguments.
+Creates an encoder instance to which the data can be written. When not called as a constructor, it will do so itself instead and return the newly created instance. It accepts one argument.
+
+* **strict** *(optional)* <br/> A boolean to turn strict mode on or off, can be manually adjusted by changing the *strict* property of the instance. In strict mode, Polynar will try to improvise by typecasting, etc. instead of throwing exceptions.
 
 ###.encoder.write
 > ```Javascript
@@ -145,7 +147,7 @@ No sanitizing is utilized and using this method can improve efficiency, but is d
 
 ###.encoder.toString
 > ```Javascript
-encoder.compose( charset );
+encoder.toString( charset );
 ```
 
 The method to return the encoded data as string. It accepts one argument.
@@ -158,13 +160,15 @@ Be aware that byte size is an exponential function of the bit count, resulting i
 
 ###.decoder
 > ```Javascript
-var decoder = new Polynar.decoder( data, charset );
+var decoder = new Polynar.decoder( data, charset [, strict ] );
 ```
 
 Returns a decoder instance from which the data can be read. When not called as a constructor, it will do so itself instead and return the newly created instance. It accepts two arguments.
 
 * **data** <br/> The encoded data string to decode.
 * **charset** <br/>  The [character set](#character-sets) under which to interpret the encoded data.
+* **strict** *(optional)* <br/> A boolean to turn strict mode on or off, can be manually adjusted by changing the *strict* property of the instance. In strict mode, Polynar will try to improvise by typecasting, etc. instead of throwing exceptions.
+
 
 Be aware that the encoded data fed to the decoder needs to be the exact same as was output by the encoder, no trailing spaces are allowed as they could all be part of the data.
 
@@ -176,13 +180,13 @@ decoder.read( encodingOptions [, count ] );
 The method used for reading any kind of data from the decoder instance. It accepts two arguments.
 
 * **encodingOptions** <br/> An [encodingOptions object](#encodingoptions), specifying the encoding options to decode the items with.
-* **count** (optional) <br/> A positive integer with the amount of items to decode, will be ignored if the *limit* encoding option is set.
+* **count** *(optional)* <br/> A positive integer with the amount of items to decode, will be ignored if the *limit* encoding option is set.
 
 When decoding data, it is important to know that order matters. You must read the data in the exact same order, using the exact same options as it was previously written. The best way to do this is to predefine all [encodingOptions objects](#encodingoptions) you will use and refer to the same ones in both your encoding and decoding algorithm.
 
 ###.decoder.parse
 > ```Javascript
-encoder.compose( integer, radix );
+encoder.parse( radix );
 ```
 
 The underlaying method used by *decoder.read*. It parses and returns an integer. It accepts one argument.
