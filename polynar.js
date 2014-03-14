@@ -58,12 +58,6 @@
 			
 			case 'number':
 				
-				// no precision by default
-				if( typeof options.precision == 'undefined' )
-					options.precision = 1;
-				else if( typeof options.precision != 'number' )
-					throw TypeError( 'Invalid precision' );
-					
 				// 1 step by default
 				if( typeof options.step == 'undefined' )
 					options.step = 1;
@@ -79,21 +73,21 @@
 				// both bounds must be integer
 				if(
 					typeof options.min != 'number' ||
-					typeof options.max != 'number' ||
+					( typeof options.max != 'number' && typeof options.max != 'boolean' && options.max != false ) ||
 					options.min % 1 != 0 ||
 					options.max % 1 != 0
 				)
 					throw TypeError( 'Invalid range bound' );
 				
 				// swap bounds if wrong order
-				if( options.min > options.max )
+				if( options.max != false && options.min > options.max )
 					options.min = options.max + ( options.max = options.min, 0 );
 				
-				if( ( options.max - options.min ) / options.step % 1 > 0.0000000000000001 ) // fucking floats
+				if( options.max != false && ( options.max - options.min ) / options.step % 1 > 0.0000000000000001 ) // fucking floats
 					throw TypeError( 'Range bound outside step range' );
 				
 				break;
-			
+				
 			case 'string':
 				
 				if( typeof options.max != 'number' || options.max % 1 != 0 || options.max < 0 )
@@ -120,7 +114,7 @@
 			case 'boolean':
 				
 				break;
-			
+				
 			case 'object':
 				
 				if(
@@ -142,7 +136,7 @@
 			default:
 				
 				throw TypeError( 'Invalid encoding type' );
-			
+				
 		}
 		
 		if( typeof options.limit != 'undefined' )
@@ -210,7 +204,7 @@
 	
 	obj.encoder.prototype.write = function( items, options ) {
 		
-		var i, pos, chr, size, item, workTpl;
+		var i, pos, chr, size, item, workTpl, pow, md;
 		
 		options = validateOptions( options );
 		
@@ -259,17 +253,35 @@
 						else
 							item = Number[ item ] || 0; // cast it to number or settle for 0 if NaN
 					
-					if( this.strict === false )
-						item = Math.min( options.max, Math.max( options.min, item ) ); // limit to bounds
-					else if( item < options.min || item > options.max )
-						throw RangeError( 'Item \'' + item + '\' exceeds range bounds' );
-					
-					item = ( item - options.min ) / options.step;
-					
-					if( this.strict && item % 1 > 0.0000000000000001 ) // fucking floats
-						throw RangeError( 'Item \'' + items[ i ] + '\' outside step range' );
-					
-					this.compose( ~~item, ( options.max - options.min ) / options.step + 1 ); // round anyway because f. floats
+					if( options.max === false ) {
+						
+						item = ( item - options.min ) / options.step;
+						
+						for( pow = 2; item != 0; pow *= 2 ) {
+							
+							md = item % pow;
+							item -= md;
+							this.compose( md ? 2 : 1, 3 );
+							
+						}
+						this.compose( 0, 3 );
+						
+						
+					} else {
+						
+						if( this.strict === false )
+							item = Math.min( options.max, Math.max( options.min, item ) ); // limit to bounds
+						else if( item < options.min || item > options.max )
+							throw RangeError( 'Item \'' + item + '\' exceeds range bounds' );
+						
+						item = ( item - options.min ) / options.step;
+						
+						if( this.strict && item % 1 > 0.0000000000000001 ) // fucking floats
+							throw RangeError( 'Item \'' + items[ i ] + '\' outside step range' );
+						
+						this.compose( ~~item, ( options.max - options.min ) / options.step + 1 ); // round anyway because f. floats
+						
+					}
 					
 				}
 				
@@ -535,7 +547,7 @@
 	
 	obj.decoder.prototype.read = function( options, count ) {
 		
-		var i, obj, chr, size, len, str, ptr;
+		var i, obj, chr, size, len, str, ptr, md, pow, cur;
 		
 		if( typeof count == 'undefined' )
 			var count = 1;
@@ -564,8 +576,23 @@
 				
 			case 'number':
 				
-				for( i = 0; i < count; i++ )
-					items.push( this.parse( ( options.max - options.min ) / options.step + 1 ) * options.step + options.min );
+				if( options.max === false )
+					for( i = 0; i < count; i++ ) {
+						
+						cur = 0;
+						md = this.parse( 3 ) - 1;
+						for( pow = 0; md != -1; pow ++ ) {
+							
+							cur += md * Math.pow( 2, pow );
+							md = this.parse( 3 ) - 1;
+							
+						}
+						items.push( cur * options.step + options.min );
+						
+					}
+				else
+					for( i = 0; i < count; i++ )
+						items.push( this.parse( ( options.max - options.min ) / options.step + 1 ) * options.step + options.min );
 				
 				break;
 				

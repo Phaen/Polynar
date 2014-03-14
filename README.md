@@ -202,11 +202,11 @@ EncodingOptions is a plainObject containing the options as property-value pairs 
 
 * **type** *(string)* <br/> Must be set to *'number'*.
 * **min** *(integer)* <br/> The lower bound of the range.
-* **max** *(integer)* <br/> The upper bound of the range.
-* **offset** *(integer, optional)* <br/> Alternatively specifies the range through the maximum offset from zero, will overwrite min and max.
+* **max** *(integer,boolean)* <br/> The upper bound of the range. This can alternatively also be set to the boolean *false*, leaving the upper bound open and allowing numbers of any size to be encoded. Saving numbers with no upper bound is more efficient when the gap between the average number and **max** would be large.
+* **offset** *(integer,optional)* <br/> Alternatively specifies the range by overwriting **min** and **max** with *0*, and **offset**.
 * **step** *(unsigned float, optional)* <br/> The step size of the range, will default to *1*.
 
-Despite their naming convention, *min* and *max* can accept either range bound.
+Despite their naming convention, *min* and *max* can accept either range bound. As a result of this, **offset** can also be negative.
 
 ##### Strings
 
@@ -265,7 +265,7 @@ alphanumeric: 0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
 Base64: ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
 printable:  !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~
 htmlSafe:  !#$%'()*+,-./0123456789:;=?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~
-urlSafe: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ$-_.+!*\'()
+urlSafe: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ$-_.+!*'()
 ```
 
 ##### Unsigned integer
