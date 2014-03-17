@@ -29,6 +29,9 @@
 	// strict mode by default
 	var defaultStrict = false;
 	
+	// the default base to encode integer parts under, 3 is on average the most efficient
+	var defaultBase = 3;
+	
 	// registering our object name, both browser and server side
 	if( typeof exports == 'undefined' )
 		this[ objName ] = obj;
@@ -64,11 +67,12 @@
 				else if( typeof options.step != 'number' || options.step < 0 )
 					throw TypeError( 'Invalid step size' );
 				
-				// if offset defined then set the upper bound regardless of sign
-				if( typeof options.offset != 'undefined' ) {
+				// max and min defaults
+				if( typeof options.min == 'undefined' )
 					options.min = 0;
-					options.max = options.offset;
-				}
+				
+				if( typeof options.max == 'undefined' )
+					options.max = 0;
 				
 				// both bounds must be integer
 				if(
@@ -257,14 +261,13 @@
 						
 						item = ( item - options.min ) / options.step;
 						
-						for( pow = 2; item != 0; pow *= 2 ) {
+						while( item != 0 ) {
 							
-							md = item % pow;
-							item -= md;
-							this.compose( md ? 2 : 1, 3 );
+							this.compose( item % defaultBase + 1, defaultBase + 1 );
+							item = Math.floor( item / defaultBase );
 							
 						}
-						this.compose( 0, 3 );
+						this.compose( 0, defaultBase + 1 );
 						
 						
 					} else {
@@ -369,10 +372,10 @@
 						if( typeof obj[ key ] == 'undefined' )
 							throw ReferenceError( 'Object has no property \'' + key + '\'' );
 						
-						if( typeof tpl[ key ].type == 'string' )						
+						if( typeof tpl[ key ].type == 'string' )
 							this.write( obj[ key ], tpl[ key ] );
 						else if( isObject( tpl[ key ] ) )
-							workTpl( obj[ key ], tpl[ key ] );
+							workTpl.call( this, obj[ key ], tpl[ key ] );
 						else
 							throw TypeError( 'Invalid object template' );
 						
@@ -580,10 +583,10 @@
 					for( i = 0; i < count; i++ ) {
 						
 						cur = 0;
-						md = this.parse( 3 ) - 1;
+						md = this.parse( defaultBase + 1 ) - 1;
 						for( pow = 0; md != -1; pow ++ ) {
 							
-							cur += md * Math.pow( 2, pow );
+							cur += md * Math.pow( defaultBase, pow );
 							md = this.parse( 3 ) - 1;
 							
 						}
@@ -665,7 +668,7 @@
 								if( typeof obj[ key ] == 'undefined' )
 									obj[ key ] = {};
 								
-								workTpl( obj[ key ], tpl[ key ] );
+								workTpl.call( this, obj[ key ], tpl[ key ] );
 								
 							} else
 								throw TypeError( 'Invalid object template' );
