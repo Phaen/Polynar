@@ -587,7 +587,7 @@
 						for( pow = 0; md != -1; pow ++ ) {
 							
 							cur += md * Math.pow( defaultBase, pow );
-							md = this.parse( 3 ) - 1;
+							md = this.parse( defaultBase + 1 ) - 1;
 							
 						}
 						items.push( cur * options.step + options.min );
