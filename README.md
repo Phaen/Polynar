@@ -201,8 +201,8 @@ EncodingOptions is a plainObject containing the options as property-value pairs 
 ##### Numbers
 
 * **type** *(string)* <br/> Must be set to *'number'*.
-* **min** *(integer, optional)* <br/> The lower bound of the range, defaults to *0*.
-* **max** *(integer, boolean)* <br/> The upper bound of the range, defaults to *0*. This can alternatively also be set to the boolean *false*, leaving the upper bound open and allowing numbers of any size to be encoded. Saving numbers with no upper bound is more efficient when the gap between the average number and **max** would be large.
+* **min** *(number, optional)* <br/> The lower bound of the range, defaults to *0*.
+* **max** *(number, boolean)* <br/> The upper bound of the range, defaults to *0*. This can alternatively also be set to the boolean *false*, leaving the upper bound open and allowing numbers of any size to be encoded. Saving numbers with no upper bound is more efficient when the gap between the average number and **max** would be large.
 * **step** *(unsigned float, optional)* <br/> The step size of the range, defaults to *1*.
 
 Despite their naming convention, *min* and *max* can accept either range bound. As a result of this, **offset** can also be negative.
