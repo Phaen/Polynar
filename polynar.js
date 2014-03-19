@@ -70,16 +70,13 @@
 				// max and min defaults
 				if( typeof options.min == 'undefined' )
 					options.min = 0;
-				
 				if( typeof options.max == 'undefined' )
 					options.max = 0;
 				
 				// both bounds must be integer
 				if(
 					typeof options.min != 'number' ||
-					( typeof options.max != 'number' && typeof options.max != 'boolean' && options.max != false ) ||
-					options.min % 1 != 0 ||
-					options.max % 1 != 0
+					( typeof options.max != 'number' && typeof options.max != 'boolean' && options.max != false )
 				)
 					throw TypeError( 'Invalid range bound' );
 				
@@ -259,7 +256,17 @@
 					
 					if( options.max === false ) {
 						
+						if( this.strict === false )
+							item = Math.max( options.min, item ); // limit to lower bound
+						else if( item < options.min )
+							throw RangeError( 'Item \'' + item + '\' exceeds lower range bound' );
+						
 						item = ( item - options.min ) / options.step;
+						
+						if( this.strict && item % 1 > 0.0000000000000001 ) // fucking floats
+							throw RangeError( 'Item \'' + items[ i ] + '\' outside step range' );
+						
+						item = Math.floor( item );
 						
 						while( item != 0 ) {
 							
@@ -282,7 +289,7 @@
 						if( this.strict && item % 1 > 0.0000000000000001 ) // fucking floats
 							throw RangeError( 'Item \'' + items[ i ] + '\' outside step range' );
 						
-						this.compose( ~~item, ( options.max - options.min ) / options.step + 1 ); // round anyway because f. floats
+						this.compose( Math.floor( item ), ( options.max - options.min ) / options.step + 1 );
 						
 					}
 					
