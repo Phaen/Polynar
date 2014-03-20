@@ -75,17 +75,21 @@
 				
 				// both bounds must be integer
 				if(
-					typeof options.min != 'number' ||
+					( typeof options.min != 'number' && typeof options.min != 'boolean' && options.min != false ) ||
 					( typeof options.max != 'number' && typeof options.max != 'boolean' && options.max != false )
 				)
 					throw TypeError( 'Invalid range bound' );
 				
-				// swap bounds if wrong order
-				if( options.max != false && options.min > options.max )
-					options.min = options.max + ( options.max = options.min, 0 );
-				
-				if( options.max != false && ( options.max - options.min ) / options.step % 1 > 0.0000000000000001 ) // fucking floats
-					throw TypeError( 'Range bound outside step range' );
+				if( options.max != false && options.min != false ) {
+					
+					// swap bounds if wrong order
+					if( options.min > options.max )
+						options.min = options.max + ( options.max = options.min, 0 );
+					
+					if( ( options.max - options.min ) / options.step % 1 > 0.0000000000000001 ) // fucking floats
+						throw TypeError( 'Range bound outside step range' );
+					
+				}
 				
 				break;
 				
@@ -205,7 +209,7 @@
 	
 	obj.encoder.prototype.write = function( items, options ) {
 		
-		var i, pos, chr, size, item, workTpl, pow, md;
+		var i, pos, chr, size, item, workTpl, pow, md, sign;
 		
 		options = validateOptions( options );
 		
@@ -252,16 +256,27 @@
 						if( this.strict )
 							throw TypeError( 'Item \'' + item + '\' not a number' );
 						else
-							item = Number[ item ] || 0; // cast it to number or settle for 0 if NaN
+							item = Number( item ) || 0; // cast it to number or settle for 0 if NaN
 					
-					if( options.max === false ) {
+					if( options.max === false || options.min === false ) {
+						
+						sign = 0;
+						
+						if( options.min === false && options.min === false ) {
+							if( item < 0 )
+								sign ++;
+							item = Math.abs( item );
+						} else if( options.min === false )
+							item = -1 * item + options.max;
+						else
+							item -= options.min;
 						
 						if( this.strict === false )
-							item = Math.max( options.min, item ); // limit to lower bound
-						else if( item < options.min )
-							throw RangeError( 'Item \'' + item + '\' exceeds lower range bound' );
+							item = Math.max( 0, item ); // limit to lower bound
+						else if( item < 0 )
+							throw RangeError( 'Item \'' + item + '\' exceeds range bounds' );
 						
-						item = ( item - options.min ) / options.step;
+						item /= options.step;
 						
 						if( this.strict && item % 1 > 0.0000000000000001 ) // fucking floats
 							throw RangeError( 'Item \'' + items[ i ] + '\' outside step range' );
@@ -275,6 +290,9 @@
 							
 						}
 						this.compose( 0, defaultBase + 1 );
+						
+						if( options.min === false && options.min === false )
+							this.compose( sign, 2 );
 						
 						
 					} else {
@@ -586,7 +604,8 @@
 				
 			case 'number':
 				
-				if( options.max === false )
+				if( options.max === false || options.min === false ) {
+					
 					for( i = 0; i < count; i++ ) {
 						
 						cur = 0;
@@ -597,10 +616,22 @@
 							md = this.parse( defaultBase + 1 ) - 1;
 							
 						}
-						items.push( cur * options.step + options.min );
+						
+						cur *= options.step;
+						
+						if( options.max === false && options.min === false ) {
+							if( this.parse( 2 ) )
+								cur *= -1;
+						} else if( options.max === false )
+							cur += options.min;
+						else
+							cur = -1 * cur - options.max;
+						
+						items.push( cur );
 						
 					}
-				else
+					
+				} else
 					for( i = 0; i < count; i++ )
 						items.push( this.parse( ( options.max - options.min ) / options.step + 1 ) * options.step + options.min );
 				
