@@ -201,8 +201,8 @@ EncodingOptions is a plainObject containing the options as property-value pairs 
 ##### Numbers
 
 * **type** *(string)* <br/> Must be set to *'number'*.
-* **min** *(number/boolean, optional)* <br/> The lower bound of the range, defaults to *0*. Can be set to *false* to leave the lower bound open, but is less efficient when the average distance to **min** would be small.
-* **max** *(number/boolean, optional)* <br/> The lower bound of the range, defaults to *0*. Can be set to *false* to leave the lower bound open, but is less efficient when the average distance to **max** would be small
+* **min** *(number/boolean, optional)* <br/> The lower bound of the range, defaults to *0*. Can be set to *false* to leave the lower bound open, but is less efficient when the gap between the average and **min** would be small.
+* **max** *(number/boolean, optional)* <br/> The upper bound of the range, defaults to *0*. Can be set to *false* to leave the upper bound open, but is less efficient when the gap between the average and **max** would be small.
 * **step** *(unsigned float, optional)* <br/> The step size of the range, defaults to *1*.
 
 Despite their naming convention, **min** and **max** can accept either range bound when neither is set to *false*.
@@ -210,7 +210,7 @@ Despite their naming convention, **min** and **max** can accept either range bou
 ##### Strings
 
 * **type** *(string)* <br/> Must be set to *'string'*.
-* **max** *(unsigned integer)* <br/> The maximum amount of characters in a string.
+* **max** *(unsigned integer)* <br/> The maximum length of a string. Can be set to *false* to leave the maximum length open, but is less efficient when the gap between the average length and **max** would be small.
 * **charset** *([character set](#character-sets))* <br/> The [character set](#character-sets) of the string.
 
 ##### Booleans

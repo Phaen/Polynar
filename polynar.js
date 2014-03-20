@@ -75,8 +75,8 @@
 				
 				// both bounds must be integer
 				if(
-					( typeof options.min != 'number' && typeof options.min != 'boolean' && options.min != false ) ||
-					( typeof options.max != 'number' && typeof options.max != 'boolean' && options.max != false )
+					( typeof options.min != 'number' && typeof options.min != 'boolean' && options.min !== false ) ||
+					( typeof options.max != 'number' && typeof options.max != 'boolean' && options.max !== false )
 				)
 					throw TypeError( 'Invalid range bound' );
 				
@@ -95,7 +95,11 @@
 				
 			case 'string':
 				
-				if( typeof options.max != 'number' || options.max % 1 != 0 || options.max < 0 )
+				if(
+					( typeof options.max != 'number' || options.max % 1 != 0 || options.max < 0 ) &&
+					( typeof options.max != 'boolean' || options.max !== false )
+					
+				)
 					throw TypeError( 'Invalid string limit' );
 				
 				options.charset = validateCharset( options.charset );
@@ -209,7 +213,7 @@
 	
 	obj.encoder.prototype.write = function( items, options ) {
 		
-		var i, pos, chr, size, item, workTpl, pow, md, sign;
+		var i, pos, chr, size, item, workTpl, pow, md, sign, len;
 		
 		options = validateOptions( options );
 		
@@ -272,7 +276,7 @@
 							item -= options.min;
 						
 						if( this.strict === false )
-							item = Math.max( 0, item ); // limit to lower bound
+							item = Math.max( 0, item ); // limit to bound
 						else if( item < 0 )
 							throw RangeError( 'Item \'' + item + '\' exceeds range bounds' );
 						
@@ -348,13 +352,28 @@
 						else
 							item = String( item );
 					
-					if( item.length > options.max )
-						if( this.strict )
-							throw RangeError( 'Item \'' + item + '\' exceeds max length' );
-						else
-							item = item.substr( 0, options.max ); // cut off to max length
-					
-					this.compose( item.length, options.max + 1 );
+					if( options.max === false ) {
+						
+						len = item.length;
+						while( len != 0 ) {
+							
+							this.compose( len % defaultBase + 1, defaultBase + 1 );
+							len = Math.floor( len / defaultBase );
+							
+						}
+						this.compose( 0, defaultBase + 1 );
+						
+					} else {
+						
+						if( item.length > options.max )
+							if( this.strict )
+								throw RangeError( 'Item \'' + item + '\' exceeds max length' );
+							else
+								item = item.substr( 0, options.max ); // cut off at max length
+						
+						this.compose( item.length, options.max + 1 );
+						
+					}
 					
 					for( chr = 0; chr < item.length; chr ++ )
 						if( typeof options.charset == 'string' ) {
@@ -651,7 +670,20 @@
 				
 				for( i = 0; i < count; i++ ) {
 					
-					len = this.parse( options.max + 1 );
+					if( options.max === false ) {
+						
+						len = 0;
+						md = this.parse( defaultBase + 1 ) - 1;
+						for( pow = 0; md != -1; pow ++ ) {
+							
+							len += md * Math.pow( defaultBase, pow );
+							md = this.parse( defaultBase + 1 ) - 1;
+							
+						}
+						
+					} else
+						len = this.parse( options.max + 1 );
+
 					str = '';
 					
 					for( chr = 0; chr < len; chr ++ )
