@@ -520,7 +520,7 @@
 					
 					this.compose( +( h < 0 ), 2 );
 					this.composeTerm( Math.abs( h ) );
-					this.composeTerm( k == 1 ? 0 : k );
+					this.composeTerm( k - 1 );
 					
 				}
 				
@@ -948,7 +948,7 @@
 			case 'fraction':
 				
 				for( i = 0; i < count; i++ )
-					items.push( ( this.parse( 2 ) ? -1 : 1 ) * this.parseTerm() / ( this.parseTerm() || 1 ) );
+					items.push( ( this.parse( 2 ) ? -1 : 1 ) * this.parseTerm() / ( this.parseTerm() + 1 ) );
 				
 				break;
 				
