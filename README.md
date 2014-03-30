@@ -201,8 +201,8 @@ EncodingOptions is a plainObject containing the options as property-value pairs 
 ##### Numbers
 
 * **type** *(string)* <br/> Must be set to *'number'*.
-* **min** *(number/boolean, optional)* <br/> The lower bound of the range, defaults to *0*. Can be set to *false* to leave the lower bound open, but is less efficient when the gap between the average and **min** would be small.
-* **max** *(number/boolean, optional)* <br/> The upper bound of the range, defaults to *0*. Can be set to *false* to leave the upper bound open, but is less efficient when the gap between the average and **max** would be small.
+* **min** *(number/boolean, optional)* <br/> The lower bound of the range, defaults to *0*. When set to *false* the lower bound is left open, but is less efficient when the gap between the average and minimum number is small.
+* **max** *(number/boolean, optional)* <br/> The upper bound of the range, defaults to *0*. When set to *false* the upper bound is left open, but is less efficient when the gap between the average and maximum number is small.
 * **step** *(unsigned float, optional)* <br/> The step size of the range, defaults to *1*.
 
 Despite their naming convention, **min** and **max** can accept either range bound when neither is set to *false*.
@@ -210,8 +210,8 @@ Despite their naming convention, **min** and **max** can accept either range bou
 ##### Strings
 
 * **type** *(string)* <br/> Must be set to *'string'*.
-* **max** *(unsigned integer)* <br/> The maximum length of a string. Can be set to *false* to leave the maximum length open, but is less efficient when the gap between the average length and **max** would be small.
-* **charset** *([character set](#character-sets))* <br/> The [character set](#character-sets) of the string.
+* **max** *(unsigned integer/boolean, optional)* <br/> The maximum length of a string, defaults to *false*. When set to *false* the maximum length is left open, but is less efficient when the gap between the average length and the maximum length would be small.
+* **charset** *([character set](#character-sets), optional)* <br/> The [character set](#character-sets) of the string, defaults to all printable characters.
 
 ##### Booleans
 
@@ -232,9 +232,35 @@ Be aware that items that are arrays must be supplied in a containing array at al
 Whole objects can be processed as well, allowing you to furfill most of your encoding and decoding needs through one function call.
 
 * **type** *(string)* <br/> Must be set to *'object'*.
-* **template** *(plainObject)* <br/> A plainObject containing all properties of the object to be processed and the [encodingOptions objects](#encodingoptions) to process them under as property-value pairs. Instead of supplying nested options, the template will be parsed recursively and can also contain nested objects.
+* **template** *(plainObject/boolean, optional)* <br/> A plainObject containing all properties of the object to be processed recursively and the [encodingOptions objects](#encodingoptions) to process them under as property-value pairs, defaults to *false*. When set to *false* it will encode every object property as well and save every value as *any* type, this is extremely inefficient and is effectively serializing.
 * **base** *(object/function/array, optional)* Decoding only. A base object to assign the properties and decoded values to. If ommited, a new plainObject will be created. If an anonymous function is supplied, it will be called to retrieve the object. If a named function is supplied, it will be called as a constructor to instantiate the object. If an array is supplied, the items will each be used as base for the decoded items. Array length must match the item count.
-* **sort** *(bool, optional)* <br/> If true, will sort the keys before encoding ensuring that identical, but differently constructed objects will yield the same results.
+* **sort** *(bool, optional)* <br/> If true, will sort the keys before encoding ensuring that identical, but differently constructed objects will yield the same results, defaults to *false*.
+
+Be aware that assigning any encoding options to a property will overwrite the corresponding property in the base object, even if both are an object and complement each other. To avoid this, add the encoded properties resursively to the template instead.
+
+##### Fractions
+
+For every number a fractional approximation can be found, allowing any number to be saved as a fraction. This can be very efficient when dealing with long decimals as result of divisions, when all of them are relevant and need to be saved.
+
+* **type** *(string)* <br/> Must be set to *'fraction'*.
+* **precision** *(unsigned float, optional)* <br/> The maximum precision to attempt to find a fractional approximation for, defaults to *1.0 <sup>-15</sup>*.
+
+##### Dates
+
+This can be used to encode dates that are instances of the Date constructor.
+
+* **type** *(string)* <br/> Must be set to *'date'*.
+* **min** *(Date/unsigned integer/boolean, optional)* <br/> The lower bound of the range, defaults to *false*. This can either be a Date instance, an integer representing a timestamp, or *false* to leave the lower bound open.
+* **max** *(Date/unsigned integer/boolean, optional)* <br/> The upper bound of the range, defaults to *false*. This can either be a Date instance, an integer representing a timestamp, or *false* to leave the upper bound open.
+* **interval** *(unsigned integer/string, optional)* <br/> The smallest time interval to save the dates with, defaults to *1*. When integer it represents the amount of miliseconds. When string it can be any of *'second'*, *'minute'*, *'hour'*, *'day'*, *'week'*, *'month'*, *'year'*.
+
+Be aware when using large intervals that only the UTC time is saved and thus the decoded date can be almost a whole interval off until UTC catches up with your current timezone.
+
+##### Any
+
+Almost any item can be saved either as string, fraction, boolean, date or object. This type will automatically detect the item's type and save it as such with as lousy options as possible.
+
+* **type** *(string)* <br/> Must be set to *'any'*.
 
 ##### All
 
