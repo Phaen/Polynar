@@ -9,7 +9,7 @@
 	var objName = 'Polynar';
 	
 	// the Polynar object
-	var obj = {};
+	var obj = { modules: {} };
 	
 	// registering useful character sets
 	obj.digit = '0123456789';
@@ -57,153 +57,21 @@
 	var multiply = function( a, b ) { return a * b; };
 	
 	// validate encodingOptions
-	var validateOptions = function( obj ) {
+	var validateOptions = function( optionsObj ) {
 		
-		if( !isObject( obj ) )
-			throw TypeError( obj + ' is not an object' );
+		if( !isObject( optionsObj ) )
+			throw TypeError( optionsObj + ' is not an object' );
+		
+		if( obj.modules[ optionsObj.type ] == 'undefined' )
+			throw TypeError( 'Invalid encoding type' );
 		
 		// lets shallow copy the options so we may make any adjustments
 		var options = {};
-		for( var i in obj )
-		if( obj.hasOwnProperty( i ) )
-			options[ i ] = obj[ i ];
+		for( var i in optionsObj )
+		if( optionsObj.hasOwnProperty( i ) )
+			options[ i ] = optionsObj[ i ];
 		
-		switch( options.type ) {
-			
-			case 'number':
-				
-				// 1 step by default
-				if( typeof options.step == 'undefined' )
-					options.step = 1;
-				else if( typeof options.step != 'number' || options.step < 0 )
-					throw TypeError( 'Invalid step size' );
-				
-				// max and min defaults
-				if( typeof options.min == 'undefined' )
-					options.min = 0;
-				if( typeof options.max == 'undefined' )
-					options.max = 0;
-				
-				// both bounds must be integer
-				if(
-					( typeof options.min != 'number' && typeof options.min != 'boolean' && options.min !== false ) ||
-					( typeof options.max != 'number' && typeof options.max != 'boolean' && options.max !== false )
-				)
-					throw TypeError( 'Invalid range bound' );
-				
-				if( options.max != false && options.min != false ) {
-					
-					// swap bounds if wrong order
-					if( options.min > options.max )
-						options.min = options.max + ( options.max = options.min, 0 );
-					
-					if( ( options.max - options.min ) / options.step % 1 > 0.0000000000000001 ) // fucking floats
-						throw TypeError( 'Range bound outside step range' );
-					
-				}
-				
-				break;
-				
-			case 'string':
-				
-				if( typeof options.max == 'undefined' )
-					options.max = false;
-				
-				if(
-					( typeof options.max != 'number' || options.max % 1 != 0 || options.max < 0 ) &&
-					( typeof options.max != 'boolean' || options.max !== false )
-					
-				)
-					throw TypeError( 'Invalid string limit' );
-				
-				if( typeof options.charset == 'undefined' )
-					options.charset = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~';
-				else
-					options.charset = validateCharset( options.charset );
-				
-				break;
-				
-			case 'item':
-				
-				if(
-					typeof options.list == 'undefined' ||
-					!isArray( options.list ) ||
-					options.list.length == 0
-				)
-					throw TypeError( 'Invalid or empty list' );
-				
-				if( typeof options.sort == 'bool' && options.sort === true )
-					options.list = options.list.slice( 0 ).sort(); // slice, so we don't alter the original array
-				
-				break;
-				
-			case 'boolean':
-				
-				break;
-				
-			case 'object':
-				
-				if( typeof options.template == 'undefined' )
-					options.template = false;
-				
-				if(
-					( typeof options.template != 'boolean' || options.template !== false ) &&
-					!isObject( options.template )
-				)
-					throw TypeError( 'Invalid object template' );
-				
-				if(
-					typeof options.base != 'undefined' &&
-					!isArray( options.base ) &&
-					!isObject( options.base ) &&
-					typeof options.base != 'function'
-				)
-					throw TypeError( 'Invalid object base' );
-				
-				break;
-				
-			case 'fraction':
-				
-				if( typeof options.precision == 'undefined' )
-					options.precision = 1.0E-15;
-				else if( typeof options.precision != 'number' || options.precision < 0 )
-					throw TypeError( 'Invalid fraction precision' );
-				
-				break;
-				
-			case 'date':	
-				
-				if( typeof options.interval == 'undefined' )
-					options.interval = 1;
-				else if(  typeof options.interval != 'number' || options.interval % 1 != 0 )
-					if( typeof options.interval == 'string' && ( options.interval = dates.indexOf( options.interval ) ) != -1 )
-						options.interval = dateInts.slice( 0, options.interval + 1 ).reduce( multiply );
-					else
-						throw TypeError( 'Invalid date interval' );
-					
-				if( isDate( options.min ) )
-					options.min = options.min.getTime();
-				
-				if( isDate( options.max ) )
-					options.max = options.max.getTime();
-				
-				if(
-					( typeof options.min != 'undefined' && ( typeof options.min != 'number' || options.min % 1 != 0 ) ) ||
-					( typeof options.max != 'undefined' && ( typeof options.max != 'number' || options.max % 1 != 0 ) )
-				)
-					throw TypeError( 'Invalid range bound' );
-				
-				break;
-				
-			case 'any':
-				
-				break;
-				
-			default:
-				
-				throw TypeError( 'Invalid encoding type' );
-				
-		}
+		obj.modules[ options.type ].validator.call( obj, options );
 		
 		if( typeof options.limit != 'undefined' )
 			if( typeof options.limit != 'number' || options.limit % 1 != 0 || options.limit < 0 )
@@ -251,7 +119,7 @@
 		
 	}
 	
-	// our encoder class
+	// encoder class
 	obj.encoder = function( strict ) {
 		
 		if( !this instanceof obj.encoder )
@@ -270,15 +138,13 @@
 	
 	obj.encoder.prototype.write = function( items, options ) {
 		
-		var i, pos, chr, size, item, workTpl, sign, len, h, h1, h2, k, k1, k2, a;
-		
 		options = validateOptions( options );
 		
 		if( !isArray( items ) )
 			items = [ items ];
 		
 		if( typeof options.preProc == 'function' )
-			for( i in items )
+			for( var i in items )
 				items[ i ] = options.preProc( items[ i ] );
 		
 		if( options.limit )
@@ -287,315 +153,7 @@
 			else
 				this.compose( items.length, options.limit + 1 );
 		
-		switch( options.type ) {
-			
-			case 'item':
-				
-				for( i in items ) {
-					
-					pos = options.list.indexOf( items[ i ] );
-					
-					if( pos == -1 )
-						if( strict )
-							throw Error( 'Item \'' + items[ i ] + '\' not found in list' );
-						else
-							pos = 0;
-					
-					this.compose( pos, options.list.length );
-					
-				}
-				
-				break;
-			
-			case 'number':
-				
-				for( i in items ) {
-					
-					item = items[ i ];
-					
-					if( typeof item != 'number' )
-						if( this.strict )
-							throw TypeError( 'Item \'' + item + '\' not a number' );
-						else
-							item = Number( item ) || 0; // cast it to number or settle for 0 if NaN
-					
-					if( options.max === false || options.min === false ) {
-						
-						sign = 0;
-						
-						if( options.min === false && options.min === false ) {
-							if( item < 0 )
-								sign ++;
-							item = Math.abs( item );
-						} else if( options.min === false )
-							item = -1 * item + options.max;
-						else
-							item -= options.min;
-						
-						if( this.strict === false )
-							item = Math.max( 0, item ); // limit to bound
-						else if( item < 0 )
-							throw RangeError( 'Item \'' + item + '\' exceeds range bounds' );
-						
-						item /= options.step;
-						
-						if( this.strict && item % 1 > 0.0000000000000001 ) // fucking floats
-							throw RangeError( 'Item \'' + items[ i ] + '\' outside step range' );
-						
-						this.composeTerm( Math.floor( item ) );
-						
-						if( options.min === false && options.min === false )
-							this.compose( sign, 2 );
-						
-						
-					} else {
-						
-						if( this.strict === false )
-							item = Math.min( options.max, Math.max( options.min, item ) ); // limit to bounds
-						else if( item < options.min || item > options.max )
-							throw RangeError( 'Item \'' + item + '\' exceeds range bounds' );
-						
-						item = ( item - options.min ) / options.step;
-						
-						if( this.strict && item % 1 > 0.0000000000000001 ) // fucking floats
-							throw RangeError( 'Item \'' + items[ i ] + '\' outside step range' );
-						
-						this.compose( Math.floor( item ), ( options.max - options.min ) / options.step + 1 );
-						
-					}
-					
-				}
-				
-				break;
-				
-			case 'boolean':
-				
-				for( i in items ) {
-					
-					item = items[ i ];
-					
-					if( typeof item != 'boolean' )
-						if( this.strict )
-							throw TypeError( 'Item \'' + item + '\' not boolean' );
-						else
-							item = Boolean( item );
-					
-					this.compose( +item, 2 );
-					
-				}
-				
-				break;
-				
-			case 'string':
-				
-				if( typeof options.charset != 'string' )
-					size = options.charset[ 1 ] - options.charset[ 0 ] + 1;
-				
-				for( i in items ) {
-					
-					item = items[ i ];
-					
-					if( typeof item != 'string' )
-						if( this.strict )
-							throw TypeError( 'Item \'' + item + '\' not string' );
-						else
-							item = String( item );
-					
-					if( options.max === false )
-						this.composeTerm( item.length );
-					else {
-						
-						if( item.length > options.max )
-							if( this.strict )
-								throw RangeError( 'Item \'' + item + '\' exceeds max length' );
-							else
-								item = item.substr( 0, options.max ); // cut off at max length
-						
-						this.compose( item.length, options.max + 1 );
-						
-					}
-					
-					for( chr = 0; chr < item.length; chr ++ )
-						if( typeof options.charset == 'string' ) {
-							
-							pos = options.charset.indexOf( item.charAt( chr ) );
-							
-							if( pos == -1 )
-								throw Error( 'String not compliant with character set' );
-							
-							this.compose( pos, options.charset.length );
-							
-						} else {
-							
-							pos = item.charCodeAt( chr );
-							
-							if( pos < options.charset[ 0 ] || pos > options.charset[ 1 ] )
-								throw Error( 'String not compliant with character set' );
-							
-							this.compose( pos - options.charset[ 0 ], size );
-							
-						}
-						
-				}
-				
-				break;
-				
-			case 'object':
-				
-				workTpl = function( obj, tpl ) {
-					
-					var key, keys = Object.keys( tpl === false ? obj : tpl );
-					
-					if( options.sort )
-						keys.sort();
-					
-					if( tpl === false )
-						this.composeTerm( keys.length );
-					
-					for( var k in keys ) {
-						
-						key = keys[ k ];
-						
-						if( tpl === false ) {
-							
-							this.write( key, { type: 'string' } );
-							this.write( obj[ key ], { type: 'any' } );
-							
-						} else {
-							
-							if( typeof obj[ key ] == 'undefined' )
-								if( options.optional ) {
-									this.compose( 0, 2 );
-									continue;
-								} else
-									throw ReferenceError( 'Object has no property \'' + key + '\'' );
-							
-							if( options.optional )
-								this.compose( 1, 2 );
-							
-							if( typeof tpl[ key ].type == 'string' )
-								this.write( obj[ key ], tpl[ key ] );
-							else if( isObject( tpl[ key ] ) )
-								workTpl.call( this, obj[ key ], tpl[ key ] );
-							else
-								throw TypeError( 'Invalid object template' );
-							
-						}
-						
-					}
-					
-				}
-				
-				for( i in items )
-					workTpl.call( this, items[ i ], options.template );
-				
-				break;
-				
-			case 'fraction':
-				
-				for( i in items ) {
-					
-					item = items[ i ];
-					
-					if( typeof item != 'number' )
-						if( this.strict )
-							throw TypeError( 'Item \'' + item + '\' not a number' );
-						else
-							item = Number( item ) || 0; // cast it to number or settle for 0 if NaN
-					
-					a = Math.floor( item );
-					h1 = 1;
-					k1 = 0;
-					h = a;
-					k = 1;
-					
-					while( item - a > options.precision * k * k ) {
-						item = 1 / ( item - a );
-						a = Math.floor( item );
-						h2 = h1; h1 = h;
-						k2 = k1; k1 = k;
-						h = h2 + a * h1;
-						k = k2 + a * k1;
-					}
-					
-					this.compose( +( h < 0 ), 2 );
-					this.composeTerm( Math.abs( h ) );
-					this.composeTerm( k - 1 );
-					
-				}
-				
-				break;
-			
-			case 'date':
-				
-				for( i in items ) {
-					
-					item = items[ i ];
-					
-					if( typeof item == 'string' )
-						item = Date.parse( item );
-					
-					if( !isDate( item ) || isNaN( item.getTime() ) )
-						if( this.strict )
-							throw TypeError( 'Item \'' + item + '\' not a valid date' );
-						else
-							item = new Date( item );
-					
-					item = item.getTime();
-					
-					this.write( Math.floor( item / options.interval ), { type: 'number', min: options.min || false, max: options.max || false, step: 1 } );
-					
-				}
-				
-				break;
-			
-			case 'any':
-				
-				for( i in items ) {
-					
-					item = items[ i ];
-					
-					switch( typeof item ) {
-						
-						case 'undefined':
-							this.compose( 0, 6 );
-							break;
-						
-						case 'number':
-							this.compose( 1, 6 );
-							this.write( item, { type: 'fraction' } );
-							break;
-							
-						case 'string':
-							this.compose( 2, 6 );
-							this.write( item, { type: 'string' } );
-							break;
-							
-						case 'boolean':
-							this.compose( 3, 6 );
-							this.write( item, { type: 'boolean' } );
-							break;
-							
-						case 'object':
-							if( isDate( item ) ) {
-								this.compose( 4, 6 );
-								this.write( item, { type: 'date' } );
-							} else {
-								this.compose( 5, 6 );
-								this.write( item, { type: 'object' } );
-							}
-							break;
-						
-						default:
-							throw TypeError( 'Type \'' + typeof item + '\' not supported' );
-						
-					}
-					
-				}
-				
-				break;
-			
-		}
+		obj.modules[ options.type ].encoder.call( this, items, options );
 		
 	}
 	
@@ -681,7 +239,7 @@
 		
 	}
 	
-	// our decoder class
+	// decoder class
 	obj.decoder = function( str, charset, strict ) {
 		
 		if( !this instanceof obj.decoder )
@@ -786,7 +344,7 @@
 		
 	obj.decoder.prototype.read = function( options, count ) {
 		
-		var i, obj, chr, size, len, ptr, item;
+		var i, chr, size, len, ptr, item;
 		
 		if( typeof count == 'undefined' )
 			var count = 1;
@@ -802,195 +360,7 @@
 		if( options.limit )
 			count = this.parse( options.limit + 1 );
 		
-		var items = new Array();
-		
-		switch( options.type ) {
-			
-			case 'item':
-				
-				for( i = 0; i < count; i++ )
-					items.push( options.list[ this.parse( options.list.length ) ] );
-				
-				break;
-				
-			case 'number':
-				
-				if( options.max === false || options.min === false ) {
-					
-					for( i = 0; i < count; i++ ) {
-						
-						item = this.parseTerm();
-						
-						item *= options.step;
-						
-						if( options.max === false && options.min === false ) {
-							if( this.parse( 2 ) )
-								item *= -1;
-						} else if( options.max === false )
-							item += options.min;
-						else
-							item = -1 * item - options.max;
-						
-						items.push( item );
-						
-					}
-					
-				} else
-					for( i = 0; i < count; i++ )
-						items.push( this.parse( ( options.max - options.min ) / options.step + 1 ) * options.step + options.min );
-				
-				break;
-				
-			case 'boolean':
-				
-				for( i = 0; i < count; i++ )
-					items.push( Boolean( this.parse( 2 ) ) );
-				
-				break;
-			
-			case 'string':
-				
-				if( typeof options.charset != 'string' )
-					size = options.charset[ 1 ] - options.charset[ 0 ] + 1;
-				
-				for( i = 0; i < count; i++ ) {
-					
-					if( options.max === false )
-						len = this.parseTerm();
-					else
-						len = this.parse( options.max + 1 );
-
-					item = '';
-					
-					for( chr = 0; chr < len; chr ++ )
-						if( typeof options.charset == 'string' )
-							item += options.charset.charAt( this.parse( options.charset.length ) );
-						else
-							item += this.parse( size ) + options.charset[ 0 ];
-					
-					items.push( item );
-					
-				}
-				
-				break;
-			
-			case 'object':
-				
-				if( isArray( options.base ) && options.base.length != count )
-					throw Error( 'Items and base count mismatch' );
-				
-				for( i = 0; i < count; i++ ) {
-					
-					if( typeof options.base == 'undefined' )
-						base = {};
-					else if( isArray( options.base ) )
-						base = options.base[ i ];
-					else if( typeof options.base == 'function' )
-						if( options.base.name = '' )
-							base = options.base();
-						else
-							base = new options.base();
-					else
-						base = options.base;
-					
-					if( typeof base != 'object' )
-						throw TypeError( 'Invalid object base' );
-					
-					workTpl = function( obj, tpl ) {
-						
-						var key, keys;
-						
-						if( tpl === false ) {
-							
-							keys = this.parseTerm();
-							for( key = 0; key < keys; key ++ )
-								obj[ this.read( { type: 'string' } ) ] = this.read( { type: 'any' } );
-							
-						} else {
-							
-							keys = Object.keys( tpl );
-							
-							if( options.sort )
-								keys.sort();
-
-							for( var k in keys ) {
-								
-								if( options.optional && !this.parse( 2 ) )
-									continue;
-								
-								key = keys[ k ];
-								
-								if( typeof tpl[ key ].type == 'string' )
-									obj[ key ] = this.read( tpl[ key ] );
-								else if( isObject( tpl[ key ] ) ) {
-									
-									if( typeof obj[ key ] == 'undefined' )
-										obj[ key ] = {};
-									
-									workTpl.call( this, obj[ key ], tpl[ key ] );
-									
-								} else
-									throw TypeError( 'Invalid object template' );
-								
-							}
-							
-						}
-						
-					}
-					
-					workTpl.call( this, base, options.template )
-					items.push( base );
-					
-				}
-				
-				break;
-				
-			case 'fraction':
-				
-				for( i = 0; i < count; i++ )
-					items.push( ( this.parse( 2 ) ? -1 : 1 ) * this.parseTerm() / ( this.parseTerm() + 1 ) );
-				
-				break;
-				
-			case 'date':
-				
-				for( i = 0; i < count; i++ )
-					items.push( new Date( this.read( { type: 'number', min: options.min || false, max: options.max || false, step: options.interval } ) * options.interval ) );
-				
-				break;
-				
-			case 'any':
-				
-				for( i = 0; i < count; i++ )
-					switch( this.parse( 6 ) ) {
-						
-						case 0:
-							items.push( undefined );
-							break;
-						
-						case 1:
-							items.push( this.read( { type: 'fraction' } ) );
-							break;
-							
-						case 2:
-							items.push( this.read( { type: 'string' } ) );
-							break;
-							
-						case 3:
-							items.push( this.read( { type: 'boolean' } ) );
-							break;
-							
-						case 4:
-							items.push( this.read( { type: 'date' } ) );
-							break;
-							
-						case 5:
-							items.push( this.read( { type: 'object' } ) );
-						
-					}
-				
-				break;
-		}
+		var items = obj.modules[ options.type ].decoder.call( this, options, count );
 		
 		if( typeof options.postProc == 'function' )
 			for( i in items )
@@ -998,9 +368,647 @@
 				
 		if( count == 1 )
 			items = items.pop();
-		
+		console.log(items);
 		return items;
 		
 	}
+	
+	// Polynar expansion
+	
+	obj.module = function( name, validator, encoder, decoder ) {
+		
+		this.modules[ name ] = { 'validator': validator, 'encoder': encoder, 'decoder': decoder };
+		
+	}
+	
+	// modules
+	
+	obj.module(
+		'number',
+		function( options ) {
+			
+			// 1 step by default
+			if( typeof options.step == 'undefined' )
+				options.step = 1;
+			else if( typeof options.step != 'number' || options.step < 0 )
+				throw TypeError( 'Invalid step size' );
+			
+			// max and min defaults
+			if( typeof options.min == 'undefined' )
+				options.min = 0;
+			if( typeof options.max == 'undefined' )
+				options.max = 0;
+			
+			// both bounds must be integer
+			if(
+				( typeof options.min != 'number' && typeof options.min != 'boolean' && options.min !== false ) ||
+				( typeof options.max != 'number' && typeof options.max != 'boolean' && options.max !== false )
+			)
+				throw TypeError( 'Invalid range bound' );
+			
+			if( options.max != false && options.min != false ) {
+				
+				// swap bounds if wrong order
+				if( options.min > options.max )
+					options.min = options.max + ( options.max = options.min, 0 );
+				
+				if( ( options.max - options.min ) / options.step % 1 > 0.0000000000000001 ) // fucking floats
+					throw TypeError( 'Range bound outside step range' );
+				
+			}
+			
+		},
+		function( items, options ) {
+			
+			for( var i in items ) {
+				
+				item = items[ i ];
+				
+				if( typeof item != 'number' )
+					if( this.strict )
+						throw TypeError( 'Item \'' + item + '\' not a number' );
+					else
+						item = Number( item ) || 0; // cast it to number or settle for 0 if NaN
+				
+				if( options.max === false || options.min === false ) {
+					
+					sign = 0;
+					
+					if( options.min === false && options.min === false ) {
+						if( item < 0 )
+							sign ++;
+						item = Math.abs( item );
+					} else if( options.min === false )
+						item = -1 * item + options.max;
+					else
+						item -= options.min;
+					
+					if( this.strict === false )
+						item = Math.max( 0, item ); // limit to bound
+					else if( item < 0 )
+						throw RangeError( 'Item \'' + item + '\' exceeds range bounds' );
+					
+					item /= options.step;
+					
+					if( this.strict && item % 1 > 0.0000000000000001 ) // fucking floats
+						throw RangeError( 'Item \'' + items[ i ] + '\' outside step range' );
+					
+					this.composeTerm( Math.floor( item ) );
+					
+					if( options.min === false && options.min === false )
+						this.compose( sign, 2 );
+					
+					
+				} else {
+					
+					if( this.strict === false )
+						item = Math.min( options.max, Math.max( options.min, item ) ); // limit to bounds
+					else if( item < options.min || item > options.max )
+						throw RangeError( 'Item \'' + item + '\' exceeds range bounds' );
+					
+					item = ( item - options.min ) / options.step;
+					
+					if( this.strict && item % 1 > 0.0000000000000001 ) // fucking floats
+						throw RangeError( 'Item \'' + items[ i ] + '\' outside step range' );
+					
+					this.compose( Math.floor( item ), ( options.max - options.min ) / options.step + 1 );
+					
+				}
+				
+			}
+		},
+		function( options, count ) {
+			var items = new Array();
+			if( options.max === false || options.min === false ) {
+				
+				for( i = 0; i < count; i++ ) {
+					
+					item = this.parseTerm();
+					
+					item *= options.step;
+					
+					if( options.max === false && options.min === false ) {
+						if( this.parse( 2 ) )
+							item *= -1;
+					} else if( options.max === false )
+						item += options.min;
+					else
+						item = -1 * item - options.max;
+					
+					items.push( item );
+					
+				}
+				
+			} else
+				for( i = 0; i < count; i++ )
+					items.push( this.parse( ( options.max - options.min ) / options.step + 1 ) * options.step + options.min );
+			
+			return items;
+		}
+	);
+	
+	obj.module(
+		'string',
+		function( options ) {
+			
+			if( typeof options.max == 'undefined' )
+				options.max = false;
+			
+			if(
+				( typeof options.max != 'number' || options.max % 1 != 0 || options.max < 0 ) &&
+				( typeof options.max != 'boolean' || options.max !== false )
+				
+			)
+				throw TypeError( 'Invalid string limit' );
+			
+			if( typeof options.charset == 'undefined' )
+				options.charset = obj.printable;
+			else
+				options.charset = validateCharset( options.charset );
+			
+		},
+		function( items, options ) {
+			
+			if( typeof options.charset != 'string' )
+				size = options.charset[ 1 ] - options.charset[ 0 ] + 1;
+			
+			for( i in items ) {
+				
+				item = items[ i ];
+				
+				if( typeof item != 'string' )
+					if( this.strict )
+						throw TypeError( 'Item \'' + item + '\' not string' );
+					else
+						item = String( item );
+				
+				if( options.max === false )
+					this.composeTerm( item.length );
+				else {
+					
+					if( item.length > options.max )
+						if( this.strict )
+							throw RangeError( 'Item \'' + item + '\' exceeds max length' );
+						else
+							item = item.substr( 0, options.max ); // cut off at max length
+					
+					this.compose( item.length, options.max + 1 );
+					
+				}
+				
+				for( chr = 0; chr < item.length; chr ++ )
+					if( typeof options.charset == 'string' ) {
+						
+						pos = options.charset.indexOf( item.charAt( chr ) );
+						
+						if( pos == -1 )
+							throw Error( 'String not compliant with character set' );
+						
+						this.compose( pos, options.charset.length );
+						
+					} else {
+						
+						pos = item.charCodeAt( chr );
+						
+						if( pos < options.charset[ 0 ] || pos > options.charset[ 1 ] )
+							throw Error( 'String not compliant with character set' );
+						
+						this.compose( pos - options.charset[ 0 ], size );
+						
+					}
+				
+			}
+			
+		},
+		function( options, count ) {
+			
+			var i, len, chr, item, items = new Array();
+			if( typeof options.charset != 'string' )
+				size = options.charset[ 1 ] - options.charset[ 0 ] + 1;
+			
+			for( i = 0; i < count; i++ ) {
+				
+				if( options.max === false )
+					len = this.parseTerm();
+				else
+					len = this.parse( options.max + 1 );
+
+				item = '';
+				
+				for( chr = 0; chr < len; chr ++ )
+					if( typeof options.charset == 'string' )
+						item += options.charset.charAt( this.parse( options.charset.length ) );
+					else
+						item += this.parse( size ) + options.charset[ 0 ];
+				
+				items.push( item );
+				
+			}
+			
+			return items;
+			
+		}
+	);
+	
+	obj.module(
+		'item',
+		function( options ) {
+			if(
+				typeof options.list == 'undefined' ||
+				!isArray( options.list ) ||
+				options.list.length == 0
+			)
+				throw TypeError( 'Invalid or empty list' );
+			
+			if( typeof options.sort == 'bool' && options.sort === true )
+				options.list = options.list.slice( 0 ).sort(); // slice, so we don't alter the original array
+			
+		},
+		function( items, options ) {
+			for( i in items ) {
+				
+				pos = options.list.indexOf( items[ i ] );
+				
+				if( pos == -1 )
+					if( strict )
+						throw Error( 'Item \'' + items[ i ] + '\' not found in list' );
+					else
+						pos = 0;
+				
+				this.compose( pos, options.list.length );
+				
+			}
+		},
+		function( options, count ) {
+			var items = new Array();
+			for( i = 0; i < count; i++ )
+				items.push( options.list[ this.parse( options.list.length ) ] );
+			return items;
+		}
+	);
+	
+	obj.module(
+		'boolean',
+		false,
+		function( items, options ) {
+			for( i in items ) {
+				
+				item = items[ i ];
+				
+				if( typeof item != 'boolean' )
+					if( this.strict )
+						throw TypeError( 'Item \'' + item + '\' not boolean' );
+					else
+						item = Boolean( item );
+				
+				this.compose( +item, 2 );
+				
+			}
+		},
+		function( options, count ) {
+			var items = new Array();
+			for( i = 0; i < count; i++ )
+				items.push( Boolean( this.parse( 2 ) ) );
+			return items;
+		}
+	);
+	
+	obj.module(
+		'fraction',
+		function( options ) {
+			if( typeof options.precision == 'undefined' )
+				options.precision = 1.0E-15;
+			else if( typeof options.precision != 'number' || options.precision < 0 )
+				throw TypeError( 'Invalid fraction precision' );
+		},
+		function( items, options ) {
+			
+			var i, item, a, h1, k1, h, k;
+			for( i in items ) {
+				
+				item = items[ i ];
+				
+				if( typeof item != 'number' )
+					if( this.strict )
+						throw TypeError( 'Item \'' + item + '\' not a number' );
+					else
+						item = Number( item ) || 0; // cast it to number or settle for 0 if NaN
+				
+				a = Math.floor( item );
+				h1 = 1;
+				k1 = 0;
+				h = a;
+				k = 1;
+				
+				while( item - a > options.precision * k * k ) {
+					item = 1 / ( item - a );
+					a = Math.floor( item );
+					h2 = h1; h1 = h;
+					k2 = k1; k1 = k;
+					h = h2 + a * h1;
+					k = k2 + a * k1;
+				}
+				
+				this.compose( +( h < 0 ), 2 );
+				this.composeTerm( Math.abs( h ) );
+				this.composeTerm( k - 1 );
+				
+			}
+			
+		},
+		function( options, count ) {
+			
+			var items = new Array();
+			for( i = 0; i < count; i++ )
+				items.push( ( this.parse( 2 ) ? -1 : 1 ) * this.parseTerm() / ( this.parseTerm() + 1 ) );
+			return items;
+			
+		}
+	);
+		
+	obj.module(
+		'any',
+		false,
+		function( items, options ) {
+			
+			for( var i in items ) {
+				
+				item = items[ i ];
+				
+				switch( typeof item ) {
+					
+					case 'undefined':
+						this.compose( 0, 6 );
+						break;
+					
+					case 'number':
+						this.compose( 1, 6 );
+						this.write( item, { type: 'fraction' } );
+						break;
+						
+					case 'string':
+						this.compose( 2, 6 );
+						this.write( item, { type: 'string' } );
+						break;
+						
+					case 'boolean':
+						this.compose( 3, 6 );
+						this.write( item, { type: 'boolean' } );
+						break;
+						
+					case 'object':
+						if( isDate( item ) ) {
+							this.compose( 4, 6 );
+							this.write( item, { type: 'date' } );
+						} else {
+							this.compose( 5, 6 );
+							this.write( item, { type: 'object' } );
+						}
+						break;
+					
+					default:
+						throw TypeError( 'Type \'' + typeof item + '\' not supported' );
+					
+				}
+				
+			}
+		},
+		function( options, count ) {
+			
+			var i, items = new Array();
+			for( i = 0; i < count; i++ )
+				switch( this.parse( 6 ) ) {
+					
+					case 0:
+						items.push( undefined );
+						break;
+					
+					case 1:
+						items.push( this.read( { type: 'fraction' } ) );
+						break;
+						
+					case 2:
+						items.push( this.read( { type: 'string' } ) );
+						break;
+						
+					case 3:
+						items.push( this.read( { type: 'boolean' } ) );
+						break;
+						
+					case 4:
+						items.push( this.read( { type: 'date' } ) );
+						break;
+						
+					case 5:
+						items.push( this.read( { type: 'object' } ) );
+					
+				}
+			return items;
+			
+		}
+	);
+			
+	obj.module(
+		'date',
+		function( options ) {
+			if( typeof options.interval == 'undefined' )
+				options.interval = 1;
+			else if(  typeof options.interval != 'number' || options.interval % 1 != 0 )
+				if( typeof options.interval == 'string' && ( options.interval = dates.indexOf( options.interval ) ) != -1 )
+					options.interval = dateInts.slice( 0, options.interval + 1 ).reduce( multiply );
+				else
+					throw TypeError( 'Invalid date interval' );
+				
+			if( isDate( options.min ) )
+				options.min = options.min.getTime();
+			
+			if( isDate( options.max ) )
+				options.max = options.max.getTime();
+			
+			if(
+				( typeof options.min != 'undefined' && ( typeof options.min != 'number' || options.min % 1 != 0 ) ) ||
+				( typeof options.max != 'undefined' && ( typeof options.max != 'number' || options.max % 1 != 0 ) )
+			)
+				throw TypeError( 'Invalid range bound' );
+		},
+		function( items, options ) {
+		
+			var i, item;
+			for( i in items ) {
+				
+				item = items[ i ];
+				
+				if( typeof item == 'string' )
+					item = Date.parse( item );
+				
+				if( !isDate( item ) || isNaN( item.getTime() ) )
+					if( this.strict )
+						throw TypeError( 'Item \'' + item + '\' not a valid date' );
+					else
+						item = new Date( item );
+				
+				item = item.getTime();
+				
+				this.write( Math.floor( item / options.interval ), { type: 'number', min: options.min || false, max: options.max || false, step: 1 } );
+				
+			}
+		},
+		function( options, count ) {
+			
+			var i, items = new Array();
+			for( i = 0; i < count; i++ )
+				items.push( new Date( this.read( { type: 'number', min: options.min || false, max: options.max || false, step: options.interval } ) * options.interval ) );
+			return items;
+			
+		}
+	);
+	
+	obj.module(
+		'object',
+		function( options ) {
+		if( typeof options.template == 'undefined' )
+			options.template = false;
+		
+		if(
+			( typeof options.template != 'boolean' || options.template !== false ) &&
+			!isObject( options.template )
+		)
+			throw TypeError( 'Invalid object template' );
+		
+		if(
+			typeof options.base != 'undefined' &&
+			!isArray( options.base ) &&
+			!isObject( options.base ) &&
+			typeof options.base != 'function'
+		)
+			throw TypeError( 'Invalid object base' );
+		
+
+		},
+		function( items, options ) {
+			
+			var workTpl = function( obj, tpl ) {
+				
+				var key, keys = Object.keys( tpl === false ? obj : tpl );
+				
+				if( options.sort )
+					keys.sort();
+				
+				if( tpl === false )
+					this.composeTerm( keys.length );
+				
+				for( var k in keys ) {
+					
+					key = keys[ k ];
+					
+					if( tpl === false ) {
+						
+						this.write( key, { type: 'string' } );
+						this.write( obj[ key ], { type: 'any' } );
+						
+					} else {
+						
+						if( typeof obj[ key ] == 'undefined' )
+							if( options.optional ) {
+								this.compose( 0, 2 );
+								continue;
+							} else
+								throw ReferenceError( 'Object has no property \'' + key + '\'' );
+						
+						if( options.optional )
+							this.compose( 1, 2 );
+						
+						if( typeof tpl[ key ].type == 'string' )
+							this.write( obj[ key ], tpl[ key ] );
+						else if( isObject( tpl[ key ] ) )
+							workTpl.call( this, obj[ key ], tpl[ key ] );
+						else
+							throw TypeError( 'Invalid object template' );
+						
+					}
+					
+				}
+				
+			}
+			
+			for( var i in items )
+				workTpl.call( this, items[ i ], options.template );
+			
+		},
+		function( options, count ) {
+			
+			var items = new Array();
+			
+			if( isArray( options.base ) && options.base.length != count )
+				throw Error( 'Items and base count mismatch' );
+			
+			var workTpl = function( obj, tpl ) {
+				
+				var k, key, keys;
+				
+				if( tpl === false ) {
+					
+					keys = this.parseTerm();
+					for( key = 0; key < keys; key ++ )
+						obj[ this.read( { type: 'string' } ) ] = this.read( { type: 'any' } );
+					
+				} else {
+					
+					keys = Object.keys( tpl );
+					
+					if( options.sort )
+						keys.sort();
+
+					for( k in keys ) {
+						
+						if( options.optional && !this.parse( 2 ) )
+							continue;
+						
+						key = keys[ k ];
+						
+						if( typeof tpl[ key ].type == 'string' )
+							obj[ key ] = this.read( tpl[ key ] );
+						else if( isObject( tpl[ key ] ) ) {
+							
+							if( typeof obj[ key ] == 'undefined' )
+								obj[ key ] = {};
+							
+							workTpl.call( this, obj[ key ], tpl[ key ] );
+							
+						} else
+							throw TypeError( 'Invalid object template' );
+						
+					}
+					
+				}
+				
+			}
+			
+			for( var i = 0; i < count; i++ ) {
+				
+				if( typeof options.base == 'undefined' )
+					base = {};
+				else if( isArray( options.base ) )
+					base = options.base[ i ];
+				else if( typeof options.base == 'function' )
+					if( options.base.name = '' )
+						base = options.base();
+					else
+						base = new options.base();
+				else
+					base = options.base;
+				
+				if( typeof base != 'object' )
+					throw TypeError( 'Invalid object base' );
+				
+				workTpl.call( this, base, options.template )
+				items.push( base );
+				
+			}
+			
+			return items;
+			
+		}
+	);
 	
 } ).call( this );
