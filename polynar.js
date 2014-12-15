@@ -71,7 +71,8 @@
 		if( optionsObj.hasOwnProperty( i ) )
 			options[ i ] = optionsObj[ i ];
 		
-		obj.modules[ options.type ].validator.call( obj, options );
+		if( obj.modules[ options.type ].validator )
+			obj.modules[ options.type ].validator.call( obj, options );
 		
 		if( typeof options.limit != 'undefined' )
 			if( typeof options.limit != 'number' || options.limit % 1 != 0 || options.limit < 0 )
