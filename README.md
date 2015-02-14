@@ -122,7 +122,7 @@ var encoder = new Polynar.encoder( [ strict ] );
 
 Creates an encoder instance to which the data can be written. When not called as a constructor, it will do so itself instead and return the newly created instance. It accepts one argument.
 
-* **strict** *(optional)* <br/> A boolean to turn strict mode on or off (defaults to false), can be manually adjusted by changing the *strict* property of the instance. In strict mode, Polynar will try to improvise by typecasting, etc. instead of throwing exceptions.
+* **strict** *(optional)* <br/> A boolean to turn strict mode on or off (defaults to false), can be manually adjusted by changing the *strict* property of the instance. Outside strict mode, Polynar will try to improvise by typecasting, etc. instead of throwing exceptions.
 
 ###.encoder.write
 > ```Javascript
@@ -238,6 +238,7 @@ Whole objects can be processed as well, allowing you to furfill most of your enc
 * **template** *(plainObject/boolean, optional)* <br/> A plainObject containing all properties of the object to be processed recursively and the [encodingOptions objects](#encodingoptions) to process them under as property-value pairs, defaults to *false*. When set to *false* it will encode every object property as well and save every value as *any* type, this is extremely inefficient and is effectively serializing.
 * **base** *(object/function/array, optional)* Decoding only. A base object to assign the properties and decoded values to. If ommited, a new plainObject will be created. If an anonymous function is supplied, it will be called to retrieve the object. If a named function is supplied, it will be called as a constructor to instantiate the object. If an array is supplied, the items will each be used as base for the decoded items. Array length must match the item count.
 * **sort** *(bool, optional)* <br/> If true, will sort the keys before encoding ensuring that identical, but differently constructed objects will yield the same results, defaults to *false*.
+* **optional** *(bool, optional)* <br/> If true, template properties are optional and are allowed to be absent in the object, defaults to *false*. This option can also be set on specific properties under the encoding options in the template and will override the global option.
 
 Be aware that assigning any encoding options to a property will overwrite the corresponding property in the base object, even if both are an object and complement each other. To avoid this, add the encoded properties resursively to the template instead.
 

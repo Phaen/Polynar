@@ -277,7 +277,7 @@
 			if( typeof this.current == 'undefined' )
 				this.pointer = 0;
 			else if( this.current != 0 )
-				throw Error( 'Oversaturated byte at byte ' + this.pointer );
+				throw Error( 'Oversaturated byte at position ' + this.pointer );
 			else
 				this.pointer ++;
 			
@@ -369,7 +369,7 @@
 				
 		if( count == 1 )
 			items = items.pop();
-		console.log(items);
+		
 		return items;
 		
 	}
@@ -909,16 +909,20 @@
 						
 					} else {
 						
+						if( typeof tpl[ key ].optional == 'undefined' )
+							optional = options.optional
+						else
+							optional = tpl[ key ].optional;
+						
 						if( typeof obj[ key ] == 'undefined' )
-							if( options.optional ) {
+							if( optional ) {
 								this.compose( 0, 2 );
 								continue;
 							} else
 								throw ReferenceError( 'Object has no property \'' + key + '\'' );
 						
-						if( options.optional )
+						if( optional )
 							this.compose( 1, 2 );
-						
 						if( typeof tpl[ key ].type == 'string' )
 							this.write( obj[ key ], tpl[ key ] );
 						else if( isObject( tpl[ key ] ) )
@@ -962,10 +966,10 @@
 
 					for( k in keys ) {
 						
-						if( options.optional && !this.parse( 2 ) )
-							continue;
-						
 						key = keys[ k ];
+						
+						if( ( typeof tpl[ key ].optional == 'undefined' ? options.optional : tpl[ key ].optional ) && this.parse( 2 ) == 0 )
+							continue;
 						
 						if( typeof tpl[ key ].type == 'string' )
 							obj[ key ] = this.read( tpl[ key ] );
