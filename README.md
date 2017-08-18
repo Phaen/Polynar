@@ -115,7 +115,7 @@ Documentation
 * [Character sets](#character-sets)
 
 
-###.encoder
+### .encoder
 ```Javascript
 var encoder = new Polynar.encoder( [ strict ] );
 ```
