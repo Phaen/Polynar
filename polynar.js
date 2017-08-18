@@ -49,9 +49,9 @@
 	}
 	
 	// define our own is[Type] functions
-	var isObject = function( obj ) { return obj && obj.constructor.name == 'Object'; };
-	var isArray = function( obj ) { return obj && obj.constructor.name == 'Array'; };
-	var isDate = function( obj ) { return obj && obj.constructor.name == 'Date'; };
+	var isObject = function( o ) { return o && typeof o === 'object'; };
+	var isArray = function( o ) { return o && o.constructor.name == 'Array'; };
+	var isDate = function( o ) { return o && o.constructor.name == 'Date'; };
 	
 	// basic math functions
 	var multiply = function( a, b ) { return a * b; };
