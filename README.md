@@ -124,8 +124,8 @@ Creates an encoder instance to which the data can be written. When not called as
 
 * **strict** *(optional)* <br/> A boolean to turn strict mode on or off (defaults to false), can be manually adjusted by changing the *strict* property of the instance. Outside strict mode, Polynar will try to improvise by typecasting, etc. instead of throwing exceptions.
 
-###.encoder.write
-> ```Javascript
+### .encoder.write
+```Javascript
 encoder.write( items, encodingOptions );
 ```
 
@@ -136,8 +136,8 @@ The method used for writing any kind of data to the encoder instance. It takes t
 
 When encoding data, it is important to know that order matters. You must write the data in the exact same order, using the exact same options as it will be read. The best way to do this is to predefine all [encodingOptions objects](#encodingoptions) you will use and refer to the same ones in both your encoding and decoding algorithm.
 
-###.encoder.compose
-> ```Javascript
+### .encoder.compose
+```Javascript
 encoder.compose( integer, radix );
 ```
 
@@ -148,8 +148,8 @@ The underlaying method used by *encoder.write*. It accepts two arguments.
 
 No sanitizing is utilized and using this method can improve efficiency, but is discouraged when lacking expertise. When used improperly, the encoding process may raise exceptions or produce corrupt data.
 
-###.encoder.toString
-> ```Javascript
+### .encoder.toString
+```Javascript
 encoder.toString( charset );
 ```
 
@@ -161,8 +161,8 @@ Because of the naming convention, an encoder instance will automatically return 
 
 Be aware that byte size is an exponential function of the bit count, resulting in diminishing returns. Having a massive set is only a small advantage in string length over a large set.
 
-###.decoder
-> ```Javascript
+### .decoder
+```Javascript
 var decoder = new Polynar.decoder( data, charset [, strict ] );
 ```
 
@@ -175,8 +175,8 @@ Returns a decoder instance from which the data can be read. When not called as a
 
 Be aware that the encoded data fed to the decoder needs to be the exact same as was output by the encoder, no trailing spaces are allowed as they could all be part of the data.
 
-###.decoder.read
-> ```Javascript
+### .decoder.read
+```Javascript
 decoder.read( encodingOptions [, count ] );
 ```
 
@@ -187,8 +187,8 @@ The method used for reading any kind of data from the decoder instance. It accep
 
 When decoding data, it is important to know that order matters. You must read the data in the exact same order, using the exact same options as it was previously written. The best way to do this is to predefine all [encodingOptions objects](#encodingoptions) you will use and refer to the same ones in both your encoding and decoding algorithm.
 
-###.decoder.parse
-> ```Javascript
+### .decoder.parse
+```Javascript
 encoder.parse( radix );
 ```
 
@@ -198,7 +198,7 @@ The underlaying method used by *decoder.read*. It parses and returns an integer.
 
 No sanitizing is utilized and using this method can improve efficiency, but is discouraged when lacking expertise. When used improperly, the decoding process may raise exceptions or produce corrupt data.
 
-###The encodingOptions object
+### The encodingOptions object
 EncodingOptions is a plainObject containing the options as property-value pairs to be used in encoding and decoding processes. These options differ per data type that is encoded.
 
 ##### Numbers
