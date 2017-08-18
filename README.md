@@ -116,7 +116,7 @@ Documentation
 
 
 ###.encoder
-> ```Javascript
+```Javascript
 var encoder = new Polynar.encoder( [ strict ] );
 ```
 
