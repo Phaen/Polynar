@@ -1,5 +1,5 @@
 //     Polynar.js 1.0
-//     http://srv2.blobtech.nl/Polynar
+//     http://blobtech.nl/Polynar
 //     (c) 2014 Pablo Kebees
 //     Polynar may be freely distributed under the MIT license.
 
