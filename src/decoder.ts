@@ -18,20 +18,39 @@ export class Decoder implements IDecoder {
   current?: number;
   radii?: number;
   pointer?: number;
+  private bytes?: Uint8Array;
 
-  constructor(str: string, charset?: Charset, strict?: boolean) {
+  constructor(str: string | Uint8Array, charset?: Charset, strict?: boolean) {
     if (str == null) {
       throw new Error('Missing first argument');
     }
 
     this.strict = strict == null ? DEFAULT_STRICT : Boolean(strict);
-    this.str = String(str);
-    this.charset = validateCharset(charset);
 
-    if (typeof this.charset === 'string') {
-      this.size = this.charset.length;
+    if (str instanceof Uint8Array) {
+      // Binary mode - use Uint8Array directly
+      this.bytes = str;
+      this.str = ''; // Not used in binary mode
+
+      const [min, max] = (charset as [number, number]) || [0, 255];
+
+      // Validate range
+      if (min < 0 || min > 255 || max < 0 || max > 255 || min > max) {
+        throw new RangeError('Binary range must be between 0-255 and min must be <= max');
+      }
+
+      this.charset = [min, max];
+      this.size = max - min + 1;
     } else {
-      this.size = (this.charset as [number, number])[1] - (this.charset as [number, number])[0] + 1;
+      // String mode
+      this.str = String(str);
+      this.charset = validateCharset(charset);
+
+      if (typeof this.charset === 'string') {
+        this.size = this.charset.length;
+      } else {
+        this.size = (this.charset as [number, number])[1] - (this.charset as [number, number])[0] + 1;
+      }
     }
   }
 
@@ -50,21 +69,30 @@ export class Decoder implements IDecoder {
       this.radii = 1;
       left = this.size;
 
-      if (this.pointer === this.str.length) {
-        throw new Error('Unexpected end of input while parsing');
-      }
-
-      if (typeof this.charset === 'string') {
-        this.current = this.charset.indexOf(this.str.charAt(this.pointer!));
-
-        if (this.current === -1) {
-          throw new Error('Byte at ' + this.pointer + ' not found in character set');
+      if (this.bytes) {
+        // Binary mode - read from Uint8Array
+        if (this.pointer === this.bytes.length) {
+          throw new Error('Unexpected end of input while parsing');
         }
+        this.current = this.bytes[this.pointer!] - (this.charset as [number, number])[0];
       } else {
-        this.current = this.str.charCodeAt(this.pointer!) - (this.charset as [number, number])[0];
+        // String mode - read from string
+        if (this.pointer === this.str.length) {
+          throw new Error('Unexpected end of input while parsing');
+        }
 
-        if (this.current > this.size) {
-          throw new Error('Byte at ' + this.pointer + ' does not fit binary range');
+        if (typeof this.charset === 'string') {
+          this.current = this.charset.indexOf(this.str.charAt(this.pointer!));
+
+          if (this.current === -1) {
+            throw new Error('Byte at ' + this.pointer + ' not found in character set');
+          }
+        } else {
+          this.current = this.str.charCodeAt(this.pointer!) - (this.charset as [number, number])[0];
+
+          if (this.current > this.size) {
+            throw new Error('Byte at ' + this.pointer + ' does not fit binary range');
+          }
         }
       }
     }

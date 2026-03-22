@@ -147,6 +147,7 @@ export interface Encoder {
   compose(integer: number, radix: number): void;
   composeTerm(integer: number): void;
   toString(charset?: Charset): string;
+  toUint8Array(charset?: [number, number]): Uint8Array;
 }
 
 /**
@@ -164,3 +165,4 @@ export interface Decoder {
   parseTerm(): number;
   read(options: EncodingOptions, count?: number): any;
 }
+

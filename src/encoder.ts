@@ -110,4 +110,49 @@ export class Encoder implements IEncoder {
 
     return str;
   }
+
+  toUint8Array(charset?: [number, number]): Uint8Array {
+    const [min, max] = charset || [0, 255];
+
+    // Validate range
+    if (min < 0 || min > 255 || max < 0 || max > 255 || min > max) {
+      throw new RangeError('Binary range must be between 0-255 and min must be <= max');
+    }
+
+    const size = max - min + 1;
+    let radii = 1;
+    let current = 0;
+    const bytes: number[] = [];
+
+    const build = (integer: number, radix: number): void => {
+      let left = Math.floor(size / radii);
+
+      if (left < 2) {
+        bytes.push(current + min);
+        current = 0;
+        radii = 1;
+        left = size;
+      }
+
+      if (left >= radix) {
+        current += radii * integer;
+        radii *= radix;
+      } else {
+        const factor = Math.ceil(radix / left);
+        current += radii * Math.floor(integer / factor);
+        radii *= left;
+        build(integer % factor, factor);
+      }
+    };
+
+    for (const i in this.radii) {
+      build(this.integers[i], this.radii[i]);
+    }
+
+    if (radii !== 0) {
+      bytes.push(current + min);
+    }
+
+    return new Uint8Array(bytes);
+  }
 }

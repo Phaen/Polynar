@@ -44,14 +44,19 @@ npm install polynar
 ```typescript
 import { Encoder, Decoder, CharSets } from 'polynar';
 
-// Encode numbers
+// Encode numbers to string
 const encoder = new Encoder();
 encoder.write(42, { type: 'number', min: 0, max: 100 });
 const encoded = encoder.toString(); // Compact string representation
 
-// Decode numbers
+// Decode numbers from string
 const decoder = new Decoder(encoded);
 const decoded = decoder.read({ type: 'number', min: 0, max: 100 }); // 42
+
+// Or encode to binary (Uint8Array) for maximum efficiency
+const binary = encoder.toUint8Array(); // Compact binary representation
+const binaryDecoder = new Decoder(binary);
+const decodedBinary = binaryDecoder.read({ type: 'number', min: 0, max: 100 }); // 42
 ```
 
 ## Usage Examples
@@ -196,6 +201,53 @@ const dec2 = new Decoder(encodedString);
 const values = dec2.read({ type: 'boolean' }, 3); // Read 3 booleans
 ```
 
+### Using Binary Encoding (Uint8Array)
+
+For maximum efficiency and when working with binary data, use `toUint8Array()` instead of `toString()`:
+
+```typescript
+import { Encoder, Decoder } from 'polynar';
+
+const enc = new Encoder();
+enc.write('data', { type: 'string', max: 20 });
+
+// Convert to Uint8Array for binary output
+const binary = enc.toUint8Array();
+
+// Benefits:
+// - More compact than string encoding
+// - Native binary format (each byte is 0-255)
+// - Perfect for storage, transmission, or serialization
+// - JSON-serializable via Array.from(binary)
+
+// Decode from Uint8Array
+const dec = new Decoder(binary);
+const result = dec.read({ type: 'string', max: 20 });
+
+// Can be serialized to JSON if needed
+const jsonArray = Array.from(binary);
+const json = JSON.stringify(jsonArray);
+// Later: reconstruct from JSON
+const reconstructed = new Uint8Array(JSON.parse(json));
+const decoder = new Decoder(reconstructed);
+
+// Custom byte range (useful for printable ASCII, specific protocols, etc.)
+const printableBinary = enc.toUint8Array([32, 126]); // Printable ASCII only
+const printableDecoder = new Decoder(printableBinary, [32, 126]);
+```
+
+**When to use Uint8Array:**
+- Storing data in databases (as BLOB or bytea)
+- Transmitting over network (e.g., WebSocket binary frames)
+- File storage with maximum compression
+- Working with binary protocols
+- Maximum encoding efficiency
+
+**When to use toString():**
+- Need URL-safe or human-readable strings
+- Working with text-only systems
+- Need specific character sets (Base64, hex, etc.)
+
 ### Using Custom Character Sets
 
 ```typescript
@@ -276,16 +328,37 @@ class Encoder {
   constructor(strict?: boolean);
   write(items: any | any[], options: EncodingOptions): void;
   toString(charset?: Charset): string;
+  toUint8Array(): Uint8Array;  // New: Binary encoding
 }
 ```
+
+**Methods:**
+- `write()` - Write data to the encoder with specified options
+- `toString(charset?)` - Convert encoded data to string (various charsets supported)
+- `toUint8Array(charset?)` - Convert encoded data to Uint8Array (binary, most efficient)
+  - `charset` (default: `[0, 255]`) - Byte range as `[min, max]`
 
 ### `Decoder`
 
 ```typescript
 class Decoder {
-  constructor(str: string, charset?: Charset, strict?: boolean);
+  constructor(str: string | Uint8Array, charset?: Charset, strict?: boolean);
   read(options: EncodingOptions, count?: number): any;
 }
+```
+
+**Constructor parameters:**
+- `str` - String or Uint8Array containing encoded data
+- `charset` - Character set or byte range `[min, max]` (default: `[0, 255]` for Uint8Array)
+- `strict` - Enable strict validation (default: false)
+
+**For Uint8Array input:**
+```typescript
+// Default range (0-255)
+new Decoder(uint8Array)
+
+// Custom range (e.g., 100-200)
+new Decoder(uint8Array, [100, 200])
 ```
 
 ### Encoding Options
