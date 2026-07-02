@@ -4,7 +4,7 @@
 
 import type { Charset, EncodingOptions, Encoder as IEncoder } from './types';
 import { DEFAULT_BASE } from './constants';
-import { validateOptions, validateCharset, isArray } from './utils';
+import { validateOptions, validateCharset, blockCapacity, isArray } from './utils';
 import { modules } from './modules/registry';
 
 /**
@@ -33,7 +33,9 @@ export class Encoder implements IEncoder {
       items = items.map((item: any) => preProc(item));
     }
 
-    if (validatedOptions.limit) {
+    // Presence check, not truthiness: `limit: 0` is a valid cap of zero, not
+    // "no limit".
+    if (validatedOptions.limit != null) {
       if (items.length > validatedOptions.limit) {
         throw new RangeError('Item count exceeds limit');
       } else {
@@ -65,38 +67,73 @@ export class Encoder implements IEncoder {
       throw new TypeError('Term must be a non-negative integer');
     }
 
-    while (integer !== 0) {
-      this.compose((integer % DEFAULT_BASE) + 1, DEFAULT_BASE + 1);
-      integer = Math.floor(integer / DEFAULT_BASE);
+    // Every integer-valued double is exact, but float division on values above
+    // 2^53 is not — extract the digits in BigInt so huge terms round-trip
+    // bit-exact instead of silently corrupting.
+    const base = BigInt(DEFAULT_BASE);
+    let value = BigInt(integer);
+
+    while (value !== 0n) {
+      this.compose(Number(value % base) + 1, DEFAULT_BASE + 1);
+      value /= base;
     }
     this.compose(0, DEFAULT_BASE + 1);
   }
 
   /**
-   * Pack the whole buffer into a single big mixed-radix integer and write it
-   * out as base-`size` digits, lowest digit first. Values are folded in
-   * reverse so the decoder can peel them off front-to-back, which it needs
-   * because later radices can depend on earlier decoded values (e.g. a
-   * `limit` length prefix). Rounding up to a whole digit happens once, at the
-   * end of the message, so the output length is always the minimum:
+   * Pack the buffer into base-`size` digits, lowest digit first, as a run of
+   * mixed-radix blocks. Within a block, values fold into one big integer — in
+   * reverse, so the decoder can peel them off front-to-back, which it needs
+   * because later radices can depend on earlier decoded values (e.g. a `limit`
+   * length prefix). A value whose radix would push the block's radix product
+   * past the block cap starts the next block instead. Full blocks span
+   * exactly `digits` digits, so the decoder finds the boundaries by position
+   * alone; only the final block rounds up to a whole digit, so a message that
+   * fits one block is always the information-theoretic minimum length:
    * ceil(log_size(product of all radii)).
    */
   private toDigits(size: number): number[] {
     const base = BigInt(size);
-    let value = 0n;
-    let capacity = 1n;
-
-    for (let i = this.radii.length - 1; i >= 0; i--) {
-      const radix = BigInt(this.radii[i]);
-      value = value * radix + BigInt(this.integers[i]);
-      capacity *= radix;
-    }
-
+    const block = blockCapacity(size);
     const digits: number[] = [];
-    while (capacity > 1n) {
-      digits.push(Number(value % base));
-      value /= base;
-      capacity = (capacity + base - 1n) / base;
+
+    let start = 0;
+    while (start < this.radii.length) {
+      // Extend the block while its radix product stays within the cap.
+      let product = 1n;
+      let end = start;
+      while (end < this.radii.length) {
+        const radix = BigInt(this.radii[end]);
+        if (product * radix > block.cap) {
+          break;
+        }
+        product *= radix;
+        end++;
+      }
+
+      let value = 0n;
+      for (let i = end - 1; i >= start; i--) {
+        value = value * BigInt(this.radii[i]) + BigInt(this.integers[i]);
+      }
+
+      if (end < this.radii.length) {
+        // A full block: more values follow, so every digit of the block is
+        // emitted, filled or not.
+        for (let d = 0; d < block.digits; d++) {
+          digits.push(Number(value % base));
+          value /= base;
+        }
+      } else {
+        // The final block: emit the minimum digits its state space needs.
+        let capacity = product;
+        while (capacity > 1n) {
+          digits.push(Number(value % base));
+          value /= base;
+          capacity = (capacity + base - 1n) / base;
+        }
+      }
+
+      start = end;
     }
 
     return digits;

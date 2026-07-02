@@ -42,12 +42,12 @@ describe('Number module', () => {
       expect(roundTrip([10, 20, 30], opts)).toEqual([10, 20, 30]);
     });
 
-    it('treats a swapped min/max as the same range', () => {
-      expect(roundTrip(42, { type: 'number', min: 100, max: 0 })).toBe(42);
-    });
-
-    it('defaults min and max to 0 (single representable value)', () => {
-      expect(roundTrip(0, { type: 'number' } as NumberOptions)).toBe(0);
+    it('rejects an inverted min/max range instead of silently swapping', () => {
+      // A silent swap would accept values below the declared minimum and
+      // reject values the caller declared valid.
+      expect(() => roundTrip(42, { type: 'number', min: 100, max: 0 })).toThrow(
+        'Range minimum exceeds maximum'
+      );
     });
   });
 
@@ -75,6 +75,14 @@ describe('Number module', () => {
       expect(roundTrip(-3.14, { type: 'number', min: false, max: false, step: 0.01 })).toBe(-3.14);
     });
 
+    it('encodes exactly-on-grid values on fine grids at large offsets', () => {
+      // Encoding computes the bucket index in the same decimal-scaled integers
+      // decoding uses, so any value a decode can produce also re-encodes,
+      // instead of drifting off-grid through float division.
+      const opts: NumberOptions = { type: 'number', min: 1e9, max: 1e9 + 1, step: 1e-6 };
+      expect(roundTrip(1e9 + 5e-6, opts)).toBe(1e9 + 5e-6);
+    });
+
     it('round-trips integer steps > 1', () => {
       const opts: NumberOptions = { type: 'number', min: 0, max: 100, step: 5 };
       expect(roundTrip([0, 25, 100], opts)).toEqual([0, 25, 100]);
@@ -95,6 +103,18 @@ describe('Number module', () => {
       const opts: NumberOptions = { type: 'number', min: false, max: 10 };
       expect(roundTrip([10, 9, 0, -25], opts)).toEqual([10, 9, 0, -25]);
     });
+
+    it('treats a declared min without a max as lower-bounded, not as [0, min]', () => {
+      const opts: NumberOptions = { type: 'number', min: 5 };
+      expect(roundTrip(7, opts)).toBe(7);
+      expect(() => roundTrip(3, opts)).toThrow(RangeError);
+    });
+
+    it('treats a declared max without a min as upper-bounded', () => {
+      const opts: NumberOptions = { type: 'number', max: 10 };
+      expect(roundTrip(-100, opts)).toBe(-100);
+      expect(() => roundTrip(11, opts)).toThrow(RangeError);
+    });
   });
 
   describe('fully unbounded (signed)', () => {
@@ -106,6 +126,18 @@ describe('Number module', () => {
     it('round-trips large magnitudes', () => {
       const opts: NumberOptions = { type: 'number', min: false, max: false };
       expect(roundTrip([123456789, -987654321], opts)).toEqual([123456789, -987654321]);
+    });
+
+    it('defaults omitted bounds to fully unbounded', () => {
+      expect(roundTrip([0, 100, -50], { type: 'number' } as NumberOptions)).toEqual([0, 100, -50]);
+    });
+
+    it('round-trips integer doubles above 2^53 bit-exact', () => {
+      // The term digits travel through BigInt, so no float division ever
+      // rounds these into a neighbouring representable integer.
+      const opts: NumberOptions = { type: 'number', min: false, max: false };
+      expect(roundTrip(18014398509481988, opts)).toBe(18014398509481988);
+      expect(roundTrip(1e300, opts)).toBe(1e300);
     });
   });
 
@@ -164,6 +196,13 @@ describe('Number module', () => {
 
     it('rejects an invalid range bound', () => {
       expect(() => enc.write(1, { type: 'number', min: 'x' as never, max: 10 })).toThrow(TypeError);
+    });
+
+    it('rejects `true` as a range bound (only `false` means unbounded)', () => {
+      // `true` would silently coerce to 1 in the range arithmetic.
+      expect(() => enc.write(1, { type: 'number', min: true as never, max: 5 })).toThrow(
+        'Invalid range bound'
+      );
     });
   });
 });

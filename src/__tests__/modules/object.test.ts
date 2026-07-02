@@ -47,6 +47,30 @@ describe('Object module', () => {
       const encoder = new Encoder();
       expect(() => encoder.write({ name: 'John', active: true }, opts)).toThrow(ReferenceError);
     });
+
+    it('round-trips null in an any-typed field', () => {
+      // null is a value the any type carries, not an absent field; only
+      // undefined means absent.
+      const nullOpts: ObjectOptions = { type: 'object', template: { x: { type: 'any' } } };
+      expect(roundTrip({ x: null }, nullOpts)).toEqual({ x: null });
+    });
+
+    it('round-trips a length-prefixed (limit) array field', () => {
+      const limitOpts: ObjectOptions = {
+        type: 'object',
+        template: { nums: { type: 'number', min: 0, max: 10, limit: 5 } },
+      };
+      expect(roundTrip({ nums: [1, 2, 3] }, limitOpts)).toEqual({ nums: [1, 2, 3] });
+      expect(roundTrip({ nums: [] }, limitOpts)).toEqual({ nums: [] });
+    });
+
+    it('round-trips an any-typed limit field without extra nesting', () => {
+      const limitOpts: ObjectOptions = {
+        type: 'object',
+        template: { tags: { type: 'any', limit: 4 } },
+      };
+      expect(roundTrip({ tags: ['a', 'b'] }, limitOpts)).toEqual({ tags: ['a', 'b'] });
+    });
   });
 
   describe('nested templates', () => {
@@ -85,6 +109,36 @@ describe('Object module', () => {
       const obj = { name: 'John' };
       expect(roundTrip(obj, opts)).toEqual(obj);
     });
+
+    it('preserves null on an optional any-typed field instead of dropping it', () => {
+      const nullOpts: ObjectOptions = {
+        type: 'object',
+        template: { x: { type: 'any', optional: true } },
+      };
+      expect(roundTrip({ x: null }, nullOpts)).toEqual({ x: null });
+      expect(roundTrip({}, nullOpts)).toEqual({});
+    });
+  });
+
+  describe('optional template groups', () => {
+    // A nested plain template group made optional via its own `optional: true`
+    // marker — the marker must act as the group's presence flag, not as a field.
+    const opts: ObjectOptions = {
+      type: 'object',
+      template: {
+        settings: { optional: true, theme: { type: 'string', max: 10 } },
+      },
+    };
+
+    it('round-trips with the group present', () => {
+      expect(roundTrip({ settings: { theme: 'dark' } }, opts)).toEqual({
+        settings: { theme: 'dark' },
+      });
+    });
+
+    it('round-trips with the group absent', () => {
+      expect(roundTrip({}, opts)).toEqual({});
+    });
   });
 
   describe('templateless (self-describing) objects', () => {
@@ -102,6 +156,17 @@ describe('Object module', () => {
     it('defaults to templateless when template is omitted', () => {
       const obj = { x: 5 };
       expect(roundTrip(obj, { type: 'object' } as ObjectOptions)).toEqual(obj);
+    });
+
+    it('decodes a __proto__ key as an own property, not the prototype', () => {
+      // Wire data must never replace the decoded object's prototype: a plain
+      // assignment of a '__proto__' key would invoke the prototype setter.
+      const payload = JSON.parse('{"__proto__": {"isAdmin": true}, "name": "x"}');
+      const decoded = roundTrip(payload, opts) as Record<string, unknown>;
+      expect(Object.getPrototypeOf(decoded)).toBe(Object.prototype);
+      expect((decoded as { isAdmin?: boolean }).isAdmin).toBeUndefined();
+      expect(Object.keys(decoded).sort()).toEqual(['__proto__', 'name']);
+      expect(decoded['__proto__']).toEqual({ isAdmin: true });
     });
   });
 

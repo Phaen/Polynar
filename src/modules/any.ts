@@ -23,7 +23,9 @@ export function registerAnyModule() {
     'any',
     false,
     function (items) {
-      for (const i in items) {
+      // Indexed iteration, not for-in: a sparse array's holes must encode (as
+      // `undefined`) so the count stays consistent with `items.length`.
+      for (let i = 0; i < items.length; i++) {
         const item = items[i];
 
         // `null` and arrays both report `typeof 'object'`, so handle them before

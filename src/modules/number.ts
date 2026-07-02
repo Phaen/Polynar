@@ -56,6 +56,36 @@ export function registerNumberModule() {
     return idx * step + offset;
   };
 
+  // Index of `value` on the grid `offset + idx * step` — the exact inverse of
+  // gridValue. When value, step and offset are all short decimals, work in the
+  // same decimal-scaled integers, so every value gridValue can produce
+  // re-encodes exactly instead of drifting through float division. Values
+  // outside that space fall back to the tolerance snap. NaN signals a
+  // genuinely off-grid value.
+  const gridIndex = (value: number, step: number, offset: number): number => {
+    const valuePlaces = decimalPlaces(value);
+    const stepPlaces = decimalPlaces(step);
+    const offsetPlaces = decimalPlaces(offset);
+
+    if (valuePlaces !== null && stepPlaces !== null && offsetPlaces !== null) {
+      const scale = Math.pow(10, Math.max(valuePlaces, stepPlaces, offsetPlaces));
+      const scaledValue = Math.round(value * scale);
+      const scaledStep = Math.round(step * scale);
+      const scaledOffset = Math.round(offset * scale);
+      const delta = scaledValue - scaledOffset;
+
+      if (
+        Math.abs(scaledValue) <= Number.MAX_SAFE_INTEGER &&
+        Math.abs(scaledOffset) <= Number.MAX_SAFE_INTEGER &&
+        Math.abs(delta) <= Number.MAX_SAFE_INTEGER
+      ) {
+        return delta % scaledStep === 0 ? delta / scaledStep : NaN;
+      }
+    }
+
+    return bucketIndex((value - offset) / step);
+  };
+
   registerModule(
     'number',
     function (options) {
@@ -67,26 +97,28 @@ export function registerNumberModule() {
         throw new TypeError('Invalid step size');
       }
 
-      if (options.min == null) options.min = 0;
-      if (options.max == null) options.max = 0;
+      // An omitted bound means unbounded on that side, matching what declaring
+      // only the other bound implies.
+      if (options.min == null) options.min = false;
+      if (options.max == null) options.max = false;
 
+      // Only the literal `false` means unbounded; `true` would silently
+      // coerce to 1 in the range arithmetic.
       if (
-        (typeof options.min !== 'number' &&
-          typeof options.min !== 'boolean' &&
-          options.min !== false) ||
-        (typeof options.max !== 'number' &&
-          typeof options.max !== 'boolean' &&
-          options.max !== false)
+        (typeof options.min !== 'number' && options.min !== false) ||
+        (typeof options.max !== 'number' && options.max !== false)
       ) {
         throw new TypeError('Invalid range bound');
       }
 
       if (options.max !== false && options.min !== false) {
+        // Swapping the bounds silently would accept values below the declared
+        // minimum and reject values the caller declared valid.
         if (options.min > options.max) {
-          [options.min, options.max] = [options.max, options.min];
+          throw new RangeError('Range minimum exceeds maximum');
         }
 
-        if (Number.isNaN(bucketIndex((options.max - options.min) / options.step))) {
+        if (Number.isNaN(gridIndex(options.max, options.step, options.min))) {
           throw new TypeError('Range bound outside step range');
         }
       }
@@ -97,31 +129,33 @@ export function registerNumberModule() {
       const bounded = options.max !== false && options.min !== false;
       const size = bounded ? rangeSize(options) : 0;
 
-      for (const i in items) {
+      for (let i = 0; i < items.length; i++) {
         const item = items[i];
 
         if (typeof item !== 'number') {
           throw new TypeError(`Item '${item}' not a number`);
         }
 
-        if (options.max === false || options.min === false) {
+        if (!bounded) {
           let sign = 0;
-          let value = item;
+          let idx: number;
 
           if (options.min === false && options.max === false) {
-            if (value < 0) sign++;
-            value = Math.abs(value);
+            if (item < 0) sign++;
+            idx = gridIndex(Math.abs(item), options.step, 0);
           } else if (options.min === false) {
-            value = -1 * value + options.max;
+            if (item > options.max) {
+              throw new RangeError(`Item '${item}' exceeds range bounds`);
+            }
+            // The wire index counts downward from max, so it is the negated
+            // grid index.
+            idx = -gridIndex(item, options.step, options.max);
           } else {
-            value -= options.min;
+            if (item < options.min) {
+              throw new RangeError(`Item '${item}' exceeds range bounds`);
+            }
+            idx = gridIndex(item, options.step, options.min);
           }
-
-          if (value < 0) {
-            throw new RangeError(`Item '${item}' exceeds range bounds`);
-          }
-
-          const idx = bucketIndex(value / options.step);
 
           if (Number.isNaN(idx)) {
             throw new RangeError(`Item '${item}' outside step range`);
@@ -137,7 +171,7 @@ export function registerNumberModule() {
             throw new RangeError(`Item '${item}' exceeds range bounds`);
           }
 
-          const idx = bucketIndex((item - options.min) / options.step);
+          const idx = gridIndex(item, options.step, options.min);
 
           if (Number.isNaN(idx)) {
             throw new RangeError(`Item '${item}' outside step range`);

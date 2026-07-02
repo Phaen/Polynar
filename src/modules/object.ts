@@ -43,9 +43,7 @@ export function registerObjectModule() {
           this.composeTerm(keys.length);
         }
 
-        for (const k in keys) {
-          const key = keys[k];
-
+        for (const key of keys) {
           if (tpl === false) {
             // Keys can hold any character, and a value may itself be an array.
             // Wrap it so `write` encodes it as ONE `any` value instead of
@@ -53,13 +51,22 @@ export function registerObjectModule() {
             this.write(key, { type: 'string', charset: UTF16_RANGE });
             this.write([obj[key]], { type: 'any' });
           } else {
+            // `optional: true` on a nested template group marks the GROUP
+            // optional (consumed by the parent level); it is a marker, not a
+            // data field.
+            if (key === 'optional' && typeof tpl[key] === 'boolean') {
+              continue;
+            }
+
             // A field is optional only when its own template entry says so. The
             // parent object's `optional` (its presence bit in ITS parent) must not
             // bleed down as a default, or it would silently make every sub-field
             // of an optional nested object optional too.
             const optional = tpl[key].optional === true;
 
-            if (obj[key] == null) {
+            // Only `undefined` means absent. `null` is a value in its own right
+            // (the `any` type round-trips it), so it must reach the module.
+            if (obj[key] === undefined) {
               if (optional) {
                 this.compose(0, 2);
                 continue;
@@ -73,11 +80,17 @@ export function registerObjectModule() {
             }
 
             if (typeof tpl[key].type === 'string') {
-              // Wrap in a single-element array so `write` encodes the value as
-              // ONE item even when it is itself an array (e.g. an `any` field
-              // holding an array). Otherwise the array is spread into several
-              // writes that decode (which reads one value) cannot recover.
-              this.write([obj[key]], tpl[key]);
+              if (tpl[key].limit != null) {
+                // A `limit` field is array-valued and length-prefixed by
+                // `write` itself; pass it through unwrapped.
+                this.write(obj[key], tpl[key]);
+              } else {
+                // Wrap in a single-element array so `write` encodes the value as
+                // ONE item even when it is itself an array (e.g. an `any` field
+                // holding an array). Otherwise the array is spread into several
+                // writes that decode (which reads one value) cannot recover.
+                this.write([obj[key]], tpl[key]);
+              }
             } else if (isObject(tpl[key])) {
               workTpl.call(this, obj[key], tpl[key]);
             } else {
@@ -87,7 +100,7 @@ export function registerObjectModule() {
         }
       };
 
-      for (const i in items) {
+      for (let i = 0; i < items.length; i++) {
         workTpl.call(this, items[i], options.template);
       }
     },
@@ -101,9 +114,16 @@ export function registerObjectModule() {
       const workTpl = function (this: Decoder, obj: any, tpl: any): void {
         if (tpl === false) {
           const keys = this.parseTerm();
-          for (let key = 0; key < keys; key++) {
-            obj[this.read({ type: 'string', charset: UTF16_RANGE }) as string] = this.read({
-              type: 'any',
+          for (let i = 0; i < keys; i++) {
+            const key = this.read({ type: 'string', charset: UTF16_RANGE }) as string;
+            // Define an own property: plain assignment would follow a
+            // '__proto__' key to the prototype setter, letting wire data
+            // replace the decoded object's prototype.
+            Object.defineProperty(obj, key, {
+              value: this.read({ type: 'any' }),
+              writable: true,
+              enumerable: true,
+              configurable: true,
             });
           }
         } else {
@@ -113,8 +133,12 @@ export function registerObjectModule() {
             keys.sort();
           }
 
-          for (const k in keys) {
-            const key = keys[k];
+          for (const key of keys) {
+            // Mirror the encoder: `optional: true` on a nested template group
+            // is the group's own presence marker, not a data field.
+            if (key === 'optional' && typeof tpl[key] === 'boolean') {
+              continue;
+            }
 
             // Mirror the encoder: optionality comes only from the field's own
             // template entry, never inherited from the parent object.

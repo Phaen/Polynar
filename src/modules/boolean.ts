@@ -9,7 +9,7 @@ export function registerBooleanModule() {
     'boolean',
     false,
     function (items) {
-      for (const i in items) {
+      for (let i = 0; i < items.length; i++) {
         const item = items[i];
 
         if (typeof item !== 'boolean') {

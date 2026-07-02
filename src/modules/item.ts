@@ -18,7 +18,7 @@ export function registerItemModule() {
       }
     },
     function (items, options) {
-      for (const i in items) {
+      for (let i = 0; i < items.length; i++) {
         const pos = options.list.indexOf(items[i]);
 
         if (pos === -1) {

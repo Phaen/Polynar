@@ -18,7 +18,7 @@ export function registerFractionModule() {
       }
     },
     function (items, options) {
-      for (const i in items) {
+      for (let i = 0; i < items.length; i++) {
         let item = items[i];
 
         if (typeof item !== 'number' || !Number.isFinite(item)) {

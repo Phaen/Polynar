@@ -159,4 +159,5 @@ export interface Decoder {
   parse(radix: number): number;
   parseTerm(): number;
   read(options: EncodingOptions, count?: number): any;
+  finalize(): void;
 }

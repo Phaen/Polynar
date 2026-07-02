@@ -34,6 +34,13 @@ describe('Fraction module', () => {
     expect(roundTrip([0, 1, -1, 42, -1000])).toEqual([0, 1, -1, 42, -1000]);
   });
 
+  it('round-trips huge magnitudes bit-exact', () => {
+    // The numerator term is far above 2^53; BigInt term packing keeps it exact
+    // where float division would silently land on a neighbouring double.
+    expect(roundTrip(1e300)).toBe(1e300);
+    expect(roundTrip(-1e300)).toBe(-1e300);
+  });
+
   it('approximates irrationals within the default precision', () => {
     expect(roundTrip(Math.PI)).toBeCloseTo(Math.PI, 10);
     expect(roundTrip(Math.E)).toBeCloseTo(Math.E, 10);

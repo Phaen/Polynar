@@ -24,6 +24,17 @@ export const DEFAULT_CHARSET = CharSets.Base64;
 export const DEFAULT_BASE = 3;
 
 /**
+ * State-space cap per packed block, in bits. Values fold into one
+ * arbitrary-precision integer only until the block's radix product would
+ * exceed this, then the block flushes and a fresh one starts. The cap bounds
+ * every BigInt operation, keeping encode/decode linear in message size (one
+ * uncapped integer would make them quadratic), at a worst-case cost of one
+ * unfilled digit per block boundary. Must comfortably exceed 2^53, the
+ * largest single radix `compose` accepts.
+ */
+export const BLOCK_BITS = 2048;
+
+/**
  * Full UTF-16 code-unit range. Used wherever a string must round-trip ANY
  * character (the schema's `p.string()` default, and the self-describing `any`
  * encoder for string values and object keys) rather than the compact but

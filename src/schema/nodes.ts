@@ -53,7 +53,12 @@ export abstract class PNode<TOut> {
 
   decode(bytes: Uint8Array): TOut {
     const decoder = new Decoder(bytes);
-    return decoder.read(this._options()) as TOut;
+    const value = decoder.read(this._options()) as TOut;
+    // The schema is the whole message, so the input must be exactly consumed.
+    // This rejects tampered digits and trailing padding instead of silently
+    // decoding them into plausible-looking values.
+    decoder.finalize();
+    return value;
   }
 
   /**
@@ -77,8 +82,9 @@ export abstract class PNode<TOut> {
   decodeMany(bytes: Uint8Array): TOut[] {
     const decoder = new Decoder(bytes);
     const count = decoder.read(COUNT_OPTIONS) as number;
-    if (count === 0) return [];
-    const items = decoder.read(this._options(), count);
+    const items = count === 0 ? [] : decoder.read(this._options(), count);
+    // Same exhaustion check as `decode`: the batch is the whole message.
+    decoder.finalize();
     // The codec unwraps a single-element read into the bare item. Re-wrap it.
     return (count === 1 ? [items] : items) as TOut[];
   }

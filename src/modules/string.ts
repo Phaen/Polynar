@@ -33,7 +33,7 @@ export function registerStringModule() {
         size = options.charset[1] - options.charset[0] + 1;
       }
 
-      for (const i in items) {
+      for (let i = 0; i < items.length; i++) {
         const item = items[i];
 
         if (typeof item !== 'string') {

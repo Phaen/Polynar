@@ -119,6 +119,12 @@ describe('Schema objects', () => {
     expect(Schema.decode(Schema.encode(value))).toEqual(value);
   });
 
+  it('round-trips null in an any-typed field', () => {
+    // null is a value the any type carries; only undefined means absent.
+    const Schema = p.object({ x: p.any() });
+    expect(Schema.decode(Schema.encode({ x: null }))).toEqual({ x: null });
+  });
+
   it('an optional nested object stays all-or-nothing and keeps its sub-fields required', () => {
     const Schema = p.object({
       inner: p.object({ a: p.int(0, 9), b: p.int(0, 9) }).optional(),
@@ -224,6 +230,31 @@ describe('Schema v3 hardening', () => {
     // keeps an array whole instead of losing all but the first element.
     const optAny = p.any().optional();
     expect(optAny.decode(optAny.encode([1, 2, 3]))).toEqual([1, 2, 3]);
+  });
+});
+
+describe('Schema corruption rejection', () => {
+  it('decode rejects a tampered byte instead of returning plausible values', () => {
+    const node = p.int(0, 100);
+    const bytes = node.encode(42);
+    expect(bytes).toHaveLength(1);
+    // The tampered byte still yields an in-range value on read (192 % 101 =
+    // 91); only the leftover-value check can tell the byte was altered.
+    expect(() => node.decode(Uint8Array.of(bytes[0] + 150))).toThrow(
+      'Unread or corrupted data at end of input'
+    );
+  });
+
+  it('decode rejects trailing padding', () => {
+    const node = p.int(0, 100);
+    const padded = Uint8Array.of(...node.encode(42), 0);
+    expect(() => node.decode(padded)).toThrow('Input is longer than its contents');
+  });
+
+  it('decodeMany rejects trailing padding', () => {
+    const node = p.int(0, 1000);
+    const padded = Uint8Array.of(...node.encodeMany([1, 2, 3]), 0);
+    expect(() => node.decodeMany(padded)).toThrow('Input is longer than its contents');
   });
 });
 

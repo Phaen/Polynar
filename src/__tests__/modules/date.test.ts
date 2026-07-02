@@ -133,5 +133,16 @@ describe('Date module', () => {
       expect(() => enc.write(new Date(), { type: 'date', interval: 0 })).toThrow(TypeError);
       expect(() => enc.write(new Date(), { type: 'date', interval: -1000 })).toThrow(TypeError);
     });
+
+    it('rejects a minimum bound after the maximum', () => {
+      // A silent swap would accept dates before the declared minimum.
+      expect(() =>
+        enc.write(new Date('2020-06-15T00:00:00Z'), {
+          type: 'date',
+          min: new Date('2021-01-01T00:00:00Z'),
+          max: new Date('2020-01-01T00:00:00Z'),
+        })
+      ).toThrow('Range minimum exceeds maximum');
+    });
   });
 });

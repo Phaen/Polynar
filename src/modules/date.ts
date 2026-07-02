@@ -46,6 +46,12 @@ export function registerDateModule() {
       ) {
         throw new TypeError('Invalid range bound');
       }
+
+      // Swapping the bounds silently would accept dates before the declared
+      // minimum and reject dates the caller declared valid.
+      if (options.min != null && options.max != null && options.min > options.max) {
+        throw new RangeError('Range minimum exceeds maximum');
+      }
     },
     function (items, options) {
       // Quantize relative to `base` (the min bound, or epoch when unbounded
@@ -55,7 +61,7 @@ export function registerDateModule() {
       const base = options.min != null ? options.min : 0;
       const max = options.max != null ? Math.floor((options.max - base) / options.interval) : false;
 
-      for (const i in items) {
+      for (let i = 0; i < items.length; i++) {
         let item = items[i];
 
         if (typeof item === 'string') {

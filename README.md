@@ -17,7 +17,7 @@ A number has many representations. Decimal `9` is `1001` in binary. One decimal 
 
 The waste shows up when your data doesn't fit a power of two. Say a field is `male`, `female`, or `unknown`. Two binary digits give you four slots and you throw one away. A single base-3 digit gives you exactly three.
 
-Polynar mixes bases inside one number, a different base per piece of data, sized to that piece. A boolean rides in a base-2 slot, a three-way enum in a base-3 slot, a 0-to-99 integer in a base-100 slot. The whole message is packed as a single arbitrary-precision integer, so nothing is rounded up to a whole byte or character until the entire value is serialized — the output is always the information-theoretic minimum length for the schema. You give the constraints, Polynar does the arithmetic.
+Polynar mixes bases inside one number, a different base per piece of data, sized to that piece. A boolean rides in a base-2 slot, a three-way enum in a base-3 slot, a 0-to-99 integer in a base-100 slot. The message is packed as arbitrary-precision integers in ~2-kilobit blocks (capping the big-number arithmetic keeps encoding linear-time on large messages), and nothing is rounded up to a whole byte or character within a block. A message that fits one block — roughly 250 bytes of output — is always the information-theoretic minimum length for the schema; beyond that, each block boundary costs at most one output character. You give the constraints, Polynar does the arithmetic.
 
 ## Install
 
@@ -199,6 +199,8 @@ dec.read({ type: 'string', max: 20 }); // 'hello'
 
 Reads have to mirror writes: same order, same options. The buffer carries no field names or types of its own, which is exactly why it stays small.
 
+After the last read, `dec.finalize()` asserts the input is exactly the canonical encoding of everything read: it throws on tampered digits and on trailing padding, both of which would otherwise decode silently into plausible-looking values. The schema layer's `decode`/`decodeMany` call it for you.
+
 ### Strings vs bytes
 
 `toUint8Array()` gives you raw bytes, the most compact form, ideal for a database BLOB or a binary WebSocket frame. `toString(charset?)` gives you text in a charset of your choice when you need something URL-safe or printable.
@@ -221,7 +223,7 @@ Bytes survive JSON if you need them to: `Array.from(bytes)` to write, `new Uint8
 Every `write`/`read` call takes a `type` plus the options for that type.
 
 `number`
-- `min`, `max`: bounds, or `false` for unbounded. Default `0`.
+- `min`, `max`: bounds, or `false` for unbounded. Default `false`.
 - `step`: spacing between representable values. Default `1`.
 
 `string`
