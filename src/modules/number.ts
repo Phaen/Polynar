@@ -24,6 +24,38 @@ export function registerNumberModule() {
   const rangeSize = (options: any): number =>
     Math.round((options.max - options.min) / options.step) + 1;
 
+  // Smallest number of decimal places at which x is represented exactly, or
+  // null when there is none within double precision (e.g. 1/3, Math.PI).
+  const decimalPlaces = (x: number): number | null => {
+    let e = 1;
+    for (let p = 0; p <= 15; p++, e *= 10) {
+      if (Math.round(x * e) / e === x) {
+        return p;
+      }
+    }
+    return null;
+  };
+
+  // Decoded values sit on the grid `offset + idx * step`, but computing that
+  // directly in floats drifts (1314 * 0.01 - 10 → 3.1400000000000006). When
+  // step and offset are short decimals, work in decimal-scaled integers and
+  // divide back once, so grid values decode exactly.
+  const gridValue = (idx: number, step: number, offset: number): number => {
+    const stepPlaces = decimalPlaces(step);
+    const offsetPlaces = decimalPlaces(offset);
+
+    if (stepPlaces !== null && offsetPlaces !== null) {
+      const scale = Math.pow(10, Math.max(stepPlaces, offsetPlaces));
+      const scaled = idx * Math.round(step * scale) + Math.round(offset * scale);
+
+      if (Math.abs(scaled) <= Number.MAX_SAFE_INTEGER) {
+        return scaled / scale;
+      }
+    }
+
+    return idx * step + offset;
+  };
+
   registerModule(
     'number',
     function (options) {
@@ -119,15 +151,16 @@ export function registerNumberModule() {
       const items: number[] = [];
       if (options.max === false || options.min === false) {
         for (let i = 0; i < count; i++) {
-          let item = this.parseTerm();
-          item *= options.step;
+          const idx = this.parseTerm();
+          let item: number;
 
           if (options.max === false && options.min === false) {
+            item = gridValue(idx, options.step, 0);
             if (this.parse(2)) item *= -1;
           } else if (options.max === false) {
-            item += options.min;
+            item = gridValue(idx, options.step, options.min);
           } else {
-            item = options.max - item;
+            item = gridValue(-idx, options.step, options.max);
           }
 
           items.push(item);
@@ -135,7 +168,7 @@ export function registerNumberModule() {
       } else {
         const size = rangeSize(options);
         for (let i = 0; i < count; i++) {
-          items.push(this.parse(size) * options.step + options.min);
+          items.push(gridValue(this.parse(size), options.step, options.min));
         }
       }
       return items;

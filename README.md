@@ -17,7 +17,7 @@ A number has many representations. Decimal `9` is `1001` in binary. One decimal 
 
 The waste shows up when your data doesn't fit a power of two. Say a field is `male`, `female`, or `unknown`. Two binary digits give you four slots and you throw one away. A single base-3 digit gives you exactly three.
 
-Polynar mixes bases inside one number, a different base per piece of data, sized to that piece. A boolean rides in a base-2 slot, a three-way enum in a base-3 slot, a 0-to-99 integer in a base-100 slot. Nothing is rounded up to the next byte until the whole value is serialized. You give the constraints, Polynar does the arithmetic.
+Polynar mixes bases inside one number, a different base per piece of data, sized to that piece. A boolean rides in a base-2 slot, a three-way enum in a base-3 slot, a 0-to-99 integer in a base-100 slot. The whole message is packed as a single arbitrary-precision integer, so nothing is rounded up to a whole byte or character until the entire value is serialized — the output is always the information-theoretic minimum length for the schema. You give the constraints, Polynar does the arithmetic.
 
 ## Install
 

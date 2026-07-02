@@ -42,6 +42,14 @@ describe('Character sets', () => {
     const range: [number, number] = [65, 90];
     expect(new Decoder(encoder.toString(range), range).read(NUM)).toBe(123);
   });
+
+  it('accepts a reversed range charset without mutating the caller array', () => {
+    const encoder = new Encoder();
+    encoder.write(123, NUM);
+    const reversed: [number, number] = [90, 65];
+    expect(new Decoder(encoder.toString(reversed), reversed).read(NUM)).toBe(123);
+    expect(reversed).toEqual([90, 65]);
+  });
 });
 
 describe('Low-level primitives', () => {
@@ -61,6 +69,25 @@ describe('Low-level primitives', () => {
     const decoder = new Decoder(encoder.toString());
     expect(decoder.parseTerm()).toBe(0);
     expect(decoder.parseTerm()).toBe(12345);
+  });
+
+  it('rejects a compose integer outside its radix', () => {
+    const encoder = new Encoder();
+    expect(() => encoder.compose(10, 10)).toThrow(RangeError);
+    expect(() => encoder.compose(-1, 10)).toThrow(RangeError);
+    expect(() => encoder.compose(1.5, 10)).toThrow(RangeError);
+  });
+
+  it('rejects an invalid compose radix', () => {
+    const encoder = new Encoder();
+    expect(() => encoder.compose(0, 0)).toThrow(TypeError);
+    expect(() => encoder.compose(0, 2.5)).toThrow(TypeError);
+  });
+
+  it('rejects a negative or fractional composeTerm term', () => {
+    const encoder = new Encoder();
+    expect(() => encoder.composeTerm(-1)).toThrow(TypeError);
+    expect(() => encoder.composeTerm(1.5)).toThrow(TypeError);
   });
 });
 
@@ -153,6 +180,37 @@ describe('read count handling', () => {
   });
 });
 
+describe('output density', () => {
+  it('packs to the information-theoretic minimum length', () => {
+    // Four base-1001 slots span 1001^4 ≈ 1.004e12 states. That needs 5 bytes
+    // (256^5 ≈ 1.100e12) and 7 Base64 chars (64^7 ≈ 4.398e12; 6 are too few).
+    const encoder = new Encoder();
+    encoder.write([1000, 0, 999, 1], { ...NUM, max: 1000 });
+    expect(encoder.toUint8Array().length).toBe(5);
+    expect(encoder.toString().length).toBe(7);
+
+    const decoder = new Decoder(encoder.toUint8Array());
+    expect(decoder.read(NUM, 4)).toEqual([1000, 0, 999, 1]);
+  });
+
+  it('packs 40 booleans into exactly 40 bits', () => {
+    // No byte boundary rounds a partially-filled slot up on its own; only the
+    // whole message rounds, once, to 5 bytes.
+    const encoder = new Encoder();
+    encoder.write(
+      Array.from({ length: 40 }, (_, i) => i % 3 === 0),
+      { type: 'boolean' }
+    );
+    expect(encoder.toUint8Array().length).toBe(5);
+  });
+
+  it('produces empty output for an empty encoder', () => {
+    const encoder = new Encoder();
+    expect(encoder.toString()).toBe('');
+    expect(encoder.toUint8Array().length).toBe(0);
+  });
+});
+
 describe('error surface', () => {
   it('rejects an unknown encoding type on write', () => {
     expect(() => new Encoder().write(1, { type: 'nope' } as never)).toThrow(
@@ -190,5 +248,9 @@ describe('error surface', () => {
     const decoder = new Decoder(encoder.toString());
     decoder.read(NUM);
     expect(() => decoder.read(NUM)).toThrow('Unexpected end of input while parsing');
+  });
+
+  it('throws when reading from empty input', () => {
+    expect(() => new Decoder('').read(NUM)).toThrow('Unexpected end of input while parsing');
   });
 });

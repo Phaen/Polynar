@@ -110,6 +110,14 @@ describe('Binary output', () => {
       expect(() => new Decoder(bytes, [200, 100])).toThrow(RangeError);
     });
 
+    it('rejects a charset that is not a [min, max] range', () => {
+      const enc = new Encoder();
+      enc.write(42, { type: 'number', min: 0, max: 100 });
+      expect(() => enc.toUint8Array(16 as never)).toThrow(TypeError);
+      expect(() => new Decoder(enc.toUint8Array(), 16)).toThrow(TypeError);
+      expect(() => new Decoder(enc.toUint8Array(), 'abc')).toThrow(TypeError);
+    });
+
     it('throws when reading past the end of the byte buffer', () => {
       const enc = new Encoder();
       enc.write(42, { type: 'number', min: 0, max: 100 });

@@ -1,5 +1,5 @@
 /**
- * Polynar.js 3.0
+ * Polynar.js
  * Efficient data encoding library
  * (c) 2014-2026 Pablo Kebees
  * Polynar may be freely distributed under the MIT license.

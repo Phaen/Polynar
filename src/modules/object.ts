@@ -5,8 +5,7 @@
 import { registerModule } from './registry';
 import { UTF16_RANGE } from '../constants';
 import { isObject, isArray } from '../utils';
-import type { Encoder } from '../encoder';
-import type { Decoder } from '../decoder';
+import type { Encoder, Decoder } from '../types';
 
 export function registerObjectModule() {
   registerModule(
@@ -147,7 +146,10 @@ export function registerObjectModule() {
         } else if (isArray(options.base)) {
           base = options.base[i];
         } else if (typeof options.base === 'function') {
-          if (options.base.name === '') {
+          // Arrow functions (and other non-constructables) have no `prototype`:
+          // call them as factories. Everything else is `new`ed — classes throw
+          // when called without `new`.
+          if (options.base.prototype === undefined) {
             base = options.base();
           } else {
             base = new options.base();
@@ -159,7 +161,7 @@ export function registerObjectModule() {
           base = structuredClone(options.base);
         }
 
-        if (typeof base !== 'object') {
+        if (base == null || typeof base !== 'object') {
           throw new TypeError('Invalid object base');
         }
 

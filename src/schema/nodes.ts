@@ -224,7 +224,7 @@ export class PString extends PNode<string> {
   }
 
   protected _buildOptions(): EncodingOptions {
-    // Copy array charsets. validateCharset may reverse them in place.
+    // Copy array charsets so the memoized options never alias the node's array.
     const charset = isArray(this._charset) ? ([...this._charset] as Charset) : this._charset;
     return { type: 'string', max: this._max, charset };
   }

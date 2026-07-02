@@ -2,9 +2,7 @@
  * Module registry for Polynar encoding/decoding modules
  */
 
-import type { Modules } from '../types';
-import type { Encoder } from '../encoder';
-import type { Decoder } from '../decoder';
+import type { Modules, Encoder, Decoder } from '../types';
 
 /**
  * Modules registry

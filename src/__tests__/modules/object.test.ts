@@ -176,11 +176,18 @@ describe('Object module', () => {
       );
     });
 
-    it('calls an anonymous factory base', () => {
-      const factory = [() => ({ tag: 'f' })][0]; // array element → name '' → factory path
+    it('calls a factory function base', () => {
+      const factory = () => ({ tag: 'f' });
       const str = encodeToString({ n: 9 }, opts);
       const decoded = new Decoder(str).read({ ...opts, base: factory });
       expect(decoded).toEqual({ tag: 'f', n: 9 });
+    });
+
+    it('rejects a factory base that returns a non-object', () => {
+      const str = encodeToString({ n: 9 }, opts);
+      expect(() => new Decoder(str).read({ ...opts, base: () => null as never })).toThrow(
+        'Invalid object base'
+      );
     });
 
     it('instantiates a named constructor base', () => {

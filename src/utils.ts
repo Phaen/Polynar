@@ -76,16 +76,17 @@ export function validateCharset(charset?: Charset): Charset {
       throw new TypeError(errBin);
     }
 
-    // Swap bounds if wrong order
-    if (charset[0] > charset[1]) {
-      charset.reverse();
+    // Normalize into a fresh array so the caller's is never mutated.
+    let [min, max] = charset;
+    if (min > max) {
+      [min, max] = [max, min];
     }
 
-    if (charset[1] - charset[0] < 2) {
-      throw new Error(errChar);
+    if (max - min < 2) {
+      throw new Error(errBin);
     }
 
-    return charset;
+    return [min, max];
   } else {
     throw new TypeError(errChar);
   }

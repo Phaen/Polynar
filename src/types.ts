@@ -156,9 +156,6 @@ export interface Decoder {
   str: string;
   charset: Charset;
   size: number;
-  current?: number;
-  radii?: number;
-  pointer?: number;
   parse(radix: number): number;
   parseTerm(): number;
   read(options: EncodingOptions, count?: number): any;

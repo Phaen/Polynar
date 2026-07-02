@@ -61,8 +61,18 @@ describe('Number module', () => {
     it('round-trips step-aligned values despite floating-point division error', () => {
       // 0.3 / 0.1 === 2.9999999999999996; the bucket must snap to 3, not reject.
       const opts: NumberOptions = { type: 'number', min: 0, max: 10, step: 0.1 };
-      expect(roundTrip(0.3, opts)).toBeCloseTo(0.3, 10);
-      expect(roundTrip(0.7, opts)).toBeCloseTo(0.7, 10);
+      expect(roundTrip(0.3, opts)).toBe(0.3);
+      expect(roundTrip(0.7, opts)).toBe(0.7);
+    });
+
+    it('decodes bit-exact values on decimal grids, whatever the range shape', () => {
+      // Decoding computes offset + idx * step in decimal-scaled integers, so
+      // grid values survive unchanged rather than picking up float noise.
+      expect(roundTrip(3.14, { type: 'number', min: -10, max: 10, step: 0.01 })).toBe(3.14);
+      expect(roundTrip(9.99, { type: 'number', min: -10, max: 10, step: 0.01 })).toBe(9.99);
+      expect(roundTrip(3.14, { type: 'number', min: -10, max: false, step: 0.01 })).toBe(3.14);
+      expect(roundTrip(3.14, { type: 'number', min: false, max: 10, step: 0.01 })).toBe(3.14);
+      expect(roundTrip(-3.14, { type: 'number', min: false, max: false, step: 0.01 })).toBe(-3.14);
     });
 
     it('round-trips integer steps > 1', () => {
