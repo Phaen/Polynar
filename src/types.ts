@@ -140,7 +140,6 @@ export interface Modules {
  * Encoder class interface
  */
 export interface Encoder {
-  strict: boolean;
   radii: number[];
   integers: number[];
   write(items: any | any[], options: EncodingOptions): void;
@@ -154,7 +153,6 @@ export interface Encoder {
  * Decoder class interface
  */
 export interface Decoder {
-  strict: boolean;
   str: string;
   charset: Charset;
   size: number;
@@ -165,4 +163,3 @@ export interface Decoder {
   parseTerm(): number;
   read(options: EncodingOptions, count?: number): any;
 }
-

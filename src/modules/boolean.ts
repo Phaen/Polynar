@@ -10,14 +10,10 @@ export function registerBooleanModule() {
     false,
     function (items) {
       for (const i in items) {
-        let item = items[i];
+        const item = items[i];
 
         if (typeof item !== 'boolean') {
-          if (this.strict) {
-            throw new TypeError(`Item '${item}' not boolean`);
-          } else {
-            item = Boolean(item);
-          }
+          throw new TypeError(`Item '${item}' not boolean`);
         }
 
         this.compose(+item, 2);

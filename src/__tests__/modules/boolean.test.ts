@@ -1,29 +1,34 @@
 /**
- * Tests for boolean encoding module
+ * Boolean module — full feature coverage.
+ *
+ * Booleans have no options; coverage is single/multiple values plus rejection
+ * of non-booleans.
  */
 
 import { Encoder, Decoder } from '../../polynar';
+import type { BooleanOptions } from '../../types';
 
-describe('Boolean Module', () => {
-  it('should encode and decode a boolean', () => {
-    const encoder = new Encoder();
-    encoder.write(true, { type: 'boolean' });
-    const encoded = encoder.toString();
+const OPTS: BooleanOptions = { type: 'boolean' };
 
-    const decoder = new Decoder(encoded);
-    const decoded = decoder.read({ type: 'boolean' });
+const roundTrip = (value: boolean | boolean[]) => {
+  const encoder = new Encoder();
+  encoder.write(value, OPTS);
+  const decoder = new Decoder(encoder.toString());
+  return decoder.read(OPTS, Array.isArray(value) ? value.length : 1);
+};
 
-    expect(decoded).toBe(true);
+describe('Boolean module', () => {
+  it('round-trips true and false', () => {
+    expect(roundTrip(true)).toBe(true);
+    expect(roundTrip(false)).toBe(false);
   });
 
-  it('should encode and decode multiple booleans', () => {
+  it('round-trips a sequence of booleans', () => {
+    expect(roundTrip([true, false, true, true, false])).toEqual([true, false, true, true, false]);
+  });
+
+  it('throws on non-booleans', () => {
     const encoder = new Encoder();
-    encoder.write([true, false, true], { type: 'boolean' });
-    const encoded = encoder.toString();
-
-    const decoder = new Decoder(encoded);
-    const decoded = decoder.read({ type: 'boolean' }, 3);
-
-    expect(decoded).toEqual([true, false, true]);
+    expect(() => encoder.write(1 as unknown as boolean, OPTS)).toThrow(TypeError);
   });
 });

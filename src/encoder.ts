@@ -3,7 +3,7 @@
  */
 
 import type { Charset, EncodingOptions, Encoder as IEncoder } from './types';
-import { DEFAULT_STRICT, DEFAULT_BASE } from './constants';
+import { DEFAULT_BASE } from './constants';
 import { validateOptions, validateCharset, isArray } from './utils';
 import { modules } from './modules/registry';
 
@@ -11,12 +11,10 @@ import { modules } from './modules/registry';
  * Encoder class
  */
 export class Encoder implements IEncoder {
-  strict: boolean;
   radii: number[];
   integers: number[];
 
-  constructor(strict?: boolean) {
-    this.strict = strict == null ? DEFAULT_STRICT : Boolean(strict);
+  constructor() {
     this.radii = [];
     this.integers = [];
   }
@@ -29,9 +27,10 @@ export class Encoder implements IEncoder {
     }
 
     if (typeof validatedOptions.preProc === 'function') {
-      for (const i in items) {
-        items[i] = validatedOptions.preProc(items[i]);
-      }
+      // Map into a fresh array so a caller-supplied `items` array is never
+      // mutated in place by the hook.
+      const preProc = validatedOptions.preProc;
+      items = items.map((item: any) => preProc(item));
     }
 
     if (validatedOptions.limit) {

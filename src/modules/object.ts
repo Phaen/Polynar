@@ -3,6 +3,7 @@
  */
 
 import { registerModule } from './registry';
+import { UTF16_RANGE } from '../constants';
 import { isObject, isArray } from '../utils';
 import type { Encoder } from '../encoder';
 import type { Decoder } from '../decoder';
@@ -47,10 +48,17 @@ export function registerObjectModule() {
           const key = keys[k];
 
           if (tpl === false) {
-            this.write(key, { type: 'string' });
-            this.write(obj[key], { type: 'any' });
+            // Keys can hold any character, and a value may itself be an array.
+            // Wrap it so `write` encodes it as ONE `any` value instead of
+            // spreading it into several.
+            this.write(key, { type: 'string', charset: UTF16_RANGE });
+            this.write([obj[key]], { type: 'any' });
           } else {
-            const optional = tpl[key].optional == null ? options.optional : tpl[key].optional;
+            // A field is optional only when its own template entry says so. The
+            // parent object's `optional` (its presence bit in ITS parent) must not
+            // bleed down as a default, or it would silently make every sub-field
+            // of an optional nested object optional too.
+            const optional = tpl[key].optional === true;
 
             if (obj[key] == null) {
               if (optional) {
@@ -66,7 +74,11 @@ export function registerObjectModule() {
             }
 
             if (typeof tpl[key].type === 'string') {
-              this.write(obj[key], tpl[key]);
+              // Wrap in a single-element array so `write` encodes the value as
+              // ONE item even when it is itself an array (e.g. an `any` field
+              // holding an array). Otherwise the array is spread into several
+              // writes that decode (which reads one value) cannot recover.
+              this.write([obj[key]], tpl[key]);
             } else if (isObject(tpl[key])) {
               workTpl.call(this, obj[key], tpl[key]);
             } else {
@@ -91,7 +103,9 @@ export function registerObjectModule() {
         if (tpl === false) {
           const keys = this.parseTerm();
           for (let key = 0; key < keys; key++) {
-            obj[this.read({ type: 'string' }) as string] = this.read({ type: 'any' });
+            obj[this.read({ type: 'string', charset: UTF16_RANGE }) as string] = this.read({
+              type: 'any',
+            });
           }
         } else {
           const keys = Object.keys(tpl);
@@ -103,7 +117,9 @@ export function registerObjectModule() {
           for (const k in keys) {
             const key = keys[k];
 
-            const optional = tpl[key].optional == null ? options.optional : tpl[key].optional;
+            // Mirror the encoder: optionality comes only from the field's own
+            // template entry, never inherited from the parent object.
+            const optional = tpl[key].optional === true;
 
             if (optional && this.parse(2) === 0) {
               continue;
@@ -137,7 +153,10 @@ export function registerObjectModule() {
             base = new options.base();
           }
         } else {
-          base = options.base;
+          // A plain-object base is a template of default values. Deep-clone it
+          // per item so neither decoded records nor their nested sub-objects
+          // alias (and mutate in place) one shared instance across the batch.
+          base = structuredClone(options.base);
         }
 
         if (typeof base !== 'object') {

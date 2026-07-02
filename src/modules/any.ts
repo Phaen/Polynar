@@ -3,7 +3,20 @@
  */
 
 import { registerModule } from './registry';
-import { isDate } from '../utils';
+import { UTF16_RANGE } from '../constants';
+import { isArray, isDate } from '../utils';
+
+// Type tags. `null` and `array` are distinct from `undefined`/`object` so they
+// round-trip faithfully. There are 8 tags, so each is packed against radix 8.
+const TAG_COUNT = 8;
+const TAG_UNDEFINED = 0;
+const TAG_NUMBER = 1;
+const TAG_STRING = 2;
+const TAG_BOOLEAN = 3;
+const TAG_DATE = 4;
+const TAG_OBJECT = 5;
+const TAG_NULL = 6;
+const TAG_ARRAY = 7;
 
 export function registerAnyModule() {
   registerModule(
@@ -13,32 +26,51 @@ export function registerAnyModule() {
       for (const i in items) {
         const item = items[i];
 
+        // `null` and arrays both report `typeof 'object'`, so handle them before
+        // the switch. Otherwise null would hit Object.keys(null) and an array
+        // would be silently spread by `write` into several separate values.
+        if (item === null) {
+          this.compose(TAG_NULL, TAG_COUNT);
+          continue;
+        }
+
+        if (isArray(item)) {
+          this.compose(TAG_ARRAY, TAG_COUNT);
+          this.composeTerm(item.length);
+          for (let j = 0; j < item.length; j++) {
+            // Wrap each element so `write` treats it as ONE value even when it is
+            // itself an array (otherwise nested arrays would be spread).
+            this.write([item[j]], { type: 'any' });
+          }
+          continue;
+        }
+
         switch (typeof item) {
           case 'undefined':
-            this.compose(0, 6);
+            this.compose(TAG_UNDEFINED, TAG_COUNT);
             break;
 
           case 'number':
-            this.compose(1, 6);
+            this.compose(TAG_NUMBER, TAG_COUNT);
             this.write(item, { type: 'fraction' });
             break;
 
           case 'string':
-            this.compose(2, 6);
-            this.write(item, { type: 'string' });
+            this.compose(TAG_STRING, TAG_COUNT);
+            this.write(item, { type: 'string', charset: UTF16_RANGE });
             break;
 
           case 'boolean':
-            this.compose(3, 6);
+            this.compose(TAG_BOOLEAN, TAG_COUNT);
             this.write(item, { type: 'boolean' });
             break;
 
           case 'object':
             if (isDate(item)) {
-              this.compose(4, 6);
+              this.compose(TAG_DATE, TAG_COUNT);
               this.write(item, { type: 'date' });
             } else {
-              this.compose(5, 6);
+              this.compose(TAG_OBJECT, TAG_COUNT);
               this.write(item, { type: 'object' });
             }
             break;
@@ -51,25 +83,37 @@ export function registerAnyModule() {
     function (_options, count) {
       const items: any[] = [];
       for (let i = 0; i < count; i++) {
-        switch (this.parse(6)) {
-          case 0:
+        switch (this.parse(TAG_COUNT)) {
+          case TAG_UNDEFINED:
             items.push(undefined);
             break;
-          case 1:
+          case TAG_NUMBER:
             items.push(this.read({ type: 'fraction' }));
             break;
-          case 2:
-            items.push(this.read({ type: 'string' }));
+          case TAG_STRING:
+            items.push(this.read({ type: 'string', charset: UTF16_RANGE }));
             break;
-          case 3:
+          case TAG_BOOLEAN:
             items.push(this.read({ type: 'boolean' }));
             break;
-          case 4:
+          case TAG_DATE:
             items.push(this.read({ type: 'date' }));
             break;
-          case 5:
+          case TAG_OBJECT:
             items.push(this.read({ type: 'object' }));
             break;
+          case TAG_NULL:
+            items.push(null);
+            break;
+          case TAG_ARRAY: {
+            const len = this.parseTerm();
+            const arr: any[] = [];
+            for (let j = 0; j < len; j++) {
+              arr.push(this.read({ type: 'any' }));
+            }
+            items.push(arr);
+            break;
+          }
         }
       }
       return items;

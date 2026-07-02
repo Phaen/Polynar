@@ -3,7 +3,7 @@
  */
 
 import type { Charset, EncodingOptions, Decoder as IDecoder } from './types';
-import { DEFAULT_STRICT, DEFAULT_BASE } from './constants';
+import { DEFAULT_BASE } from './constants';
 import { validateOptions, validateCharset } from './utils';
 import { modules } from './modules/registry';
 
@@ -11,7 +11,6 @@ import { modules } from './modules/registry';
  * Decoder class
  */
 export class Decoder implements IDecoder {
-  strict: boolean;
   str: string;
   charset: Charset;
   size: number;
@@ -20,12 +19,10 @@ export class Decoder implements IDecoder {
   pointer?: number;
   private bytes?: Uint8Array;
 
-  constructor(str: string | Uint8Array, charset?: Charset, strict?: boolean) {
+  constructor(str: string | Uint8Array, charset?: Charset) {
     if (str == null) {
       throw new Error('Missing first argument');
     }
-
-    this.strict = strict == null ? DEFAULT_STRICT : Boolean(strict);
 
     if (str instanceof Uint8Array) {
       // Binary mode - use Uint8Array directly
@@ -49,7 +46,8 @@ export class Decoder implements IDecoder {
       if (typeof this.charset === 'string') {
         this.size = this.charset.length;
       } else {
-        this.size = (this.charset as [number, number])[1] - (this.charset as [number, number])[0] + 1;
+        this.size =
+          (this.charset as [number, number])[1] - (this.charset as [number, number])[0] + 1;
       }
     }
   }
@@ -90,7 +88,7 @@ export class Decoder implements IDecoder {
         } else {
           this.current = this.str.charCodeAt(this.pointer!) - (this.charset as [number, number])[0];
 
-          if (this.current > this.size) {
+          if (this.current >= this.size) {
             throw new Error('Byte at ' + this.pointer + ' does not fit binary range');
           }
         }
@@ -126,17 +124,16 @@ export class Decoder implements IDecoder {
 
   read(options: EncodingOptions, count: number = 1): any {
     if (typeof count !== 'number' || count % 1 !== 0 || count < 0) {
-      if (this.strict) {
-        throw new TypeError('Count must be positive integer');
-      } else {
-        count = Math.max(0, Math.floor(Number(count)));
-      }
+      throw new TypeError('Count must be a non-negative integer');
     }
 
     const validatedOptions = validateOptions(options);
 
-    if (validatedOptions.limit) {
-      count = this.parse(validatedOptions.limit + 1);
+    // A `limit` read recovers a length-prefixed array, so it must always return
+    // an array. Never unwrap it, even when the decoded length happens to be 1.
+    const limited = !!validatedOptions.limit;
+    if (limited) {
+      count = this.parse((validatedOptions.limit as number) + 1);
     }
 
     let items = modules[validatedOptions.type].decoder.call(this, validatedOptions, count);
@@ -147,7 +144,7 @@ export class Decoder implements IDecoder {
       }
     }
 
-    if (count === 1) {
+    if (count === 1 && !limited) {
       items = items.pop();
     }
 

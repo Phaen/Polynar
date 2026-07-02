@@ -25,6 +25,13 @@ export function registerDateModule() {
         }
       }
 
+      // The interval is a divisor (ms per bucket). 0/negative/non-integer values
+      // have no coherent meaning and an interval of 0 would divide by zero into
+      // an infinite encode loop.
+      if (!(options.interval > 0) || (options.interval as number) % 1 !== 0) {
+        throw new TypeError('Invalid date interval');
+      }
+
       if (isDate(options.min)) {
         options.min = options.min.getTime();
       }
@@ -41,6 +48,13 @@ export function registerDateModule() {
       }
     },
     function (items, options) {
+      // Quantize relative to `base` (the min bound, or epoch when unbounded
+      // below). Anchoring at min (rather than at epoch and flooring the bound)
+      // guarantees every in-range date is representable AND that no decoded date
+      // falls below the declared minimum (decoded = base + bucket * interval).
+      const base = options.min != null ? options.min : 0;
+      const max = options.max != null ? Math.floor((options.max - base) / options.interval) : false;
+
       for (const i in items) {
         let item = items[i];
 
@@ -49,32 +63,39 @@ export function registerDateModule() {
         }
 
         if (!isDate(item) || isNaN(item.getTime())) {
-          if (this.strict) {
-            throw new TypeError(`Item '${item}' not a valid date`);
-          } else {
-            item = new Date(item);
-          }
+          throw new TypeError(`Item '${item}' not a valid date`);
         }
 
         const timestamp = item.getTime();
-        this.write(Math.floor(timestamp / options.interval), {
+
+        if (options.min != null && timestamp < options.min) {
+          throw new RangeError(`Date '${item.toISOString()}' is before the minimum bound`);
+        }
+        if (options.max != null && timestamp > options.max) {
+          throw new RangeError(`Date '${item.toISOString()}' is after the maximum bound`);
+        }
+
+        this.write(Math.floor((timestamp - base) / options.interval), {
           type: 'number',
-          min: options.min || false,
-          max: options.max || false,
+          min: options.min != null ? 0 : false,
+          max,
           step: 1,
         });
       }
     },
     function (options, count) {
+      const base = options.min != null ? options.min : 0;
+      const max = options.max != null ? Math.floor((options.max - base) / options.interval) : false;
+
       const items: Date[] = [];
       for (let i = 0; i < count; i++) {
-        const timestamp = this.read({
+        const bucket = this.read({
           type: 'number',
-          min: options.min || false,
-          max: options.max || false,
+          min: options.min != null ? 0 : false,
+          max,
           step: 1,
         }) as number;
-        items.push(new Date(timestamp * options.interval));
+        items.push(new Date(base + bucket * options.interval));
       }
       return items;
     }

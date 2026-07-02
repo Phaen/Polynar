@@ -1,121 +1,72 @@
 /**
- * Example: Creating and registering a custom encoding module
- *
- * This example shows how to create your own custom encoding type
- * using the same registerModule API that Polynar uses internally.
+ * Custom encoding type: register a new `type` with the same API the built-ins
+ * use. The encoder pushes values with compose/composeTerm, the decoder pulls
+ * them back in the same order with parse/parseTerm.
+ * Run with: npx tsx examples/custom-module.ts
  */
+import { Encoder, Decoder, registerModule } from 'polynar';
 
-import { Encoder, Decoder, registerModule } from '../src';
-
-// Example: Create a custom "color" module that encodes RGB colors efficiently
+// A "color" type that packs RGB, plus an optional alpha channel, into byte slots.
 registerModule(
-  'color', // Type name
+  'color',
 
-  // Validator function (optional - use false if no validation needed)
+  // Validator, or `false` for none. Bad input always throws. There is no lenient mode.
   function (options) {
-    // Validate encoding options if needed
-    if (options.alpha && typeof options.alpha !== 'boolean') {
-      throw new TypeError('alpha option must be boolean');
+    if (options.alpha != null && typeof options.alpha !== 'boolean') {
+      throw new TypeError('color: alpha option must be a boolean');
     }
   },
 
-  // Encoder function
+  // Encoder
   function (items, options) {
     for (const i in items) {
-      const color = items[i];
-
-      // Validate the color object
-      if (typeof color !== 'object' || !color.r || !color.g || !color.b) {
-        if (this.strict) {
-          throw new TypeError('Item must be a color object with r, g, b properties');
-        }
-        continue;
+      const c = items[i];
+      if (typeof c !== 'object' || c == null) {
+        throw new TypeError('color: each item must be an { r, g, b } object');
       }
-
-      // Encode RGB values (0-255)
-      this.compose(color.r, 256);
-      this.compose(color.g, 256);
-      this.compose(color.b, 256);
-
-      // Optionally encode alpha channel
-      if (options.alpha && color.a !== undefined) {
-        this.compose(Math.floor(color.a * 255), 256);
+      this.compose(c.r, 256);
+      this.compose(c.g, 256);
+      this.compose(c.b, 256);
+      if (options.alpha) {
+        this.compose(Math.round(c.a * 255), 256);
       }
     }
   },
 
-  // Decoder function
+  // Decoder
   function (options, count) {
     const items: any[] = [];
-
     for (let i = 0; i < count; i++) {
-      const color: any = {
-        r: this.parse(256),
-        g: this.parse(256),
-        b: this.parse(256),
-      };
-
-      // Optionally decode alpha channel
+      const c: any = { r: this.parse(256), g: this.parse(256), b: this.parse(256) };
       if (options.alpha) {
-        color.a = this.parse(256) / 255;
+        c.a = this.parse(256) / 255;
       }
-
-      items.push(color);
+      items.push(c);
     }
-
     return items;
   }
 );
 
-// Now use the custom module!
-console.log('=== Custom Color Module Example ===\n');
-
-// Encode some colors
-const encoder = new Encoder();
 const colors = [
-  { r: 255, g: 0, b: 0 },      // Red
-  { r: 0, g: 255, b: 0 },      // Green
-  { r: 0, g: 0, b: 255 },      // Blue
+  { r: 255, g: 0, b: 0 },
+  { r: 0, g: 255, b: 0 },
+  { r: 0, g: 0, b: 255 },
 ];
 
-encoder.write(colors, { type: 'color' });
-const encoded = encoder.toString();
+const enc = new Encoder();
+enc.write(colors, { type: 'color' } as any);
+const encoded = enc.toString();
+console.log('packed', colors.length, 'colors into', encoded.length, 'characters');
+console.log('decoded:', new Decoder(encoded).read({ type: 'color' } as any, 3));
 
-console.log('Original colors:', colors);
-console.log('Encoded:', encoded);
-console.log('Encoded length:', encoded.length, 'characters');
-
-// Decode the colors
-const decoder = new Decoder(encoded);
-const decoded = decoder.read({ type: 'color' }, 3);
-
-console.log('Decoded colors:', decoded);
-console.log();
-
-// Example with alpha channel
-console.log('=== With Alpha Channel ===\n');
-
-const encoder2 = new Encoder();
-const colorsWithAlpha = [
-  { r: 255, g: 0, b: 0, a: 1.0 },    // Solid red
-  { r: 0, g: 255, b: 0, a: 0.5 },    // Semi-transparent green
-  { r: 0, g: 0, b: 255, a: 0.25 },   // Mostly transparent blue
+// Options flow through to the module, so the same type can carry alpha.
+const enc2 = new Encoder();
+const translucent = [
+  { r: 255, g: 0, b: 0, a: 1 },
+  { r: 0, g: 255, b: 0, a: 0.5 },
 ];
-
-encoder2.write(colorsWithAlpha, { type: 'color', alpha: true });
-const encoded2 = encoder2.toString();
-
-console.log('Colors with alpha:', colorsWithAlpha);
-console.log('Encoded:', encoded2);
-
-const decoder2 = new Decoder(encoded2);
-const decoded2 = decoder2.read({ type: 'color', alpha: true }, 3);
-
-console.log('Decoded:', decoded2);
-console.log();
-
-console.log('✓ Custom module works perfectly!');
-console.log('  You can create modules for any data type you need:');
-console.log('  - Custom binary formats');
-console.log('  - Domain-specific types (coordinates, vectors, etc.)');
-console.log('  - Optimized encodings for your use case');
+enc2.write(translucent, { type: 'color', alpha: true } as any);
+console.log(
+  'with alpha:',
+  new Decoder(enc2.toString()).read({ type: 'color', alpha: true } as any, 2)
+);

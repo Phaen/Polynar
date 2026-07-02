@@ -10,7 +10,10 @@ export function registerFractionModule() {
     function (options) {
       if (options.precision == null) {
         options.precision = 1.0e-15;
-      } else if (typeof options.precision !== 'number' || options.precision < 0) {
+      } else if (typeof options.precision !== 'number' || !(options.precision > 0)) {
+        // Precision is the approximation tolerance. 0/negative/NaN have no
+        // meaning and precision 0 would never let the continued-fraction loop
+        // converge for an irrational value (an infinite-loop hang).
         throw new TypeError('Invalid fraction precision');
       }
     },
@@ -18,12 +21,10 @@ export function registerFractionModule() {
       for (const i in items) {
         let item = items[i];
 
-        if (typeof item !== 'number') {
-          if (this.strict) {
-            throw new TypeError(`Item '${item}' not a number`);
-          } else {
-            item = Number(item) || 0;
-          }
+        if (typeof item !== 'number' || !Number.isFinite(item)) {
+          // NaN/Infinity are `typeof 'number'` but would spin the continued-
+          // fraction / composeTerm loops forever, so reject them explicitly.
+          throw new TypeError(`Item '${item}' not a finite number`);
         }
 
         let a = Math.floor(item);

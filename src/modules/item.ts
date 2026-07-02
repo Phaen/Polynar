@@ -19,14 +19,10 @@ export function registerItemModule() {
     },
     function (items, options) {
       for (const i in items) {
-        let pos = options.list.indexOf(items[i]);
+        const pos = options.list.indexOf(items[i]);
 
         if (pos === -1) {
-          if (this.strict) {
-            throw new Error(`Item '${items[i]}' not found in list`);
-          } else {
-            pos = 0;
-          }
+          throw new Error(`Item '${items[i]}' not found in list`);
         }
 
         this.compose(pos, options.list.length);

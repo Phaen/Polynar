@@ -34,25 +34,17 @@ export function registerStringModule() {
       }
 
       for (const i in items) {
-        let item = items[i];
+        const item = items[i];
 
         if (typeof item !== 'string') {
-          if (this.strict) {
-            throw new TypeError(`Item '${item}' not string`);
-          } else {
-            item = String(item);
-          }
+          throw new TypeError(`Item '${item}' not string`);
         }
 
         if (options.max === false) {
           this.composeTerm(item.length);
         } else {
           if (item.length > options.max) {
-            if (this.strict) {
-              throw new RangeError(`Item '${item}' exceeds max length`);
-            } else {
-              item = item.substr(0, options.max);
-            }
+            throw new RangeError(`Item '${item}' exceeds max length`);
           }
           this.compose(item.length, options.max + 1);
         }
