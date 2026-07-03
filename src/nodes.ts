@@ -370,16 +370,21 @@ export class PDecimal extends PNode<number> {
 
 // Scratch views for splitting a double into its IEEE-754 fields and back.
 // Both views share one buffer, so platform endianness cancels out; the wire
-// carries the three fields as plain integers, never raw bytes.
+// carries the fields as plain integers, never raw bytes.
 const FLOAT_SCRATCH = new Float64Array(1);
 const FLOAT_BITS = new BigUint64Array(FLOAT_SCRATCH.buffer);
 const MANTISSA_BITS = 52n;
 const MANTISSA_RADIX = 2 ** 52;
 // Finite doubles use exponents 0..2046; 2047 encodes NaN/Infinity, which this
-// codec rejects, so the radix structurally cannot represent them.
-const EXPONENT_RADIX = 2047;
+// codec rejects. The exponent rides the term encoding as the zigzag of its
+// distance from the bias (0, -1, +1, -2 -> 0, 1, 2, 3): real-world magnitudes
+// cluster near 1, so the common exponents spend ~2-8 bits where a flat radix
+// would spend 11. Zigzag over sign-plus-magnitude because it is a bijection,
+// leaving no signed-zero wire state to reject.
+const EXPONENT_BIAS = 1023;
+const EXPONENT_ZIGZAG_MAX = 2046;
 
-/** IEEE-754 double, bit-exact. `p.float`. */
+/** IEEE-754 double, bit-exact. Magnitudes near 1 pack denser. `p.float`. */
 export class PFloat extends PNode<number> {
   _write(enc: Encoder, value: number): void {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -388,16 +393,28 @@ export class PFloat extends PNode<number> {
 
     FLOAT_SCRATCH[0] = value;
     const bits = FLOAT_BITS[0];
+    const exponent = Number((bits >> MANTISSA_BITS) & 0x7ffn);
     enc.compose(Number(bits >> 63n), 2);
-    enc.compose(Number((bits >> MANTISSA_BITS) & 0x7ffn), EXPONENT_RADIX);
+    enc.composeTerm(
+      exponent >= EXPONENT_BIAS
+        ? (exponent - EXPONENT_BIAS) * 2
+        : (EXPONENT_BIAS - exponent) * 2 - 1
+    );
     enc.compose(Number(bits & 0xfffffffffffffn), MANTISSA_RADIX);
   }
 
   _read(dec: Decoder): number {
     const sign = BigInt(dec.parse(2));
-    const exponent = BigInt(dec.parse(EXPONENT_RADIX));
+    const zigzag = dec.parseTerm();
+    // A term is open-ended where a radix is not: anything past the top finite
+    // exponent is a wire state the encoder cannot emit.
+    if (zigzag > EXPONENT_ZIGZAG_MAX) {
+      throw new CorruptInputError('Float exponent is outside the finite range');
+    }
+    const exponent =
+      zigzag % 2 === 0 ? EXPONENT_BIAS + zigzag / 2 : EXPONENT_BIAS - (zigzag + 1) / 2;
     const mantissa = BigInt(dec.parse(MANTISSA_RADIX));
-    FLOAT_BITS[0] = (sign << 63n) | (exponent << MANTISSA_BITS) | mantissa;
+    FLOAT_BITS[0] = (sign << 63n) | (BigInt(exponent) << MANTISSA_BITS) | mantissa;
     return FLOAT_SCRATCH[0];
   }
 }

@@ -63,7 +63,7 @@ p.int()                         // any integer, signed
 p.int().min(0).max(100)         // bounds pack denser; fractional bounds round inward
 p.decimal(0.01)                 // exact multiples of a step; off-grid values throw
 p.decimal(0.01).min(0).max(100) // a price in cents: 2 bytes
-p.float()                       // any finite double, bit-exact, flat 64 bits
+p.float()                       // any finite double, bit-exact; magnitudes near 1 pack denser
 ```
 
 `p.int` for whole numbers, `p.decimal` for a known step, `p.float` for arbitrary doubles. All bit-exact; NaN and Infinity throw everywhere, and so does anything exactness can't survive: bounded ranges wider than 2^53, or a value farther than that from a lone bound.

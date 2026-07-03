@@ -63,7 +63,7 @@ describe('Schema scalars', () => {
   });
 
   it('decimal spends only what the step and bounds allow', () => {
-    // 0..100 in cents is 10001 states — 2 bytes, where p.float is a flat 8.
+    // 0..100 in cents is 10001 states — 2 bytes, where p.float spends 8.
     expect(p.decimal(0.01).min(0).max(100).encode(3.14)).toHaveLength(2);
     expect(p.float().encode(3.14)).toHaveLength(8);
   });
@@ -104,6 +104,14 @@ describe('Schema scalars', () => {
     expect(trip(p.float(), Number.MAX_VALUE)).toBe(Number.MAX_VALUE);
     expect(trip(p.float(), Number.MIN_VALUE)).toBe(Number.MIN_VALUE); // subnormal
     expect(Object.is(trip(p.float(), -0), -0)).toBe(true); // sign bit survives
+  });
+
+  it('float spends less on magnitudes near 1', () => {
+    // The exponent travels as a zigzag term counting away from the bias, so
+    // its cost scales with the distance from magnitude 1: everyday values
+    // undercut the flat 8 bytes and only the far reaches exceed them.
+    expect(p.float().encode(1.5)).toHaveLength(7);
+    expect(p.float().encode(1e-300)).toHaveLength(9);
   });
 
   it('string round-trips real-world unicode and bounded lengths', () => {
@@ -535,6 +543,15 @@ describe('Schema corruption rejection', () => {
     enc.compose(0, 2);
     enc.composeTerm(2 ** 60);
     expect(() => p.decimal(0.01).decode(enc.toUint8Array())).toThrow(CorruptInputError);
+  });
+
+  it('rejects a float exponent past the finite range', () => {
+    // The exponent zigzag tops out at the last finite exponent; the next term
+    // value would be Infinity's slot, which the encoder never emits.
+    const enc = new Encoder();
+    enc.compose(0, 2);
+    enc.composeTerm(2047);
+    expect(() => p.float().decode(enc.toUint8Array())).toThrow(CorruptInputError);
   });
 });
 
