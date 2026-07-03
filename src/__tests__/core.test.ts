@@ -5,6 +5,9 @@
  */
 
 import { Encoder, Decoder, CharSets } from '../polynar';
+import * as root from '../index';
+import * as schema from '../schema';
+import * as mods from '../modules';
 import { blockCapacity } from '../utils';
 import type { NumberOptions } from '../types';
 
@@ -437,5 +440,29 @@ describe('corruption detection', () => {
     const decoder = new Decoder(encoder.toString());
     decoder.read(NUM);
     expect(() => decoder.finalize()).toThrow('Unread or corrupted data at end of input');
+  });
+});
+
+describe('Public entrypoints', () => {
+  // Loading the barrels executes their re-export bindings; asserting identity
+  // guards the public surface actually points at the real implementations
+  // rather than a stale or stubbed re-export. Behaviour is covered elsewhere.
+  it('re-export the same Encoder/Decoder as the internal modules', () => {
+    expect(root.Encoder).toBe(Encoder);
+    expect(root.Decoder).toBe(Decoder);
+    expect(root.p).toBe(schema.p);
+    expect(root.registerModule).toBe(mods.registerModule);
+  });
+
+  it('expose a non-empty, fully-defined surface on every barrel', () => {
+    // Access every export so each lazy re-export getter runs; a barrel that
+    // points at an undefined/removed symbol fails here.
+    for (const ns of [root, schema, mods]) {
+      const keys = Object.keys(ns);
+      expect(keys.length).toBeGreaterThan(0);
+      for (const key of keys) {
+        expect((ns as Record<string, unknown>)[key]).toBeDefined();
+      }
+    }
   });
 });
