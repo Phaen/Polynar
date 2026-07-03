@@ -1,13 +1,14 @@
 /**
- * Binary output: schema encode/decode speak Uint8Array directly, and the
- * lower-level codec lets you pick a custom byte range or a string form.
+ * Output forms: every node speaks Uint8Array (`encode`/`decode`) and text in a
+ * charset of your choice (`encodeString`/`decodeString`). The packer
+ * primitives underneath add custom byte ranges when you need them.
  * Run with: npx tsx examples/binary-encoding.ts
  */
 import { p, Encoder, Decoder, CharSets } from 'polynar';
 
 const Sensor = p.object({
-  id: p.int(0, 65535),
-  reading: p.int(-40, 125),
+  id: p.int().min(0).max(65535),
+  reading: p.int().min(-40).max(125),
   ok: p.bool(),
 });
 
@@ -20,24 +21,16 @@ const json = JSON.stringify(Array.from(bytes));
 const restored = Sensor.decode(new Uint8Array(JSON.parse(json)));
 console.log('via JSON:', restored);
 
-// The lower-level codec exposes the string form and custom byte ranges.
-const enc = new Encoder();
-enc.write('hello world', { type: 'string', max: 32 });
-
-const asBytes = enc.toUint8Array(); // default byte range [0, 255]
-const asPrintable = enc.toUint8Array([32, 126]); // printable ASCII only
-const asUrlSafe = enc.toString(CharSets.urlSafe);
-
-console.log('raw bytes:', asBytes.length, 'printable bytes:', asPrintable.length);
+// Text output picks a charset; both sides must agree on it.
+const Message = p.string().max(32);
+const asUrlSafe = Message.encodeString('hello world', CharSets.urlSafe);
 console.log('url-safe string:', asUrlSafe);
+console.log('from url-safe:', Message.decodeString(asUrlSafe, CharSets.urlSafe));
 
-// Decode each back with the range or charset it was written in.
-console.log('from bytes:', new Decoder(asBytes).read({ type: 'string', max: 32 }));
-console.log(
-  'from printable:',
-  new Decoder(asPrintable, [32, 126]).read({ type: 'string', max: 32 })
-);
-console.log(
-  'from url-safe:',
-  new Decoder(asUrlSafe, CharSets.urlSafe).read({ type: 'string', max: 32 })
-);
+// Custom byte ranges live on the packer primitives: drive the node's
+// _write/_read against an Encoder/Decoder holding the range.
+const enc = new Encoder();
+Message._write(enc, 'hello world');
+const asPrintable = enc.toUint8Array([32, 126]); // printable ASCII only
+console.log('printable bytes:', asPrintable.length, 'raw bytes:', Message.encode('hello world').length);
+console.log('from printable:', Message._read(new Decoder(asPrintable, [32, 126])));

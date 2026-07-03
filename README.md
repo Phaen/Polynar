@@ -5,19 +5,19 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue.svg)](https://www.typescriptlang.org/)
 
-Polynar encodes typed data into compact bytes (or strings) and reads it back. It spends only the bits a value's constraints actually allow, so an integer you promise is between 0 and 100 costs well under a byte, and a field you promise is one of three names costs a fraction of one.
-
-You describe the shape once with a small schema. Polynar packs values against it and decodes them back to the same types. There's a Zod-style layer (`p`) for everyday use, and a lower-level codec underneath when you want to drive the bit-packing yourself.
+Polynar encodes typed data into compact bytes or strings and reads it back. You describe the shape once with a small Zod-style schema, and every value spends only the bits its constraints allow: an integer you promise stays between 0 and 100 costs well under a byte, and a field that is one of three names costs a fraction of one. Custom types are one subclass away.
 
 One caveat up front: this is not encryption. Anyone with the bytes can recover the data by analysis, with or without the schema. If you need secrecy, encrypt the output.
 
-## How it packs so tight
+## What are polynary numbers?
 
-A number has many representations. Decimal `9` is `1001` in binary. One decimal digit became four binary ones, and each of those four can only ever hold two states.
+A number has many representations. Decimal 9 is 1001 in binary. One decimal digit became four binary ones, and each of those four can only ever hold two states.
 
-The waste shows up when your data doesn't fit a power of two. Say a field is `male`, `female`, or `unknown`. Two binary digits give you four slots and you throw one away. A single base-3 digit gives you exactly three.
+The waste shows up when your data doesn't fit a power of two. Say a field is male, female, or unknown. Two binary digits give you four slots and you throw one away. A single base-3 digit gives you exactly three.
 
-Polynar mixes bases inside one number, a different base per piece of data, sized to that piece. A boolean rides in a base-2 slot, a three-way enum in a base-3 slot, a 0-to-99 integer in a base-100 slot. The message is packed as arbitrary-precision integers in ~2-kilobit blocks (capping the big-number arithmetic keeps encoding linear-time on large messages), and nothing is rounded up to a whole byte or character within a block. A message that fits one block — roughly 250 bytes of output — is always the information-theoretic minimum length for the schema; beyond that, each block boundary costs at most one output character. You give the constraints, Polynar does the arithmetic.
+That idea is where the name comes from. Binary counts in base 2 and ternary in base 3; a polynary number mixes many bases inside one number, a different base for every piece of data, each sized to exactly that piece. A boolean rides in a base-2 slot, a three-way enum in a base-3 slot, a 0-to-99 integer in a base-100 slot, and nothing rounds up to a whole byte or character. Your data fits perfectly, without waste.
+
+Under the hood, the message packs into arbitrary-precision integers in blocks of about two kilobits, keeping encoding linear and the output within a hair of the information-theoretic minimum. You give the constraints, Polynar does the arithmetic.
 
 ## Install
 
@@ -25,30 +25,22 @@ Polynar mixes bases inside one number, a different base per piece of data, sized
 npm install polynar
 ```
 
-Polynar ships CommonJS and ESM builds plus type declarations, so `require` and `import` both resolve to the right thing without config.
-
-For the browser without a build step, import the ES module from a CDN that serves
-the ESM build. Either esm.sh or jsdelivr's `/+esm` endpoint works:
+CommonJS, ESM and type declarations all ship. In the browser, import the ESM build from a CDN:
 
 ```html
 <script type="module">
-  import { p } from 'https://esm.sh/polynar';
-  // or: import { p } from 'https://cdn.jsdelivr.net/npm/polynar/+esm';
-  const Age = p.int(0, 120);
-  console.log(Age.decode(Age.encode(36)));
+  import { p } from 'https://esm.sh/polynar'; // or jsdelivr's /+esm
 </script>
 ```
 
 ## Quick start
-
-Build a schema with `p`, then call `encode` and `decode` on it.
 
 ```typescript
 import { p, type Infer } from 'polynar';
 
 const User = p.object({
   name: p.string().max(40),
-  age: p.int(0, 120),
+  age: p.int().min(0).max(120),
   active: p.bool(),
   role: p.enum(['admin', 'member', 'guest']),
   nickname: p.string().optional(),
@@ -56,41 +48,25 @@ const User = p.object({
 
 type User = Infer<typeof User>;
 
-const bytes = User.encode({
-  name: 'Ada',
-  age: 36,
-  active: true,
-  role: 'admin',
-});
-
+const bytes = User.encode({ name: 'Ada', age: 36, active: true, role: 'admin' });
 const user = User.decode(bytes); // typed as User
 ```
 
-`encode` returns a `Uint8Array`. `decode` takes one back. The decoded value carries the type you inferred, no casting needed.
+## API
 
-## The schema layer
-
-Every node is immutable. Refinements like `.max(20)` return a fresh node rather than mutating the old one, so you can share and reuse schemas freely.
+Nodes are immutable; refinements return fresh nodes. One rule throughout: the factory takes what the type is, chained refinements say what values are allowed. Every node is strict, so a value that doesn't fit the declared type throws.
 
 ### Numbers
 
 ```typescript
-p.int(0, 100)            // bounded, packed against base 101
-p.int(10)                // lower bound only
-p.int()                  // unbounded, signed
-p.int().min(2).max(9)    // same as p.int(2, 9)
+p.int()                         // any integer, signed
+p.int().min(0).max(100)         // bounds pack denser; fractional bounds round inward
+p.decimal(0.01)                 // exact multiples of a step; off-grid values throw
+p.decimal(0.01).min(0).max(100) // a price in cents: 2 bytes
+p.float()                       // any finite double, bit-exact, flat 64 bits
 ```
 
-`p.int` stores integers. It truncates toward zero, so `3.7` becomes `3` and `-3.7` becomes `-3`. Fractional bounds round inward (`p.int(0.5, 10.5)` covers `1` through `10`) so the range you ask for is never quietly widened. Ask for a band that holds no integer, like `p.int(2.1, 2.9)`, and it throws instead of guessing.
-
-`p.number` is an alias for `p.int`. It's integers too, despite the name, which trips people up. Reach for `p.float` when you need the decimals.
-
-```typescript
-p.float()                // approximate to ~1e-15
-p.float().precision(1e-9)
-```
-
-`p.float` stores a value as a fraction found by continued-fraction approximation. It's lossy at roughly 1e-15 and it isn't dense, so it suits ordinary decimals rather than exact high-magnitude numbers. Set a coarser `precision` and you trade accuracy for smaller output.
+`p.int` for whole numbers, `p.decimal` for a known step, `p.float` for arbitrary doubles. All bit-exact; NaN and Infinity throw everywhere, and so does anything exactness can't survive: bounded ranges wider than 2^53, or a value farther than that from a lone bound.
 
 ### Strings
 
@@ -100,48 +76,48 @@ p.string().max(40)               // a bounded length packs smaller
 p.string().charset('0123456789') // restrict the alphabet for density
 ```
 
-The default covers the full UTF-16 range, so emoji and CJK text round-trip fine. Narrow the charset when you know the input stays inside one, like digits or hex. Each character then costs only what that smaller alphabet needs.
-
 ### Booleans and enums
 
 ```typescript
 p.bool();
-p.enum(['red', 'green', 'blue']); // stored as a sub-byte index
+p.enum(['red', 'green', 'blue']);      // one base-3 slot
+p.enum([256, 512, 1024]);              // numbers too
+p.enum([Strategy.fast, Strategy.safe]); // any value, matched by identity
 ```
 
-An enum packs against the length of its list, so three options cost a base-3 slot. The list order is the encoding, so keep it stable across versions if you want old bytes to keep decoding.
+The list order is the encoding, so keep it stable if old bytes must keep decoding. Membership is `===`, so objects and functions work as members; decode returns the listed reference itself.
 
 ### Dates
 
 ```typescript
-p.date();                                              // lossless to the ms
-p.date(new Date('2020-01-01'), new Date('2030-01-01')); // bounded
-p.date(min, max).interval('day');                       // coarser, smaller
+p.date()                 // lossless to the ms
+p.date().min(new Date('2020-01-01')).max(new Date('2030-01-01'))
+p.date().interval('day') // coarser, smaller, lossy
 ```
 
-Default precision is one millisecond, which round-trips a `Date` exactly. `interval` accepts a millisecond count or a name: `'second'`, `'minute'`, `'hour'`, `'day'`, `'week'`, `'month'`, or `'year'`. A coarser interval drops sub-interval precision and saves bytes. With a minimum bound set, a decoded date never lands before that minimum, even when the bound itself isn't interval-aligned.
+`interval` takes milliseconds or `'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'`. A decoded date never lands before the min bound.
 
 ### Objects
 
 ```typescript
-const Point = p.object({
-  x: p.int(-1000, 1000),
-  y: p.int(-1000, 1000),
+p.object({
+  x: p.int().min(-1000).max(1000),
+  label: p.string().optional(), // one presence bit; only undefined means absent
 });
 ```
 
-Fields are required by default. Mark one `.optional()` and it gets a single presence bit, so present and absent both round-trip. An optional field set to `undefined` decodes back to absent. Falsy-but-defined values like `0`, `''`, and `false` are kept as themselves, never mistaken for missing.
+Fields are required by default. Objects nest, and falsy-but-defined values are never mistaken for missing.
 
-Objects nest. An optional nested object is all-or-nothing: either the whole sub-object is there or none of it is, and its own fields stay required regardless of the parent's optionality.
+### Arrays
 
 ```typescript
-const Account = p.object({
-  id: p.int(0, 1_000_000),
-  profile: p
-    .object({ city: p.string().max(30), zip: p.int(0, 99999) })
-    .optional(),
-});
+p.array(p.int())               // any count, length-prefixed
+p.array(p.int()).min(1).max(4) // a bounded count packs denser
+p.array(p.float()).length(3)   // a fixed count costs zero bits
+p.array(p.array(p.bool()))     // arrays nest
 ```
+
+`.length` is both bounds at once, so combining it with `.min` or `.max` throws. Items can't be `.optional()`; make the array itself optional.
 
 ### Anything
 
@@ -149,128 +125,24 @@ const Account = p.object({
 p.any(); // numbers, strings, booleans, dates, null, undefined, arrays, plain objects
 ```
 
-`p.any` is the escape hatch for data whose shape you don't know ahead of time. It writes a type tag with every value, so it costs more than a precise node. Numbers go through the float path, which means integers come back intact but very large or very precise values can drift. When you do know the shape, name it. You'll get smaller output and a real static type.
+Self-describing escape hatch: a type tag per value, everything round-trips bit-exact. Costs more than a precise node.
 
-### Batches
+### Inference
 
-```typescript
-const Reading = p.int(0, 1023);
-const blob = Reading.encodeMany([512, 0, 1023, 7]);
-const back = Reading.decodeMany(blob); // number[]
-```
+`Infer<typeof Node>` is the decoded type of any node; `.optional()` fields become optional keys.
 
-`encodeMany` validates the schema once and reuses a single encoder across the whole array, so it's cheaper than calling `encode` in a loop and the output is denser. It's the right tool for a column of same-typed values.
-
-### Inferring types
-
-`Infer<typeof Schema>` gives you the decoded type for any node. For an object schema it splits required and optional keys correctly, so the result matches a hand-written type.
+### Output
 
 ```typescript
-import { p, type Infer } from 'polynar';
-
-const Event = p.object({
-  kind: p.enum(['click', 'view']),
-  at: p.date(),
-  label: p.string().optional(),
-});
-
-type Event = Infer<typeof Event>;
-// { kind: 'click' | 'view'; at: Date; label?: string }
+node.encode(value);                         // Uint8Array
+node.decode(bytes);
+node.encodeString(value, CharSets.urlSafe); // text in a charset of your choice
+node.decodeString(text, CharSets.urlSafe);
 ```
 
-## The lower-level codec
+The charset defaults to Base64; any string of unique characters or a `[min, max]` code-unit range works too, on both the string form and `p.string().charset()`.
 
-`p` is built on an `Encoder` and a `Decoder` you can use directly. This is the older surface. It's more verbose and you manage the read order yourself, but it exposes a few things the schema layer doesn't, like length-prefixed arrays and transform hooks.
-
-```typescript
-import { Encoder, Decoder } from 'polynar';
-
-const enc = new Encoder();
-enc.write(42, { type: 'number', min: 0, max: 100 });
-enc.write('hello', { type: 'string', max: 20 });
-
-const text = enc.toString(); // compact string
-const bytes = enc.toUint8Array(); // or raw bytes
-
-const dec = new Decoder(text);
-dec.read({ type: 'number', min: 0, max: 100 }); // 42
-dec.read({ type: 'string', max: 20 }); // 'hello'
-```
-
-Reads have to mirror writes: same order, same options. The buffer carries no field names or types of its own, which is exactly why it stays small.
-
-After the last read, `dec.finalize()` asserts the input is exactly the canonical encoding of everything read: it throws on tampered digits and on trailing padding, both of which would otherwise decode silently into plausible-looking values. The schema layer's `decode`/`decodeMany` call it for you.
-
-### Strings vs bytes
-
-`toUint8Array()` gives you raw bytes, the most compact form, ideal for a database BLOB or a binary WebSocket frame. `toString(charset?)` gives you text in a charset of your choice when you need something URL-safe or printable.
-
-```typescript
-const enc = new Encoder();
-enc.write('data', { type: 'string' });
-
-enc.toString(CharSets.Base64); // pick a charset for the string form
-enc.toString(CharSets.urlSafe);
-
-enc.toUint8Array(); // default byte range [0, 255]
-enc.toUint8Array([32, 126]); // restrict to printable ASCII bytes
-```
-
-Bytes survive JSON if you need them to: `Array.from(bytes)` to write, `new Uint8Array(parsed)` to read back. To decode a custom byte range, pass the same range to the `Decoder`: `new Decoder(bytes, [32, 126])`.
-
-### Write options
-
-Every `write`/`read` call takes a `type` plus the options for that type.
-
-`number`
-- `min`, `max`: bounds, or `false` for unbounded. Default `false`.
-- `step`: spacing between representable values. Default `1`.
-
-`string`
-- `max`: maximum length, or `false` for variable. Default `false`.
-- `charset`: a charset string, a `[min, max]` code-unit range, or a number `n` for `[0, n]`.
-
-`boolean`
-- no extra options.
-
-`fraction`
-- `precision`: approximation tolerance. Default `1e-15`.
-
-`date`
-- `interval`: millisecond count or interval name. Default `1`.
-- `min`, `max`: bounds as a `Date` or a timestamp.
-
-`item`
-- `list`: the array of allowed values.
-- `sort`: sort the list before indexing. Default off.
-
-`object`
-- `template`: per-field options, or `false` for a self-describing object.
-- `sort`: sort keys before packing. Default off.
-
-`any`
-- no extra options.
-
-Three options apply to any type:
-- `limit`: cap an array write and length-prefix it, so a matching `read` returns the array.
-- `preProc`: transform each value before encoding.
-- `postProc`: transform each value after decoding.
-
-```typescript
-const enc = new Encoder();
-enc.write([1, 2, 3], {
-  type: 'number',
-  min: 0,
-  max: 10,
-  preProc: (x) => x * 2,
-});
-
-const dec = new Decoder(enc.toString());
-dec.read({ type: 'number', min: 0, max: 10, postProc: (x) => x / 2 }, 3);
-// [1, 2, 3]
-```
-
-## Character sets
+Decoding verifies the input is the canonical encoding of what was read: tampering, truncation and padding throw a `CorruptInputError` (also matchable via `err.name`). Bytes survive JSON via `Array.from(bytes)` / `new Uint8Array(parsed)`.
 
 | Name | Characters |
 | --- | --- |
@@ -285,38 +157,26 @@ dec.read({ type: 'number', min: 0, max: 10, postProc: (x) => x / 2 }, 3);
 | `CharSets.Base64` | standard Base64 |
 | `CharSets.urlSafe` | URL-safe characters |
 
-## Custom encoding types
+### Custom types
 
-The built-in types are registered through the same `registerModule` API you can call yourself. A module is a name, an optional validator, an encoder, and a decoder. The encoder calls `compose`/`composeTerm` to push values, the decoder calls `parse`/`parseTerm` to pull them back in the same order.
+Subclass `PNode`: `_write` validates one value and pushes its digits with `compose(integer, radix)` / `composeTerm(integer)`, `_read` mirrors it with `parse`/`parseTerm` in the same order. The node then composes with `p.object`, `p.array` and `.optional()` like any built-in. See `examples/custom-node.ts` for a runnable version.
 
 ```typescript
-import { registerModule, Encoder } from 'polynar';
+import { p, PNode, Encoder, Decoder } from 'polynar';
 
-registerModule(
-  'color',
-  false, // no validator
-  function (items) {
-    for (const i in items) {
-      const c = items[i];
-      this.compose(c.r, 256);
-      this.compose(c.g, 256);
-      this.compose(c.b, 256);
-    }
-  },
-  function (_options, count) {
-    const out = [];
-    for (let i = 0; i < count; i++) {
-      out.push({ r: this.parse(256), g: this.parse(256), b: this.parse(256) });
-    }
-    return out;
+class PColor extends PNode<{ r: number; g: number; b: number }> {
+  _write(enc: Encoder, c: { r: number; g: number; b: number }): void {
+    enc.compose(c.r, 256);
+    enc.compose(c.g, 256);
+    enc.compose(c.b, 256);
   }
-);
+  _read(dec: Decoder): { r: number; g: number; b: number } {
+    return { r: dec.parse(256), g: dec.parse(256), b: dec.parse(256) };
+  }
+}
 
-const enc = new Encoder();
-enc.write({ r: 255, g: 0, b: 0 }, { type: 'color' });
+const Theme = p.object({ name: p.string().max(20), accent: new PColor() });
 ```
-
-See `examples/custom-module.ts` for a runnable version.
 
 ## Development
 
@@ -326,12 +186,6 @@ npm run build
 npm test
 ```
 
-Tests live in `src/__tests__/`, one file per module plus the schema suite. `npm run test:coverage` writes an HTML report to `coverage/lcov-report/index.html`.
-
 ## License
 
 MIT © Pablo Kebees
-
-## Contributing
-
-Pull requests are welcome.

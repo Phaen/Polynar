@@ -1,5 +1,5 @@
 /**
- * Type-level inference for the schema layer.
+ * Type-level inference for schema nodes.
  *
  * A schema node carries a phantom output type on `_t`. `Infer` extracts it.
  * Object shapes split required vs `.optional()` keys (detected via the `_optional`

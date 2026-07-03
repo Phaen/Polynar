@@ -1,19 +1,28 @@
 /**
- * Decoder class for Polynar
+ * The read-side packer primitive. `parse`/`parseTerm` peel values back off the
+ * mixed-radix blocks in the exact order the Encoder composed them; `finalize`
+ * asserts the input was exactly consumed. Schema nodes drive this — it knows
+ * nothing about types.
  */
 
-import type { Charset, EncodingOptions, Decoder as IDecoder } from './types';
-import { DEFAULT_BASE } from './constants';
-import { validateOptions, validateCharset, blockCapacity, isArray } from './utils';
-import { modules } from './modules/registry';
+import type { Charset } from './types';
+import {
+  TERM_BASE,
+  TERM_COUNT_RUN_DIGITS,
+  TERM_ESCAPE_MIN,
+  TERM_INLINE_DIGITS,
+  TERM_PAYLOAD_BASE,
+  TERM_PAYLOAD_MIN_DIGITS,
+} from './constants';
+import { CorruptInputError } from './errors';
+import { validateCharset, blockCapacity, isArray } from './utils';
 
-/**
- * Decoder class
- */
-export class Decoder implements IDecoder {
-  str: string;
-  charset: Charset;
-  size: number;
+const TERM_ESCAPE_MIN_BIG = BigInt(TERM_ESCAPE_MIN);
+
+export class Decoder {
+  private str: string;
+  private charset: Charset;
+  private size: number;
   private bytes?: Uint8Array;
   /** The remaining value of the current block, as one big mixed-radix integer. */
   private value?: bigint;
@@ -57,8 +66,7 @@ export class Decoder implements IDecoder {
       if (typeof this.charset === 'string') {
         this.size = this.charset.length;
       } else {
-        this.size =
-          (this.charset as [number, number])[1] - (this.charset as [number, number])[0] + 1;
+        this.size = this.charset[1] - this.charset[0] + 1;
       }
     }
   }
@@ -69,7 +77,7 @@ export class Decoder implements IDecoder {
       const digit = this.bytes[i] - (this.charset as [number, number])[0];
 
       if (digit < 0 || digit >= this.size) {
-        throw new Error('Byte at ' + i + ' does not fit binary range');
+        throw new CorruptInputError('Byte at ' + i + ' does not fit binary range');
       }
 
       return digit;
@@ -79,7 +87,7 @@ export class Decoder implements IDecoder {
       const digit = this.charset.indexOf(this.str.charAt(i));
 
       if (digit === -1) {
-        throw new Error('Byte at ' + i + ' not found in character set');
+        throw new CorruptInputError('Byte at ' + i + ' not found in character set');
       }
 
       return digit;
@@ -88,7 +96,7 @@ export class Decoder implements IDecoder {
     const digit = this.str.charCodeAt(i) - (this.charset as [number, number])[0];
 
     if (digit < 0 || digit >= this.size) {
-      throw new Error('Byte at ' + i + ' does not fit binary range');
+      throw new CorruptInputError('Byte at ' + i + ' does not fit binary range');
     }
 
     return digit;
@@ -122,6 +130,7 @@ export class Decoder implements IDecoder {
     this.consumed = 1n;
   }
 
+  /** Read one value composed in a fixed radix. */
   parse(radix: number): number {
     if (this.value == null) {
       this.loadBlock(0);
@@ -136,11 +145,11 @@ export class Decoder implements IDecoder {
       // The encoder leaves no remainder at a block boundary, so leftover value
       // here means a digit was tampered past its saturation point.
       if (this.value !== 0n) {
-        throw new Error('Oversaturated input');
+        throw new CorruptInputError('Oversaturated input');
       }
 
       if (this.blockStart + this.block!.digits >= this.inputLength()) {
-        throw new Error('Unexpected end of input while parsing');
+        throw new CorruptInputError('Unexpected end of input while parsing');
       }
 
       this.loadBlock(this.blockStart + this.block!.digits);
@@ -151,7 +160,7 @@ export class Decoder implements IDecoder {
     // product, so needing more state space than the block holds means the
     // input is truncated or is being read past its end.
     if (consumed > this.capacity!) {
-      throw new Error('Unexpected end of input while parsing');
+      throw new CorruptInputError('Unexpected end of input while parsing');
     }
 
     this.consumed = consumed;
@@ -165,26 +174,74 @@ export class Decoder implements IDecoder {
     // this check is only sound in the final-digit region — block advancement
     // and `finalize()` cover the rest.
     if (consumed * 2n > this.capacity! && this.value !== 0n) {
-      throw new Error('Oversaturated input');
+      throw new CorruptInputError('Oversaturated input');
     }
 
     return Number(integer);
   }
 
+  /** Read one unbounded non-negative integer composed by `composeTerm`. */
   parseTerm(): number {
-    // Accumulate in BigInt: float addition above 2^53 rounds, and the encoder
-    // packs such terms bit-exact. Number() converts the total back to the
-    // nearest double, which is exact for any term composeTerm accepted.
-    const base = BigInt(DEFAULT_BASE);
-    let integer = 0n;
-    let pow = 1n;
-    let md = this.parse(DEFAULT_BASE + 1) - 1;
-    while (md !== -1) {
-      integer += BigInt(md) * pow;
-      pow *= base;
-      md = this.parse(DEFAULT_BASE + 1) - 1;
+    const first = this.parse(TERM_BASE + 2);
+
+    if (first !== TERM_BASE + 1) {
+      return this.parseRun(first, TERM_INLINE_DIGITS);
     }
-    return Number(integer);
+
+    // Escaped: digit count (offset by its known minimum), then the digits,
+    // reassembled in BigInt so terms above 2^53 round-trip bit-exact.
+    const count =
+      TERM_PAYLOAD_MIN_DIGITS + this.parseRun(this.parse(TERM_BASE + 1), TERM_COUNT_RUN_DIGITS);
+    const base = BigInt(TERM_PAYLOAD_BASE);
+    let value = 0n;
+    let pow = 1n;
+    for (let i = 0; i < count - 1; i++) {
+      value += BigInt(this.parse(TERM_PAYLOAD_BASE)) * pow;
+      pow *= base;
+    }
+    value += BigInt(this.parse(TERM_PAYLOAD_BASE - 1) + 1) * pow;
+
+    // The encoder escapes only above the inline range, and only emits values
+    // a double represents exactly; anything else is a corrupted input.
+    if (value < TERM_ESCAPE_MIN_BIG) {
+      throw new CorruptInputError('Non-canonical escaped term within the inline range');
+    }
+    const integer = Number(value);
+    if (!Number.isFinite(integer) || BigInt(integer) !== value) {
+      throw new CorruptInputError('Escaped term is not an exactly representable integer');
+    }
+    return integer;
+  }
+
+  /**
+   * Continue a terminated base-TERM_BASE run whose first symbol the caller
+   * already consumed. `maxDigits` is the canonical cap: the encoder never
+   * emits longer runs, so exceeding it (or padding with a zero top digit)
+   * is corruption, and honoring the cap keeps the arithmetic exact.
+   */
+  private parseRun(symbol: number, maxDigits: number): number {
+    let integer = 0;
+    let pow = 1;
+    let count = 0;
+    let last = 0;
+
+    while (symbol !== 0) {
+      if (++count > maxDigits) {
+        throw new CorruptInputError('Term run is longer than its canonical maximum');
+      }
+      integer += (symbol - 1) * pow;
+      pow *= TERM_BASE;
+      last = symbol;
+      symbol = this.parse(TERM_BASE + 1);
+    }
+
+    // Symbol 1 is digit zero; as the top digit it means a shorter run encodes
+    // the same value, so the encoder never emits it there.
+    if (count > 0 && last === 1) {
+      throw new CorruptInputError('Non-canonical zero-padded term run');
+    }
+
+    return integer;
   }
 
   /**
@@ -199,7 +256,7 @@ export class Decoder implements IDecoder {
     }
 
     if (this.value !== 0n) {
-      throw new Error('Unread or corrupted data at end of input');
+      throw new CorruptInputError('Unread or corrupted data at end of input');
     }
 
     // No block may follow the current one, and a canonical final block spans
@@ -209,37 +266,7 @@ export class Decoder implements IDecoder {
       this.blockStart + this.block!.digits < this.inputLength() ||
       this.consumed * BigInt(this.size) <= this.capacity!
     ) {
-      throw new Error('Input is longer than its contents');
+      throw new CorruptInputError('Input is longer than its contents');
     }
-  }
-
-  read(options: EncodingOptions, count: number = 1): any {
-    if (typeof count !== 'number' || count % 1 !== 0 || count < 0) {
-      throw new TypeError('Count must be a non-negative integer');
-    }
-
-    const validatedOptions = validateOptions(options);
-
-    // A `limit` read recovers a length-prefixed array, so it must always return
-    // an array. Never unwrap it, even when the decoded length happens to be 1.
-    // Presence check, not truthiness: `limit: 0` is a valid cap of zero.
-    const limited = validatedOptions.limit != null;
-    if (limited) {
-      count = this.parse((validatedOptions.limit as number) + 1);
-    }
-
-    let items = modules[validatedOptions.type].decoder.call(this, validatedOptions, count);
-
-    if (typeof validatedOptions.postProc === 'function') {
-      for (let i = 0; i < items.length; i++) {
-        items[i] = validatedOptions.postProc(items[i]);
-      }
-    }
-
-    if (count === 1 && !limited) {
-      items = items.pop();
-    }
-
-    return items;
   }
 }

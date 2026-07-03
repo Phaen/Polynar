@@ -1,51 +1,24 @@
 /**
- * Encoder class for Polynar
+ * The write-side packer primitive. Values are pushed as (integer, radix)
+ * pairs via `compose`/`composeTerm`; `toString`/`toUint8Array` fold them into
+ * mixed-radix blocks and emit digits. Schema nodes drive this — it knows
+ * nothing about types.
  */
 
-import type { Charset, EncodingOptions, Encoder as IEncoder } from './types';
-import { DEFAULT_BASE } from './constants';
-import { validateOptions, validateCharset, blockCapacity, isArray } from './utils';
-import { modules } from './modules/registry';
+import type { Charset } from './types';
+import {
+  TERM_BASE,
+  TERM_ESCAPE_MIN,
+  TERM_PAYLOAD_BASE,
+  TERM_PAYLOAD_MIN_DIGITS,
+} from './constants';
+import { validateCharset, blockCapacity, isArray } from './utils';
 
-/**
- * Encoder class
- */
-export class Encoder implements IEncoder {
-  radii: number[];
-  integers: number[];
+export class Encoder {
+  private radii: number[] = [];
+  private integers: number[] = [];
 
-  constructor() {
-    this.radii = [];
-    this.integers = [];
-  }
-
-  write(items: any | any[], options: EncodingOptions): void {
-    const validatedOptions = validateOptions(options);
-
-    if (!isArray(items)) {
-      items = [items];
-    }
-
-    if (typeof validatedOptions.preProc === 'function') {
-      // Map into a fresh array so a caller-supplied `items` array is never
-      // mutated in place by the hook.
-      const preProc = validatedOptions.preProc;
-      items = items.map((item: any) => preProc(item));
-    }
-
-    // Presence check, not truthiness: `limit: 0` is a valid cap of zero, not
-    // "no limit".
-    if (validatedOptions.limit != null) {
-      if (items.length > validatedOptions.limit) {
-        throw new RangeError('Item count exceeds limit');
-      } else {
-        this.compose(items.length, validatedOptions.limit + 1);
-      }
-    }
-
-    modules[validatedOptions.type].encoder.call(this, items, validatedOptions);
-  }
-
+  /** Push one value in a fixed radix: `integer` must lie in `[0, radix)`. */
   compose(integer: number, radix: number): void {
     // An out-of-range value would not throw on its own; it would silently
     // corrupt every value packed after it. Fail here, at the source.
@@ -61,32 +34,65 @@ export class Encoder implements IEncoder {
     this.radii.push(radix);
   }
 
+  /** Push one unbounded non-negative integer. */
   composeTerm(integer: number): void {
     if (!Number.isInteger(integer) || integer < 0) {
-      // The digit loop below only terminates for non-negative integers.
+      // The digit loops below only terminate for non-negative integers.
       throw new TypeError('Term must be a non-negative integer');
     }
 
-    // Every integer-valued double is exact, but float division on values above
-    // 2^53 is not — extract the digits in BigInt so huge terms round-trip
-    // bit-exact instead of silently corrupting.
-    const base = BigInt(DEFAULT_BASE);
-    let value = BigInt(integer);
+    if (integer < TERM_ESCAPE_MIN) {
+      // Inline: a terminated base-TERM_BASE run. Values here stay far below
+      // 2^53, so plain number arithmetic is exact.
+      this.composeRun(integer, TERM_BASE + 2);
+      return;
+    }
 
+    // Escaped: the widened first slot's extra symbol, the base-8 digit count
+    // (offset by its known minimum, as a plain run), then the digits.
+    this.compose(TERM_BASE + 1, TERM_BASE + 2);
+
+    // Extract digits in BigInt: integer-valued doubles are exact, but float
+    // division above 2^53 is not, and escaped terms live in that range.
+    const base = BigInt(TERM_PAYLOAD_BASE);
+    const digits: number[] = [];
+    let value = BigInt(integer);
     while (value !== 0n) {
-      this.compose(Number(value % base) + 1, DEFAULT_BASE + 1);
+      digits.push(Number(value % base));
       value /= base;
     }
-    this.compose(0, DEFAULT_BASE + 1);
+
+    this.composeRun(digits.length - TERM_PAYLOAD_MIN_DIGITS, TERM_BASE + 1);
+    for (let i = 0; i < digits.length - 1; i++) {
+      this.compose(digits[i], TERM_PAYLOAD_BASE);
+    }
+    // The top digit is never zero, so it packs one state tighter — which also
+    // makes zero-padded (non-canonical) digit strings unrepresentable.
+    this.compose(digits[digits.length - 1] - 1, TERM_PAYLOAD_BASE - 1);
+  }
+
+  /**
+   * A terminated base-TERM_BASE digit run, lowest digit first: digit d rides
+   * as symbol d+1, symbol 0 terminates. The first slot's radix is a parameter
+   * because a term's opening slot carries one extra state for the escape.
+   */
+  private composeRun(value: number, firstRadix: number): void {
+    let radix = firstRadix;
+    while (value !== 0) {
+      this.compose((value % TERM_BASE) + 1, radix);
+      value = Math.floor(value / TERM_BASE);
+      radix = TERM_BASE + 1;
+    }
+    this.compose(0, radix);
   }
 
   /**
    * Pack the buffer into base-`size` digits, lowest digit first, as a run of
    * mixed-radix blocks. Within a block, values fold into one big integer — in
    * reverse, so the decoder can peel them off front-to-back, which it needs
-   * because later radices can depend on earlier decoded values (e.g. a `limit`
-   * length prefix). A value whose radix would push the block's radix product
-   * past the block cap starts the next block instead. Full blocks span
+   * because later radices can depend on earlier decoded values (e.g. an
+   * array's length prefix). A value whose radix would push the block's radix
+   * product past the block cap starts the next block instead. Full blocks span
    * exactly `digits` digits, so the decoder finds the boundaries by position
    * alone; only the final block rounds up to a whole digit, so a message that
    * fits one block is always the information-theoretic minimum length:
@@ -145,7 +151,7 @@ export class Encoder implements IEncoder {
     const size =
       typeof validatedCharset === 'string'
         ? validatedCharset.length
-        : (validatedCharset as [number, number])[1] - (validatedCharset as [number, number])[0] + 1;
+        : validatedCharset[1] - validatedCharset[0] + 1;
 
     let str = '';
 
@@ -153,7 +159,7 @@ export class Encoder implements IEncoder {
       if (typeof validatedCharset === 'string') {
         str += validatedCharset.charAt(digit);
       } else {
-        str += String.fromCharCode(digit + (validatedCharset as [number, number])[0]);
+        str += String.fromCharCode(digit + validatedCharset[0]);
       }
     }
 

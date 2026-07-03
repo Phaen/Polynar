@@ -2,9 +2,8 @@
  * Utility functions for Polynar
  */
 
-import type { Charset, EncodingOptions } from './types';
+import type { Charset } from './types';
 import { BLOCK_BITS, DEFAULT_CHARSET } from './constants';
-import { modules } from './modules/registry';
 
 /**
  * Type checking utilities
@@ -12,11 +11,6 @@ import { modules } from './modules/registry';
 export const isObject = (o: any): o is object => o && typeof o === 'object';
 export const isArray = (o: any): o is any[] => Array.isArray(o);
 export const isDate = (o: any): o is Date => o instanceof Date;
-
-/**
- * Math utilities
- */
-export const multiply = (a: number, b: number): number => a * b;
 
 /**
  * The largest digit count (and its state space, size^digits) a block of
@@ -48,40 +42,6 @@ export function blockCapacity(size: number): { digits: number; cap: bigint } {
 }
 
 /**
- * Validate encoding options
- */
-export function validateOptions(optionsObj: EncodingOptions): EncodingOptions {
-  if (!isObject(optionsObj)) {
-    throw new TypeError(`${optionsObj} is not an object`);
-  }
-
-  if (modules[optionsObj.type] == null) {
-    throw new TypeError('Invalid encoding type');
-  }
-
-  // Shallow copy the options
-  const options: any = {};
-  for (const i in optionsObj) {
-    if (Object.prototype.hasOwnProperty.call(optionsObj, i)) {
-      options[i] = (optionsObj as any)[i];
-    }
-  }
-
-  const validator = modules[options.type].validator;
-  if (validator) {
-    validator(options);
-  }
-
-  if (options.limit != null) {
-    if (typeof options.limit !== 'number' || options.limit % 1 !== 0 || options.limit < 0) {
-      throw new TypeError('Invalid item limit');
-    }
-  }
-
-  return options;
-}
-
-/**
  * Validate character set
  */
 export function validateCharset(charset?: Charset): Charset {
@@ -90,11 +50,6 @@ export function validateCharset(charset?: Charset): Charset {
 
   if (charset == null) {
     return DEFAULT_CHARSET;
-  } else if (typeof charset === 'number') {
-    if (charset % 1 !== 0 || charset < 2 || charset > 65535) {
-      throw new TypeError(errBin);
-    }
-    return [0, charset];
   } else if (typeof charset === 'string') {
     // A 1-character charset is base 1, whose digit loop never terminates. The
     // `s` flag makes `.` match line terminators, so a duplicate on either side
@@ -121,7 +76,9 @@ export function validateCharset(charset?: Charset): Charset {
       throw new RangeError(errBin);
     }
 
-    if (max - min < 2) {
+    // Two symbols (base 2) is the floor, same as string charsets and binary
+    // mode; a single symbol would be base 1, which carries no digit variation.
+    if (max - min < 1) {
       throw new Error(errBin);
     }
 

@@ -1,17 +1,23 @@
 /**
- * Core Encoder/Decoder — construction, charsets, low-level primitives, the
- * generic `limit`/`preProc`/`postProc` options, multi-write buffers, and the
- * error surface shared by every module.
+ * Packer primitives — Encoder/Decoder construction, charsets, compose/parse,
+ * block packing, output density, and the corruption-detection surface. Typed
+ * behaviour lives in nodes.test.ts; this file exercises the layer custom
+ * nodes build on.
  */
 
-import { Encoder, Decoder, CharSets } from '../polynar';
+import { Encoder, Decoder, CharSets, CorruptInputError, p, PNode } from '../index';
 import * as root from '../index';
-import * as schema from '../schema';
-import * as mods from '../modules';
 import { blockCapacity } from '../utils';
-import type { NumberOptions } from '../types';
 
-const NUM: NumberOptions = { type: 'number', min: 0, max: 1000 };
+/** Push `values` as base-1001 slots — the compact stand-in for real payloads. */
+const composeAll = (encoder: Encoder, values: number[]): void => {
+  for (const value of values) {
+    encoder.compose(value, 1001);
+  }
+};
+
+const parseAll = (decoder: Decoder, count: number): number[] =>
+  Array.from({ length: count }, () => decoder.parse(1001));
 
 describe('Encoder / Decoder construction', () => {
   it('throws when constructed without input', () => {
@@ -22,36 +28,30 @@ describe('Encoder / Decoder construction', () => {
 describe('Character sets', () => {
   it.each(Object.entries(CharSets))('round-trips through the %s charset', (_name, charset) => {
     const encoder = new Encoder();
-    encoder.write(123, NUM);
+    encoder.compose(123, 1001);
     const decoder = new Decoder(encoder.toString(charset), charset);
-    expect(decoder.read(NUM)).toBe(123);
+    expect(decoder.parse(1001)).toBe(123);
   });
 
   it('uses Base64 as the default charset on both ends', () => {
     const encoder = new Encoder();
-    encoder.write(123, NUM);
+    encoder.compose(123, 1001);
     // No charset on either side → both default to Base64.
-    expect(new Decoder(encoder.toString()).read(NUM)).toBe(123);
-  });
-
-  it('round-trips through a numeric charset ([0, n])', () => {
-    const encoder = new Encoder();
-    encoder.write(123, NUM);
-    expect(new Decoder(encoder.toString(16), 16).read(NUM)).toBe(123);
+    expect(new Decoder(encoder.toString()).parse(1001)).toBe(123);
   });
 
   it('round-trips through a binary-range charset', () => {
     const encoder = new Encoder();
-    encoder.write(123, NUM);
+    encoder.compose(123, 1001);
     const range: [number, number] = [65, 90];
-    expect(new Decoder(encoder.toString(range), range).read(NUM)).toBe(123);
+    expect(new Decoder(encoder.toString(range), range).parse(1001)).toBe(123);
   });
 
   it('accepts a reversed range charset without mutating the caller array', () => {
     const encoder = new Encoder();
-    encoder.write(123, NUM);
+    encoder.compose(123, 1001);
     const reversed: [number, number] = [90, 65];
-    expect(new Decoder(encoder.toString(reversed), reversed).read(NUM)).toBe(123);
+    expect(new Decoder(encoder.toString(reversed), reversed).parse(1001)).toBe(123);
     expect(reversed).toEqual([90, 65]);
   });
 });
@@ -86,6 +86,28 @@ describe('Low-level primitives', () => {
     expect(decoder.parseTerm()).toBe(1e300);
   });
 
+  it('composeTerm/parseTerm round-trips across the inline/escaped boundary', () => {
+    // Values below 3^21 ride as inline digit runs; from 3^21 up they escape
+    // to the length-prefixed form. Both sides of the edge must agree.
+    const edge = 3 ** 21;
+    const encoder = new Encoder();
+    encoder.composeTerm(edge - 1);
+    encoder.composeTerm(edge);
+    encoder.composeTerm(edge + 1);
+    const decoder = new Decoder(encoder.toString());
+    expect(decoder.parseTerm()).toBe(edge - 1);
+    expect(decoder.parseTerm()).toBe(edge);
+    expect(decoder.parseTerm()).toBe(edge + 1);
+  });
+
+  it('large terms cost little more than their information content', () => {
+    // 1e300 is ~997 bits of information. The escaped form carries it in
+    // ~1016 bits; the pure base-3 run would need ~1260.
+    const encoder = new Encoder();
+    encoder.composeTerm(1e300);
+    expect(encoder.toUint8Array().length).toBeLessThanOrEqual(128);
+  });
+
   it('rejects a compose integer outside its radix', () => {
     const encoder = new Encoder();
     expect(() => encoder.compose(10, 10)).toThrow(RangeError);
@@ -106,144 +128,72 @@ describe('Low-level primitives', () => {
   });
 });
 
-describe('Multi-write buffers', () => {
-  it('reads heterogeneous values back in write order', () => {
+describe('Shared buffers', () => {
+  it('nodes compose onto one encoder and read back in write order', () => {
+    // `encode` is one node per message; several nodes can share a buffer by
+    // driving the primitives directly, as a custom composite node would.
+    const age = p.int().min(0).max(100);
+    const name = p.string().max(10);
+    const active = p.bool();
+
     const encoder = new Encoder();
-    encoder.write(42, { type: 'number', min: 0, max: 100 });
-    encoder.write('hello', { type: 'string', max: 10 });
-    encoder.write(true, { type: 'boolean' });
+    age._write(encoder, 42);
+    name._write(encoder, 'hello');
+    active._write(encoder, true);
 
     const decoder = new Decoder(encoder.toString());
-    expect(decoder.read({ type: 'number', min: 0, max: 100 })).toBe(42);
-    expect(decoder.read({ type: 'string', max: 10 })).toBe('hello');
-    expect(decoder.read({ type: 'boolean' })).toBe(true);
+    expect(age._read(decoder)).toBe(42);
+    expect(name._read(decoder)).toBe('hello');
+    expect(active._read(decoder)).toBe(true);
+    expect(() => decoder.finalize()).not.toThrow();
+  });
+
+  it('a custom PNode subclass composes with the built-in combinators', () => {
+    // The extension surface: implement _write/_read against the primitives
+    // and the node nests inside p.object / p.array like any built-in.
+    class PRgb extends PNode<[number, number, number]> {
+      _write(enc: Encoder, value: [number, number, number]): void {
+        for (const channel of value) {
+          enc.compose(channel, 256);
+        }
+      }
+      _read(dec: Decoder): [number, number, number] {
+        return [dec.parse(256), dec.parse(256), dec.parse(256)];
+      }
+    }
+
+    const Palette = p.object({ name: p.string().max(10), colors: p.array(new PRgb()) });
+    const value = {
+      name: 'sunset',
+      colors: [
+        [255, 94, 0],
+        [255, 195, 113],
+      ] as [number, number, number][],
+    };
+    expect(Palette.decode(Palette.encode(value))).toEqual(value);
   });
 });
 
-describe('limit option', () => {
-  it('round-trips a length-prefixed array within the limit', () => {
-    const opts: NumberOptions = { type: 'number', min: 0, max: 10, limit: 10 };
-    const encoder = new Encoder();
-    encoder.write([1, 2, 3], opts);
-    expect(new Decoder(encoder.toString()).read(opts)).toEqual([1, 2, 3]);
-  });
-
-  it('round-trips a single-element array as an array, not a bare value', () => {
-    const opts: NumberOptions = { type: 'number', min: 0, max: 10, limit: 10 };
-    const encoder = new Encoder();
-    encoder.write([7], opts);
-    expect(new Decoder(encoder.toString()).read(opts)).toEqual([7]);
-  });
-
-  it('throws when the item count exceeds the limit', () => {
-    const encoder = new Encoder();
-    expect(() =>
-      encoder.write([1, 2, 3, 4], { type: 'number', min: 0, max: 10, limit: 2 })
-    ).toThrow('Item count exceeds limit');
-  });
-
-  it('rejects an invalid limit', () => {
-    const encoder = new Encoder();
-    expect(() => encoder.write([1], { type: 'number', min: 0, max: 10, limit: -1 })).toThrow(
-      TypeError
-    );
-  });
-
-  it('treats limit 0 as a cap of zero, not as no limit', () => {
-    const opts: NumberOptions = { type: 'number', min: 0, max: 10, limit: 0 };
-    const encoder = new Encoder();
-    encoder.write([], opts);
-    expect(new Decoder(encoder.toString()).read(opts)).toEqual([]);
-    expect(() => new Encoder().write([1], opts)).toThrow('Item count exceeds limit');
-  });
-
-  it('rejects sparse-array holes instead of desyncing the length prefix', () => {
-    // A hole reads as undefined, which is not a number; skipping it (as for-in
-    // iteration would) would encode fewer values than the prefix declares.
-    const sparse = [1, , 3];
-    expect(() =>
-      new Encoder().write(sparse, { type: 'number', min: 0, max: 10, limit: 5 })
-    ).toThrow(TypeError);
-  });
-
-  it('encodes sparse holes as undefined under the any type, keeping the count', () => {
-    const sparse = [1, , 3];
-    const encoder = new Encoder();
-    encoder.write(sparse, { type: 'any', limit: 5 });
-    expect(new Decoder(encoder.toString()).read({ type: 'any', limit: 5 })).toEqual([
-      1,
-      undefined,
-      3,
-    ]);
-  });
-});
-
-describe('preProc / postProc', () => {
-  it('applies preProc on encode', () => {
-    const encoder = new Encoder();
-    encoder.write([1, 2, 3], { type: 'number', min: 0, max: 10, preProc: (x) => x * 2 });
-    const decoded = new Decoder(encoder.toString()).read({ type: 'number', min: 0, max: 10 }, 3);
-    expect(decoded).toEqual([2, 4, 6]);
-  });
-
-  it('does not mutate the caller array when applying preProc', () => {
-    const input = [1, 2, 3];
-    new Encoder().write(input, { type: 'number', min: 0, max: 10, preProc: (x) => x * 2 });
-    expect(input).toEqual([1, 2, 3]);
-  });
-
-  it('applies postProc on decode', () => {
-    const encoder = new Encoder();
-    encoder.write([2, 4, 6], { type: 'number', min: 0, max: 10 });
-    const decoded = new Decoder(encoder.toString()).read(
-      { type: 'number', min: 0, max: 10, postProc: (x) => x / 2 },
-      3
-    );
-    expect(decoded).toEqual([1, 2, 3]);
-  });
-});
-
-describe('read count handling', () => {
-  it('returns an empty array for a count of 0', () => {
-    const encoder = new Encoder();
-    encoder.write(5, NUM);
-    expect(new Decoder(encoder.toString()).read(NUM, 0)).toEqual([]);
-  });
-
-  it('rejects a non-integer count', () => {
-    const encoder = new Encoder();
-    encoder.write([1, 2], NUM);
-    expect(() => new Decoder(encoder.toString()).read(NUM, 1.5)).toThrow(TypeError);
-  });
-
-  it('rejects a negative count', () => {
-    const encoder = new Encoder();
-    encoder.write(5, NUM);
-    expect(() => new Decoder(encoder.toString()).read(NUM, -1)).toThrow(TypeError);
-  });
-});
-
-describe('output density', () => {
+describe('Output density', () => {
   it('packs to the information-theoretic minimum length', () => {
     // Four base-1001 slots span 1001^4 ≈ 1.004e12 states. That needs 5 bytes
     // (256^5 ≈ 1.100e12) and 7 Base64 chars (64^7 ≈ 4.398e12; 6 are too few).
     const encoder = new Encoder();
-    encoder.write([1000, 0, 999, 1], { ...NUM, max: 1000 });
+    composeAll(encoder, [1000, 0, 999, 1]);
     expect(encoder.toUint8Array().length).toBe(5);
     expect(encoder.toString().length).toBe(7);
 
     const decoder = new Decoder(encoder.toUint8Array());
-    expect(decoder.read(NUM, 4)).toEqual([1000, 0, 999, 1]);
+    expect(parseAll(decoder, 4)).toEqual([1000, 0, 999, 1]);
   });
 
   it('packs 40 booleans into exactly 40 bits', () => {
     // No byte boundary rounds a partially-filled slot up on its own; only the
     // whole message rounds, once, to 5 bytes.
     const encoder = new Encoder();
-    encoder.write(
-      Array.from({ length: 40 }, (_, i) => i % 3 === 0),
-      { type: 'boolean' }
-    );
+    for (let i = 0; i < 40; i++) {
+      encoder.compose(i % 3 === 0 ? 1 : 0, 2);
+    }
     expect(encoder.toUint8Array().length).toBe(5);
   });
 
@@ -254,19 +204,7 @@ describe('output density', () => {
   });
 });
 
-describe('error surface', () => {
-  it('rejects an unknown encoding type on write', () => {
-    expect(() => new Encoder().write(1, { type: 'nope' } as never)).toThrow(
-      'Invalid encoding type'
-    );
-  });
-
-  it('rejects an unknown encoding type on read', () => {
-    expect(() => new Decoder('abc').read({ type: 'nope' } as never)).toThrow(
-      'Invalid encoding type'
-    );
-  });
-
+describe('Charset validation', () => {
   it('rejects a duplicate-character charset', () => {
     expect(() => new Decoder('test', 'aab')).toThrow('Invalid character set');
   });
@@ -282,45 +220,61 @@ describe('error surface', () => {
     expect(() => new Decoder('aaa', 'a')).toThrow('Invalid character set');
   });
 
-  it('rejects a binary range with a gap < 2', () => {
-    expect(() => new Decoder('test', [5, 6])).toThrow();
+  it('rejects a bare number as a charset', () => {
+    // A charset is an explicit alphabet or a [min, max] range; a numeric size
+    // says nothing about WHICH characters carry the digits.
+    expect(() => new Decoder('x', 16 as never)).toThrow('Invalid character set');
+    expect(() => new Encoder().toString(16 as never)).toThrow('Invalid character set');
+  });
+
+  it('accepts a two-symbol range charset, the floor shared with string charsets', () => {
+    const encoder = new Encoder();
+    encoder.compose(123, 1001);
+    const range: [number, number] = [48, 49];
+    expect(new Decoder(encoder.toString(range), range).parse(1001)).toBe(123);
+  });
+
+  it('rejects a single-symbol range charset', () => {
+    // Base 1, same as the one-character string charset.
+    expect(() => new Decoder('test', [5, 5])).toThrow('Invalid binary range');
   });
 
   it('rejects a range charset outside the UTF-16 code-unit space', () => {
     // String.fromCharCode truncates modulo 2^16, so such digits would decode
     // back as different in-range values without any error.
     const encoder = new Encoder();
-    encoder.write(123, NUM);
+    encoder.compose(123, 1001);
     expect(() => encoder.toString([0, 100000])).toThrow('Invalid binary range');
     expect(() => encoder.toString([-5, 100])).toThrow('Invalid binary range');
     expect(() => encoder.toString([0.5, 100.5])).toThrow('Invalid binary range');
-    expect(() => new Decoder('x', 70000)).toThrow('Invalid binary range');
   });
 
   it('throws when a character is absent from the charset', () => {
     const decoder = new Decoder('!', CharSets.digit);
-    expect(() => decoder.read({ type: 'boolean' })).toThrow(/not found in character set/);
+    expect(() => decoder.parse(2)).toThrow(/not found in character set/);
   });
 
   it('throws when a character falls just past a binary-range charset', () => {
     // '[' (code 91) is one beyond the maximum of the [65, 90] range.
-    expect(() => new Decoder('Z[', [65, 90]).read({ type: 'string', charset: [65, 90] })).toThrow();
-  });
-
-  it('throws when input ends mid-parse', () => {
-    const encoder = new Encoder();
-    encoder.write(5, NUM);
-    const decoder = new Decoder(encoder.toString());
-    decoder.read(NUM);
-    expect(() => decoder.read(NUM)).toThrow('Unexpected end of input while parsing');
-  });
-
-  it('throws when reading from empty input', () => {
-    expect(() => new Decoder('').read(NUM)).toThrow('Unexpected end of input while parsing');
+    expect(() => new Decoder('Z[', [65, 90]).parse(1001)).toThrow();
   });
 });
 
-describe('block packing', () => {
+describe('Input exhaustion', () => {
+  it('throws when input ends mid-parse', () => {
+    const encoder = new Encoder();
+    encoder.compose(5, 1001);
+    const decoder = new Decoder(encoder.toString());
+    decoder.parse(1001);
+    expect(() => decoder.parse(1001)).toThrow('Unexpected end of input while parsing');
+  });
+
+  it('throws when reading from empty input', () => {
+    expect(() => new Decoder('').parse(1001)).toThrow('Unexpected end of input while parsing');
+  });
+});
+
+describe('Block packing', () => {
   // Large messages pack in ~2048-bit blocks so the big-number arithmetic
   // stays linear in message size. Blocks are invisible to reads; they only
   // cost at most one unfilled digit each at a boundary.
@@ -328,18 +282,18 @@ describe('block packing', () => {
   it('round-trips a message spanning many blocks', () => {
     const values = Array.from({ length: 3000 }, (_, i) => (i * 7919) % 1001);
     const encoder = new Encoder();
-    encoder.write(values, NUM);
+    composeAll(encoder, values);
     const decoder = new Decoder(encoder.toString());
-    expect(decoder.read(NUM, 3000)).toEqual(values);
+    expect(parseAll(decoder, 3000)).toEqual(values);
     expect(() => decoder.finalize()).not.toThrow();
   });
 
   it('round-trips a multi-block byte payload', () => {
     const values = Array.from({ length: 3000 }, (_, i) => (i * 31) % 1001);
     const encoder = new Encoder();
-    encoder.write(values, NUM);
+    composeAll(encoder, values);
     const decoder = new Decoder(encoder.toUint8Array());
-    expect(decoder.read(NUM, 3000)).toEqual(values);
+    expect(parseAll(decoder, 3000)).toEqual(values);
     expect(() => decoder.finalize()).not.toThrow();
   });
 
@@ -347,66 +301,65 @@ describe('block packing', () => {
     // 4000 booleans hold exactly 4000 bits; base-2 slots divide the 2048-bit
     // block cap evenly, so no boundary digit goes unfilled: 500 bytes even.
     const encoder = new Encoder();
-    encoder.write(
-      Array.from({ length: 4000 }, (_, i) => i % 3 === 0),
-      { type: 'boolean' }
-    );
+    for (let i = 0; i < 4000; i++) {
+      encoder.compose(i % 3 === 0 ? 1 : 0, 2);
+    }
     expect(encoder.toUint8Array().length).toBe(500);
   });
 
   it('throws on a digit tampered past a block boundary', () => {
     const values = Array.from({ length: 3000 }, (_, i) => (i * 7919) % 1001);
     const encoder = new Encoder();
-    encoder.write(values, NUM);
+    composeAll(encoder, values);
     const str = encoder.toString();
     // Bump the first block's highest digit to the charset maximum: the block
     // value then exceeds its radix product, and the boundary check rejects the
     // remainder the encoder guarantees is never there.
     const top = blockCapacity(64).digits - 1;
     const decoder = new Decoder(str.slice(0, top) + '/' + str.slice(top + 1));
-    expect(() => decoder.read(NUM, 3000)).toThrow('Oversaturated input');
+    expect(() => parseAll(decoder, 3000)).toThrow('Oversaturated input');
   });
 
   it('throws when a multi-block message is truncated', () => {
     const values = Array.from({ length: 3000 }, (_, i) => (i * 7919) % 1001);
     const encoder = new Encoder();
-    encoder.write(values, NUM);
+    composeAll(encoder, values);
     const decoder = new Decoder(encoder.toString().slice(0, -5));
     // A cut-off tail is indistinguishable from tampered high digits, so either
     // diagnosis may surface — reading must fail one way or the other.
-    expect(() => decoder.read(NUM, 3000)).toThrow();
+    expect(() => parseAll(decoder, 3000)).toThrow();
   });
 
   it('finalize throws on padding appended to a multi-block message', () => {
     const values = Array.from({ length: 3000 }, (_, i) => (i * 7919) % 1001);
     const encoder = new Encoder();
-    encoder.write(values, NUM);
+    composeAll(encoder, values);
     const decoder = new Decoder(encoder.toString() + 'AA');
-    decoder.read(NUM, 3000);
+    parseAll(decoder, 3000);
     expect(() => decoder.finalize()).toThrow('Input is longer than its contents');
   });
 });
 
-describe('corruption detection', () => {
+describe('Corruption detection', () => {
   it('throws mid-read when a tampered digit oversaturates the input', () => {
     // Two radix-50 values nearly fill two Base64 chars (2500 of 4096 states),
     // so after the second read less than one doubling of state space is left
     // and any leftover value is provably a digit bumped past saturation.
-    const opts: NumberOptions = { type: 'number', min: 0, max: 49 };
     const encoder = new Encoder();
-    encoder.write([10, 20], opts);
+    encoder.compose(10, 50);
+    encoder.compose(20, 50);
     const str = encoder.toString();
     expect(str).toHaveLength(2);
     const decoder = new Decoder(str.slice(0, -1) + '/');
-    decoder.read(opts);
-    expect(() => decoder.read(opts)).toThrow('Oversaturated input');
+    decoder.parse(50);
+    expect(() => decoder.parse(50)).toThrow('Oversaturated input');
   });
 
   it('finalize accepts a fully-read canonical input', () => {
     const encoder = new Encoder();
-    encoder.write(5, NUM);
+    encoder.compose(5, 1001);
     const decoder = new Decoder(encoder.toString());
-    decoder.read(NUM);
+    decoder.parse(1001);
     expect(() => decoder.finalize()).not.toThrow();
   });
 
@@ -419,50 +372,83 @@ describe('corruption detection', () => {
     // the char leaves a remainder invisible to the read (which still returns a
     // valid boolean) but caught by the leftover-value check.
     const encoder = new Encoder();
-    encoder.write(true, { type: 'boolean' });
+    encoder.compose(1, 2);
     expect(encoder.toString()).toBe('B');
     const decoder = new Decoder('D');
-    expect(decoder.read({ type: 'boolean' })).toBe(true);
+    expect(decoder.parse(2)).toBe(1);
     expect(() => decoder.finalize()).toThrow('Unread or corrupted data at end of input');
   });
 
   it('finalize throws on trailing padding appended to the input', () => {
     const encoder = new Encoder();
-    encoder.write(true, { type: 'boolean' });
+    encoder.compose(1, 2);
     const decoder = new Decoder(encoder.toString() + 'A');
-    decoder.read({ type: 'boolean' });
+    decoder.parse(2);
     expect(() => decoder.finalize()).toThrow('Input is longer than its contents');
   });
 
   it('finalize throws when values remain unread', () => {
     const encoder = new Encoder();
-    encoder.write([1, 2], NUM);
+    encoder.compose(1, 1001);
+    encoder.compose(2, 1001);
     const decoder = new Decoder(encoder.toString());
-    decoder.read(NUM);
+    decoder.parse(1001);
     expect(() => decoder.finalize()).toThrow('Unread or corrupted data at end of input');
+  });
+
+  it('rejects a term run padded with a zero top digit', () => {
+    // Digit symbols are d+1, so symbol 1 is a zero digit; on top of a run it
+    // adds nothing but length, and the encoder never emits it there.
+    const encoder = new Encoder();
+    encoder.compose(2, 5); // first slot: digit 1
+    encoder.compose(1, 4); // zero digit on top
+    encoder.compose(0, 4); // terminator
+    expect(() => new Decoder(encoder.toString()).parseTerm()).toThrow(CorruptInputError);
+  });
+
+  it('rejects a term run longer than any canonical value needs', () => {
+    // Inline runs hold at most 21 digits (values below 3^21); a longer run
+    // is corruption, and rejecting it early keeps the arithmetic exact.
+    const encoder = new Encoder();
+    encoder.compose(2, 5);
+    for (let i = 0; i < 21; i++) {
+      encoder.compose(2, 4);
+    }
+    encoder.compose(0, 4);
+    expect(() => new Decoder(encoder.toString()).parseTerm()).toThrow(
+      'longer than its canonical maximum'
+    );
+  });
+
+  it('rejects an escaped term that belongs in the inline range', () => {
+    // The escape exists for values >= 3^21; a small value behind it is a
+    // second spelling of an inline-encodable number, so it must not decode.
+    const encoder = new Encoder();
+    encoder.compose(4, 5); // escape symbol
+    encoder.compose(0, 4); // digit count: the minimum, 12
+    for (let i = 0; i < 11; i++) {
+      encoder.compose(0, 8);
+    }
+    encoder.compose(0, 7); // top digit 1 -> value 8^11, below 3^21
+    expect(() => new Decoder(encoder.toString()).parseTerm()).toThrow('within the inline range');
   });
 });
 
-describe('Public entrypoints', () => {
-  // Loading the barrels executes their re-export bindings; asserting identity
-  // guards the public surface actually points at the real implementations
-  // rather than a stale or stubbed re-export. Behaviour is covered elsewhere.
-  it('re-export the same Encoder/Decoder as the internal modules', () => {
-    expect(root.Encoder).toBe(Encoder);
-    expect(root.Decoder).toBe(Decoder);
-    expect(root.p).toBe(schema.p);
-    expect(root.registerModule).toBe(mods.registerModule);
-  });
-
-  it('expose a non-empty, fully-defined surface on every barrel', () => {
+describe('Public entrypoint', () => {
+  it('exposes a non-empty, fully-defined surface', () => {
     // Access every export so each lazy re-export getter runs; a barrel that
     // points at an undefined/removed symbol fails here.
-    for (const ns of [root, schema, mods]) {
-      const keys = Object.keys(ns);
-      expect(keys.length).toBeGreaterThan(0);
-      for (const key of keys) {
-        expect((ns as Record<string, unknown>)[key]).toBeDefined();
-      }
+    const keys = Object.keys(root);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) {
+      expect((root as Record<string, unknown>)[key]).toBeDefined();
     }
+  });
+
+  it('re-exports the working implementations', () => {
+    expect(root.Encoder).toBe(Encoder);
+    expect(root.Decoder).toBe(Decoder);
+    expect(root.p).toBe(p);
+    expect(root.p.int().min(0).max(1).decode(root.p.int().min(0).max(1).encode(1))).toBe(1);
   });
 });
