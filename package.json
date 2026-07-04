@@ -1,6 +1,6 @@
 {
   "name": "polynar",
-  "version": "4.2.0",
+  "version": "4.2.1",
   "description": "Schema-driven, mixed-base encoding that packs typed data into compact bytes or strings",
   "type": "commonjs",
   "main": "./dist/index.js",
