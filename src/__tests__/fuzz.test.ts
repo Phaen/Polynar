@@ -34,6 +34,18 @@ const randString = (max: number): string => {
   return s;
 };
 
+const FLOAT_SCRATCH = new Float64Array(1);
+const FLOAT_BITS = new BigUint64Array(FLOAT_SCRATCH.buffer);
+
+// Step a value a few doubles up or down. Neighbours of a cheap fraction are
+// the adversarial region for the float codec: their rounding intervals abut
+// the fraction's, and the significand search must not claim its name.
+const nudge = (value: number): number => {
+  FLOAT_SCRATCH[0] = value;
+  FLOAT_BITS[0] += BigInt(randInt(-3, 3));
+  return Number.isFinite(FLOAT_SCRATCH[0]) ? FLOAT_SCRATCH[0] : value;
+};
+
 const scalarCase = (): Case => {
   switch (randInt(0, 7)) {
     case 0: {
@@ -59,11 +71,26 @@ const scalarCase = (): Case => {
         gen: () => (randInt(-100000, 100000) * scaledStep) / scale,
       };
     }
-    case 3:
+    case 3: {
+      // Cover all three significand spellings — noise, ratios, decimals,
+      // dyadics and scientific magnitudes — and nudge a share of them so the
+      // codec also sees the doubles adjacent to every cheap fraction.
+      const floatGen = pick([
+        () => (rand() * 2 - 1) * 10 ** randInt(-20, 20),
+        () => randInt(1, 5000) / randInt(1, 5000),
+        () => randInt(-99999, 99999) / 10 ** randInt(0, 6),
+        () => randInt(1, 1000) * 2 ** randInt(-30, 30),
+        () => Number(`${randInt(1, 9999)}e${rand() < 0.5 ? '-' : ''}${randInt(0, 300)}`),
+      ] as const);
       return {
         node: p.float(),
-        gen: () => (rand() * 2 - 1) * 10 ** randInt(-20, 20),
+        gen: () => {
+          const raw = floatGen();
+          const value = Number.isFinite(raw) && raw !== 0 ? raw : 1.5;
+          return rand() < 0.3 ? nudge(value) : value;
+        },
       };
+    }
     case 4:
       return { node: p.string(), gen: () => randString(10) };
     case 5:
