@@ -26,7 +26,7 @@ export const p = {
   int(): PInt {
     return new PInt();
   },
-  /** Any finite double, bit-exact; magnitudes near 1 pack denser. */
+  /** Any finite double, bit-exact; simple values pack as fractions in a few bytes at any magnitude. */
   float(): PFloat {
     return new PFloat();
   },
