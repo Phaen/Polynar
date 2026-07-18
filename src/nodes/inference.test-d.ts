@@ -4,7 +4,7 @@
  * (the base tsconfig excludes only *.test.ts). A wrong inference makes `Equals`
  * resolve to `false`, so `= true` fails to compile and typecheck goes red.
  */
-import { p } from './index';
+import { p } from './p';
 import type { Infer } from './infer';
 
 type Equals<A, B> =

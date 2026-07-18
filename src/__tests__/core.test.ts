@@ -7,7 +7,7 @@
 
 import { Encoder, Decoder, CharSets, CorruptInputError, p, PNode } from '../index';
 import * as root from '../index';
-import { blockCapacity } from '../utils';
+import { blockCapacity } from '../packer/utils';
 
 /** Push `values` as base-1001 slots — the compact stand-in for real payloads. */
 const composeAll = (encoder: Encoder, values: number[]): void => {
@@ -341,10 +341,11 @@ describe('Block packing', () => {
 });
 
 describe('Corruption detection', () => {
-  it('throws mid-read when a tampered digit oversaturates the input', () => {
-    // Two radix-50 values nearly fill two Base64 chars (2500 of 4096 states),
-    // so after the second read less than one doubling of state space is left
-    // and any leftover value is provably a digit bumped past saturation.
+  it('rejects a tampered digit that oversaturates the input', () => {
+    // Two radix-50 values nearly fill two Base64 chars (2500 of 4096 states).
+    // A weighted symbol may legitimately leave value inside the last doubling
+    // of state space, so the leftover is only provably corrupt once the
+    // message ends: finalize rejects it.
     const encoder = new Encoder();
     encoder.compose(10, 50);
     encoder.compose(20, 50);
@@ -352,7 +353,8 @@ describe('Corruption detection', () => {
     expect(str).toHaveLength(2);
     const decoder = new Decoder(str.slice(0, -1) + '/');
     decoder.parse(50);
-    expect(() => decoder.parse(50)).toThrow('Oversaturated input');
+    decoder.parse(50);
+    expect(() => decoder.finalize()).toThrow('Unread or corrupted data at end of input');
   });
 
   it('finalize accepts a fully-read canonical input', () => {

@@ -13,7 +13,7 @@ import {
   PNode,
   PObject,
   PString,
-} from './nodes';
+} from './';
 
 /**
  * One rule across every node: the factory takes what the type IS (a step, an

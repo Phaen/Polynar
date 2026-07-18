@@ -6,7 +6,7 @@
  * phantom marker), then flatten the intersection so the result is identity-equal
  * to a hand-written object type.
  */
-import type { PNode } from './nodes';
+import type { PNode } from './base';
 
 /** Extract the output type a node decodes to. */
 export type Infer<N> = N extends PNode<infer T> ? T : never;

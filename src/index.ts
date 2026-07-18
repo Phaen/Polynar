@@ -8,7 +8,7 @@
  * @packageDocumentation
  */
 
-export { p } from './p';
+export { p } from './nodes';
 export {
   PNode,
   POptional,
@@ -23,10 +23,7 @@ export {
   PArray,
   PAny,
 } from './nodes';
-export type { Infer, InferShape, Simplify } from './infer';
+export type { Infer, InferShape } from './nodes';
 
-export { Encoder } from './encoder';
-export { Decoder } from './decoder';
-export { CorruptInputError } from './errors';
-export { CharSets } from './constants';
-export type { Charset } from './types';
+export { Encoder, Decoder, CorruptInputError, CharSets } from './packer';
+export type { Charset } from './packer';
