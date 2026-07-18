@@ -1,16 +1,9 @@
 /**
- * Utility functions for Polynar
+ * Utility functions for packer
  */
 
 import type { Charset } from './types';
 import { BLOCK_BITS, DEFAULT_CHARSET } from './constants';
-
-/**
- * Type checking utilities
- */
-export const isObject = (o: any): o is object => o && typeof o === 'object';
-export const isArray = (o: any): o is any[] => Array.isArray(o);
-export const isDate = (o: any): o is Date => o instanceof Date;
 
 /**
  * The largest digit count (and its state space, size^digits) a block of
@@ -58,7 +51,7 @@ export function validateCharset(charset?: Charset): Charset {
       throw new Error(errChar);
     }
     return charset;
-  } else if (isArray(charset)) {
+  } else if (Array.isArray(charset)) {
     if (charset.length !== 2) {
       throw new TypeError(errBin);
     }

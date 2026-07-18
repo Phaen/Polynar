@@ -1,5 +1,5 @@
 /**
- * Constants and character sets for Polynar
+ * Constants and character sets for Polynar packer
  */
 
 /**
@@ -62,28 +62,3 @@ export const TERM_COUNT_RUN_DIGITS = 6;
  * largest single radix `compose` accepts.
  */
 export const BLOCK_BITS = 2048;
-
-/**
- * Full UTF-16 code-unit range. Used wherever a string must round-trip ANY
- * character (the schema's `p.string()` default, and the self-describing `any`
- * encoder for string values and object keys) rather than the compact but
- * ASCII-only `printable` default.
- */
-export const UTF16_RANGE: [number, number] = [0, 65535];
-
-/**
- * Named date intervals in milliseconds. `month` is the mean Gregorian month
- * (30.4375 days) and `year` is twelve of them (365.25 days) — fixed-length
- * approximations for bucketing, not calendar arithmetic.
- */
-export const DATE_INTERVALS = {
-  second: 1_000,
-  minute: 60_000,
-  hour: 3_600_000,
-  day: 86_400_000,
-  week: 604_800_000,
-  month: 2_629_800_000,
-  year: 31_557_600_000,
-} as const;
-
-export type DateInterval = keyof typeof DATE_INTERVALS;

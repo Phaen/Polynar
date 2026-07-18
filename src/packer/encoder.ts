@@ -1,8 +1,15 @@
 /**
  * The write-side packer primitive. Values are pushed as (integer, radix)
- * pairs via `compose`/`composeTerm`; `toString`/`toUint8Array` fold them into
- * mixed-radix blocks and emit digits. Schema nodes drive this — it knows
- * nothing about types.
+ * pairs via `compose`/`composeTerm`, or as weighted symbols via
+ * `composeWeighted`; `toString`/`toUint8Array` fold them into mixed-radix
+ * blocks and emit digits. Schema nodes drive this — it knows nothing about
+ * types.
+ *
+ * The fold is a big-integer rANS: a weighted symbol owning `freq` of `total`
+ * states costs exactly log2(total/freq) bits, because the position inside
+ * its bucket carries the next value's information instead of being wasted.
+ * A uniform slot is the special case freq = 1, which reduces the update to
+ * plain multiply-add — the original mixed-radix arithmetic.
  */
 
 import type { Charset } from './types';
@@ -12,26 +19,50 @@ import {
   TERM_PAYLOAD_BASE,
   TERM_PAYLOAD_MIN_DIGITS,
 } from './constants';
-import { validateCharset, blockCapacity, isArray } from './utils';
+import { validateCharset, blockCapacity } from './utils';
 
 export class Encoder {
-  private radii: number[] = [];
-  private integers: number[] = [];
+  private cums: number[] = [];
+  private freqs: number[] = [];
+  private totals: number[] = [];
 
   /** Push one value in a fixed radix: `integer` must lie in `[0, radix)`. */
   compose(integer: number, radix: number): void {
     // An out-of-range value would not throw on its own; it would silently
     // corrupt every value packed after it. Fail here, at the source.
-    if (!Number.isInteger(radix) || radix < 1) {
-      throw new TypeError('Radix must be a positive integer');
+    if (!Number.isInteger(radix) || radix < 1 || radix > Number.MAX_SAFE_INTEGER) {
+      throw new TypeError('Radix must be a positive safe integer');
     }
 
     if (!Number.isInteger(integer) || integer < 0 || integer >= radix) {
       throw new RangeError('Integer must be a non-negative integer below its radix');
     }
 
-    this.integers.push(integer);
-    this.radii.push(radix);
+    this.cums.push(integer);
+    this.freqs.push(1);
+    this.totals.push(radix);
+  }
+
+  /**
+   * Push one weighted symbol: the bucket `[cum, cum + freq)` out of `total`
+   * states. Costs log2(total/freq) bits — fractional, exact. The decoder
+   * recovers the symbol from which bucket the residual lands in, so both
+   * sides must derive identical integer tables.
+   */
+  composeWeighted(cum: number, freq: number, total: number): void {
+    if (!Number.isInteger(total) || total < 1 || total > Number.MAX_SAFE_INTEGER) {
+      throw new TypeError('Total must be a positive safe integer');
+    }
+    if (!Number.isInteger(freq) || freq < 1) {
+      throw new TypeError('Frequency must be a positive integer');
+    }
+    if (!Number.isInteger(cum) || cum < 0 || cum + freq > total) {
+      throw new RangeError('Bucket [cum, cum + freq) must lie within [0, total)');
+    }
+
+    this.cums.push(cum);
+    this.freqs.push(freq);
+    this.totals.push(total);
   }
 
   /** Push one unbounded non-negative integer. */
@@ -91,12 +122,21 @@ export class Encoder {
    * mixed-radix blocks. Within a block, values fold into one big integer — in
    * reverse, so the decoder can peel them off front-to-back, which it needs
    * because later radices can depend on earlier decoded values (e.g. an
-   * array's length prefix). A value whose radix would push the block's radix
-   * product past the block cap starts the next block instead. Full blocks span
+   * array's length prefix). A value whose total would push the block's state
+   * bound past the block cap starts the next block instead. Full blocks span
    * exactly `digits` digits, so the decoder finds the boundaries by position
    * alone; only the final block rounds up to a whole digit, so a message that
    * fits one block is always the information-theoretic minimum length:
-   * ceil(log_size(product of all radii)).
+   * ceil(log_size(state bound)).
+   *
+   * The bound is the rational V/den, with U/den the running density factor:
+   * per symbol V' = (V + U·(total−1))·freq, U' = U·total, den' = den·freq.
+   * V/den provably covers the reverse fold in wire order even though the
+   * per-symbol exact bound is not order-commutative, and the candidate
+   * V + U·(total−1) needs only `total` — so the decoder can make the
+   * identical block-boundary decision before it has decoded the symbol.
+   * With every freq at 1, V IS the radix product: the original wire format,
+   * byte for byte.
    */
   private toDigits(size: number): number[] {
     const base = BigInt(size);
@@ -104,25 +144,32 @@ export class Encoder {
     const digits: number[] = [];
 
     let start = 0;
-    while (start < this.radii.length) {
-      // Extend the block while its radix product stays within the cap.
-      let product = 1n;
+    while (start < this.totals.length) {
+      // Extend the block while the freq-blind bound stays within the cap.
+      let den = 1n;
+      let u = 1n;
+      let v = 1n;
       let end = start;
-      while (end < this.radii.length) {
-        const radix = BigInt(this.radii[end]);
-        if (product * radix > block.cap) {
+      while (end < this.totals.length) {
+        const total = BigInt(this.totals[end]);
+        const candidate = v + u * (total - 1n);
+        if (candidate > block.cap * den) {
           break;
         }
-        product *= radix;
+        const freq = BigInt(this.freqs[end]);
+        v = candidate * freq;
+        u = u * total;
+        den = den * freq;
         end++;
       }
 
       let value = 0n;
       for (let i = end - 1; i >= start; i--) {
-        value = value * BigInt(this.radii[i]) + BigInt(this.integers[i]);
+        const freq = BigInt(this.freqs[i]);
+        value = (value / freq) * BigInt(this.totals[i]) + BigInt(this.cums[i]) + (value % freq);
       }
 
-      if (end < this.radii.length) {
+      if (end < this.totals.length) {
         // A full block: more values follow, so every digit of the block is
         // emitted, filled or not.
         for (let d = 0; d < block.digits; d++) {
@@ -130,8 +177,8 @@ export class Encoder {
           value /= base;
         }
       } else {
-        // The final block: emit the minimum digits its state space needs.
-        let capacity = product;
+        // The final block: emit the minimum digits its state bound needs.
+        let capacity = (v + den - 1n) / den;
         while (capacity > 1n) {
           digits.push(Number(value % base));
           value /= base;
@@ -167,7 +214,7 @@ export class Encoder {
   }
 
   toUint8Array(charset?: [number, number]): Uint8Array {
-    if (charset != null && (!isArray(charset) || charset.length !== 2)) {
+    if (charset != null && (!Array.isArray(charset) || charset.length !== 2)) {
       throw new TypeError('Binary charset must be a [min, max] range');
     }
 

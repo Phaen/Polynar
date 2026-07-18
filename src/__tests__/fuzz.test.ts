@@ -30,9 +30,15 @@ interface Case {
 const randString = (max: number): string => {
   let s = '';
   const length = randInt(0, max);
-  for (let i = 0; i < length; i++) {
-    // Stay below the surrogate range so every code unit is a whole character.
-    s += String.fromCharCode(randInt(32, 0xd7ff));
+  while (s.length < length) {
+    // Half ASCII, half anywhere in [0, 0x10FFFF]: over enough runs this
+    // yields astral characters, lone surrogates, and adjacent lead+trail
+    // picks that merge into one code point.
+    const code = rand() < 0.5 ? randInt(32, 126) : randInt(0, 0x10ffff);
+    if (code > 0xffff && s.length + 2 > length) {
+      continue;
+    }
+    s += String.fromCodePoint(code);
   }
   return s;
 };
@@ -126,7 +132,7 @@ const scalarCase = (): Case => {
     case 4:
       return { node: p.float(), gen: randFloat };
     case 5: {
-      switch (randInt(0, 2)) {
+      switch (randInt(0, 3)) {
         case 0:
           return { node: p.string(), gen: () => randString(10) };
         case 1: {
@@ -134,6 +140,8 @@ const scalarCase = (): Case => {
           const max = randInt(0, 12);
           return { node: p.string().max(max), gen: () => randString(max) };
         }
+        case 2:
+          return { node: p.string().prose(), gen: () => randString(10) };
         default: {
           // Both charset kinds: an indexed alphabet and a code-unit range.
           if (rand() < 0.5) {
@@ -163,13 +171,20 @@ const scalarCase = (): Case => {
         }
       }
     }
-    case 6:
-      return { node: p.bool(), gen: () => rand() < 0.5 };
+    case 6: {
+      // Weighted half the time: the prior changes the wire, never the values.
+      const node = rand() < 0.5 ? p.bool() : p.bool().weights([randInt(1, 200), randInt(1, 200)]);
+      return { node, gen: () => rand() < 0.5 };
+    }
     case 7: {
       // Membership is identity, so members can mix types freely.
       const pool = ['aa', 'bb', 'cc', 0, 1, -17, 3.5, true, false, null];
       const members = [...pool].sort(() => rand() - 0.5).slice(0, randInt(2, 6));
-      return { node: p.enum(members), gen: () => pick(members) };
+      const node =
+        rand() < 0.5
+          ? p.enum(members)
+          : p.enum(members).weights(members.map(() => randInt(1, 1000)));
+      return { node, gen: () => pick(members) };
     }
     default: {
       // Interval buckets quantize the timestamp, so values are generated on
@@ -277,7 +292,8 @@ const objectCase = (depth: number): Case => {
     fields[key] = randomCase(depth - 1);
     if (rand() < 0.3) {
       optional.add(key);
-      shape[key] = fields[key].node.optional();
+      const opt = fields[key].node.optional();
+      shape[key] = rand() < 0.5 ? opt : opt.weights([randInt(1, 100), randInt(1, 100)]);
     } else {
       shape[key] = fields[key].node;
     }
