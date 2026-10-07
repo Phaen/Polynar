@@ -2,7 +2,7 @@
  * Schema cross-node tests — validation, corruption detection, transport, and internals.
  */
 
-import { p, CharSets, CorruptInputError, Encoder } from '../../index';
+import { p, CharSets, CorruptInputError, Encoder, PNode } from '../../index';
 
 describe('Schema validation', () => {
   it('throws on non-finite numbers', () => {
@@ -237,5 +237,44 @@ describe('Schema internals', () => {
     const boundedBytes = records.reduce((n, r) => n + Bounded.encode(r).length, 0);
     const unboundedBytes = records.reduce((n, r) => n + Unbounded.encode(r).length, 0);
     expect(boundedBytes).toBeLessThan(unboundedBytes);
+  });
+
+  it('encode errors name the path to the offending value', () => {
+    const Search = p.object({ filters: p.array(p.object({ op: p.enum(['eq', 'lt']) })) });
+    const ops = [{ op: 'eq' }, { op: 'eq' }, { op: 'gt' }] as { op: 'eq' }[];
+    expect(() => Search.encode({ filters: ops })).toThrow(
+      "filters[2].op: Value 'gt' not found in list"
+    );
+
+    const Account = p.object({ user: p.object({ name: p.string() }) });
+    expect(() => Account.encode({ user: {} as { name: string } })).toThrow(
+      new ReferenceError('user.name: required field is missing')
+    );
+
+    // The class survives, and the stack's first line carries the path too.
+    let caught: unknown;
+    try {
+      p.object({ a: p.int().max(3) }).encode({ a: 5 });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(RangeError);
+    expect((caught as Error).stack).toMatch(/^RangeError: a: Value '5' exceeds range bounds/);
+
+    expect(() => p.array(p.int().max(1)).encode([0, 5])).toThrow('[1]: ');
+    expect(() => p.any().encode({ a: [1, Symbol('s')] })).toThrow(
+      "a[1]: Type 'symbol' not supported"
+    );
+
+    // Anything thrown that is not an Error passes through untouched.
+    class PThrows extends PNode<number> {
+      _write(): void {
+        throw 'not an error';
+      }
+      _read(): number {
+        return 0;
+      }
+    }
+    expect(() => p.object({ a: new PThrows() }).encode({ a: 1 })).toThrow('not an error');
   });
 });
