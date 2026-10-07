@@ -1,5 +1,5 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
-import { isArray, isDate } from './guards';
+import { isArray, isDate, isPlainObject } from './guards';
 import { PNode } from './base';
 import { PInt } from './int';
 import { PFloat } from './float';
@@ -89,6 +89,12 @@ export class PAny extends PNode<unknown> {
           enc.compose(TAG_DATE, TAG_COUNT);
           ANY_DATE._write(enc, value);
         } else {
+          if (!isPlainObject(value)) {
+            const name = value.constructor?.name ?? 'this type';
+            throw new TypeError(
+              `p.any cannot encode ${name} values; convert to a plain object first`
+            );
+          }
           if (path.has(value)) {
             throw new TypeError('p.any cannot encode a circular structure');
           }

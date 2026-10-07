@@ -57,5 +57,31 @@ describe('Schema any', () => {
       ring.push(ring);
       expect(() => p.any().encode(ring)).toThrow('circular');
     });
+
+    it('rejects values whose state is not their own keys', () => {
+      class Point {
+        constructor(
+          public x = 1,
+          public y = 2
+        ) {}
+      }
+      const cases: [string, unknown][] = [
+        ['Map', new Map([['a', 1]])],
+        ['Set', new Set([1, 2])],
+        ['RegExp', /a/g],
+        ['Error', new Error('boom')],
+        ['Uint8Array', new Uint8Array([1, 2])],
+        ['Point', new Point()],
+      ];
+      for (const [name, value] of cases) {
+        expect(() => p.any().encode(value)).toThrow(`p.any cannot encode ${name} values`);
+      }
+    });
+
+    it('accepts a null-prototype dictionary', () => {
+      const dict = Object.create(null) as Record<string, unknown>;
+      dict.a = 1;
+      expect(trip(dict)).toEqual({ a: 1 });
+    });
   });
 });
