@@ -77,6 +77,14 @@ const randFloat = (): number => {
   return rand() < 0.3 ? nudge(value) : value;
 };
 
+// A random increasing integer CDF over offsets from zero: linear (level
+// weights) or quadratic (weights growing toward the top of the range).
+const randCdf = (): ((d: number) => number) => {
+  const a = randInt(0, 3);
+  const b = randInt(1, 5);
+  return (d) => a * d * d + b * d;
+};
+
 const scalarCase = (): Case => {
   switch (randInt(0, 8)) {
     case 0: {
@@ -128,11 +136,17 @@ const scalarCase = (): Case => {
             node: p.decimal(step).max(grid(kHi)),
             gen: () => grid(kHi - randInt(0, 200000)),
           };
-        default:
+        default: {
+          const bounded = p.decimal(step).min(grid(kLo)).max(grid(kHi));
+          const cdf = randCdf();
           return {
-            node: p.decimal(step).min(grid(kLo)).max(grid(kHi)),
+            node:
+              rand() < 0.5
+                ? bounded
+                : bounded.cdf((v) => cdf(Math.round((v * scale) / scaledStep) - kLo)),
             gen: () => grid(randInt(kLo, kHi)),
           };
+        }
       }
     }
     case 4:
@@ -225,8 +239,10 @@ const scalarCase = (): Case => {
         default: {
           const min = randInt(-1e12, 1e12);
           const span = randInt(0, 1000);
+          const bounded = node.min(min).max(min + span * ms);
+          const cdf = randCdf();
           return {
-            node: node.min(min).max(min + span * ms),
+            node: rand() < 0.5 ? bounded : bounded.cdf((t) => cdf((t - min) / ms)),
             gen: () => new Date(min + randInt(0, span) * ms),
           };
         }
@@ -273,9 +289,11 @@ const arrayCase = (depth: number): Case => {
   const item = randomCase(depth - 1);
   const length = randInt(0, 4);
   let node = p.array(item.node as never);
+  let free = false;
   switch (randInt(0, 3)) {
     case 1:
       node = node.max(length + randInt(0, 3));
+      free = true;
       break;
     case 2:
       node = node.length(length);
@@ -283,9 +301,14 @@ const arrayCase = (depth: number): Case => {
     case 3:
       // A raised floor packs the count as its offset from the minimum.
       node = node.min(randInt(0, length));
-      if (rand() < 0.5) node = node.max(length + randInt(0, 3));
+      if (rand() < 0.5) {
+        node = node.max(length + randInt(0, 3));
+        free = true;
+      }
       break;
   }
+  // A count prior needs a max and a free length.
+  if (free && rand() < 0.5) node = node.cdf(randCdf());
   return { node, gen: () => Array.from({ length }, () => item.gen()) };
 };
 
