@@ -14,3 +14,24 @@ export const isPlainObject = (o: any): o is Record<string, unknown> => {
   const proto = Object.getPrototypeOf(o);
   return proto === null || proto === Object.prototype;
 };
+
+/** The JS kinds `p.union` tells apart: `typeof`, with null, arrays and dates split out of `'object'`. */
+export type Kind =
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'bigint'
+  | 'symbol'
+  | 'function'
+  | 'undefined'
+  | 'null'
+  | 'array'
+  | 'date'
+  | 'object';
+
+export const kindOf = (v: unknown): Kind => {
+  if (v === null) return 'null';
+  if (Array.isArray(v)) return 'array';
+  if (v instanceof Date) return 'date';
+  return typeof v;
+};

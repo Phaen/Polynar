@@ -1,5 +1,6 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
+import { kindOf, type Kind } from './guards';
 import { buildWeights, locateWeighted, type WeightTable } from './weights';
 
 /**
@@ -10,6 +11,7 @@ import { buildWeights, locateWeighted, type WeightTable } from './weights';
  * the listed member itself, not a copy.
  */
 export class PEnum<T> extends PNode<T> {
+  readonly _kinds: readonly Kind[];
   private readonly _list: readonly T[];
   /** A prior over the members; undefined means uniform. */
   private readonly _weights?: WeightTable;
@@ -32,6 +34,7 @@ export class PEnum<T> extends PNode<T> {
       throw new TypeError('p.enum members must be unique');
     }
     this._list = [...list]; // copy so later caller mutation can't change the node
+    this._kinds = [...new Set(this._list.map(kindOf))];
     if (weights !== undefined) {
       this._weights = buildWeights(weights, this._list.length, 'p.enum');
     }

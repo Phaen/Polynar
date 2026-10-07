@@ -1,5 +1,6 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode, POptional } from './base';
+import type { Kind } from './guards';
 import { writeIndex, readIndex } from './lattice';
 import { validateCdf, cdfBucket, locateCdf, type Cdf } from './weights';
 
@@ -18,6 +19,8 @@ interface ArrayBounds {
  * the range to one state — the count then costs zero bits on the wire.
  */
 export class PArray<TItem> extends PNode<TItem[]> {
+  readonly _kinds: readonly Kind[] = ['array'];
+
   private readonly _item: PNode<TItem>;
   private readonly _min?: number;
   private readonly _max?: number;

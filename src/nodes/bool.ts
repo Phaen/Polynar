@@ -1,9 +1,12 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
+import type { Kind } from './guards';
 import { buildWeights, locateWeighted, type WeightTable } from './weights';
 
 /** Boolean. `p.bool`. */
 export class PBool extends PNode<boolean> {
+  readonly _kinds: readonly Kind[] = ['boolean'];
+
   /** A prior as `[false, true]` weights; undefined means one bit each way. */
   private readonly _weights?: WeightTable;
 

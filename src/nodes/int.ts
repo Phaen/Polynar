@@ -1,10 +1,13 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
+import type { Kind } from './guards';
 import { writeIndex, readIndex } from './lattice';
 import { buildWeights, validateCdf, cdfBucket, locateCdf, type Cdf } from './weights';
 
 /** Integer (strict: non-integers throw). `p.int`. */
 export class PInt extends PNode<number> {
+  readonly _kinds: readonly Kind[] = ['number'];
+
   private readonly _min?: number;
   private readonly _max?: number;
   /** The prior as declared, kept so a later bound change re-validates it. */

@@ -22,9 +22,19 @@ export {
   PObject,
   PArray,
   PAny,
+  PNull,
+  PUnion,
 } from './nodes';
 export { ProseModels, buildProseModel } from './nodes';
-export type { Infer, InferShape, Cdf, DateInterval, ProseModel, ProseModelOptions } from './nodes';
+export type {
+  Infer,
+  InferShape,
+  Cdf,
+  DateInterval,
+  Kind,
+  ProseModel,
+  ProseModelOptions,
+} from './nodes';
 
 export { Encoder, Decoder, CorruptInputError, CharSets } from './packer';
 export type { Charset, ByteRange } from './packer';

@@ -64,3 +64,10 @@ const _tagged: Equals<Infer<typeof Tagged>, { tags: ('a' | 'b')[]; scores?: numb
 // optional, never its items.
 // @ts-expect-error — POptional is not a valid array item
 p.array(p.string().optional());
+
+// Unions infer the union of their members' types.
+const Nullable = p.union([p.string(), p.int(), p.null()]);
+const _union: Equals<Infer<typeof Nullable>, string | number | null> = true;
+
+// @ts-expect-error — POptional is not a valid union member
+p.union([p.string().optional(), p.int()]);

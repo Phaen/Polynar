@@ -1,9 +1,12 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import type { InferShape } from './infer';
 import { PNode, POptional } from './base';
+import type { Kind } from './guards';
 
 /** Object with a fixed shape. Optional fields carry a single presence bit. */
 export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferShape<S>> {
+  readonly _kinds: readonly Kind[] = ['object'];
+
   private readonly _shape: S;
   private readonly _keys: readonly string[];
 

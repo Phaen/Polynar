@@ -124,6 +124,16 @@ The list order is the encoding, so keep it stable if old bytes must keep decodin
 
 `.weights()` says how likely each value is, as positive integers in list order (`[false, true]` for booleans). It never rejects anything: rare values still encode, they just cost more. The weights are part of the wire format.
 
+### Unions
+
+```typescript
+p.union([p.string(), p.int(), p.array(p.string())]); // string | number | string[]
+p.union([p.string(), p.null()]); // a nullable string
+p.union([p.string(), p.null()]).weights([1, 99]); // nearly always null
+```
+
+The member is picked by the value's kind: string, number, boolean, null, date, array or object. Each kind can belong to one member, so two array or two object members throw; for mixed items, use `p.array(p.union([...]))`. The tag costs log2(members) bits, or whatever `.weights()` says.
+
 ### Dates
 
 ```typescript
@@ -197,7 +207,7 @@ Input that does not decode as the schema expects throws a `CorruptInputError` (a
 
 ### Custom types
 
-Subclass `PNode`: `_write` validates one value and pushes its digits with `compose(integer, radix)` / `composeTerm(integer)` — or `composeWeighted(cum, freq, total)` when some values are more common than others — and `_read` mirrors it with `parse`/`parseTerm`/`parseWeighted` in the same order. The node then composes with `p.object`, `p.array` and `.optional()` like any built-in. See [`examples/custom-node.ts`](examples/custom-node.ts) for a runnable version.
+Subclass `PNode`: `_write` validates one value and pushes its digits with `compose(integer, radix)` / `composeTerm(integer)` — or `composeWeighted(cum, freq, total)` when some values are more common than others — and `_read` mirrors it with `parse`/`parseTerm`/`parseWeighted` in the same order. The node then composes with `p.object`, `p.array` and `.optional()` like any built-in; to use it in `p.union`, also set `_kinds` to the kinds its values have, e.g. `readonly _kinds = ['object'] as const`. See [`examples/custom-node.ts`](examples/custom-node.ts) for a runnable version.
 
 ```typescript
 import { p, PNode, Encoder, Decoder } from 'polynar';

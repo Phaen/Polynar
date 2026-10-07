@@ -86,7 +86,7 @@ const randCdf = (): ((d: number) => number) => {
 };
 
 const scalarCase = (): Case => {
-  switch (randInt(0, 8)) {
+  switch (randInt(0, 9)) {
     case 0: {
       const lo = randInt(-1000, 0);
       const hi = lo + randInt(0, 2000);
@@ -213,6 +213,24 @@ const scalarCase = (): Case => {
           ? p.enum(members)
           : p.enum(members).weights(members.map(() => randInt(1, 1000)));
       return { node, gen: () => pick(members) };
+    }
+    case 8: {
+      // One member per kind: the generators below cover number, string,
+      // boolean, null and array without overlap.
+      const options: Case[] = [
+        { node: p.int().min(-50).max(50), gen: () => randInt(-50, 50) },
+        { node: p.string().max(6), gen: () => randString(6) },
+        { node: p.bool(), gen: () => rand() < 0.5 },
+        { node: p.null(), gen: () => null },
+        { node: p.array(p.int().min(0).max(9)).max(3), gen: () => [randInt(0, 9)] },
+      ]
+        .sort(() => rand() - 0.5)
+        .slice(0, randInt(2, 3));
+      const union = p.union(options.map((o) => o.node));
+      return {
+        node: rand() < 0.5 ? union : union.weights(options.map(() => randInt(1, 1000))),
+        gen: () => pick(options).gen(),
+      };
     }
     default: {
       // Interval buckets quantize the timestamp, so values are generated on

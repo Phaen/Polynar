@@ -11,9 +11,12 @@ import {
   PFloat,
   PInt,
   PNode,
+  PNull,
   PObject,
   PString,
+  PUnion,
 } from './';
+import type { Infer } from './infer';
 
 /**
  * One rule across every node: the factory takes what the type IS (a step, an
@@ -49,6 +52,19 @@ export const p = {
   /** Enum over a fixed list of values, matched by identity (`===`). */
   enum<const T extends readonly unknown[]>(list: T): PEnum<T[number]> {
     return new PEnum<T[number]>(list);
+  },
+  /**
+   * One of several members, picked by the value's JS kind; one member per
+   * kind. `p.union([p.string(), p.null()])` is a nullable string.
+   */
+  union<T extends readonly (PNode<any> & { _optional?: never })[]>(
+    members: T
+  ): PUnion<Infer<T[number]>> {
+    return new PUnion<Infer<T[number]>>(members);
+  },
+  /** Null; zero bits. Pairs with `p.union` for nullable fields. */
+  null(): PNull {
+    return new PNull();
   },
   /** Date; chain `.min()`/`.max()` to bound, `.interval()` to coarsen. */
   date(): PDate {

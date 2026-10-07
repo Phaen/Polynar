@@ -1,5 +1,5 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
-import { isArray, isDate, isPlainObject } from './guards';
+import { isArray, isDate, isPlainObject, type Kind } from './guards';
 import { PNode } from './base';
 import { PInt } from './int';
 import { PFloat } from './float';
@@ -24,6 +24,17 @@ const TAG_OBJECT = 8;
 
 /** Self-describing escape hatch. Output type `unknown`. `p.any`. */
 export class PAny extends PNode<unknown> {
+  readonly _kinds: readonly Kind[] = [
+    'undefined',
+    'null',
+    'boolean',
+    'number',
+    'string',
+    'date',
+    'array',
+    'object',
+  ];
+
   _write(enc: Encoder, value: unknown): void {
     this._writeAny(enc, value, new WeakSet());
   }
