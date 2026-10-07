@@ -58,4 +58,25 @@ describe('Schema int', () => {
     enc.composeTerm(2 ** 53);
     expect(() => p.int().min(1).decode(enc.toUint8Array())).toThrow(CorruptInputError);
   });
+
+  it('int rejects non-finite bounds', () => {
+    expect(() => p.int().min(-Infinity)).toThrow('p.int min must be a finite number');
+    expect(() => p.int().max(NaN)).toThrow('p.int max must be a finite number');
+  });
+
+  it('a lone bound refuses offsets that lose precision past 2^53', () => {
+    // 2^53 + 6 - 1 rounds to an even neighbour, so it cannot come back exactly.
+    expect(() =>
+      p
+        .int()
+        .min(1)
+        .encode(2 ** 53 + 6)
+    ).toThrow('too far from its bound');
+    // The decode side catches the same drift on a term from foreign bytes.
+    const bytes = p
+      .int()
+      .min(0)
+      .encode(2 ** 53 + 2);
+    expect(() => p.int().max(-3).decode(bytes)).toThrow(CorruptInputError);
+  });
 });

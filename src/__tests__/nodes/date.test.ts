@@ -58,4 +58,8 @@ describe('Schema date', () => {
     const d = new Date('2020-06-15T00:00:00Z');
     expect(daily.decode(daily.encode(d)).getTime()).toBe(d.getTime());
   });
+
+  it('rejects fractional timestamp bounds', () => {
+    expect(() => p.date().min(1.5)).toThrow('bounds must be Dates or integer timestamps');
+  });
 });

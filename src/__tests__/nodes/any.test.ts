@@ -84,4 +84,9 @@ describe('Schema any', () => {
       expect(trip(dict)).toEqual({ a: 1 });
     });
   });
+
+  it('rejects types it has no tag for', () => {
+    expect(() => p.any().encode(Symbol('s'))).toThrow("Type 'symbol' not supported");
+    expect(() => p.any().encode(1n)).toThrow("Type 'bigint' not supported");
+  });
 });

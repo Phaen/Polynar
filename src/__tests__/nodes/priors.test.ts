@@ -154,4 +154,16 @@ describe('Schema priors', () => {
     expect(heavy.encode(all).length).toBeLessThanOrEqual(4);
     expect(flat.encode(all).length).toBeGreaterThan(18);
   });
+
+  it('priors reject malformed weights and cdfs eagerly', () => {
+    expect(() => p.enum(['a', 'b']).weights([2 ** 53, 2 ** 53])).toThrow('sum to a safe integer');
+    expect(() =>
+      p
+        .int()
+        .min(0)
+        .max(1)
+        .cdf((v) => v + 0.5)
+    ).toThrow('cdf must return safe integers');
+    expect(() => p.date().cdf((t) => t)).toThrow('p.date cdf requires both bounds');
+  });
 });
