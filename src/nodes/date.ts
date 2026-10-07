@@ -55,14 +55,11 @@ export class PDate extends PNode<Date> {
     }
 
     if (typeof interval === 'string') {
-      if (!(interval in DATE_INTERVALS)) {
-        throw new TypeError('Invalid date interval');
-      }
-      interval = DATE_INTERVALS[interval as DateInterval];
+      interval = DATE_INTERVALS[interval];
     }
     // The interval is a divisor (ms per bucket). 0/negative/non-integer values
     // have no coherent meaning and an interval of 0 would divide by zero.
-    if (typeof interval !== 'number' || !(interval > 0) || interval % 1 !== 0) {
+    if (!(interval > 0) || interval % 1 !== 0) {
       throw new TypeError('Invalid date interval');
     }
     this._interval = interval;
@@ -111,7 +108,7 @@ export class PDate extends PNode<Date> {
   }
 
   _write(enc: Encoder, value: Date): void {
-    if (!isDate(value) || isNaN(value.getTime())) {
+    if (isNaN(value.getTime())) {
       throw new TypeError(`p.date expected a valid Date, got ${String(value)}`);
     }
     const timestamp = value.getTime();

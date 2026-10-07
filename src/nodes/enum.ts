@@ -1,5 +1,4 @@
 import { Encoder, Decoder } from '../packer';
-import { isArray } from './guards';
 import { PNode } from './base';
 import { buildWeights, locateWeighted, type WeightTable } from './weights';
 
@@ -17,7 +16,7 @@ export class PEnum<T> extends PNode<T> {
 
   constructor(list: readonly T[], weights?: readonly number[]) {
     super();
-    if (!isArray(list) || list.length === 0) {
+    if (list.length === 0) {
       throw new TypeError('p.enum requires a non-empty list');
     }
     for (const member of list) {

@@ -42,7 +42,7 @@ export class PDecimal extends PNode<number> {
 
   constructor(step: number, min?: number, max?: number, cdf?: Cdf) {
     super();
-    if (typeof step !== 'number' || !(step > 0)) {
+    if (!(step > 0)) {
       throw new TypeError('p.decimal step must be a positive number');
     }
 
@@ -129,7 +129,7 @@ export class PDecimal extends PNode<number> {
   }
 
   _write(enc: Encoder, value: number): void {
-    if (typeof value !== 'number' || !Number.isFinite(value)) {
+    if (!Number.isFinite(value)) {
       throw new TypeError(`p.decimal expected a finite number, got ${String(value)}`);
     }
 

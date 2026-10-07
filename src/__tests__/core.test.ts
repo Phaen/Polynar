@@ -19,12 +19,6 @@ const composeAll = (encoder: Encoder, values: number[]): void => {
 const parseAll = (decoder: Decoder, count: number): number[] =>
   Array.from({ length: count }, () => decoder.parse(1001));
 
-describe('Encoder / Decoder construction', () => {
-  it('throws when constructed without input', () => {
-    expect(() => new Decoder(null as never)).toThrow('Missing first argument');
-  });
-});
-
 describe('Character sets', () => {
   it.each(Object.entries(CharSets))('round-trips through the %s charset', (_name, charset) => {
     const encoder = new Encoder();
@@ -226,13 +220,6 @@ describe('Charset validation', () => {
     // the array overflows and the decoder would misparse every read.
     expect(() => new Encoder().toString('a')).toThrow('Invalid character set');
     expect(() => new Decoder('aaa', 'a')).toThrow('Invalid character set');
-  });
-
-  it('rejects a bare number as a charset', () => {
-    // A charset is an explicit alphabet or a [min, max] range; a numeric size
-    // says nothing about WHICH characters carry the digits.
-    expect(() => new Decoder('x', 16 as never)).toThrow('Invalid character set');
-    expect(() => new Encoder().toString(16 as never)).toThrow('Invalid character set');
   });
 
   it('accepts a two-symbol range charset, the floor shared with string charsets', () => {

@@ -23,9 +23,6 @@ export class PBool extends PNode<boolean> {
   }
 
   _write(enc: Encoder, value: boolean): void {
-    if (typeof value !== 'boolean') {
-      throw new TypeError(`p.bool expected a boolean, got ${String(value)}`);
-    }
     if (this._weights === undefined) {
       enc.compose(value ? 1 : 0, 2);
     } else {

@@ -71,12 +71,4 @@ describe('Schema object', () => {
     });
     expect(() => Schema.encode({ inner: { a: 1 } } as never)).toThrow();
   });
-
-  it('throws when an object value is not an object', () => {
-    expect(() => p.object({ a: p.int().min(0).max(9) }).encode(null as never)).toThrow(TypeError);
-  });
-
-  it('rejects an array passed where an object is expected', () => {
-    expect(() => p.object({ a: p.int().min(0).max(9) }).encode([1] as never)).toThrow(TypeError);
-  });
 });

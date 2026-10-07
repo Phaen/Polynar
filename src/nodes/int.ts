@@ -94,7 +94,7 @@ export class PInt extends PNode<number> {
   _write(enc: Encoder, value: number): void {
     // Strict, like every other node: a fractional value is off the integer
     // lattice and throws — truncating it away would silently lose data.
-    if (typeof value !== 'number' || !Number.isInteger(value)) {
+    if (!Number.isInteger(value)) {
       throw new TypeError(`p.int expected an integer, got ${String(value)}`);
     }
     // `+ 0` normalizes -0 to 0 so the sign bit never records a negative zero.

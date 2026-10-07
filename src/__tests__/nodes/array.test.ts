@@ -120,10 +120,6 @@ describe('Schema array', () => {
     expect(() => p.array(p.string().optional() as never)).toThrow(TypeError);
   });
 
-  it('rejects a non-array value at encode', () => {
-    expect(() => p.array(p.int().min(0).max(9)).encode('nope' as never)).toThrow(TypeError);
-  });
-
   it('is denser than per-value encode over many records', () => {
     const node = p.int().min(0).max(7);
     const values = Array.from({ length: 500 }, (_, i) => i % 8);

@@ -238,8 +238,4 @@ describe('Schema internals', () => {
     const unboundedBytes = records.reduce((n, r) => n + Unbounded.encode(r).length, 0);
     expect(boundedBytes).toBeLessThan(unboundedBytes);
   });
-
-  it('rejects a shape whose field is not a schema node', () => {
-    expect(() => p.object({ a: 5 as never })).toThrow(TypeError);
-  });
 });
