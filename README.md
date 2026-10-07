@@ -72,7 +72,7 @@ const user = User.decode(bytes); // typed as User
 
 ## API
 
-Refinements return fresh nodes. One rule throughout: the factory takes what the type is, chained refinements say what values are allowed. Every node is strict, so a value that doesn't fit the declared type throws.
+Refinements return fresh nodes. One rule throughout: the factory takes what the type is, chained refinements say what values are allowed. A value that breaks a declared bound, step, length or list throws; the TypeScript types are the contract for everything else, and object keys outside the shape are left out.
 
 ### Numbers
 
@@ -89,9 +89,9 @@ p.decimal(0.01).min(0).max(100); // a price in cents: 2 bytes
 p.float(); // any finite double, bit-exact; 0.1, 1/3 or 6.02e23 cost 2-6 bytes, noise costs 8
 ```
 
-`p.int` for whole numbers, `p.decimal` for a known step, `p.float` for arbitrary doubles. All bit-exact; NaN and Infinity throw everywhere, and so does anything that can't round-trip exactly: ranges wider than 2^53, or a value farther than that from a lone bound.
+`p.int` for whole numbers, `p.decimal` for a known step (values must already sit on it, so round first: `0.1 + 0.2` throws on step 0.1), `p.float` for arbitrary doubles. All bit-exact, except that `p.int` and `p.decimal` store `-0` as `0`; NaN and Infinity throw everywhere, and so does anything that can't round-trip exactly: ranges wider than 2^53, or a value farther than that from a lone bound.
 
-`.cdf()` tells the encoder which values are common. Hand it a running total: `cdf(v)` returns how much weight sits below `v`, so a value's own weight is `cdf(v + 1) - cdf(v)`. Common values cost fewer bits, rare ones more, zero-weight ones throw. You don't need to normalize anything — only the ratios matter — but the function must never go down; if it does, encoding a value in that stretch throws. Works the same on `p.decimal` (called with grid values), `p.date` (bucket timestamps) and `p.array` (item counts). Encoder and decoder must get identical numbers out of it, so use BigInt or plain `+ - * /` — `Math.exp` and friends round differently per engine. And don't inflate the weights for sport: the last value in a message pays extra for a big total. On a bounded `p.int`, `.weights()` takes the histogram directly instead, one positive integer per value from `min` up.
+`.cdf()` tells the encoder which values are common. Hand it a running total: `cdf(v)` returns how much weight sits below `v` as a safe integer, so a value's own weight is `cdf(v + 1) - cdf(v)`. Common values cost fewer bits, rare ones more, zero-weight ones throw. You don't need to normalize anything — only the ratios matter — but the function must never go down; if it does, encoding a value in that stretch throws. Works the same on `p.decimal`, `p.date` and `p.array`, called with the grid index (`k` for the k-th multiple of the step), the bucket counted from `min`, and the item count. Encoder and decoder must get identical numbers out of it, so use BigInt or plain `+ - * /` — `Math.exp` and friends round differently per engine. And don't inflate the weights for sport: the last value in a message pays extra for a big total. On all four, `.weights([...])` takes the histogram directly instead, one positive integer per value from the lower bound up.
 
 ### Strings
 
@@ -105,7 +105,7 @@ p.string().prose(buildProseModel(sample)); // or for your own language, counted 
 p.string().charset('0123456789'); // restrict the alphabet for density
 ```
 
-Any JS string round-trips bit-exact, lone surrogates included — where UTF-8-based formats substitute U+FFFD, Polynar returns what went in.
+Any JS string round-trips bit-exact, lone surrogates included — where UTF-8-based formats substitute U+FFFD, Polynar returns what went in. Lengths count UTF-16 code units, as `.length` does.
 
 `.prose()` weights each character by the one before it — common characters drop to 2–5 bits, `u` after `q` to under one; anything outside the model — other scripts, emoji — pays a small escape on top. Every string still encodes. You can't combine it with `.charset()`; both decide the alphabet.
 
@@ -152,7 +152,7 @@ p.date().interval('day'); // coarser, smaller, lossy
 p.object({
   x: p.int().min(-1000).max(1000),
   label: p.string().optional(), // one presence bit; only undefined means absent
-  nick: p.string().optional().weights([1, 99]), // a 99%-present field pays ~0.015 bits
+  nick: p.string().optional().weights([1, 99]), // [absent, present]: a 99%-present field pays ~0.015 bits
 });
 ```
 
@@ -186,11 +186,13 @@ Self-describing escape hatch: a type tag per value, everything round-trips bit-e
 ```typescript
 node.encode(value); // Uint8Array
 node.decode(bytes);
+node.encode(value, [32, 126]); // bytes restricted to a range
+node.decode(bytes, [32, 126]);
 node.encodeString(value, CharSets.urlSafe); // text in a charset of your choice
 node.decodeString(text, CharSets.urlSafe);
 ```
 
-The charset defaults to Base64; any string of unique characters or a `[min, max]` code-unit range works too, on both the string form and `p.string().charset()`.
+The charset defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. Any string of unique characters or a `[min, max]` code-unit range works too, on both the string form and `p.string().charset()`.
 
 Input that does not decode as the schema expects throws a `CorruptInputError` (also matchable via `err.name`).
 
