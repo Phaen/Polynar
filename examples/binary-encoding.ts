@@ -1,10 +1,10 @@
 /**
  * Output forms: every node speaks Uint8Array (`encode`/`decode`) and text in a
- * charset of your choice (`encodeString`/`decodeString`). The packer
- * primitives underneath add custom byte ranges when you need them.
+ * charset of your choice (`encodeString`/`decodeString`). Both byte forms take
+ * an optional range when the output has to stay inside one.
  * Run with: npx tsx examples/binary-encoding.ts
  */
-import { p, Encoder, Decoder, CharSets } from 'polynar';
+import { p, CharSets } from 'polynar';
 
 const Sensor = p.object({
   id: p.int().min(0).max(65535),
@@ -27,10 +27,12 @@ const asUrlSafe = Message.encodeString('hello world', CharSets.urlSafe);
 console.log('url-safe string:', asUrlSafe);
 console.log('from url-safe:', Message.decodeString(asUrlSafe, CharSets.urlSafe));
 
-// Custom byte ranges live on the packer primitives: drive the node's
-// _write/_read against an Encoder/Decoder holding the range.
-const enc = new Encoder();
-Message._write(enc, 'hello world');
-const asPrintable = enc.toUint8Array([32, 126]); // printable ASCII only
-console.log('printable bytes:', asPrintable.length, 'raw bytes:', Message.encode('hello world').length);
-console.log('from printable:', Message._read(new Decoder(asPrintable, [32, 126])));
+// A [min, max] range restricts which byte values the output may contain.
+const asPrintable = Message.encode('hello world', [32, 126]); // printable ASCII only
+console.log(
+  'printable bytes:',
+  asPrintable.length,
+  'raw bytes:',
+  Message.encode('hello world').length
+);
+console.log('from printable:', Message.decode(asPrintable, [32, 126]));
