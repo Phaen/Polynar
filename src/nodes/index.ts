@@ -8,6 +8,7 @@ export { PInt } from './int';
 export { PDecimal } from './decimal';
 export { PFloat } from './float';
 export { PString } from './string';
+export { PBytes } from './bytes';
 export { PBool } from './bool';
 export { PEnum } from './enum';
 export { PNull } from './null';

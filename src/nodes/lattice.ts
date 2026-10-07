@@ -63,3 +63,69 @@ export function readIndex(dec: Decoder, min?: number, max?: number): number {
   }
   return negative ? -magnitude : magnitude;
 }
+
+export interface LengthBounds {
+  readonly min?: number;
+  readonly max?: number;
+  readonly length?: number;
+}
+
+/**
+ * The length prefix of a string or byte run: validated bounds, then one
+ * lattice index over `[length ?? min ?? 0, length ?? max]`. A fixed length
+ * IS both bounds, so it costs zero bits.
+ */
+export class LengthPrefix {
+  readonly bounds: LengthBounds;
+  private readonly lo: number;
+  private readonly hi?: number;
+
+  constructor(bounds: LengthBounds, who: string) {
+    const { length } = bounds;
+    // Combining the two spellings of a fixed length is a contradiction, so
+    // it throws instead of silently merging.
+    if (length != null && (bounds.min != null || bounds.max != null)) {
+      throw new TypeError(`${who} length cannot be combined with min or max`);
+    }
+    // No inward rounding for a fixed length: no length satisfies a
+    // fractional one, so either rounding direction would invent a contract.
+    if (length != null && (!Number.isInteger(length) || length < 0)) {
+      throw new RangeError(`${who} length must be a non-negative integer`);
+    }
+    // Round each bound INWARD (ceil the min, floor the max) so a fractional
+    // bound never admits a length beyond itself.
+    const min = bounds.min == null ? undefined : Math.ceil(bounds.min);
+    if (min !== undefined && (!Number.isInteger(min) || min < 0)) {
+      throw new RangeError(`${who} min must be a non-negative length`);
+    }
+    const max = bounds.max == null ? undefined : Math.floor(bounds.max);
+    if (max !== undefined && (!Number.isInteger(max) || max < 0)) {
+      throw new RangeError(`${who} max must be a non-negative length`);
+    }
+    if (min !== undefined && max !== undefined && min > max) {
+      throw new RangeError(`${who} range is empty: min exceeds max`);
+    }
+    this.bounds = { min, max, length: length ?? undefined };
+    this.lo = length ?? min ?? 0;
+    this.hi = length ?? max;
+  }
+
+  /** `describe` names the value in an error, built only when one throws. */
+  write(enc: Encoder, length: number, describe: () => string): void {
+    const { min, max } = this.bounds;
+    if (this.bounds.length !== undefined && length !== this.bounds.length) {
+      throw new RangeError(`${describe()} differs from the fixed length`);
+    }
+    if (min !== undefined && length < min) {
+      throw new RangeError(`${describe()} is below min length`);
+    }
+    if (max !== undefined && length > max) {
+      throw new RangeError(`${describe()} exceeds max length`);
+    }
+    writeIndex(enc, length, this.lo, this.hi);
+  }
+
+  read(dec: Decoder): number {
+    return readIndex(dec, this.lo, this.hi);
+  }
+}
