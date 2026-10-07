@@ -249,9 +249,11 @@ describe('Charset validation', () => {
     expect(() => decoder.parse(2)).toThrow(/not found in character set/);
   });
 
-  it('throws when a character falls just past a binary-range charset', () => {
+  it('throws when a character falls just past a range charset', () => {
     // '[' (code 91) is one beyond the maximum of the [65, 90] range.
-    expect(() => new Decoder('Z[', [65, 90]).parse(1001)).toThrow();
+    expect(() => new Decoder('Z[', [65, 90]).parse(1001)).toThrow(
+      'Character at 1 does not fit the character range'
+    );
   });
 });
 

@@ -98,7 +98,7 @@ export class Decoder {
     const digit = this.str.charCodeAt(i) - (this.charset as [number, number])[0];
 
     if (digit < 0 || digit >= this.size) {
-      throw new CorruptInputError('Byte at ' + i + ' does not fit binary range');
+      throw new CorruptInputError('Character at ' + i + ' does not fit the character range');
     }
 
     return digit;
