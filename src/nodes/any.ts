@@ -1,6 +1,7 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { isArray, isDate, isPlainObject, type Kind } from './guards';
 import { PNode } from './base';
+import { atPath } from './path';
 import { PInt } from './int';
 import { PFloat } from './float';
 import { PString } from './string';
@@ -61,8 +62,13 @@ export class PAny extends PNode<unknown> {
       enc.composeTerm(value.length);
       // Indexed iteration: sparse holes must encode (as `undefined`) so the
       // element count stays consistent with the length prefix.
-      for (let i = 0; i < value.length; i++) {
-        this._writeAny(enc, value[i], path);
+      let i = 0;
+      try {
+        for (; i < value.length; i++) {
+          this._writeAny(enc, value[i], path);
+        }
+      } catch (error) {
+        throw atPath(error, i);
       }
       path.delete(value);
       return;
@@ -114,9 +120,14 @@ export class PAny extends PNode<unknown> {
           const record = value as Record<string, unknown>;
           const keys = Object.keys(record);
           enc.composeTerm(keys.length);
-          for (const key of keys) {
-            ANY_STRING._write(enc, key);
-            this._writeAny(enc, record[key], path);
+          let key = '';
+          try {
+            for (key of keys) {
+              ANY_STRING._write(enc, key);
+              this._writeAny(enc, record[key], path);
+            }
+          } catch (error) {
+            throw atPath(error, key);
           }
           path.delete(value);
         }

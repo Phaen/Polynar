@@ -203,7 +203,7 @@ node.decodeString(text, CharSets.urlSafe);
 
 The charset defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. Any string of unique characters or a `[min, max]` code-unit range works too, on both the string form and `p.string().charset()`.
 
-Input that does not decode as the schema expects throws a `CorruptInputError` (also matchable via `err.name`).
+Input that does not decode as the schema expects throws a `CorruptInputError` (also matchable via `err.name`). A value that can't encode throws with the path to it in front, like `filters[2].op: Value 'gt' not found in list`.
 
 | Name                    | Characters                 |
 | ----------------------- | -------------------------- |

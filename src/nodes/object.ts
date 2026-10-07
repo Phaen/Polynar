@@ -1,6 +1,7 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import type { InferShape } from './infer';
 import { PNode, POptional } from './base';
+import { atPath } from './path';
 import type { Kind } from './guards';
 
 /** Object with a fixed shape. Optional fields carry a single presence bit. */
@@ -17,39 +18,48 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
   }
 
   _write(enc: Encoder, value: InferShape<S>): void {
-    for (const key of this._keys) {
-      const field = this._shape[key];
-      const optional = field instanceof POptional;
-      // Unwrap the optional marker so the presence bit is written here, once;
-      // the inner node never learns it was optional.
-      const node = optional ? (field as POptional<unknown>).inner : field;
-      const v = (value as Record<string, unknown>)[key];
-
-      const presence = optional ? (field as POptional<unknown>).presence : undefined;
-
-      // Only `undefined` means absent. `null` is a value in its own right (the
-      // any type round-trips it), so it must reach the field's node.
-      if (v === undefined) {
-        if (optional) {
-          if (presence === undefined) {
-            enc.compose(0, 2);
-          } else {
-            enc.composeWeighted(0, presence[0], presence[0] + presence[1]);
-          }
-          continue;
-        }
-        throw new ReferenceError(`Object has no property '${key}'`);
+    let key = '';
+    try {
+      for (key of this._keys) {
+        this._writeField(enc, value, key);
       }
+    } catch (error) {
+      throw atPath(error, key);
+    }
+  }
 
+  private _writeField(enc: Encoder, value: InferShape<S>, key: string): void {
+    const field = this._shape[key];
+    const optional = field instanceof POptional;
+    // Unwrap the optional marker so the presence bit is written here, once;
+    // the inner node never learns it was optional.
+    const node = optional ? (field as POptional<unknown>).inner : field;
+    const v = (value as Record<string, unknown>)[key];
+
+    const presence = optional ? (field as POptional<unknown>).presence : undefined;
+
+    // Only `undefined` means absent. `null` is a value in its own right (the
+    // any type round-trips it), so it must reach the field's node.
+    if (v === undefined) {
       if (optional) {
         if (presence === undefined) {
-          enc.compose(1, 2);
+          enc.compose(0, 2);
         } else {
-          enc.composeWeighted(presence[0], presence[1], presence[0] + presence[1]);
+          enc.composeWeighted(0, presence[0], presence[0] + presence[1]);
         }
+        return;
       }
-      node._write(enc, v);
+      throw new ReferenceError('required field is missing');
     }
+
+    if (optional) {
+      if (presence === undefined) {
+        enc.compose(1, 2);
+      } else {
+        enc.composeWeighted(presence[0], presence[1], presence[0] + presence[1]);
+      }
+    }
+    node._write(enc, v);
   }
 
   _read(dec: Decoder): InferShape<S> {

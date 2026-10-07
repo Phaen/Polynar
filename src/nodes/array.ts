@@ -1,5 +1,6 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode, POptional } from './base';
+import { atPath } from './path';
 import type { Kind } from './guards';
 import { writeIndex, readIndex } from './lattice';
 import { resolvePrior, priorKind, cdfBucket, locateCdf, type Cdf, type Prior } from './weights';
@@ -163,8 +164,13 @@ export class PArray<TItem> extends PNode<TItem[]> {
     // Indexed iteration, not for-of over holes: a sparse array's holes read as
     // undefined and must fail the item's own validation rather than be skipped,
     // or the element count would desync from the length prefix.
-    for (let i = 0; i < count; i++) {
-      this._item._write(enc, value[i]);
+    let i = 0;
+    try {
+      for (; i < count; i++) {
+        this._item._write(enc, value[i]);
+      }
+    } catch (error) {
+      throw atPath(error, i);
     }
   }
 
