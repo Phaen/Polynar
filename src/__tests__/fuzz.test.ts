@@ -158,6 +158,14 @@ const scalarCase = (): Case => {
         case 1: {
           // A bounded length packs as a radix slot instead of a term.
           const max = randInt(0, 12);
+          // A floor half the time: the prefix then counts up from it.
+          if (rand() < 0.5) {
+            const min = randInt(0, max);
+            return {
+              node: p.string().min(min).max(max),
+              gen: () => 'x'.repeat(min) + randString(max - min),
+            };
+          }
           return { node: p.string().max(max), gen: () => randString(max) };
         }
         case 2:

@@ -98,6 +98,8 @@ p.float(); // any finite double, bit-exact; 0.1, 1/3 or 6.02e23 cost 2-6 bytes, 
 ```typescript
 p.string(); // any text, length-prefixed; ~7 bits per ASCII character
 p.string().max(40); // a bounded length packs smaller
+p.string().min(8).max(12); // a floor narrows it further
+p.string().length(2); // a fixed length costs nothing
 p.string().prose(); // weighted for natural language; ~4 bits per character
 p.string().prose(buildProseModel(sample)); // or for your own language, counted from sample text
 p.string().charset('0123456789'); // restrict the alphabet for density

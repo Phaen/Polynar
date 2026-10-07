@@ -57,6 +57,26 @@ describe('Schema string', () => {
     expect(() => p.string().charset('abc').prose()).toThrow(TypeError);
   });
 
+  it('min and length narrow the length prefix', () => {
+    const ranged = p.string().min(8).max(12);
+    expect(trip(ranged, 'abcdefghij')).toBe('abcdefghij');
+    expect(() => ranged.encode('short')).toThrow('below min length');
+    expect(trip(p.string().min(2), 'abc')).toBe('abc');
+    expect(() => p.string().min(3).max(2)).toThrow('range is empty');
+    expect(() => p.string().min(-1)).toThrow('non-negative length');
+    // A fixed length is both bounds, so it combines with neither.
+    expect(() => p.string().length(5).max(8)).toThrow('cannot be combined');
+    expect(() => p.string().min(2).length(5)).toThrow('cannot be combined');
+    expect(() => p.string().length(2.5)).toThrow('non-negative integer');
+    expect(() => p.string().length(3).encode('ab')).toThrow('differs from the fixed length');
+    // A fixed length spends nothing on the prefix: eight binary characters
+    // fill one byte exactly, where a max of 8 needs a second.
+    const bits = p.string().charset('ab');
+    expect(bits.length(8).encode('abababab')).toHaveLength(1);
+    expect(bits.max(8).encode('abababab')).toHaveLength(2);
+    expect(trip(bits.length(8), 'aaaabbbb')).toBe('aaaabbbb');
+  });
+
   it('prose takes any model, starting outside the alphabet when it has no space', () => {
     const kana = buildProseModel('ありがとうございます。こんにちは。さようなら。');
     for (const value of ['ありがとう', 'こんにちは!', '', 'xyz 🎉']) {
