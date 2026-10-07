@@ -2,7 +2,7 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { isDate, type Kind } from './guards';
 import { PNode } from './base';
 import { writeIndex, readIndex } from './lattice';
-import { validateCdf, cdfBucket, locateCdf, type Cdf } from './weights';
+import { resolvePrior, priorKind, cdfBucket, locateCdf, type Cdf, type Prior } from './weights';
 
 /**
  * Named date intervals in milliseconds. `month` is the mean Gregorian month
@@ -29,16 +29,16 @@ export class PDate extends PNode<Date> {
   private readonly _max?: number;
   private readonly _interval: number;
 
-  /** The user's timestamp-domain cdf and its bucket-domain adapter. */
+  /** The prior as declared, kept so a later bound change re-validates it. */
+  private readonly _prior?: Prior;
   private readonly _cdf?: Cdf;
-  private readonly _bucketCdf?: Cdf;
   private readonly _total?: number;
 
   constructor(
     min?: number | Date,
     max?: number | Date,
     interval: number | DateInterval = 1,
-    cdf?: Cdf
+    prior?: Prior
   ) {
     super();
     this._min = isDate(min) ? min.getTime() : (min ?? undefined);
@@ -69,44 +69,45 @@ export class PDate extends PNode<Date> {
     // `.interval()` sets only after the bounds construct intermediate nodes.
     // The quantization check in `_write` catches drift per value instead.
 
-    if (cdf !== undefined) {
+    if (prior !== undefined) {
       if (this._min === undefined || this._max === undefined) {
-        throw new TypeError('p.date cdf requires both bounds');
+        throw new TypeError(`p.date ${priorKind(prior)} requires both bounds`);
       }
-      const base = this._min;
-      const interval = this._interval;
-      const rebased = validateCdf(
-        (bucket: number) => cdf(base + bucket * interval),
-        0,
-        this._bucketMax()!,
-        'p.date'
-      );
-      this._bucketCdf = rebased.cdf;
-      this._total = rebased.total;
-      this._cdf = cdf;
+      this._prior = prior;
+      const resolved = resolvePrior(prior, 0, this._bucketMax()!, 'p.date');
+      this._cdf = resolved.cdf;
+      this._total = resolved.total;
     }
   }
 
   min(n: number | Date): PDate {
-    return new PDate(n, this._max, this._interval, this._cdf);
+    return new PDate(n, this._max, this._interval, this._prior);
   }
 
   max(n: number | Date): PDate {
-    return new PDate(this._min, n, this._interval, this._cdf);
+    return new PDate(this._min, n, this._interval, this._prior);
   }
 
   interval(i: number | DateInterval): PDate {
-    return new PDate(this._min, this._max, i, this._cdf);
+    return new PDate(this._min, this._max, i, this._prior);
   }
 
   /**
-   * Declare a prior over the bounded range as an integer CDF over
-   * TIMESTAMPS: `fn(t)` is the cumulative weight of buckets starting below
-   * `t` ms, evaluated at exact bucket starts. "Recent is likelier" costs a
+   * Declare a prior over the bounded range as an integer CDF over bucket
+   * indices: `fn(b)` is the cumulative weight of buckets below the b-th,
+   * counted from the min bound's bucket at 0. "Recent is likelier" costs a
    * skewed fn; a zero-weight bucket cannot encode.
    */
   cdf(fn: Cdf): PDate {
     return new PDate(this._min, this._max, this._interval, fn);
+  }
+
+  /**
+   * Declare how likely each bucket from min to max is, earliest first. Same
+   * prior as `.cdf()`, given as the histogram instead of its running total.
+   */
+  weights(w: readonly number[]): PDate {
+    return new PDate(this._min, this._max, this._interval, w);
   }
 
   _write(enc: Encoder, value: Date): void {
@@ -138,20 +139,20 @@ export class PDate extends PNode<Date> {
       );
     }
 
-    if (this._bucketCdf === undefined) {
+    if (this._cdf === undefined) {
       writeIndex(enc, bucket, this._bucketMin(), this._bucketMax());
       return;
     }
-    const [cum, freq] = cdfBucket(this._bucketCdf, bucket, 'p.date');
+    const [cum, freq] = cdfBucket(this._cdf, bucket, 'p.date');
     enc.composeWeighted(cum, freq, this._total!);
   }
 
   _read(dec: Decoder): Date {
     const base = this._min ?? 0;
     const bucket =
-      this._bucketCdf === undefined
+      this._cdf === undefined
         ? readIndex(dec, this._bucketMin(), this._bucketMax())
-        : dec.parseWeighted(this._total!, locateCdf(this._bucketCdf, 0, this._bucketMax()!));
+        : dec.parseWeighted(this._total!, locateCdf(this._cdf, 0, this._bucketMax()!));
     const date = new Date(base + bucket * this._interval);
     // A bucket beyond the ±8.64e15 ms Date range can only come from a
     // corrupted input; the encoder requires a valid Date.

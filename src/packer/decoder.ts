@@ -89,7 +89,7 @@ export class Decoder {
       const digit = this.charset.indexOf(this.str.charAt(i));
 
       if (digit === -1) {
-        throw new CorruptInputError('Byte at ' + i + ' not found in character set');
+        throw new CorruptInputError('Character at ' + i + ' not found in character set');
       }
 
       return digit;
