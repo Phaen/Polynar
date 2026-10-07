@@ -11,14 +11,23 @@
  *
  * Custom types are nodes too: subclass `PNode`, implement `_write`/`_read`
  * against the same primitives, and the node composes with `p.object`,
- * `p.array` and `.optional()` like any built-in.
+ * `p.array` and `.optional()` like any built-in; declaring `_kinds` makes it
+ * a valid `p.union` member too.
  */
 import { Encoder, Decoder } from '../packer';
 import type { Charset, ByteRange } from '../packer';
+import type { Kind } from './guards';
 
 /** Base class for every schema node. `_t` is a phantom carrying the output type. */
 export abstract class PNode<TOut> {
   declare readonly _t: TOut;
+
+  /**
+   * The JS kinds this node's values can have, which `p.union` uses to pick a
+   * member. Undefined means undeclared: a custom node sets it to be usable in
+   * a union, and `.optional()` leaves it unset.
+   */
+  readonly _kinds?: readonly Kind[];
 
   /** Validate one value and write its digits. The whole codec for this type. */
   abstract _write(enc: Encoder, value: TOut): void;

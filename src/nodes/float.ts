@@ -1,6 +1,7 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { TERM_BASE } from '../packer/constants';
 import { PNode } from './base';
+import type { Kind } from './guards';
 
 // Scratch views for splitting a double into its IEEE-754 fields and back.
 // Both views share one buffer, so platform endianness cancels out; the wire
@@ -226,6 +227,8 @@ function doubleFrom(exponent: number, mantissa: bigint): number {
  * `p.float`.
  */
 export class PFloat extends PNode<number> {
+  readonly _kinds: readonly Kind[] = ['number'];
+
   _write(enc: Encoder, value: number): void {
     if (!Number.isFinite(value)) {
       throw new TypeError(`p.float expected a finite number, got ${String(value)}`);

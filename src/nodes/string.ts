@@ -9,6 +9,7 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import type { Charset } from '../packer';
 import { validateCharset } from '../packer/utils';
 import { PNode } from './base';
+import type { Kind } from './guards';
 import { composeCodePoint, parseCodePoint } from './codepoint';
 import {
   ProseModels,
@@ -21,6 +22,8 @@ import {
 } from './prose';
 
 export class PString extends PNode<string> {
+  readonly _kinds: readonly Kind[] = ['string'];
+
   private readonly _max?: number;
   /** Explicit charset; undefined selects the laddered code-point default. */
   private readonly _charset?: Charset;

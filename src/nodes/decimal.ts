@@ -1,5 +1,6 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { PNode } from './base';
+import type { Kind } from './guards';
 import { writeIndex, readIndex } from './lattice';
 import { validateCdf, cdfBucket, locateCdf, type Cdf } from './weights';
 
@@ -26,6 +27,8 @@ const decimalPlaces = (x: number): number | null => {
  * off-grid values throw instead of snapping to a neighbour.
  */
 export class PDecimal extends PNode<number> {
+  readonly _kinds: readonly Kind[] = ['number'];
+
   private readonly _step: number;
   private readonly _minRaw?: number;
   private readonly _maxRaw?: number;

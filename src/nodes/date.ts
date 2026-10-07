@@ -1,5 +1,5 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
-import { isDate } from './guards';
+import { isDate, type Kind } from './guards';
 import { PNode } from './base';
 import { writeIndex, readIndex } from './lattice';
 import { validateCdf, cdfBucket, locateCdf, type Cdf } from './weights';
@@ -23,6 +23,8 @@ export type DateInterval = keyof typeof DATE_INTERVALS;
 
 /** Date. Default interval is 1ms (lossless); larger intervals are lossy. `p.date`. */
 export class PDate extends PNode<Date> {
+  readonly _kinds: readonly Kind[] = ['date'];
+
   private readonly _min?: number;
   private readonly _max?: number;
   private readonly _interval: number;
