@@ -23,7 +23,7 @@ export {
   PArray,
   PAny,
 } from './nodes';
-export type { Infer, InferShape } from './nodes';
+export type { Infer, InferShape, Cdf, DateInterval } from './nodes';
 
 export { Encoder, Decoder, CorruptInputError, CharSets } from './packer';
-export type { Charset } from './packer';
+export type { Charset, ByteRange } from './packer';

@@ -11,9 +11,11 @@ export { PString } from './string';
 export { PBool } from './bool';
 export { PEnum } from './enum';
 export { PDate } from './date';
+export type { DateInterval } from './date';
 export { PArray } from './array';
 export { PObject } from './object';
 export { PAny } from './any';
 
 export { p } from './p';
 export type { Infer, InferShape } from './infer';
+export type { Cdf } from './weights';
