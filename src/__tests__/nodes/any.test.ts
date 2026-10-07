@@ -72,6 +72,8 @@ describe('Schema any', () => {
         ['Error', new Error('boom')],
         ['Uint8Array', new Uint8Array([1, 2])],
         ['Point', new Point()],
+        // A prototype chain with no constructor anywhere has no name to show.
+        ['this type', Object.create(Object.create(null))],
       ];
       for (const [name, value] of cases) {
         expect(() => p.any().encode(value)).toThrow(`p.any cannot encode ${name} values`);

@@ -159,7 +159,9 @@ export class PAny extends PNode<unknown> {
         }
         return value;
       }
-      case TAG_OBJECT: {
+      default: {
+        // TAG_OBJECT: parse() bounds the tag to its radix, so the last tag is
+        // the only one left.
         const value: Record<string, unknown> = {};
         const count = dec.parseTerm();
         for (let i = 0; i < count; i++) {
@@ -181,9 +183,6 @@ export class PAny extends PNode<unknown> {
         }
         return value;
       }
-      default:
-        // parse() bounds the tag to its radix, so this is unreachable.
-        throw new CorruptInputError('Unknown any-type tag');
     }
   }
 }
