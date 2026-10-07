@@ -101,4 +101,12 @@ describe('Schema string', () => {
       'Code points overrun the length prefix'
     );
   });
+
+  it('rejects bad configuration and non-compliant values', () => {
+    expect(() => p.string().max(-1)).toThrow('max must be a non-negative length');
+    expect(() => p.string().prose().charset('ab')).toThrow('cannot combine prose with a charset');
+    expect(() => p.string().charset([97, 98]).encode('abc')).toThrow(
+      'String not compliant with character set'
+    );
+  });
 });

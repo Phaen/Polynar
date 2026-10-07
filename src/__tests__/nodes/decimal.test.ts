@@ -65,4 +65,11 @@ describe('Schema decimal', () => {
     enc.composeTerm(2 ** 60);
     expect(() => p.decimal(0.01).decode(enc.toUint8Array())).toThrow(CorruptInputError);
   });
+
+  it('refuses bounds, ranges and values outside exact arithmetic', () => {
+    expect(() => p.decimal(0.01).max(1e20)).toThrow('max is outside the exact range');
+    expect(() => p.decimal(1).min(-9e15).max(9e15)).toThrow('more steps than exact arithmetic');
+    expect(() => p.decimal(1).encode(1e20)).toThrow('outside the exact range of this step');
+    expect(() => p.decimal(1).encode(NaN)).toThrow('p.decimal expected a finite number');
+  });
 });

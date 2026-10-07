@@ -126,6 +126,14 @@ describe('Low-level primitives', () => {
     expect(() => encoder.composeTerm(-1)).toThrow(TypeError);
     expect(() => encoder.composeTerm(1.5)).toThrow(TypeError);
   });
+  it('parseWeighted rejects a locate that misses the residual', () => {
+    const encoder = new Encoder();
+    encoder.composeWeighted(0, 1, 2);
+    const decoder = new Decoder(encoder.toString());
+    expect(() => decoder.parseWeighted(2, () => [0, 0, 0] as const)).toThrow(
+      'locate returned a bucket that does not contain the residual'
+    );
+  });
 });
 
 describe('Shared buffers', () => {
@@ -337,6 +345,15 @@ describe('Block packing', () => {
     const decoder = new Decoder(encoder.toString() + 'AA');
     parseAll(decoder, 3000);
     expect(() => decoder.finalize()).toThrow('Input is longer than its contents');
+  });
+  it('throws when a multi-block message is cut exactly at a block boundary', () => {
+    const encoder = new Encoder();
+    composeAll(
+      encoder,
+      Array.from({ length: 3000 }, (_, i) => (i * 7919) % 1001)
+    );
+    const decoder = new Decoder(encoder.toString().slice(0, blockCapacity(64).digits));
+    expect(() => parseAll(decoder, 3000)).toThrow('Unexpected end of input while parsing');
   });
 });
 
