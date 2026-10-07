@@ -17,7 +17,10 @@ export const CharSets = {
   htmlSafe:
     " !#$%'()*+,-./0123456789:;=?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~",
   Base64: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/',
-  urlSafe: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789$-_.+!*'()",
+  // RFC 3986 unreserved. The wider RFC 1738 set would buy 0.13 bits per
+  // character, but it contains `+`, which form decoding — URLSearchParams and
+  // every server-side equivalent — turns back into a space.
+  urlSafe: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~',
 } as const;
 
 export const DEFAULT_CHARSET = CharSets.Base64;
