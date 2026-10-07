@@ -82,7 +82,13 @@ const scalarCase = (): Case => {
     case 0: {
       const lo = randInt(-1000, 0);
       const hi = lo + randInt(0, 2000);
-      return { node: p.int().min(lo).max(hi), gen: () => randInt(lo, hi) };
+      // Weighted half the time, like bool and enum below.
+      const bounded = p.int().min(lo).max(hi);
+      const node =
+        rand() < 0.5
+          ? bounded
+          : bounded.weights(Array.from({ length: hi - lo + 1 }, () => randInt(1, 1000)));
+      return { node, gen: () => randInt(lo, hi) };
     }
     case 1:
       return { node: p.int(), gen: () => randInt(-(2 ** 40), 2 ** 40) };

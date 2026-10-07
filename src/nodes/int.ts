@@ -1,17 +1,19 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import { writeIndex, readIndex } from './lattice';
-import { validateCdf, cdfBucket, locateCdf, type Cdf } from './weights';
+import { buildWeights, validateCdf, cdfBucket, locateCdf, type Cdf } from './weights';
 
 /** Integer (strict: non-integers throw). `p.int`. */
 export class PInt extends PNode<number> {
   private readonly _min?: number;
   private readonly _max?: number;
+  /** The prior as declared, kept so a later bound change re-validates it. */
+  private readonly _prior?: Cdf | readonly number[];
   private readonly _cdf?: Cdf;
   /** cdf(max + 1), the weight of the whole range. */
   private readonly _total?: number;
 
-  constructor(min?: number, max?: number, cdf?: Cdf) {
+  constructor(min?: number, max?: number, prior?: Cdf | readonly number[]) {
     super();
     // Round each bound INWARD (ceil the min, floor the max) so a fractional
     // bound never widens the declared range: .min(10.9) admits 11 and up.
@@ -42,9 +44,21 @@ export class PInt extends PNode<number> {
       throw new RangeError('p.int range is wider than exact integer arithmetic supports');
     }
 
-    if (cdf !== undefined) {
+    if (prior !== undefined) {
+      const kind = typeof prior === 'function' ? 'cdf' : 'weights';
       if (this._min === undefined || this._max === undefined) {
-        throw new TypeError('p.int cdf requires both bounds');
+        throw new TypeError(`p.int ${kind} requires both bounds`);
+      }
+      this._prior = prior;
+      let cdf: Cdf;
+      if (typeof prior === 'function') {
+        cdf = prior;
+      } else {
+        // A weight list is a CDF read off its running totals.
+        const lo = this._min;
+        const hi = this._max;
+        const table = buildWeights(prior, hi - lo + 1, 'p.int');
+        cdf = (v) => (v > hi ? table.total : table.cums[v - lo]);
       }
       const rebased = validateCdf(cdf, this._min, this._max, 'p.int');
       this._cdf = rebased.cdf;
@@ -53,11 +67,11 @@ export class PInt extends PNode<number> {
   }
 
   min(n: number): PInt {
-    return new PInt(n, this._max, this._cdf);
+    return new PInt(n, this._max, this._prior);
   }
 
   max(n: number): PInt {
-    return new PInt(this._min, n, this._cdf);
+    return new PInt(this._min, n, this._prior);
   }
 
   /**
@@ -67,6 +81,14 @@ export class PInt extends PNode<number> {
    */
   cdf(fn: Cdf): PInt {
     return new PInt(this._min, this._max, fn);
+  }
+
+  /**
+   * Declare how likely each value in the bounded range is, lowest first. Same
+   * prior as `.cdf()`, given as the histogram instead of its running total.
+   */
+  weights(w: readonly number[]): PInt {
+    return new PInt(this._min, this._max, w);
   }
 
   _write(enc: Encoder, value: number): void {
