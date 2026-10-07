@@ -14,7 +14,7 @@
  * `p.array` and `.optional()` like any built-in.
  */
 import { Encoder, Decoder } from '../packer';
-import type { Charset } from '../packer';
+import type { Charset, ByteRange } from '../packer';
 
 /** Base class for every schema node. `_t` is a phantom carrying the output type. */
 export abstract class PNode<TOut> {
@@ -26,14 +26,16 @@ export abstract class PNode<TOut> {
   /** Read one value back, in the exact order `_write` produced it. */
   abstract _read(dec: Decoder): TOut;
 
-  encode(value: TOut): Uint8Array {
+  /** Encode to bytes. A `[min, max]` range restricts which byte values appear. */
+  encode(value: TOut, range?: ByteRange): Uint8Array {
     const enc = new Encoder();
     this._write(enc, value);
-    return enc.toUint8Array();
+    return enc.toUint8Array(range);
   }
 
-  decode(bytes: Uint8Array): TOut {
-    const dec = new Decoder(bytes);
+  /** Decode bytes produced by `encode` with the same range. */
+  decode(bytes: Uint8Array, range?: ByteRange): TOut {
+    const dec = new Decoder(bytes, range);
     const value = this._read(dec);
     // The schema is the whole message, so the input must be exactly consumed.
     // This rejects tampered digits and trailing padding instead of silently

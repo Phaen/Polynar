@@ -12,7 +12,7 @@
  * plain multiply-add — the original mixed-radix arithmetic.
  */
 
-import type { Charset } from './types';
+import type { Charset, ByteRange } from './types';
 import {
   TERM_BASE,
   TERM_ESCAPE_MIN,
@@ -213,7 +213,7 @@ export class Encoder {
     return str;
   }
 
-  toUint8Array(charset?: [number, number]): Uint8Array {
+  toUint8Array(charset?: ByteRange): Uint8Array {
     if (charset != null && (!Array.isArray(charset) || charset.length !== 2)) {
       throw new TypeError('Binary charset must be a [min, max] range');
     }

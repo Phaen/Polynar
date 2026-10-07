@@ -7,3 +7,9 @@
  * characters, or an inclusive `[min, max]` range of UTF-16 code units.
  */
 export type Charset = string | [number, number];
+
+/**
+ * An inclusive `[min, max]` range of byte values for binary output. Defaults
+ * to the whole byte when omitted.
+ */
+export type ByteRange = [number, number];

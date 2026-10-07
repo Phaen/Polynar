@@ -190,6 +190,39 @@ describe('String output (encodeString / decodeString)', () => {
   });
 });
 
+describe('Byte output (encode / decode with a range)', () => {
+  const Player = p.object({ name: p.string().max(20), level: p.int().min(1).max(99) });
+  const value = { name: 'Ada', level: 42 };
+
+  it('round-trips through a restricted range', () => {
+    const bytes = Player.encode(value, [32, 126]);
+    expect(Player.decode(bytes, [32, 126])).toEqual(value);
+  });
+
+  it('emits only bytes from the range', () => {
+    const bytes = Player.encode(value, [32, 126]);
+    expect(bytes.every((b) => b >= 32 && b <= 126)).toBe(true);
+  });
+
+  it('spends no fewer bytes than the full range does', () => {
+    const long = { name: 'a'.repeat(20), level: 42 };
+    expect(Player.encode(long, [32, 126]).length).toBeGreaterThan(Player.encode(long).length);
+    expect(Player.encode(value, [32, 126]).length).toBeGreaterThanOrEqual(
+      Player.encode(value).length
+    );
+  });
+
+  it('rejects a range the encoder would not have produced', () => {
+    const bytes = Player.encode(value, [32, 126]);
+    expect(() => Player.decode(bytes)).toThrow(CorruptInputError);
+  });
+
+  it('validates the range itself', () => {
+    expect(() => Player.encode(value, [200, 10])).toThrow(RangeError);
+    expect(() => Player.encode(value, [0, 300])).toThrow(RangeError);
+  });
+});
+
 describe('Schema internals', () => {
   it('encodes identically across calls', () => {
     const node = p.object({ a: p.int().min(0).max(100), b: p.string().max(10) });
