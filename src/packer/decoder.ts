@@ -42,16 +42,12 @@ export class Decoder {
   private block?: { digits: number; cap: bigint };
 
   constructor(str: string | Uint8Array, charset?: Charset) {
-    if (str == null) {
-      throw new Error('Missing first argument');
-    }
-
     if (str instanceof Uint8Array) {
       // Binary mode - use Uint8Array directly
       this.bytes = str;
       this.str = ''; // Not used in binary mode
 
-      if (charset != null && (!Array.isArray(charset) || charset.length !== 2)) {
+      if (charset != null && !Array.isArray(charset)) {
         throw new TypeError('Binary charset must be a [min, max] range');
       }
 
@@ -66,7 +62,7 @@ export class Decoder {
       this.size = max - min + 1;
     } else {
       // String mode
-      this.str = String(str);
+      this.str = str;
       this.charset = validateCharset(charset);
 
       if (typeof this.charset === 'string') {

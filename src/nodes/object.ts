@@ -1,5 +1,4 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
-import { isArray, isObject } from './guards';
 import type { InferShape } from './infer';
 import { PNode, POptional } from './base';
 
@@ -12,18 +11,9 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     super();
     this._shape = { ...shape }; // copy so later caller mutation can't change the node
     this._keys = Object.keys(this._shape);
-    for (const key of this._keys) {
-      if (!(this._shape[key] instanceof PNode)) {
-        throw new TypeError(`p.object field '${key}' is not a schema node`);
-      }
-    }
   }
 
   _write(enc: Encoder, value: InferShape<S>): void {
-    if (!isObject(value) || isArray(value)) {
-      throw new TypeError('p.object expected an object');
-    }
-
     for (const key of this._keys) {
       const field = this._shape[key];
       const optional = field instanceof POptional;

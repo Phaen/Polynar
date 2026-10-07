@@ -227,7 +227,7 @@ function doubleFrom(exponent: number, mantissa: bigint): number {
  */
 export class PFloat extends PNode<number> {
   _write(enc: Encoder, value: number): void {
-    if (typeof value !== 'number' || !Number.isFinite(value)) {
+    if (!Number.isFinite(value)) {
       throw new TypeError(`p.float expected a finite number, got ${String(value)}`);
     }
 

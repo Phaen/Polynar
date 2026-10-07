@@ -1,5 +1,4 @@
 import { Encoder, Decoder } from '../packer';
-import { isArray } from './guards';
 import { PNode, POptional } from './base';
 import { writeIndex, readIndex } from './lattice';
 import { validateCdf, cdfBucket, locateCdf, type Cdf } from './weights';
@@ -29,9 +28,6 @@ export class PArray<TItem> extends PNode<TItem[]> {
 
   constructor(item: PNode<TItem>, bounds: ArrayBounds = {}) {
     super();
-    if (!(item instanceof PNode)) {
-      throw new TypeError('p.array requires a schema node for its item type');
-    }
     // The presence bit only exists for object fields; an array slot is always
     // occupied, so an optional item type could never mark anything absent.
     if (item instanceof POptional) {
@@ -124,9 +120,6 @@ export class PArray<TItem> extends PNode<TItem[]> {
   }
 
   _write(enc: Encoder, value: TItem[]): void {
-    if (!isArray(value)) {
-      throw new TypeError('p.array expected an array');
-    }
     const count = value.length;
 
     if (this._length !== undefined && count !== this._length) {

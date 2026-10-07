@@ -94,10 +94,8 @@ describe('Binary output', () => {
       expect(() => new Decoder(bytes, [200, 100])).toThrow(RangeError);
     });
 
-    it('rejects a binary charset that is not a [min, max] range', () => {
+    it('rejects a string charset on binary input', () => {
       const bytes = p.int().min(0).max(100).encode(42);
-      expect(() => new Encoder().toUint8Array(16 as never)).toThrow(TypeError);
-      expect(() => new Decoder(bytes, 16 as never)).toThrow(TypeError);
       expect(() => new Decoder(bytes, 'abc')).toThrow(TypeError);
     });
 

@@ -5,8 +5,6 @@
  * normalize differently across platforms.
  */
 
-import { isArray } from './guards';
-
 export interface WeightTable {
   readonly cums: readonly number[];
   readonly freqs: readonly number[];
@@ -14,7 +12,7 @@ export interface WeightTable {
 }
 
 export function buildWeights(weights: readonly number[], states: number, who: string): WeightTable {
-  if (!isArray(weights) || weights.length !== states) {
+  if (weights.length !== states) {
     throw new TypeError(`${who} weights must list one weight per value`);
   }
   const cums: number[] = [];
@@ -66,9 +64,6 @@ export function validateCdf(
   hi: number,
   who: string
 ): { cdf: Cdf; total: number } {
-  if (typeof cdf !== 'function') {
-    throw new TypeError(`${who} cdf must be a function`);
-  }
   const base = cdf(lo);
   if (!Number.isSafeInteger(base)) {
     throw new TypeError(`${who} cdf must return safe integers`);

@@ -19,16 +19,14 @@ describe('Schema date', () => {
     expect(trip(node, d).getTime()).toBe(d.getTime());
   });
 
-  it('date enforces its bounds and rejects non-dates', () => {
+  it('date enforces its bounds and rejects invalid dates', () => {
     const node = p.date().min(new Date('2020-01-01Z')).max(new Date('2021-01-01Z'));
     expect(() => node.encode(new Date('2019-12-31Z'))).toThrow('before the minimum bound');
     expect(() => node.encode(new Date('2021-01-02Z'))).toThrow('after the maximum bound');
     expect(() => node.encode(new Date(NaN))).toThrow(TypeError);
-    expect(() => p.date().encode('2020-01-01' as never)).toThrow(TypeError);
   });
 
-  it('date rejects an unknown interval name and swapped bounds at construction', () => {
-    expect(() => p.date().interval('fortnight' as never)).toThrow('Invalid date interval');
+  it('date rejects swapped bounds at construction', () => {
     expect(() => p.date().min(new Date('2021-01-01Z')).max(new Date('2020-01-01Z'))).toThrow(
       RangeError
     );

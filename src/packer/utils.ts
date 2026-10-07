@@ -51,11 +51,7 @@ export function validateCharset(charset?: Charset): Charset {
       throw new Error(errChar);
     }
     return charset;
-  } else if (Array.isArray(charset)) {
-    if (charset.length !== 2) {
-      throw new TypeError(errBin);
-    }
-
+  } else {
     // Normalize into a fresh array so the caller's is never mutated.
     let [min, max] = charset;
     if (min > max) {
@@ -76,7 +72,5 @@ export function validateCharset(charset?: Charset): Charset {
     }
 
     return [min, max];
-  } else {
-    throw new TypeError(errChar);
   }
 }

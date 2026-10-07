@@ -72,10 +72,6 @@ export class PString extends PNode<string> {
   }
 
   _write(enc: Encoder, value: string): void {
-    if (typeof value !== 'string') {
-      throw new TypeError(`p.string expected a string, got ${String(value)}`);
-    }
-
     // The length prefix counts UTF-16 code units (`.length`), not code
     // points, so `.max()` keeps plain JS string semantics.
     if (this._max === undefined) {

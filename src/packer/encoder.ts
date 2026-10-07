@@ -214,10 +214,6 @@ export class Encoder {
   }
 
   toUint8Array(charset?: ByteRange): Uint8Array {
-    if (charset != null && (!Array.isArray(charset) || charset.length !== 2)) {
-      throw new TypeError('Binary charset must be a [min, max] range');
-    }
-
     const [min, max] = charset || [0, 255];
 
     // Validate range
