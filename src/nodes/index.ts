@@ -19,3 +19,5 @@ export { PAny } from './any';
 export { p } from './p';
 export type { Infer, InferShape } from './infer';
 export type { Cdf } from './weights';
+export { ProseModels, buildProseModel } from './prose';
+export type { ProseModel, ProseModelOptions } from './prose';

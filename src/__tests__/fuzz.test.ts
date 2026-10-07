@@ -8,7 +8,7 @@
  * failure is reproducible.
  */
 
-import { CharSets, p, PNode } from '../index';
+import { CharSets, p, PNode, buildProseModel } from '../index';
 import type { Charset } from '../index';
 
 const mulberry32 = (seed: number) => (): number => {
@@ -161,7 +161,15 @@ const scalarCase = (): Case => {
           return { node: p.string().max(max), gen: () => randString(max) };
         }
         case 2:
-          return { node: p.string().prose(), gen: () => randString(10) };
+          // English half the time, else a model counted from random text.
+          return {
+            node: p
+              .string()
+              .prose(
+                rand() < 0.5 ? undefined : buildProseModel('q' + randString(30), { minCount: 1 })
+              ),
+            gen: () => randString(10),
+          };
         default: {
           // Both charset kinds: an indexed alphabet and a code-unit range.
           if (rand() < 0.5) {
