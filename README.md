@@ -111,6 +111,15 @@ Any JS string round-trips bit-exact, lone surrogates included — where UTF-8-ba
 
 The built-in model is English. Any other is a matrix: `{ alphabet, weights }`, where `weights[row][col]` says how likely the character in column `col` is after the one in row `row`. Both run over `alphabet` plus one extra: the last row is for after a character outside the alphabet, the last column is the escape. A string starts in the space's row, or the last one if the alphabet has no space. `buildProseModel(corpus)` counts a model from sample text and returns plain JSON; characters it sees only once are left to the escape, which `{ minCount }` or an explicit `{ alphabet }` changes.
 
+### Bytes
+
+```typescript
+p.bytes(); // a Uint8Array, eight bits per byte plus its length
+p.bytes().length(32); // a hash or key: exactly 32 bytes on the wire
+```
+
+Takes `.min()`, `.max()` and `.length()` like a string. Decodes to a fresh `Uint8Array`.
+
 ### Booleans and enums
 
 ```typescript
@@ -134,7 +143,7 @@ p.union([p.string(), p.null()]); // a nullable string
 p.union([p.string(), p.null()]).weights([1, 99]); // nearly always null
 ```
 
-The member is picked by the value's kind: string, number, boolean, null, date, array or object. Each kind can belong to one member, so two array or two object members throw; for mixed items, use `p.array(p.union([...]))`. The tag costs log2(members) bits, or whatever `.weights()` says.
+The member is picked by the value's kind: string, number, boolean, null, date, array, bytes or object. Each kind can belong to one member, so two array or two object members throw; for mixed items, use `p.array(p.union([...]))`. The tag costs log2(members) bits, or whatever `.weights()` says.
 
 ### Dates
 

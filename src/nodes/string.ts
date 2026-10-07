@@ -9,7 +9,7 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import type { Charset } from '../packer';
 import { validateCharset } from '../packer/utils';
 import { PNode } from './base';
-import { writeIndex, readIndex } from './lattice';
+import { LengthPrefix, type LengthBounds } from './lattice';
 import type { Kind } from './guards';
 import { composeCodePoint, parseCodePoint } from './codepoint';
 import {
@@ -22,18 +22,10 @@ import {
   type ProseTable,
 } from './prose';
 
-interface StringBounds {
-  min?: number;
-  max?: number;
-  length?: number;
-}
-
 export class PString extends PNode<string> {
   readonly _kinds: readonly Kind[] = ['string'];
 
-  private readonly _min?: number;
-  private readonly _max?: number;
-  private readonly _length?: number;
+  private readonly _length: LengthPrefix;
   /** Explicit charset; undefined selects the laddered code-point default. */
   private readonly _charset?: Charset;
   /** Symbol count of a range charset; undefined for string charsets. */
@@ -42,34 +34,9 @@ export class PString extends PNode<string> {
   private readonly _prose?: ProseModel;
   private readonly _table?: ProseTable;
 
-  constructor(bounds: StringBounds = {}, charset?: Charset, prose?: ProseModel) {
+  constructor(bounds: LengthBounds = {}, charset?: Charset, prose?: ProseModel) {
     super();
-    // A fixed length IS both bounds; combining the two spellings is a
-    // contradiction, so it throws instead of silently merging.
-    if (bounds.length != null && (bounds.min != null || bounds.max != null)) {
-      throw new TypeError('p.string length cannot be combined with min or max');
-    }
-    if (bounds.length != null) {
-      // No inward rounding here: no length satisfies a fractional one, so
-      // either rounding direction would invent a contract never declared.
-      if (!Number.isInteger(bounds.length) || bounds.length < 0) {
-        throw new RangeError('p.string length must be a non-negative integer');
-      }
-      this._length = bounds.length;
-    }
-    // Round each bound INWARD (ceil the min, floor the max) so a fractional
-    // bound never admits a length beyond itself.
-    this._min = bounds.min == null ? undefined : Math.ceil(bounds.min);
-    if (this._min !== undefined && (!Number.isInteger(this._min) || this._min < 0)) {
-      throw new RangeError('p.string min must be a non-negative length');
-    }
-    this._max = bounds.max == null ? undefined : Math.floor(bounds.max);
-    if (this._max !== undefined && (!Number.isInteger(this._max) || this._max < 0)) {
-      throw new RangeError('p.string max must be a non-negative length');
-    }
-    if (this._min !== undefined && this._max !== undefined && this._min > this._max) {
-      throw new RangeError('p.string range is empty: min exceeds max');
-    }
+    this._length = new LengthPrefix(bounds, 'p.string');
     if (prose !== undefined) {
       this._prose = prose;
       this._table = compileProse(prose);
@@ -89,20 +56,20 @@ export class PString extends PNode<string> {
 
   /** A floor on the length; the prefix then counts up from it. */
   min(n: number): PString {
-    return new PString({ ...this._bounds(), min: n }, this._charset, this._prose);
+    return new PString({ ...this._length.bounds, min: n }, this._charset, this._prose);
   }
 
   max(n: number): PString {
-    return new PString({ ...this._bounds(), max: n }, this._charset, this._prose);
+    return new PString({ ...this._length.bounds, max: n }, this._charset, this._prose);
   }
 
   /** Fix the exact length. The prefix then costs zero bits on the wire. */
   length(n: number): PString {
-    return new PString({ ...this._bounds(), length: n }, this._charset, this._prose);
+    return new PString({ ...this._length.bounds, length: n }, this._charset, this._prose);
   }
 
   charset(c: Charset): PString {
-    return new PString(this._bounds(), c, this._prose);
+    return new PString(this._length.bounds, c, this._prose);
   }
 
   /**
@@ -113,22 +80,13 @@ export class PString extends PNode<string> {
    * cost. English by default; any other `ProseModel` swaps the matrix.
    */
   prose(model: ProseModel = ProseModels.english): PString {
-    return new PString(this._bounds(), this._charset, model);
+    return new PString(this._length.bounds, this._charset, model);
   }
 
   _write(enc: Encoder, value: string): void {
     // The length prefix counts UTF-16 code units (`.length`), not code
     // points, so `.max()` keeps plain JS string semantics.
-    if (this._length !== undefined && value.length !== this._length) {
-      throw new RangeError(`String '${value}' differs from the fixed length`);
-    }
-    if (this._min !== undefined && value.length < this._min) {
-      throw new RangeError(`String '${value}' is below min length`);
-    }
-    if (this._max !== undefined && value.length > this._max) {
-      throw new RangeError(`String '${value}' exceeds max length`);
-    }
-    writeIndex(enc, value.length, this._lengthMin(), this._lengthMax());
+    this._length.write(enc, value.length, () => `String '${value}'`);
 
     if (this._charset === undefined) {
       // Code-point iteration merges every adjacent lead+trail pair, so the
@@ -167,7 +125,7 @@ export class PString extends PNode<string> {
   }
 
   _read(dec: Decoder): string {
-    const length = readIndex(dec, this._lengthMin(), this._lengthMax());
+    const length = this._length.read(dec);
     let value = '';
 
     if (this._charset === undefined) {
@@ -206,18 +164,5 @@ export class PString extends PNode<string> {
       }
     }
     return value;
-  }
-
-  private _bounds(): StringBounds {
-    return { min: this._min, max: this._max, length: this._length };
-  }
-
-  /** A length is never negative, so the lattice floor defaults to 0. */
-  private _lengthMin(): number {
-    return this._length ?? this._min ?? 0;
-  }
-
-  private _lengthMax(): number | undefined {
-    return this._length ?? this._max;
   }
 }

@@ -71,3 +71,6 @@ const _union: Equals<Infer<typeof Nullable>, string | number | null> = true;
 
 // @ts-expect-error — POptional is not a valid union member
 p.union([p.string().optional(), p.int()]);
+
+// Bytes decode to a Uint8Array.
+const _bytes: Equals<Infer<ReturnType<typeof p.bytes>>, Uint8Array> = true;

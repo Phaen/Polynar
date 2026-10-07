@@ -14,6 +14,7 @@ import {
   PNull,
   PObject,
   PString,
+  PBytes,
   PUnion,
 } from './';
 import type { Infer } from './infer';
@@ -63,6 +64,10 @@ export const p = {
     return new PUnion<Infer<T[number]>>(members);
   },
   /** Null; zero bits. Pairs with `p.union` for nullable fields. */
+  /** Raw bytes as a `Uint8Array`; chain `.max(n)`/`.length(n)` like a string. */
+  bytes(): PBytes {
+    return new PBytes();
+  },
   null(): PNull {
     return new PNull();
   },

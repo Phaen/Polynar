@@ -16,6 +16,7 @@ export {
   PFloat,
   PDecimal,
   PString,
+  PBytes,
   PBool,
   PEnum,
   PDate,
