@@ -3,6 +3,7 @@
  */
 
 import { p } from '../../index';
+import { trip } from '../support';
 
 describe('Schema object', () => {
   const Person = p.object({
@@ -70,5 +71,13 @@ describe('Schema object', () => {
       inner: { a: 3, b: 7 },
     });
     expect(() => Schema.encode({ inner: { a: 1 } } as never)).toThrow();
+  });
+
+  it('optional twice is still one presence bit', () => {
+    const once = p.string().optional();
+    expect(once.optional()).toBe(once);
+    const Schema = p.object({ nick: once.optional() });
+    expect(trip(Schema, {})).toEqual({});
+    expect(trip(Schema, { nick: 'Ada' })).toEqual({ nick: 'Ada' });
   });
 });
