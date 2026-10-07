@@ -10,10 +10,15 @@ import type { Charset } from '../packer';
 import { validateCharset } from '../packer/utils';
 import { PNode } from './base';
 import { composeCodePoint, parseCodePoint } from './codepoint';
-import { composeProsePoint, parseProsePoint, proseContext } from './prose';
-
-/** The context of the imaginary character before the first: a space. */
-const PROSE_START = 32;
+import {
+  ProseModels,
+  compileProse,
+  composeProsePoint,
+  parseProsePoint,
+  proseContext,
+  type ProseModel,
+  type ProseTable,
+} from './prose';
 
 export class PString extends PNode<string> {
   private readonly _max?: number;
@@ -21,10 +26,11 @@ export class PString extends PNode<string> {
   private readonly _charset?: Charset;
   /** Symbol count of a range charset; undefined for string charsets. */
   private readonly _size?: number;
-  /** Prose-weighted slots instead of the flat ladder. */
-  private readonly _prose: boolean;
+  /** Prose model replacing the flat ladder, as given and compiled. */
+  private readonly _prose?: ProseModel;
+  private readonly _table?: ProseTable;
 
-  constructor(max?: number, charset?: Charset, prose = false) {
+  constructor(max?: number, charset?: Charset, prose?: ProseModel) {
     super();
     // Round the cap INWARD (floor) so a fractional cap never admits a longer
     // string than declared.
@@ -32,9 +38,12 @@ export class PString extends PNode<string> {
     if (this._max !== undefined && (!Number.isInteger(this._max) || this._max < 0)) {
       throw new RangeError('p.string max must be a non-negative length');
     }
-    this._prose = prose;
+    if (prose !== undefined) {
+      this._prose = prose;
+      this._table = compileProse(prose);
+    }
     if (charset !== undefined) {
-      if (prose) {
+      if (prose !== undefined) {
         throw new TypeError('p.string cannot combine prose with a charset');
       }
       // validateCharset returns a normalized copy, so later caller mutation of
@@ -51,10 +60,7 @@ export class PString extends PNode<string> {
   }
 
   charset(c: Charset): PString {
-    if (this._prose) {
-      throw new TypeError('p.string cannot combine prose with a charset');
-    }
-    return new PString(this._max, c);
+    return new PString(this._max, c, this._prose);
   }
 
   /**
@@ -62,13 +68,10 @@ export class PString extends PNode<string> {
    * prices each character given its predecessor, so common English costs
    * ~3-4 bits per character instead of the flat 7. Still encodes any string
    * — code points outside the model pay an escape on top of their laddered
-   * cost.
+   * cost. English by default; any other `ProseModel` swaps the matrix.
    */
-  prose(): PString {
-    if (this._charset !== undefined) {
-      throw new TypeError('p.string cannot combine prose with a charset');
-    }
-    return new PString(this._max, undefined, true);
+  prose(model: ProseModel = ProseModels.english): PString {
+    return new PString(this._max, this._charset, model);
   }
 
   _write(enc: Encoder, value: string): void {
@@ -86,12 +89,13 @@ export class PString extends PNode<string> {
       // Code-point iteration merges every adjacent lead+trail pair, so the
       // split spelling the decoder rejects as non-canonical is unreachable
       // here; lone surrogates fall through as their own code points.
-      let ctx = proseContext(PROSE_START);
+      const table = this._table;
+      let ctx = table?.start ?? 0;
       for (let i = 0; i < value.length; ) {
         const code = value.codePointAt(i)!;
-        if (this._prose) {
-          composeProsePoint(enc, code, ctx);
-          ctx = proseContext(code);
+        if (table !== undefined) {
+          composeProsePoint(enc, table, code, ctx);
+          ctx = proseContext(table, code);
         } else {
           composeCodePoint(enc, code);
         }
@@ -124,11 +128,12 @@ export class PString extends PNode<string> {
     if (this._charset === undefined) {
       let units = 0;
       let lead = false;
-      let ctx = proseContext(PROSE_START);
+      const table = this._table;
+      let ctx = table?.start ?? 0;
       while (units < length) {
-        const code = this._prose ? parseProsePoint(dec, ctx) : parseCodePoint(dec);
-        if (this._prose) {
-          ctx = proseContext(code);
+        const code = table !== undefined ? parseProsePoint(dec, table, ctx) : parseCodePoint(dec);
+        if (table !== undefined) {
+          ctx = proseContext(table, code);
         }
         // A trail directly after a lone lead spells a surrogate pair as two
         // code points; the encoder always merges the pair, so the split form

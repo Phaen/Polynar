@@ -1,16 +1,16 @@
 /**
- * The order-1 model behind `p.string().prose()`: character frequencies
+ * Order-1 prose models for `p.string().prose()`: character frequencies
  * conditioned on the previous character, driven exactly through the weighted
- * packer — no code-length rounding. Each of the 98 contexts (every modeled
- * character, plus one for anything outside the model) carries its own
- * integer frequency table over the 97 modeled characters and an escape
- * symbol that hands any other code point to the laddered codec. A common
- * character after a common predecessor costs ~2–4 bits; nothing is rejected
- * — text far from the model only pays more. The base weights, the bigram
- * boosts and the context rules together ARE the prose wire format.
+ * packer — no code-length rounding. A model is a matrix: one row per
+ * previous character plus one for anything outside the alphabet, one column
+ * per next character plus an escape that hands any other code point to the
+ * laddered codec. Nothing is rejected — text far from the model only pays
+ * more. The English model below is built from base weights, bigram boosts
+ * and context rules; together they ARE its wire format.
  */
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { composeCodePoint, parseCodePoint } from './codepoint';
+import { buildWeights, locateWeighted, type WeightTable } from './weights';
 
 /** Occurrences per ten thousand characters of running English text. */
 const BASE_WEIGHTS: Record<string, number> = {
@@ -158,29 +158,14 @@ const UPPERCASE_DIVISOR = 30;
 /** Escape weight per context; anything outside the model rides behind it. */
 const ESCAPE_WEIGHT = 30;
 
-export const PROSE_ALPHABET: string = (() => {
+/** The characters the English model weights: tab, newline and printable ASCII. */
+const ENGLISH_ALPHABET: string = (() => {
   let alphabet = '\t\n';
   for (let code = 32; code <= 126; code++) {
     alphabet += String.fromCharCode(code);
   }
   return alphabet;
 })();
-
-/** Symbol index of the escape; one past the last modeled character. */
-export const PROSE_ESCAPE = PROSE_ALPHABET.length;
-
-/** Code point → symbol index for every modeled character. */
-export const PROSE_INDEX: ReadonlyMap<number, number> = new Map(
-  Array.from(PROSE_ALPHABET, (ch, i) => [ch.charCodeAt(0), i])
-);
-
-/**
- * Context index for the character preceding the one being coded: its own
- * symbol index when modeled, PROSE_ESCAPE for anything else (escaped code
- * points, and the imaginary space before the first character maps to the
- * space context explicitly in the string node).
- */
-export const proseContext = (code: number): number => PROSE_INDEX.get(code) ?? PROSE_ESCAPE;
 
 const isUpper = (ch: string): boolean => ch >= 'A' && ch <= 'Z';
 const isLower = (ch: string): boolean => ch >= 'a' && ch <= 'z';
@@ -240,74 +225,170 @@ const contextMultiplier = (prev: string, next: string): number => {
   return m;
 };
 
-/** Per context: symbol frequencies, their prefix sums, and the grand total. */
-const FREQS: Uint32Array[] = [];
-const CUMS: Uint32Array[] = [];
-export const PROSE_TOTALS: number[] = [];
-
-for (let ctx = 0; ctx <= PROSE_ALPHABET.length; ctx++) {
-  const prev = ctx < PROSE_ALPHABET.length ? PROSE_ALPHABET[ctx] : undefined;
-  const freqs = new Uint32Array(PROSE_ALPHABET.length + 1);
-  for (let sym = 0; sym < PROSE_ALPHABET.length; sym++) {
-    const next = PROSE_ALPHABET[sym];
-    const weight =
-      prev === undefined ? baseWeight(next) : baseWeight(next) * contextMultiplier(prev, next);
-    freqs[sym] = Math.max(1, Math.round(weight));
-  }
-  // Escaped code points cluster: after one non-modeled character, another is
-  // far more likely than the base rate says.
-  freqs[PROSE_ESCAPE] = prev === undefined ? ESCAPE_WEIGHT * 40 : ESCAPE_WEIGHT;
-
-  const cums = new Uint32Array(freqs.length);
-  let total = 0;
-  for (let sym = 0; sym < freqs.length; sym++) {
-    cums[sym] = total;
-    total += freqs[sym];
-  }
-  FREQS.push(freqs);
-  CUMS.push(cums);
-  PROSE_TOTALS.push(total);
+/**
+ * An order-1 prose model. `weights[row][col]` is how likely the character in
+ * column `col` is after the one in row `row`. Rows run over `alphabet`, then
+ * one more for after any character outside it; columns run over `alphabet`,
+ * then the escape that hands any other code point to the laddered codec. A
+ * string starts in the row of the space, or the extra row if the alphabet has
+ * no space. The model is part of the wire format.
+ */
+export interface ProseModel {
+  readonly alphabet: string;
+  readonly weights: readonly (readonly number[])[];
 }
 
-export const proseBucket = (ctx: number, sym: number): readonly [number, number] => [
-  CUMS[ctx][sym],
-  FREQS[ctx][sym],
-];
+const englishWeights = (): number[][] => {
+  const size = ENGLISH_ALPHABET.length;
+  const rows: number[][] = [];
+  for (let ctx = 0; ctx <= size; ctx++) {
+    const prev = ctx < size ? ENGLISH_ALPHABET[ctx] : undefined;
+    const row: number[] = [];
+    for (const next of ENGLISH_ALPHABET) {
+      const weight =
+        prev === undefined ? baseWeight(next) : baseWeight(next) * contextMultiplier(prev, next);
+      row.push(Math.max(1, Math.round(weight)));
+    }
+    // Escaped code points cluster: after one non-modeled character, another
+    // is far more likely than the base rate says.
+    row.push(prev === undefined ? ESCAPE_WEIGHT * 40 : ESCAPE_WEIGHT);
+    rows.push(Object.freeze(row) as number[]);
+  }
+  return rows;
+};
+
+/** Ready-made prose models. */
+export const ProseModels: { readonly english: ProseModel } = Object.freeze({
+  english: Object.freeze({ alphabet: ENGLISH_ALPHABET, weights: Object.freeze(englishWeights()) }),
+});
+
+/** A model compiled for coding: symbol lookup and per-row bucket tables. */
+export interface ProseTable {
+  /** Code point of each symbol, in alphabet order. */
+  readonly codes: readonly number[];
+  readonly index: ReadonlyMap<number, number>;
+  /** Symbol of the escape, and the row for after a character outside the model. */
+  readonly escape: number;
+  /** Row of the imaginary character before the first. */
+  readonly start: number;
+  readonly rows: readonly WeightTable[];
+  readonly locates: readonly ((residual: number) => readonly [number, number, number])[];
+}
+
+const SPACE = 32;
+
+const compiled = new WeakMap<ProseModel, ProseTable>();
+
+/** Validate and compile a model once; nodes sharing a model share the table. */
+export function compileProse(model: ProseModel): ProseTable {
+  let table = compiled.get(model);
+  if (table === undefined) {
+    const codes = Array.from(model.alphabet, (ch) => ch.codePointAt(0)!);
+    const index = new Map(codes.map((code, i) => [code, i]));
+    if (codes.length === 0 || index.size !== codes.length) {
+      throw new TypeError('p.string prose alphabet must be non-empty and free of duplicates');
+    }
+    const escape = codes.length;
+    if (model.weights.length !== escape + 1) {
+      throw new TypeError('p.string prose weights need a row per alphabet character, plus one');
+    }
+    const rows = model.weights.map((row) => buildWeights(row, escape + 1, 'p.string prose'));
+    table = {
+      codes,
+      index,
+      escape,
+      start: index.get(SPACE) ?? escape,
+      rows,
+      locates: rows.map(locateWeighted),
+    };
+    compiled.set(model, table);
+  }
+  return table;
+}
+
+/** The row for the character after `code`. */
+export const proseContext = (table: ProseTable, code: number): number =>
+  table.index.get(code) ?? table.escape;
+
+const isSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdfff;
+
+export interface ProseModelOptions {
+  /** The modeled characters; overrides `minCount`. */
+  readonly alphabet?: string;
+  /** Characters seen fewer times are left to the escape. Defaults to 2. */
+  readonly minCount?: number;
+}
 
 /**
- * One prose-weighted code point in the given context: the symbol's bucket,
- * or the escape bucket followed by a laddered slot for anything outside the
+ * Count a model from sample text: each adjacent pair of characters adds one
+ * to its cell, on top of a floor of one so every character stays encodable.
+ * The alphabet defaults to every character the corpus uses at least
+ * `minCount` times, in code point order; rarer ones are cheaper behind the
+ * escape than as a row and column of their own.
+ */
+export function buildProseModel(corpus: string, options: ProseModelOptions = {}): ProseModel {
+  const { minCount = 2 } = options;
+  if (!Number.isInteger(minCount) || minCount < 1) {
+    throw new RangeError('buildProseModel minCount must be a positive integer');
+  }
+  let chars = options.alphabet;
+  if (chars === undefined) {
+    const counts = new Map<string, number>();
+    for (const ch of corpus) {
+      counts.set(ch, (counts.get(ch) ?? 0) + 1);
+    }
+    // Lone surrogates stay with the escape: joined into one alphabet string,
+    // a lead next to a trail would read back as a single astral character.
+    chars = [...counts]
+      .filter(([ch, count]) => count >= minCount && !isSurrogate(ch.codePointAt(0)!))
+      .map(([ch]) => ch)
+      .sort((a, b) => a.codePointAt(0)! - b.codePointAt(0)!)
+      .join('');
+  }
+  if (chars === '') {
+    throw new RangeError('buildProseModel found no characters to model');
+  }
+  const codes = Array.from(chars, (ch) => ch.codePointAt(0)!);
+  const index = new Map(codes.map((code, i) => [code, i]));
+  const escape = codes.length;
+  const weights = Array.from({ length: escape + 1 }, () => Array<number>(escape + 1).fill(1));
+  let ctx = index.get(SPACE) ?? escape;
+  for (const ch of corpus) {
+    const sym = index.get(ch.codePointAt(0)!) ?? escape;
+    weights[ctx][sym]++;
+    ctx = sym;
+  }
+  return { alphabet: chars, weights };
+}
+
+/**
+ * One prose-weighted code point in the given row: the symbol's bucket, or
+ * the escape bucket followed by a laddered slot for anything outside the
  * model.
  */
-export function composeProsePoint(enc: Encoder, code: number, ctx: number): void {
-  const sym = PROSE_INDEX.get(code) ?? PROSE_ESCAPE;
-  enc.composeWeighted(CUMS[ctx][sym], FREQS[ctx][sym], PROSE_TOTALS[ctx]);
-  if (sym === PROSE_ESCAPE) {
+export function composeProsePoint(
+  enc: Encoder,
+  table: ProseTable,
+  code: number,
+  ctx: number
+): void {
+  const sym = table.index.get(code) ?? table.escape;
+  const row = table.rows[ctx];
+  enc.composeWeighted(row.cums[sym], row.freqs[sym], row.total);
+  if (sym === table.escape) {
     composeCodePoint(enc, code);
   }
 }
 
-export function parseProsePoint(dec: Decoder, ctx: number): number {
-  const cums = CUMS[ctx];
-  const sym = dec.parseWeighted(PROSE_TOTALS[ctx], (residual) => {
-    // Binary search for the bucket holding the residual.
-    let lo = 0;
-    let hi = cums.length - 1;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      if (cums[mid] <= residual) lo = mid;
-      else hi = mid - 1;
-    }
-    return [lo, cums[lo], FREQS[ctx][lo]];
-  });
-
-  if (sym !== PROSE_ESCAPE) {
-    return PROSE_ALPHABET.charCodeAt(sym);
+export function parseProsePoint(dec: Decoder, table: ProseTable, ctx: number): number {
+  const sym = dec.parseWeighted(table.rows[ctx].total, table.locates[ctx]);
+  if (sym !== table.escape) {
+    return table.codes[sym];
   }
   const code = parseCodePoint(dec);
   // A modeled character has its own bucket, so its escaped form would be a
   // second wire spelling of the same string.
-  if (PROSE_INDEX.has(code)) {
+  if (table.index.has(code)) {
     throw new CorruptInputError('Non-canonical escape of a modeled character');
   }
   return code;

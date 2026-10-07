@@ -2,9 +2,9 @@
  * Schema string node (`p.string()`) — unicode strings, prose mode, charsets.
  */
 
-import { p, Encoder } from '../../index';
+import { p, Encoder, ProseModels, buildProseModel } from '../../index';
 import { TEXT_DIRECT_MAX, TEXT_FIRST_RADIX } from '../../nodes/codepoint';
-import { PROSE_ESCAPE, PROSE_TOTALS, proseBucket, proseContext } from '../../nodes/prose';
+import { compileProse } from '../../nodes/prose';
 import { trip } from '../support';
 
 describe('Schema string', () => {
@@ -57,6 +57,59 @@ describe('Schema string', () => {
     expect(() => p.string().charset('abc').prose()).toThrow(TypeError);
   });
 
+  it('prose takes any model, starting outside the alphabet when it has no space', () => {
+    const kana = buildProseModel('ありがとうございます。こんにちは。さようなら。');
+    for (const value of ['ありがとう', 'こんにちは!', '', 'xyz 🎉']) {
+      expect(trip(p.string().prose(kana), value)).toBe(value);
+    }
+    const text = 'ありがとうございます。こんにちは。';
+    expect(p.string().prose(kana).encode(text).length).toBeLessThan(
+      p.string().prose().encode(text).length
+    );
+  });
+
+  it('a built model is plain data that depends only on its corpus', () => {
+    const corpus = 'de kat zit op de mat';
+    const copy = JSON.parse(JSON.stringify(buildProseModel(corpus)));
+    expect(p.string().prose(buildProseModel(corpus)).encode('de mat')).toEqual(
+      p.string().prose(copy).encode('de mat')
+    );
+    // With an explicit alphabet, everything else rides the escape.
+    const ab = buildProseModel('abcba', { alphabet: 'ab' });
+    expect(ab.weights).toHaveLength(3);
+    expect(trip(p.string().prose(ab), 'abc')).toBe('abc');
+  });
+
+  it('a built model leaves rare characters to the escape', () => {
+    const corpus = 'the cat sat on the mat, the end 🎉';
+    expect(buildProseModel(corpus).alphabet).toBe(' aehnt');
+    expect(Array.from(buildProseModel(corpus, { minCount: 1 }).alphabet)).toContain('🎉');
+    expect(trip(p.string().prose(buildProseModel(corpus)), 'the dog 🎉')).toBe('the dog 🎉');
+    const lone = buildProseModel('a\udc00a\ud800a', { minCount: 1 });
+    expect(lone.alphabet).toBe('a');
+    expect(trip(p.string().prose(lone), 'a\ud800\ud800a')).toBe('a\ud800\ud800a');
+    expect(() => buildProseModel('abc')).toThrow('no characters to model');
+    expect(() => buildProseModel('aa', { alphabet: '' })).toThrow('no characters to model');
+    expect(() => buildProseModel('aa', { minCount: 0 })).toThrow('positive integer');
+  });
+
+  it('prose models must match their alphabet', () => {
+    const row = [1, 1, 1];
+    expect(() => p.string().prose({ alphabet: '', weights: [[1]] })).toThrow('non-empty');
+    expect(() => p.string().prose({ alphabet: 'aa', weights: [row, row, row] })).toThrow(
+      'free of duplicates'
+    );
+    expect(() => p.string().prose({ alphabet: 'ab', weights: [row, row] })).toThrow(
+      'a row per alphabet character'
+    );
+    expect(() => p.string().prose({ alphabet: 'ab', weights: [row, [1, 1], row] })).toThrow(
+      'one weight per value'
+    );
+    expect(() => p.string().prose({ alphabet: 'ab', weights: [row, [1, 0, 1], row] })).toThrow(
+      'positive integers'
+    );
+  });
+
   it('string packs ASCII near seven bits per character', () => {
     // 24 slots of log2(131) bits plus the length prefix: 22 bytes, where the
     // former flat 16-bit code units spent 49.
@@ -80,11 +133,11 @@ describe('Schema string', () => {
   it('prose decode rejects a modeled character behind the escape', () => {
     // 'e' has its own bucket, so its escaped form would be a second wire
     // spelling of the same string.
-    const ctx = proseContext(' '.charCodeAt(0));
-    const [cum, freq] = proseBucket(ctx, PROSE_ESCAPE);
+    const table = compileProse(ProseModels.english);
+    const row = table.rows[table.start];
     const enc = new Encoder();
     enc.composeTerm(1);
-    enc.composeWeighted(cum, freq, PROSE_TOTALS[ctx]);
+    enc.composeWeighted(row.cums[table.escape], row.freqs[table.escape], row.total);
     enc.compose('e'.charCodeAt(0), TEXT_FIRST_RADIX);
     expect(() => p.string().prose().decode(enc.toUint8Array())).toThrow(
       'Non-canonical escape of a modeled character'

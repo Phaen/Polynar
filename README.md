@@ -99,12 +99,15 @@ p.float(); // any finite double, bit-exact; 0.1, 1/3 or 6.02e23 cost 2-6 bytes, 
 p.string(); // any text, length-prefixed; ~7 bits per ASCII character
 p.string().max(40); // a bounded length packs smaller
 p.string().prose(); // weighted for natural language; ~4 bits per character
+p.string().prose(buildProseModel(sample)); // or for your own language, counted from sample text
 p.string().charset('0123456789'); // restrict the alphabet for density
 ```
 
 Any JS string round-trips bit-exact, lone surrogates included — where UTF-8-based formats substitute U+FFFD, Polynar returns what went in.
 
 `.prose()` weights each character by the one before it — common characters drop to 2–5 bits, `u` after `q` to under one; anything outside the model — other scripts, emoji — pays a small escape on top. Every string still encodes. You can't combine it with `.charset()`; both decide the alphabet.
+
+The built-in model is English. Any other is a matrix: `{ alphabet, weights }`, where `weights[row][col]` says how likely the character in column `col` is after the one in row `row`. Both run over `alphabet` plus one extra: the last row is for after a character outside the alphabet, the last column is the escape. A string starts in the space's row, or the last one if the alphabet has no space. `buildProseModel(corpus)` counts a model from sample text and returns plain JSON; characters it sees only once are left to the escape, which `{ minCount }` or an explicit `{ alphabet }` changes.
 
 ### Booleans and enums
 
