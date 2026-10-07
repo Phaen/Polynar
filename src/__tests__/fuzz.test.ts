@@ -140,10 +140,7 @@ const scalarCase = (): Case => {
           const bounded = p.decimal(step).min(grid(kLo)).max(grid(kHi));
           const cdf = randCdf();
           return {
-            node:
-              rand() < 0.5
-                ? bounded
-                : bounded.cdf((v) => cdf(Math.round((v * scale) / scaledStep) - kLo)),
+            node: rand() < 0.5 ? bounded : bounded.cdf((k) => cdf(k - kLo)),
             gen: () => grid(randInt(kLo, kHi)),
           };
         }
@@ -276,7 +273,7 @@ const scalarCase = (): Case => {
           const bounded = node.min(min).max(min + span * ms);
           const cdf = randCdf();
           return {
-            node: rand() < 0.5 ? bounded : bounded.cdf((t) => cdf((t - min) / ms)),
+            node: rand() < 0.5 ? bounded : bounded.cdf((b) => cdf(b)),
             gen: () => new Date(min + randInt(0, span) * ms),
           };
         }
@@ -324,9 +321,12 @@ const arrayCase = (depth: number): Case => {
   const length = randInt(0, 4);
   let node = p.array(item.node as never);
   let free = false;
+  let lo = 0;
+  let hi = 0;
   switch (randInt(0, 3)) {
     case 1:
-      node = node.max(length + randInt(0, 3));
+      hi = length + randInt(0, 3);
+      node = node.max(hi);
       free = true;
       break;
     case 2:
@@ -334,15 +334,22 @@ const arrayCase = (depth: number): Case => {
       break;
     case 3:
       // A raised floor packs the count as its offset from the minimum.
-      node = node.min(randInt(0, length));
+      lo = randInt(0, length);
+      node = node.min(lo);
       if (rand() < 0.5) {
-        node = node.max(length + randInt(0, 3));
+        hi = length + randInt(0, 3);
+        node = node.max(hi);
         free = true;
       }
       break;
   }
   // A count prior needs a max and a free length.
-  if (free && rand() < 0.5) node = node.cdf(randCdf());
+  if (free && rand() < 0.5) {
+    node =
+      rand() < 0.5
+        ? node.cdf(randCdf())
+        : node.weights(Array.from({ length: hi - lo + 1 }, () => randInt(1, 100)));
+  }
   return { node, gen: () => Array.from({ length }, () => item.gen()) };
 };
 

@@ -2,14 +2,14 @@ import { Encoder, Decoder } from '../packer';
 import { PNode, POptional } from './base';
 import type { Kind } from './guards';
 import { writeIndex, readIndex } from './lattice';
-import { validateCdf, cdfBucket, locateCdf, type Cdf } from './weights';
+import { resolvePrior, priorKind, cdfBucket, locateCdf, type Cdf, type Prior } from './weights';
 
 /** Count constraints for an array node: min/max bounds, or a fixed length. */
 interface ArrayBounds {
   min?: number;
   max?: number;
   length?: number;
-  cdf?: Cdf;
+  prior?: Prior;
 }
 
 /**
@@ -25,6 +25,8 @@ export class PArray<TItem> extends PNode<TItem[]> {
   private readonly _min?: number;
   private readonly _max?: number;
   private readonly _length?: number;
+  /** The prior as declared, kept so a later bound change re-validates it. */
+  private readonly _prior?: Prior;
   /** A prior over the item count; undefined means uniform. */
   private readonly _cdf?: Cdf;
   private readonly _total?: number;
@@ -70,16 +72,18 @@ export class PArray<TItem> extends PNode<TItem[]> {
       throw new RangeError('p.array range is empty: min exceeds max');
     }
 
-    if (bounds.cdf !== undefined) {
+    const prior = bounds.prior;
+    if (prior !== undefined) {
       if (this._length !== undefined) {
-        throw new TypeError('p.array cdf is meaningless on a fixed length');
+        throw new TypeError(`p.array ${priorKind(prior)} is meaningless on a fixed length`);
       }
       if (this._max === undefined) {
-        throw new TypeError('p.array cdf requires a max count');
+        throw new TypeError(`p.array ${priorKind(prior)} requires a max count`);
       }
-      const rebased = validateCdf(bounds.cdf, this._countMin(), this._max, 'p.array');
-      this._cdf = rebased.cdf;
-      this._total = rebased.total;
+      this._prior = prior;
+      const resolved = resolvePrior(prior, this._countMin(), this._max, 'p.array');
+      this._cdf = resolved.cdf;
+      this._total = resolved.total;
     }
   }
 
@@ -89,7 +93,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
       min: n,
       max: this._max,
       length: this._length,
-      cdf: this._cdf,
+      prior: this._prior,
     });
   }
 
@@ -99,7 +103,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
       min: this._min,
       max: n,
       length: this._length,
-      cdf: this._cdf,
+      prior: this._prior,
     });
   }
 
@@ -118,7 +122,21 @@ export class PArray<TItem> extends PNode<TItem[]> {
       min: this._min,
       max: this._max,
       length: this._length,
-      cdf: fn,
+      prior: fn,
+    });
+  }
+
+  /**
+   * Declare how likely each count from min (or 0) to max is, lowest first.
+   * Same prior as `.cdf()`, given as the histogram instead of its running
+   * total.
+   */
+  weights(w: readonly number[]): PArray<TItem> {
+    return new PArray<TItem>(this._item, {
+      min: this._min,
+      max: this._max,
+      length: this._length,
+      prior: w,
     });
   }
 

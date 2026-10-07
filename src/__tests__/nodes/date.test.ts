@@ -57,6 +57,13 @@ describe('Schema date', () => {
     expect(daily.decode(daily.encode(d)).getTime()).toBe(d.getTime());
   });
 
+  it('a decoded bucket past the Date range is corrupt input', () => {
+    // A min-only date reads its bucket like a min-only int, so an int can
+    // forge a bucket the encoder never could.
+    const late = p.date().min(new Date(8.64e15)).interval('day');
+    expect(() => late.decode(p.int().min(0).encode(1))).toThrow('representable time range');
+  });
+
   it('rejects fractional timestamp bounds', () => {
     expect(() => p.date().min(1.5)).toThrow('bounds must be Dates or integer timestamps');
   });

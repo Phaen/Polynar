@@ -2,7 +2,7 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { PNode } from './base';
 import type { Kind } from './guards';
 import { writeIndex, readIndex } from './lattice';
-import { validateCdf, cdfBucket, locateCdf, type Cdf } from './weights';
+import { resolvePrior, priorKind, cdfBucket, locateCdf, type Cdf, type Prior } from './weights';
 
 // Smallest number of decimal places at which x is represented exactly, or
 // null when there is none within double precision (e.g. 1/3, Math.PI).
@@ -38,12 +38,12 @@ export class PDecimal extends PNode<number> {
   /** Multiple-of-step bounds, rounded inward onto the grid. */
   private readonly _kMin?: number;
   private readonly _kMax?: number;
-  /** The user's value-domain cdf and its multiple-domain adapter. */
+  /** The prior as declared, kept so a later bound change re-validates it. */
+  private readonly _prior?: Prior;
   private readonly _cdf?: Cdf;
-  private readonly _kCdf?: Cdf;
   private readonly _total?: number;
 
-  constructor(step: number, min?: number, max?: number, cdf?: Cdf) {
+  constructor(step: number, min?: number, max?: number, prior?: Prior) {
     super();
     if (!(step > 0)) {
       throw new TypeError('p.decimal step must be a positive number');
@@ -95,40 +95,42 @@ export class PDecimal extends PNode<number> {
       throw new RangeError('p.decimal range spans more steps than exact arithmetic supports');
     }
 
-    if (cdf !== undefined) {
+    if (prior !== undefined) {
       if (this._kMin === undefined || this._kMax === undefined) {
-        throw new TypeError('p.decimal cdf requires both bounds');
+        throw new TypeError(`p.decimal ${priorKind(prior)} requires both bounds`);
       }
-      // The adapter hands the user exact grid values while the packer sees
-      // plain multiple indices.
-      const rebased = validateCdf(
-        (k: number) => cdf((k * this._scaledStep) / this._scale),
-        this._kMin,
-        this._kMax,
-        'p.decimal'
-      );
-      this._kCdf = rebased.cdf;
-      this._total = rebased.total;
-      this._cdf = cdf;
+      this._prior = prior;
+      const resolved = resolvePrior(prior, this._kMin, this._kMax, 'p.decimal');
+      this._cdf = resolved.cdf;
+      this._total = resolved.total;
     }
   }
 
   min(n: number): PDecimal {
-    return new PDecimal(this._step, n, this._maxRaw, this._cdf);
+    return new PDecimal(this._step, n, this._maxRaw, this._prior);
   }
 
   max(n: number): PDecimal {
-    return new PDecimal(this._step, this._minRaw, n, this._cdf);
+    return new PDecimal(this._step, this._minRaw, n, this._prior);
   }
 
   /**
-   * Declare a prior over the bounded grid as an integer CDF over VALUES:
-   * `fn(v)` is the cumulative weight of grid points below `v`, evaluated at
-   * the exact doubles the grid holds. Costs log2(total / weight) bits per
-   * value; zero-weight grid points cannot encode.
+   * Declare a prior over the bounded grid as an integer CDF over grid
+   * indices: `fn(k)` is the cumulative weight below the k-th multiple of the
+   * step (k = value / step), so a value's weight is `fn(k + 1) - fn(k)`.
+   * Costs log2(total / weight) bits per value; zero-weight grid points cannot
+   * encode.
    */
   cdf(fn: Cdf): PDecimal {
     return new PDecimal(this._step, this._minRaw, this._maxRaw, fn);
+  }
+
+  /**
+   * Declare how likely each grid point from min to max is, lowest first. Same
+   * prior as `.cdf()`, given as the histogram instead of its running total.
+   */
+  weights(w: readonly number[]): PDecimal {
+    return new PDecimal(this._step, this._minRaw, this._maxRaw, w);
   }
 
   _write(enc: Encoder, value: number): void {
@@ -158,19 +160,19 @@ export class PDecimal extends PNode<number> {
       throw new RangeError(`Value '${value}' exceeds range bounds`);
     }
 
-    if (this._kCdf === undefined) {
+    if (this._cdf === undefined) {
       writeIndex(enc, k, this._kMin, this._kMax);
       return;
     }
-    const [cum, freq] = cdfBucket(this._kCdf, k, 'p.decimal');
+    const [cum, freq] = cdfBucket(this._cdf, k, 'p.decimal');
     enc.composeWeighted(cum, freq, this._total!);
   }
 
   _read(dec: Decoder): number {
     const k =
-      this._kCdf === undefined
+      this._cdf === undefined
         ? readIndex(dec, this._kMin, this._kMax)
-        : dec.parseWeighted(this._total!, locateCdf(this._kCdf, this._kMin!, this._kMax!));
+        : dec.parseWeighted(this._total!, locateCdf(this._cdf, this._kMin!, this._kMax!));
     const scaled = k * this._scaledStep;
     // Mirror of the encode-side exactness guard: a product past 2^53 rounds,
     // and the encoder could never have emitted it.

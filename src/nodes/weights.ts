@@ -68,11 +68,36 @@ export function validateCdf(
   if (!Number.isSafeInteger(base)) {
     throw new TypeError(`${who} cdf must return safe integers`);
   }
-  const total = cdf(hi + 1) - base;
-  if (!Number.isSafeInteger(total) || total < 1) {
+  const end = cdf(hi + 1);
+  if (!Number.isSafeInteger(end)) {
+    throw new TypeError(`${who} cdf must return safe integers`);
+  }
+  const total = end - base;
+  if (total < 1) {
     throw new TypeError(`${who} cdf must put positive weight on the range`);
   }
   return { cdf: base === 0 ? cdf : (v) => cdf(v) - base, total };
+}
+
+/** A node's prior as declared: an integer CDF or a weight per value. */
+export type Prior = Cdf | readonly number[];
+
+export const priorKind = (prior: Prior): 'cdf' | 'weights' =>
+  typeof prior === 'function' ? 'cdf' : 'weights';
+
+/** A prior over `[lo, hi]` as a validated, rebased CDF and its total mass. */
+export function resolvePrior(
+  prior: Prior,
+  lo: number,
+  hi: number,
+  who: string
+): { cdf: Cdf; total: number } {
+  if (typeof prior === 'function') {
+    return validateCdf(prior, lo, hi, who);
+  }
+  // A weight list is a CDF read off its running totals.
+  const { cums, total } = buildWeights(prior, hi - lo + 1, who);
+  return { cdf: (v) => (v > hi ? total : cums[v - lo]), total };
 }
 
 /** The bucket of one value under a CDF, validated for the encode side. */
