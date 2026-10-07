@@ -83,6 +83,7 @@ p.int()
   .min(0)
   .max(100)
   .cdf((v) => v * v); // tell it which values are common; here high ones pack cheap
+p.int().min(1).max(5).weights([5, 2, 3, 10, 80]); // or as a histogram, lowest value first
 p.decimal(0.01); // exact multiples of a step; off-grid values throw
 p.decimal(0.01).min(0).max(100); // a price in cents: 2 bytes
 p.float(); // any finite double, bit-exact; 0.1, 1/3 or 6.02e23 cost 2-6 bytes, noise costs 8
@@ -90,7 +91,7 @@ p.float(); // any finite double, bit-exact; 0.1, 1/3 or 6.02e23 cost 2-6 bytes, 
 
 `p.int` for whole numbers, `p.decimal` for a known step, `p.float` for arbitrary doubles. All bit-exact; NaN and Infinity throw everywhere, and so does anything that can't round-trip exactly: ranges wider than 2^53, or a value farther than that from a lone bound.
 
-`.cdf()` tells the encoder which values are common. Hand it a running total: `cdf(v)` returns how much weight sits below `v`, so a value's own weight is `cdf(v + 1) - cdf(v)`. Common values cost fewer bits, rare ones more, zero-weight ones throw. You don't need to normalize anything — only the ratios matter — but the function must never go down; if it does, encoding a value in that stretch throws. Works the same on `p.decimal` (called with grid values), `p.date` (bucket timestamps) and `p.array` (item counts). Encoder and decoder must get identical numbers out of it, so use BigInt or plain `+ - * /` — `Math.exp` and friends round differently per engine. And don't inflate the weights for sport: the last value in a message pays extra for a big total.
+`.cdf()` tells the encoder which values are common. Hand it a running total: `cdf(v)` returns how much weight sits below `v`, so a value's own weight is `cdf(v + 1) - cdf(v)`. Common values cost fewer bits, rare ones more, zero-weight ones throw. You don't need to normalize anything — only the ratios matter — but the function must never go down; if it does, encoding a value in that stretch throws. Works the same on `p.decimal` (called with grid values), `p.date` (bucket timestamps) and `p.array` (item counts). Encoder and decoder must get identical numbers out of it, so use BigInt or plain `+ - * /` — `Math.exp` and friends round differently per engine. And don't inflate the weights for sport: the last value in a message pays extra for a big total. On a bounded `p.int`, `.weights()` takes the histogram directly instead, one positive integer per value from `min` up.
 
 ### Strings
 

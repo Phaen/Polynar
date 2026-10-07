@@ -75,6 +75,32 @@ describe('Schema priors', () => {
     expect(() => parabola.encode(80)).toThrow(TypeError);
   });
 
+  it('int weights are a histogram over the bounded range', () => {
+    const stars = p.int().min(1).max(5).weights([5, 2, 3, 10, 80]);
+    for (const v of [1, 2, 3, 4, 5]) {
+      expect(trip(stars, v)).toBe(v);
+    }
+    // The same prior as its running total encodes identically.
+    const sums = [0, 5, 7, 10, 20, 100];
+    const cdf = p
+      .int()
+      .min(1)
+      .max(5)
+      .cdf((v) => sums[v - 1]);
+    const ratings = [5, 5, 4, 5, 5, 5, 1, 5, 5, 4, 5, 5, 5, 5, 3, 5, 5, 4, 5, 5];
+    const list = (node: typeof stars) => p.array(node).length(ratings.length);
+    expect(list(stars).encode(ratings)).toEqual(list(cdf).encode(ratings));
+    expect(list(stars).encode(ratings).length).toBeLessThan(
+      list(p.int().min(1).max(5)).encode(ratings).length
+    );
+    expect(() => p.int().weights([1])).toThrow('requires both bounds');
+    expect(() => p.int().min(1).max(5).weights([1, 2])).toThrow('one weight per value');
+    expect(() => p.int().min(1).max(5).weights([1, 2, 0, 4, 5])).toThrow('positive integers');
+    // A bound change after the fact re-checks the count against the new range.
+    expect(() => stars.max(6)).toThrow('one weight per value');
+    expect(trip(stars.min(1), 4)).toBe(4);
+  });
+
   it('cdf priors ride decimal grids, date buckets and array counts', () => {
     // Latitude with a quadratic stand-in for the spherical prior.
     const lat = p
