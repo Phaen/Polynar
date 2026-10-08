@@ -40,10 +40,13 @@ export class PBytes extends PNode<Uint8Array> {
   }
 
   _read(dec: Decoder): Uint8Array {
-    const value = new Uint8Array(this._length.read(dec));
-    for (let i = 0; i < value.length; i++) {
-      value[i] = dec.parse(256);
+    // Read before allocating: a tampered length prefix then runs out of
+    // input as corrupt data instead of requesting an absurd buffer.
+    const length = this._length.read(dec);
+    const bytes: number[] = [];
+    for (let i = 0; i < length; i++) {
+      bytes.push(dec.parse(256));
     }
-    return value;
+    return Uint8Array.from(bytes);
   }
 }
