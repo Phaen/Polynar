@@ -80,12 +80,26 @@ assert.deepStrictEqual(User.decode(bytes), user);
 
 Each `p.*` factory creates a node for one type, and the node's methods narrow which values it allows. Methods return a new node; they never change the one they're called on. A schema that contradicts itself, such as `.min(5).max(2)`, throws as soon as it's defined. A value outside a declared bound, step, length or list throws when it's encoded. Everything else, like a string where a number belongs, is left to TypeScript, and object keys outside the shape are dropped.
 
-### Priors: `.weights()` and `.cdf()`
-
-Several nodes accept a prior: a hint about which values are common. Common values then cost fewer bits and rare ones more. Only the ratios matter, and the prior is part of the encoding, so both sides need the same one.
-
-- `.weights([...])` is a histogram: one positive integer per value, in the order listed for that node. It never rejects anything; rare values still encode, they just cost more.
-- `.cdf(fn)` is the same prior written as a running total: `fn(i)` returns the total weight below index `i`, as a safe integer, so index `i` weighs `fn(i + 1) - fn(i)`. The function must never go down, and encoding an index with zero weight throws. Encoder and decoder must get identical numbers from it, so stick to BigInt or plain `+ - * /`; `Math.exp` and friends round differently per engine. Keep totals small: the last value in a message pays extra when the total is large.
+- [`p.int`](#pint)
+- [`p.decimal`](#pdecimalstep-number)
+- [`p.float`](#pfloat)
+- [`p.string`](#pstring)
+- [`p.binary`](#pbinarytype-typedarrayclass)
+- [`p.bool`](#pbool)
+- [`p.enum`](#penumlist-readonly-unknown)
+- [`p.date`](#pdate)
+- [`p.null`](#pnull)
+- [`p.object`](#pobjectshape-recordstring-pnode)
+- [`p.array`](#parrayitem-pnode)
+- [`p.optional`](#poptionalnode-pnode)
+- [`p.nullable`](#pnullablenode-pnode)
+- [`p.union`](#punionmembers-pnode)
+- [`p.tagged`](#ptaggedkey-string-members-recordstring-pobject)
+- [`p.lazy`](#plazyresolve---pnode)
+- [`p.versioned`](#pversionedfirst-pnode-later-pnode--pnode-previous--next)
+- [`p.any`](#pany)
+- [Priors: `.weights()`](#priors-weights)
+- [Priors as a function: `.cdf()`](#priors-as-a-function-cdf)
 
 ### `p.int()`
 
@@ -224,7 +238,7 @@ p.tagged('type', {
 }); // { type: 'move'; x: number; y: number } | { type: 'chat'; text: string }
 ```
 
-The tag costs log2(members) bits and is never written as text. The tag key belongs to the tagged union, so a member shape that also declares it throws, and so does a value whose tag isn't listed. A tagged union counts as an object, so it can sit next to other kinds in `p.union`.
+The tag costs log2(members) bits and is never written as text. The order of the members is part of the encoding, so reordering them breaks old data unless the schema is wrapped in `p.versioned`. The tag key belongs to the tagged union, so a member shape that also declares it throws, and so does a value whose tag isn't listed. A tagged union counts as an object, so it can sit next to other kinds in `p.union`.
 
 | Method                  | Description                                 |
 | ----------------------- | ------------------------------------------- |
@@ -243,6 +257,31 @@ Data written by any listed version decodes and is migrated step by step to the n
 ### `p.any()`
 
 Self-describing escape hatch: numbers, strings, booleans, dates, null, undefined, arrays and plain objects, with a type tag per value. Infers `unknown`. Everything round-trips bit-exact; a class instance (a `Map`, a `Set`) or a circular structure throws. Costs more than a precise node. No methods.
+
+### Priors: `.weights()`
+
+Several nodes accept a prior: a hint about which values are common. Common values then cost fewer bits and rare ones more. Only the ratios matter, and the prior is part of the encoding, so both sides need the same one.
+
+`.weights([...])` takes one positive integer per value, in the order listed for that node. A weight never rejects anything: rare values still encode, they just cost more. Nodes with a range of values also take `.cdf()`, which gives the same prior as a function instead of a list.
+
+### Priors as a function: `.cdf()`
+
+When a list of weights would be too long, `.cdf(fn)` describes the prior with a function. `fn(i)` returns the total weight of everything below `i`, so the weight of `i` itself is `fn(i + 1) - fn(i)`:
+
+```typescript
+// weights 1, 2, 3, …: each value is a little more common than the one before
+p.int()
+  .min(0)
+  .max(1000)
+  .cdf((v) => (v * (v + 1)) / 2);
+```
+
+What `i` is depends on the node: the value itself on `p.int`, the step count (`value / step`) on `p.decimal`, the bucket number on `p.date` (with `min`'s bucket as 0), and the item count on `p.array`. The node calls `fn` at the lower bound, at one past the upper bound to get the total, and around each value it encodes or decodes.
+
+- `fn` returns safe integers and never goes down. A value whose weight is zero can't be encoded.
+- Only the differences between results matter, so adding a constant changes nothing.
+- Encoder and decoder must get identical numbers from it, so stick to BigInt or plain `+ - * /`; `Math.exp` and friends round differently per engine.
+- Keep the total small: the last value in a message pays extra when the total is large.
 
 ## Encoding and decoding
 
@@ -396,19 +435,20 @@ TypeScript can't infer a type that refers to itself, hence the explicit `PNode<B
 Day one:
 
 ```typescript
-const User = p.versioned(p.object({ name: p.string().max(40) }));
+const v1 = { name: p.string().max(40) };
+const User = p.versioned(p.object(v1));
 ```
 
-After two schema changes:
+After two schema changes, each version built on the one before:
 
 ```typescript
+const v2 = { ...v1, name: p.string().max(60) }; // a wider bound: old values fit as they are
+const v3 = { ...v2, age: p.int().min(0).max(120) }; // a new required field
+
 const User = p.versioned(
-  p.object({ name: p.string().max(40) }),
-  p.object({ name: p.string().max(60) }), // a wider bound: old values fit as they are
-  [
-    p.object({ name: p.string().max(60), age: p.int().min(0).max(120) }),
-    (user) => ({ ...user, age: 0 }), // a new required field: old values get a default
-  ]
+  p.object(v1),
+  p.object(v2),
+  [p.object(v3), (user) => ({ ...user, age: 0 })] // old values get a default age
 );
 ```
 
