@@ -15,7 +15,7 @@ export { PNull } from './null';
 export { PUnion } from './union';
 export type { Kind } from './guards';
 export { PDate } from './date';
-export type { DateInterval } from './date';
+export type { DateUnit } from './date';
 export { PArray } from './array';
 export { PObject } from './object';
 export { PAny } from './any';

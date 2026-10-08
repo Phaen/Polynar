@@ -150,10 +150,12 @@ The member is picked by the value's kind: string, number, boolean, null, date, a
 ```typescript
 p.date(); // lossless to the ms
 p.date().min(new Date('2020-01-01')).max(new Date('2030-01-01'));
-p.date().interval('day'); // coarser, smaller, lossy
+p.date().precision('day'); // coarser, smaller, lossy
+p.date().precision('minute', 15);
+p.date().precision('month');
 ```
 
-`interval` takes milliseconds or `'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'`. A decoded date never lands before the min bound.
+`precision` takes `'millisecond' | 'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'` and floors each date to the start of its UTC bucket: weeks start on Monday, months and years are calendar months and years, and a step groups units, so `('month', 3)` is quarters. A min in the middle of a bucket admits that whole bucket, so a date can decode to before the min.
 
 ### Objects
 

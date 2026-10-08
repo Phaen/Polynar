@@ -117,8 +117,8 @@ describe('Schema priors', () => {
       .date()
       .min(new Date('2026-01-01'))
       .max(new Date('2026-12-31'))
-      .interval('day')
-      // Day buckets count from the min bound: 0..364.
+      .precision('day')
+      // Day buckets count from the min bound's day: 0..364.
       .cdf((day) => day * day + day);
     const date = new Date('2026-07-17');
     expect(trip(when, date).getTime()).toBe(date.getTime());
@@ -164,17 +164,17 @@ describe('Schema priors', () => {
     const dList = (node: typeof dWeights) => p.array(node).length(dValues.length);
     expect(dList(dWeights).encode(dValues)).toEqual(dList(dCdf).encode(dValues));
 
-    // Four day buckets from the min bound.
+    // Four day buckets from the min bound's day.
     const tw = [1, 2, 3, 50];
     const tsums = [...running(tw), 56];
     const start = new Date('2026-01-01');
     const end = new Date('2026-01-04');
-    const tWeights = p.date().min(start).max(end).interval('day').weights(tw);
+    const tWeights = p.date().min(start).max(end).precision('day').weights(tw);
     const tCdf = p
       .date()
       .min(start)
       .max(end)
-      .interval('day')
+      .precision('day')
       .cdf((b) => tsums[b]);
     const tValues = [end, end, start, new Date('2026-01-02'), end];
     for (const v of tValues) {
@@ -203,7 +203,7 @@ describe('Schema priors', () => {
     expect(() => p.array(p.bool()).length(3).weights([1])).toThrow('meaningless on a fixed length');
     // A bound change re-checks the count against the new range.
     expect(() => dWeights.max(1.5)).toThrow('one weight per value');
-    expect(() => tWeights.interval('hour')).toThrow('one weight per value');
+    expect(() => tWeights.precision('hour')).toThrow('one weight per value');
     expect(() => aWeights.min(0)).toThrow('one weight per value');
   });
 

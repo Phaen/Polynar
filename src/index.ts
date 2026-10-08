@@ -31,7 +31,7 @@ export type {
   Infer,
   InferShape,
   Cdf,
-  DateInterval,
+  DateUnit,
   Kind,
   ProseModel,
   ProseModelOptions,
