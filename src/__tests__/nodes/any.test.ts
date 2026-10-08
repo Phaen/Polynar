@@ -2,7 +2,7 @@
  * Schema any node (`p.any()`) — unknown/dynamic values with self-description.
  */
 
-import { p } from '../../index';
+import { p, Encoder } from '../../index';
 
 describe('Schema any', () => {
   it('any round-trips heterogeneous values', () => {
@@ -90,5 +90,18 @@ describe('Schema any', () => {
   it('rejects types it has no tag for', () => {
     expect(() => p.any().encode(Symbol('s'))).toThrow("Type 'symbol' not supported");
     expect(() => p.any().encode(1n)).toThrow("Type 'bigint' not supported");
+  });
+
+  it('rejects a record whose wire form repeats a key', () => {
+    // The object tag is the last of nine, then a two-entry count, then the
+    // same key twice: a shape the encoder never produces.
+    const enc = new Encoder();
+    enc.compose(8, 9);
+    enc.composeTerm(2);
+    p.string()._write(enc, 'a');
+    p.any()._write(enc, 1);
+    p.string()._write(enc, 'a');
+    p.any()._write(enc, 2);
+    expect(() => p.any().decode(enc.toUint8Array())).toThrow('Duplicate key in record');
   });
 });

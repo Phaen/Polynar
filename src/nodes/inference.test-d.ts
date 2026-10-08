@@ -72,5 +72,27 @@ const _union: Equals<Infer<typeof Nullable>, string | number | null> = true;
 // @ts-expect-error — POptional is not a valid union member
 p.union([p.string().optional(), p.int()]);
 
+// Tagged unions infer a discriminated union: each member gets the tag as a
+// literal, so the tag narrows to that member's fields.
+const Op = p.tagged('type', {
+  insert: p.object({ pos: p.int(), text: p.string() }),
+  delete: p.object({ pos: p.int(), len: p.int() }),
+});
+const _op: Equals<
+  Infer<typeof Op>,
+  { type: 'insert'; pos: number; text: string } | { type: 'delete'; pos: number; len: number }
+> = true;
+const _narrow = (op: Infer<typeof Op>): number => {
+  switch (op.type) {
+    case 'insert':
+      return op.text.length;
+    case 'delete':
+      return op.len;
+  }
+};
+
+// @ts-expect-error — a tagged member must be a p.object
+p.tagged('type', { a: p.object({ x: p.int() }), b: p.string() });
+
 // Bytes decode to a Uint8Array.
 const _bytes: Equals<Infer<ReturnType<typeof p.bytes>>, Uint8Array> = true;

@@ -411,9 +411,27 @@ const objectCase = (depth: number): Case => {
   };
 };
 
+// Members are object cases, whose keys (f0..f2) never collide with the tag.
+const taggedCase = (depth: number): Case => {
+  const members: Record<string, Case> = {};
+  for (let i = 0, n = randInt(1, 3); i < n; i++) {
+    members[`m${i}`] = objectCase(depth - 1);
+  }
+  const tags = Object.keys(members);
+  const shape = Object.fromEntries(tags.map((tag) => [tag, members[tag].node]));
+  const tagged = p.tagged('t', shape as never);
+  return {
+    node: rand() < 0.5 ? tagged : tagged.weights(tags.map(() => randInt(1, 1000))),
+    gen: () => {
+      const tag = pick(tags);
+      return { t: tag, ...(members[tag].gen() as object) };
+    },
+  };
+};
+
 const randomCase = (depth: number): Case => {
   if (depth > 0 && rand() < 0.4) {
-    return pick([arrayCase, objectCase, () => anyCase()] as const)(depth);
+    return pick([arrayCase, objectCase, taggedCase, () => anyCase()] as const)(depth);
   }
   return rand() < 0.9 ? scalarCase() : anyCase();
 };

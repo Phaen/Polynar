@@ -143,7 +143,16 @@ p.union([p.string(), p.null()]); // a nullable string
 p.union([p.string(), p.null()]).weights([1, 99]); // nearly always null
 ```
 
-The member is picked by the value's kind: string, number, boolean, null, date, array, bytes or object. Each kind can belong to one member, so two array or two object members throw; for mixed items, use `p.array(p.union([...]))`. The tag costs log2(members) bits, or whatever `.weights()` says.
+The member is picked by the value's kind: string, number, boolean, null, date, array, bytes or object. Each kind can belong to one member, so two array or two object members throw. The tag costs log2(members) bits, or whatever `.weights()` says.
+
+```typescript
+p.tagged('type', {
+  move: p.object({ x: p.int(), y: p.int() }),
+  chat: p.object({ text: p.string().max(200) }),
+}); // { type: 'move'; x: number; y: number } | { type: 'chat'; text: string }
+```
+
+Object shapes go in `p.tagged`: the tag field picks the member, costs log2(members) bits (or whatever `.weights()` says), and is never written as text. A tagged union is of kind object, so it mixes with other kinds in `p.union`.
 
 ### Dates
 

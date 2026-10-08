@@ -25,11 +25,13 @@ export {
   PAny,
   PNull,
   PUnion,
+  PTagged,
 } from './nodes';
 export { ProseModels, buildProseModel } from './nodes';
 export type {
   Infer,
   InferShape,
+  InferTagged,
   Cdf,
   DateUnit,
   Kind,

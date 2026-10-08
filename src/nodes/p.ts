@@ -16,6 +16,7 @@ import {
   PString,
   PBytes,
   PUnion,
+  PTagged,
 } from './';
 import type { Infer } from './infer';
 
@@ -62,6 +63,13 @@ export const p = {
     members: T
   ): PUnion<Infer<T[number]>> {
     return new PUnion<Infer<T[number]>>(members);
+  },
+  /** Object shapes picked by a tag field: `p.tagged('type', { a: p.object(...), b: p.object(...) })`. */
+  tagged<K extends string, M extends Record<string, PObject<any>>>(
+    key: K,
+    members: M
+  ): PTagged<K, M> {
+    return new PTagged<K, M>(key, members);
   },
   /** Null; zero bits. Pairs with `p.union` for nullable fields. */
   /** Raw bytes as a `Uint8Array`; chain `.max(n)`/`.length(n)` like a string. */
