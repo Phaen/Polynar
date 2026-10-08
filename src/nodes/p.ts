@@ -15,6 +15,7 @@ import {
   PObject,
   PString,
   PBytes,
+  PLazy,
   PUnion,
   PTagged,
 } from './';
@@ -95,6 +96,15 @@ export const p = {
    */
   array<T>(item: PNode<T> & { _optional?: never }): PArray<T> {
     return new PArray<T>(item);
+  },
+  /**
+   * A node looked up on first use, for schemas that refer to themselves:
+   * `items: p.array(p.lazy(() => Block))`. TypeScript can't infer a type
+   * that refers to itself, so the recursive const needs it written out:
+   * `const Block: PNode<Block> = …`.
+   */
+  lazy<T>(resolve: () => PNode<T> & { _optional?: never }): PLazy<T> {
+    return new PLazy<T>(resolve);
   },
   /** Self-describing escape hatch. */
   any(): PAny {

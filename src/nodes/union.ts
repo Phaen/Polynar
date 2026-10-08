@@ -27,7 +27,7 @@ export class PUnion<T> extends PNode<T> {
     this._members.forEach((member, i) => {
       if (member._kinds === undefined) {
         throw new TypeError(
-          'p.union members must declare their kinds; .optional() and custom nodes without _kinds cannot be members'
+          'p.union members must declare their kinds; .optional(), p.lazy and custom nodes without _kinds cannot be members'
         );
       }
       for (const kind of member._kinds) {
