@@ -173,16 +173,21 @@ export class Encoder {
    * exactly `digits` digits, so the decoder finds the boundaries by position
    * alone; only the final block rounds up to a whole digit, so a message that
    * fits one block is always the information-theoretic minimum length:
-   * ceil(log_size(state bound)).
+   * ceil(log_size(digit bound)).
    *
-   * The bound is the rational V/den, with U/den the running density factor:
-   * per symbol V' = (V + U·(total−1))·freq, U' = U·total, den' = den·freq.
-   * V/den provably covers the reverse fold in wire order even though the
-   * per-symbol exact bound is not order-commutative, and the candidate
-   * V + U·(total−1) needs only `total` — so the decoder can make the
-   * identical block-boundary decision before it has decoded the symbol.
-   * With every freq at 1, V IS the radix product: the original wire format,
-   * byte for byte.
+   * The state bound is the rational V/den, with U/den the running density
+   * factor: per symbol V' = (V + U·(total−freq))·freq, U' = U·total,
+   * den' = den·freq. Folding a symbol onto a state below x yields a state
+   * below x·total/freq + (total − freq), so V/den covers the reverse fold in
+   * wire order even though the per-symbol exact bound is not
+   * order-commutative. The candidate V + U·(total−1) needs only `total`, so
+   * the decoder makes the identical block-boundary decision before it has
+   * decoded the symbol; the final digit count then covers the largest such
+   * candidate the block saw (S/den), because the decoder tells an index-form
+   * tail from a bucket by whether the bucket's candidate fits the digits.
+   * S pays the freq-blind slack once per block, for the symbol with the most
+   * of it, while V would pay it once per symbol. With every freq at 1, V and
+   * S both equal the radix product: the original wire format, byte for byte.
    */
   private toDigits(size: number): number[] {
     const base = BigInt(size);
@@ -195,10 +200,12 @@ export class Encoder {
       let den = 1n;
       let u = 1n;
       let v = 1n;
-      // The bound before the block's last symbol, which may be rewritten.
+      let s = 1n;
+      // The bounds before the block's last symbol, which may be rewritten.
       let prevDen = 1n;
       let prevU = 1n;
       let prevV = 1n;
+      let prevS = 1n;
       let end = start;
       while (end < this.totals.length) {
         const total = BigInt(this.totals[end]);
@@ -210,9 +217,18 @@ export class Encoder {
         prevDen = den;
         prevU = u;
         prevV = v;
-        v = candidate * freq;
+        prevS = s;
+        if (s < candidate) {
+          s = candidate;
+        }
+        if (freq === 1n) {
+          v = candidate;
+        } else {
+          v = (v + u * (total - freq)) * freq;
+          s = s * freq;
+          den = den * freq;
+        }
         u = u * total;
-        den = den * freq;
         end++;
       }
 
@@ -229,13 +245,14 @@ export class Encoder {
         if (count < total) {
           const asBucket = prevV + prevU * (total - 1n);
           const asIndex = prevV + prevU * (count - 1n);
+          const sizing = prevS < asIndex ? asIndex : prevS;
           let fit = 1n;
-          while (fit * prevDen < asIndex) {
+          while (fit * prevDen < sizing) {
             fit *= base;
           }
           if (asBucket > fit * prevDen) {
             indexed = true;
-            v = asIndex;
+            s = sizing;
             den = prevDen;
           }
         }
@@ -259,8 +276,8 @@ export class Encoder {
           value /= base;
         }
       } else {
-        // The final block: emit the minimum digits its state bound needs.
-        let capacity = (v + den - 1n) / den;
+        // The final block: emit the minimum digits its digit bound needs.
+        let capacity = (s + den - 1n) / den;
         while (capacity > 1n) {
           digits.push(Number(value % base));
           value /= base;

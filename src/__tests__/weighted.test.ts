@@ -180,6 +180,36 @@ describe('Weighted packer primitive', () => {
     }
   });
 
+  it('pays the freq-blind slack once per block, not once per symbol', () => {
+    // A run of the likely symbol (f = 99 of 100) shares log2(100/99) bits
+    // per draw. The digit count is that sum plus the slack of the one
+    // candidate with the most of it, under log2(2·total), however long the
+    // run: the run of 1000 costs 14.5 bits of shares, the run of 10 none
+    // to speak of, so they sit within log2(200) + 1 of their shares.
+    const bits = (n: number): number => {
+      const enc = new Encoder();
+      for (let i = 0; i < n; i++) {
+        enc.composeWeighted(1, 99, 100, 1, 2);
+      }
+      return enc.toString('01').length;
+    };
+    const share = (n: number): number => n * Math.log2(100 / 99);
+    for (const n of [2, 10, 100, 1000]) {
+      expect(bits(n)).toBeLessThanOrEqual(Math.ceil(share(n) + Math.log2(200)) + 1);
+    }
+    expect(bits(1000) - bits(10)).toBeLessThanOrEqual(Math.ceil(share(1000) - share(10)) + 1);
+  });
+
+  it('rejects a likely run padded to the digits its per-symbol slack would need', () => {
+    const node = p.array(p.bool().weights([1, 99])).length(100);
+    const text = node.encodeString(Array(100).fill(true), '01');
+    expect(text).toHaveLength(9);
+    expect(node.decodeString(text, '01')).toEqual(Array(100).fill(true));
+    for (const padding of ['0', '000000']) {
+      expect(() => node.decodeString(text + padding, '01')).toThrow(CorruptInputError);
+    }
+  });
+
   it('rejects invalid buckets at the source', () => {
     const enc = new Encoder();
     expect(() => enc.composeWeighted(0, 0, 4)).toThrow(

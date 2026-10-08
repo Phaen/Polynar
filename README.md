@@ -30,7 +30,7 @@ Seven payload shapes, mean sizes in bytes over 250 seeded random payloads each (
 | Chat message   |  95.5 (89.3) |  69.1 (71.1) |    48.6 (51.1) |      38.6 (42.4) | **29.3** (33.3) |
 | Sensor reading |  53.8 (55.9) |  39.9 (43.7) |    10.6 (14.6) |       6.0 (10.0) |   **5.0** (9.0) |
 | Shopping cart  | 124.4 (67.0) |  85.1 (61.9) |    37.2 (40.8) |      17.3 (21.3) | **13.1** (17.1) |
-| Status feed    | 521.8 (63.4) | 323.8 (60.4) |   102.0 (27.8) |      10.3 (14.3) |  **7.9** (11.9) |
+| Status feed    | 521.8 (63.4) | 323.8 (60.4) |   102.0 (27.8) |      10.0 (14.0) |  **7.7** (11.7) |
 | Lorem ipsum    |   1375 (641) |   1372 (631) | 1372 (**629**) |        979 (767) |       740 (744) |
 
 JSON and MessagePack also encode the key name; Protobuf and Polynar read from a schema instead, and are both told the same decimal steps and bounds. The difference is that Protobuf rounds every field up to whole bytes and tags it, while Polynar spends fractional bits with no implicit tags.
@@ -281,7 +281,7 @@ What `i` is depends on the node: the value itself on `p.int`, the step count (`v
 - `fn` returns safe integers and never goes down. A value whose weight is zero can't be encoded.
 - Only the differences between results matter, so adding a constant changes nothing.
 - Encoder and decoder must get identical numbers from it, so stick to BigInt or plain `+ - * /`; `Math.exp` and friends round differently per engine.
-- Keep the total small. A weighted value shares bits with what follows it, so values near the end of a message can cost up to log2(total) bits more than their share. The very last value costs at most log2(number of values) bits.
+- Keep the total small. A weighted value shares bits with what follows it, so each block of about two kilobits can cost up to log2(total) + 1 bits more than the shares of its values add up to, however many weighted values it holds. The very last value costs at most log2(number of values) bits.
 
 ## Encoding and decoding
 
