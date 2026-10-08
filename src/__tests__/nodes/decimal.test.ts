@@ -54,9 +54,10 @@ describe('Schema decimal', () => {
 
   it('decimal rejects invalid steps and empty ranges at construction', () => {
     expect(() => p.decimal(0)).toThrow(
-      new TypeError('p.decimal step must be a positive number, got 0')
+      new TypeError('p.decimal step must be a positive finite number, got 0')
     );
     expect(() => p.decimal(-0.1)).toThrow(TypeError);
+    expect(() => p.decimal(Infinity)).toThrow(TypeError);
     // 1/3 has no finite decimal form, so no value could ever sit on its grid.
     expect(() => p.decimal(1 / 3)).toThrow(TypeError);
     // No multiple of 0.5 lies in [0.6, 0.9].

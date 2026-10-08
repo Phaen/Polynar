@@ -2,7 +2,7 @@
  * Utility functions for packer
  */
 
-import type { Charset } from './types';
+import type { ByteRange, Charset } from './types';
 import { BLOCK_BITS, DEFAULT_CHARSET } from './constants';
 
 /**
@@ -37,6 +37,16 @@ export function blockCapacity(size: number): { digits: number; cap: bigint } {
 /**
  * Validate character set
  */
+/** A `[min, max]` byte range: integer endpoints within 0–255, min below max. */
+export function validateByteRange([min, max]: ByteRange): ByteRange {
+  if (!Number.isInteger(min) || !Number.isInteger(max) || min < 0 || max > 255 || min >= max) {
+    throw new RangeError(
+      `Binary range [${min}, ${max}] must be integers within 0–255 with min below max`
+    );
+  }
+  return [min, max];
+}
+
 export function validateCharset(charset?: Charset): Charset {
   if (charset == null) {
     return DEFAULT_CHARSET;

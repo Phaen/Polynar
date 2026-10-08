@@ -53,8 +53,8 @@ export class PDecimal extends PNode<number> {
 
   constructor(step: number, min?: number, max?: number, prior?: Prior) {
     super();
-    if (!(step > 0)) {
-      throw new TypeError(`p.decimal step must be a positive number, got ${step}`);
+    if (!(step > 0) || step === Infinity) {
+      throw new TypeError(`p.decimal step must be a positive finite number, got ${step}`);
     }
 
     const places = [step, min, max].map((n) => (n == null ? 0 : decimalPlaces(n)));

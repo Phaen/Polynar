@@ -15,7 +15,7 @@ import {
   TERM_PAYLOAD_MIN_DIGITS,
 } from './constants';
 import { CorruptInputError } from './errors';
-import { validateCharset, blockCapacity } from './utils';
+import { validateCharset, validateByteRange, blockCapacity } from './utils';
 
 const TERM_ESCAPE_MIN_BIG = BigInt(TERM_ESCAPE_MIN);
 
@@ -63,14 +63,7 @@ export class Decoder {
         throw new TypeError('Binary charset must be a [min, max] range');
       }
 
-      const [min, max] = (charset as [number, number]) || [0, 255];
-
-      // Validate range
-      if (min < 0 || min > 255 || max < 0 || max > 255 || min >= max) {
-        throw new RangeError(
-          `Binary range [${min}, ${max}] must lie within 0–255 with min below max`
-        );
-      }
+      const [min, max] = validateByteRange((charset as [number, number]) || [0, 255]);
 
       this.charset = [min, max];
       this.size = max - min + 1;
