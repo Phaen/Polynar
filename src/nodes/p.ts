@@ -12,6 +12,7 @@ import {
   PInt,
   PNode,
   PNull,
+  POptional,
   PObject,
   PString,
   PBytes,
@@ -91,7 +92,7 @@ export const p = {
   /**
    * Array of one item type; chain `.min(n)`/`.max(n)` to bound the count
    * (bounds pack denser) or `.length(n)` to fix it — a fixed count costs
-   * zero bits on the wire. The item cannot be `.optional()` (rejected at the
+   * zero bits on the wire. The item cannot be `p.optional` (rejected at the
    * type level via the `_optional` phantom): an array slot is always occupied.
    */
   array<T>(item: PNode<T> & { _optional?: never }): PArray<T> {
@@ -105,6 +106,14 @@ export const p = {
    */
   lazy<T>(resolve: () => PNode<T> & { _optional?: never }): PLazy<T> {
     return new PLazy<T>(resolve);
+  },
+  /**
+   * An object field that may be absent: one presence bit, or less with
+   * `.weights([absent, present])`. Only `undefined` means absent; wrapping
+   * twice is the same as once.
+   */
+  optional<T>(node: PNode<T>): POptional<T> {
+    return node instanceof POptional ? node : new POptional<T>(node);
   },
   /** Self-describing escape hatch. */
   any(): PAny {

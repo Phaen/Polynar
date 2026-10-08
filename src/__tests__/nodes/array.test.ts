@@ -29,7 +29,7 @@ describe('Schema array', () => {
     const Schema = p.object({
       id: p.int().min(0).max(100),
       tags: p.array(p.enum(['a', 'b', 'c'])),
-      scores: p.array(p.int().min(0).max(10)).optional(),
+      scores: p.optional(p.array(p.int().min(0).max(10))),
     });
     const full = { id: 7, tags: ['a', 'c'] as ('a' | 'b' | 'c')[], scores: [1, 2, 3] };
     const bare = { id: 7, tags: [] as ('a' | 'b' | 'c')[] };
@@ -117,7 +117,7 @@ describe('Schema array', () => {
   it('rejects an optional item type at construction', () => {
     // The presence bit only exists for object fields; an array slot is always
     // occupied. The array itself can be optional instead.
-    expect(() => p.array(p.string().optional() as never)).toThrow(TypeError);
+    expect(() => p.array(p.optional(p.string()) as never)).toThrow(TypeError);
   });
 
   it('is denser than per-value encode over many records', () => {

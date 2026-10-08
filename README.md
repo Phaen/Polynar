@@ -61,7 +61,7 @@ const User = p.object({
   age: p.int().min(0).max(120),
   active: p.bool(),
   role: p.enum(['admin', 'member', 'guest']),
-  nickname: p.string().optional(),
+  nickname: p.optional(p.string()),
 });
 
 type User = Infer<typeof User>;
@@ -171,8 +171,8 @@ p.date().precision('month');
 ```typescript
 p.object({
   x: p.int().min(-1000).max(1000),
-  label: p.string().optional(), // one presence bit; only undefined means absent
-  nick: p.string().optional().weights([1, 99]), // [absent, present]: a 99%-present field pays ~0.015 bits
+  label: p.optional(p.string()), // one presence bit; only undefined means absent
+  nick: p.optional(p.string()).weights([1, 99]), // [absent, present]: a 99%-present field pays ~0.015 bits
 });
 ```
 
@@ -187,7 +187,7 @@ p.array(p.float()).length(3); // a fixed count costs zero bits
 p.array(p.array(p.bool())); // arrays nest
 ```
 
-`.length` is both bounds at once, so combining it with `.min` or `.max` throws. Items can't be `.optional()`; make the array itself optional.
+`.length` is both bounds at once, so combining it with `.min` or `.max` throws. Items can't be `p.optional(...)`; make the array itself optional.
 
 ### Recursion
 
@@ -214,7 +214,7 @@ Self-describing escape hatch: a type tag per value, everything round-trips bit-e
 
 ### Inference
 
-`Infer<typeof Node>` is the decoded type of any node; `.optional()` fields become optional keys.
+`Infer<typeof Node>` is the decoded type of any node; `p.optional(...)` fields become optional keys.
 
 ### Output
 
@@ -246,7 +246,7 @@ Input that does not decode as the schema expects throws a `CorruptInputError` (a
 
 ### Custom types
 
-Subclass `PNode`: `_write` validates one value and pushes its digits with `compose(integer, radix)` / `composeTerm(integer)` — or `composeWeighted(cum, freq, total)` when some values are more common than others — and `_read` mirrors it with `parse`/`parseTerm`/`parseWeighted` in the same order. The node then composes with `p.object`, `p.array` and `.optional()` like any built-in; to use it in `p.union`, also set `_kinds` to the kinds its values have, e.g. `readonly _kinds = ['object'] as const`. See [`examples/custom-node.ts`](examples/custom-node.ts) for a runnable version.
+Subclass `PNode`: `_write` validates one value and pushes its digits with `compose(integer, radix)` / `composeTerm(integer)` — or `composeWeighted(cum, freq, total)` when some values are more common than others — and `_read` mirrors it with `parse`/`parseTerm`/`parseWeighted` in the same order. The node then composes with `p.object`, `p.array` and `p.optional` like any built-in; to use it in `p.union`, also set `_kinds` to the kinds its values have, e.g. `readonly _kinds = ['object'] as const`. See [`examples/custom-node.ts`](examples/custom-node.ts) for a runnable version.
 
 ```typescript
 import { p, PNode, Encoder, Decoder } from 'polynar';

@@ -391,7 +391,7 @@ const objectCase = (depth: number): Case => {
     fields[key] = randomCase(depth - 1);
     if (rand() < 0.3) {
       optional.add(key);
-      const opt = fields[key].node.optional();
+      const opt = p.optional(fields[key].node);
       shape[key] = rand() < 0.5 ? opt : opt.weights([randInt(1, 100), randInt(1, 100)]);
     } else {
       shape[key] = fields[key].node;
