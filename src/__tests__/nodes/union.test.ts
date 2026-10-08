@@ -74,4 +74,18 @@ describe('Schema union', () => {
     expect(p.array(Skewed).decode(skewed)).toEqual(nulls);
     expect(trip(Skewed, 'x')).toBe('x');
   });
+
+  it('p.nullable is a union with p.null', () => {
+    const nick = p.nullable(p.string().max(8));
+    expect(trip(nick, null)).toBeNull();
+    expect(trip(nick, 'Ada')).toBe('Ada');
+    expect(nick.encode('Ada')).toEqual(p.union([p.string().max(8), p.null()]).encode('Ada'));
+    const rare = nick.weights([1, 99]);
+    const nulls = Array.from({ length: 50 }, () => null);
+    expect(p.array(rare).encode(nulls).length).toBeLessThan(p.array(nick).encode(nulls).length);
+    const User = p.object({ bio: p.optional(p.nullable(p.string())) });
+    expect(trip(User, {})).toEqual({});
+    expect(trip(User, { bio: null })).toEqual({ bio: null });
+    expect(() => p.nullable(p.any())).toThrow("overlap on kind 'null'");
+  });
 });

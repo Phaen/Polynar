@@ -122,7 +122,7 @@ export const p = {
   },
   /**
    * One of several members, picked by the value's JS kind; one member per
-   * kind. `p.union([p.string(), p.null()])` is a nullable string.
+   * kind.
    */
   union<T extends readonly (PNode<any> & { _optional?: never })[]>(
     members: T
@@ -147,6 +147,13 @@ export const p = {
   },
   null(): PNull {
     return new PNull();
+  },
+  /**
+   * A value or `null`: `p.union([node, p.null()])`, so `.weights()` reads
+   * `[value, null]`.
+   */
+  nullable<T>(node: PNode<T> & { _optional?: never }): PUnion<T | null> {
+    return new PUnion<T | null>([node, new PNull()]);
   },
   /** Date; chain `.min()`/`.max()` to bound, `.precision(unit, step?)` to coarsen to UTC calendar buckets. */
   date(): PDate {

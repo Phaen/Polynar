@@ -140,8 +140,8 @@ The list order is the encoding, so keep it stable if old bytes must keep decodin
 
 ```typescript
 p.union([p.string(), p.int(), p.array(p.string())]); // string | number | string[]
-p.union([p.string(), p.null()]); // a nullable string
-p.union([p.string(), p.null()]).weights([1, 99]); // nearly always null
+p.nullable(p.string()); // string | null, short for p.union([p.string(), p.null()])
+p.nullable(p.string()).weights([1, 99]); // [value, null]: nearly always null
 ```
 
 The member is picked by the value's kind: string, number, boolean, null, date, array, object, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. The tag costs log2(members) bits, or whatever `.weights()` says.

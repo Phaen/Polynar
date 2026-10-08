@@ -127,3 +127,10 @@ p.versioned(UserV1, [
   // @ts-expect-error — the migration must produce the new version's type
   (user) => ({ ...user }),
 ]);
+
+// Nullable adds null to the node's type; optional and nullable combine.
+const Profile = p.object({ nick: p.nullable(p.string()), bio: p.optional(p.nullable(p.string())) });
+const _nullable: Equals<Infer<typeof Profile>, { nick: string | null; bio?: string | null }> = true;
+
+// @ts-expect-error — POptional is not a valid nullable target
+p.nullable(p.optional(p.string()));
