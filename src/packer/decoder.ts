@@ -30,17 +30,20 @@ export class Decoder {
   private capacity?: bigint;
   /**
    * Rational state bound V/den of the current block (with U/den its running
-   * density factor), mirroring the encoder's per-symbol updates exactly.
-   * With every freq at 1 (uniform slots only), V is the plain radix product.
+   * density factor) and its digit bound S/den, the largest freq-blind
+   * candidate the block saw, mirroring the encoder's per-symbol updates
+   * exactly. With every freq at 1 (uniform slots only), V and S are both
+   * the plain radix product.
    */
   private boundV = 1n;
   private boundU = 1n;
   private boundDen = 1n;
+  private boundS = 1n;
   /**
-   * Tightest bound the last read admits (numerator over `tightDen`): its
-   * index form where the symbol has one, else its bucket form. The encoder
-   * sizes the final block by this, so `finalize` checks the digit count
-   * against it.
+   * Tightest digit bound the last read admits (numerator over `tightDen`):
+   * the block's digit bound so far raised to the read's index form where the
+   * symbol has one, else to its bucket form. The encoder sizes the final
+   * block by this, so `finalize` checks the digit count against it.
    */
   private tightV = 1n;
   private tightDen = 1n;
@@ -139,6 +142,7 @@ export class Decoder {
     this.boundV = 1n;
     this.boundU = 1n;
     this.boundDen = 1n;
+    this.boundS = 1n;
     this.closed = false;
   }
 
@@ -177,13 +181,14 @@ export class Decoder {
     }
 
     const asIndex = countBig < totalBig ? this.boundV + this.boundU * (countBig - 1n) : candidate;
-    this.tightV = asIndex;
+    this.tightV = this.boundS < asIndex ? asIndex : this.boundS;
     this.tightDen = this.boundDen;
 
-    // The encoder emits exactly enough digits to cover the block's state
-    // bound, so needing more state space than the block holds means the
-    // input is truncated or is being read past its end — unless the
-    // symbol's index form fits, which is how the encoder wrote it.
+    // The encoder emits exactly enough digits to cover the block's digit
+    // bound, which covers every bucket candidate, so needing more state
+    // space than the block holds means the input is truncated or is being
+    // read past its end — unless the symbol's index form fits, which is how
+    // the encoder wrote it.
     if (candidate > this.capacity! * this.boundDen) {
       if (asIndex > this.capacity! * this.boundDen) {
         throw new CorruptInputError(
@@ -192,9 +197,13 @@ export class Decoder {
       }
       this.indexed = true;
       this.closed = true;
+      this.boundS = this.tightV;
       return asIndex;
     }
 
+    if (this.boundS < candidate) {
+      this.boundS = candidate;
+    }
     return candidate;
   }
 
@@ -289,9 +298,14 @@ export class Decoder {
     }
 
     const freqBig = BigInt(freq);
-    this.boundV = candidate * freqBig;
+    if (freqBig === 1n) {
+      this.boundV = candidate;
+    } else {
+      this.boundV = (this.boundV + this.boundU * (totalBig - freqBig)) * freqBig;
+      this.boundS *= freqBig;
+      this.boundDen *= freqBig;
+    }
     this.boundU *= totalBig;
-    this.boundDen *= freqBig;
     this.value = freqBig * (this.value! / totalBig) + BigInt(residual - cum);
 
     return symbol;
