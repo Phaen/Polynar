@@ -155,6 +155,17 @@ describe('Schema string', () => {
     );
   });
 
+  it('string keeps a lead surrogate that a slice cut from its trail', () => {
+    // Enough iterations for V8 to optimize the encode loop, where an
+    // optimized `codePointAt` reads past the slice into the parent string.
+    const node = p.string();
+    for (let i = 0; i < 20000; i++) {
+      const whole = `abcdefghijklmnopqrstuvwxyz${i}😀 tail`;
+      const cut = whole.slice(0, whole.length - 6);
+      expect(node.decode(node.encode(cut))).toBe(cut);
+    }
+  });
+
   it('prose decode rejects a modeled character behind the escape', () => {
     // 'e' has its own bucket, so its escaped form would be a second wire
     // spelling of the same string.
