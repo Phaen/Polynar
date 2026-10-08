@@ -106,26 +106,35 @@ describe('Low-level primitives', () => {
     const encoder = new Encoder();
     expect(() => encoder.compose(10, 10)).toThrow(RangeError);
     expect(() => encoder.compose(-1, 10)).toThrow(RangeError);
-    expect(() => encoder.compose(1.5, 10)).toThrow(RangeError);
+    expect(() => encoder.compose(1.5, 10)).toThrow(
+      new TypeError('Digit must be an integer, got 1.5')
+    );
+    expect(() => encoder.compose(10, 10)).toThrow('Digit 10 is outside [0, 10)');
   });
 
   it('rejects an invalid compose radix', () => {
     const encoder = new Encoder();
-    expect(() => encoder.compose(0, 0)).toThrow(TypeError);
-    expect(() => encoder.compose(0, 2.5)).toThrow(TypeError);
+    expect(() => encoder.compose(0, 0)).toThrow(
+      new RangeError('Radix 0 is not a positive safe integer')
+    );
+    expect(() => encoder.compose(0, 2.5)).toThrow(
+      new TypeError('Radix must be an integer, got 2.5')
+    );
   });
 
   it('rejects a negative or fractional composeTerm term', () => {
     const encoder = new Encoder();
-    expect(() => encoder.composeTerm(-1)).toThrow(TypeError);
-    expect(() => encoder.composeTerm(1.5)).toThrow(TypeError);
+    expect(() => encoder.composeTerm(-1)).toThrow(new RangeError('Term -1 is negative'));
+    expect(() => encoder.composeTerm(1.5)).toThrow(
+      new TypeError('Term must be an integer, got 1.5')
+    );
   });
   it('parseWeighted rejects a locate that misses the residual', () => {
     const encoder = new Encoder();
     encoder.composeWeighted(0, 1, 2);
     const decoder = new Decoder(encoder.toString());
     expect(() => decoder.parseWeighted(2, () => [0, 0, 0] as const)).toThrow(
-      'locate returned a bucket that does not contain the residual'
+      'locate returned a bucket that does not contain the residual: [0, 0) for 0'
     );
   });
 });
@@ -208,7 +217,9 @@ describe('Output density', () => {
 
 describe('Charset validation', () => {
   it('rejects a duplicate-character charset', () => {
-    expect(() => new Decoder('test', 'aab')).toThrow('Invalid character set');
+    expect(() => new Decoder('test', 'aab')).toThrow(
+      new TypeError("Invalid character set: 'a' appears more than once")
+    );
   });
 
   it('rejects a duplicate-character charset even across a newline', () => {
@@ -218,7 +229,9 @@ describe('Charset validation', () => {
   it('rejects a charset of fewer than two characters', () => {
     // Base 1 has no digit variation: the encoder's digit loop would push until
     // the array overflows and the decoder would misparse every read.
-    expect(() => new Encoder().toString('a')).toThrow('Invalid character set');
+    expect(() => new Encoder().toString('a')).toThrow(
+      'Invalid character set: needs at least 2 characters, got 1'
+    );
     expect(() => new Decoder('aaa', 'a')).toThrow('Invalid character set');
   });
 
@@ -231,7 +244,9 @@ describe('Charset validation', () => {
 
   it('rejects a single-symbol range charset', () => {
     // Base 1, same as the one-character string charset.
-    expect(() => new Decoder('test', [5, 5])).toThrow('Invalid binary range');
+    expect(() => new Decoder('test', [5, 5])).toThrow(
+      'Invalid character range: [5, 5] holds fewer than 2 codes'
+    );
   });
 
   it('rejects a range charset outside the UTF-16 code-unit space', () => {
@@ -239,9 +254,11 @@ describe('Charset validation', () => {
     // back as different in-range values without any error.
     const encoder = new Encoder();
     encoder.compose(123, 1001);
-    expect(() => encoder.toString([0, 100000])).toThrow('Invalid binary range');
-    expect(() => encoder.toString([-5, 100])).toThrow('Invalid binary range');
-    expect(() => encoder.toString([0.5, 100.5])).toThrow('Invalid binary range');
+    expect(() => encoder.toString([0, 100000])).toThrow(
+      'Invalid character range: [0, 100000] must be integer codes within 0–65535'
+    );
+    expect(() => encoder.toString([-5, 100])).toThrow('Invalid character range');
+    expect(() => encoder.toString([0.5, 100.5])).toThrow('Invalid character range');
   });
 
   it('throws when a character is absent from the charset', () => {

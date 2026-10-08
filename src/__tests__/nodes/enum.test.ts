@@ -15,7 +15,11 @@ describe('Schema enum', () => {
   });
 
   it('enum rejects a value not in its list', () => {
-    expect(() => p.enum(['a', 'b']).encode('c' as never)).toThrow("'c' not found in list");
+    expect(() => p.enum(['a', 'b']).encode('c' as never)).toThrow(
+      new RangeError("Value 'c' is not one of 'a', 'b'")
+    );
+    const many = p.enum(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']);
+    expect(() => many.encode('z' as never)).toThrow("Value 'z' is not one of the 9 listed values");
   });
 
   it('enum accepts any primitive literals', () => {
@@ -30,7 +34,7 @@ describe('Schema enum', () => {
     const strategies = [{ retries: 0 }, { retries: 5 }];
     const Strategy = p.enum(strategies);
     expect(trip(Strategy, strategies[1])).toBe(strategies[1]);
-    expect(() => Strategy.encode({ retries: 5 })).toThrow('not found in list');
+    expect(() => Strategy.encode({ retries: 5 })).toThrow('is not one of the 2 listed values');
 
     const Rounding = p.enum([Math.floor, Math.ceil, Math.round]);
     expect(trip(Rounding, Math.ceil)).toBe(Math.ceil);

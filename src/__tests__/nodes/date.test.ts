@@ -90,31 +90,47 @@ describe('Schema date', () => {
     expect(trip(node, new Date('2026-03-14T12:00:00Z')).getTime()).toBe(midnight.getTime());
     expect(trip(node, midnight).getTime()).toBe(midnight.getTime());
     expect(() => node.encode(new Date('2026-03-13T23:59:59Z'))).toThrow(
-      'is before the minimum bound'
+      "Date '2026-03-13T23:59:59.000Z' is before the minimum 2026-03-14T13:00:00.000Z"
     );
   });
 
   it('date enforces its bounds and rejects invalid dates', () => {
     const node = p.date().min(new Date('2020-01-01Z')).max(new Date('2021-01-01Z'));
-    expect(() => node.encode(new Date('2019-12-31Z'))).toThrow('is before the minimum bound');
-    expect(() => node.encode(new Date('2021-01-02Z'))).toThrow('is after the maximum bound');
+    expect(() => node.encode(new Date('2019-12-31Z'))).toThrow(
+      new RangeError(
+        "Date '2019-12-31T00:00:00.000Z' is before the minimum 2020-01-01T00:00:00.000Z"
+      )
+    );
+    expect(() => node.encode(new Date('2021-01-02Z'))).toThrow(
+      "Date '2021-01-02T00:00:00.000Z' is after the maximum 2021-01-01T00:00:00.000Z"
+    );
+    // A bound outside the Date range shows as its timestamp.
+    expect(() => p.date().min(9e15).encode(new Date(0))).toThrow(
+      "Date '1970-01-01T00:00:00.000Z' is before the minimum 9000000000000000"
+    );
     expect(() => node.encode(new Date(NaN))).toThrow(TypeError);
   });
 
   it('date rejects swapped bounds at construction', () => {
     expect(() => p.date().min(new Date('2021-01-01Z')).max(new Date('2020-01-01Z'))).toThrow(
-      RangeError
+      new RangeError(
+        'p.date minimum 2021-01-01T00:00:00.000Z is after the maximum 2020-01-01T00:00:00.000Z'
+      )
     );
   });
 
   it('rejects a step that is not a positive integer', () => {
     expect(() => p.date().precision('day', 0)).toThrow(RangeError);
-    expect(() => p.date().precision('day', 1.5)).toThrow(RangeError);
+    expect(() => p.date().precision('day', 1.5)).toThrow(
+      new RangeError('p.date precision step must be a positive integer, got 1.5')
+    );
   });
 
   it('date offsets past 2^53 refuse to encode instead of shifting a millisecond', () => {
     const extreme = p.date().min(new Date(-8.6e15));
-    expect(() => extreme.encode(new Date(8.6e15 + 1))).toThrow('encode exactly');
+    expect(() => extreme.encode(new Date(8.6e15 + 1))).toThrow(
+      "Value '+274493-02-24T00:53:20.001Z' is too far from its bound -270554-11-06T23:06:40.000Z to encode exactly"
+    );
     // The same spread is fine at a coarser precision, in any refinement order.
     const daily = p.date().precision('day').min(new Date(-8.64e15)).max(new Date(8.64e15));
     const d = new Date('2020-06-15T00:00:00Z');

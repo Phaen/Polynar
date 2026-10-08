@@ -46,7 +46,9 @@ export class PArray<TItem> extends PNode<TItem[]> {
       // No inward rounding here: no count satisfies a fractional length, so
       // either rounding direction would invent a contract never declared.
       if (!Number.isInteger(bounds.length) || bounds.length < 0) {
-        throw new RangeError('p.array length must be a non-negative integer count');
+        throw new RangeError(
+          `p.array length must be a non-negative integer count, got ${bounds.length}`
+        );
       }
       this._length = bounds.length;
     }
@@ -55,17 +57,17 @@ export class PArray<TItem> extends PNode<TItem[]> {
     if (bounds.min != null) {
       this._min = Math.ceil(bounds.min);
       if (!Number.isInteger(this._min) || this._min < 0) {
-        throw new RangeError('p.array min must be a non-negative count');
+        throw new RangeError(`p.array min must be a non-negative count, got ${bounds.min}`);
       }
     }
     if (bounds.max != null) {
       this._max = Math.floor(bounds.max);
       if (!Number.isInteger(this._max) || this._max < 0) {
-        throw new RangeError('p.array max must be a non-negative count');
+        throw new RangeError(`p.array max must be a non-negative count, got ${bounds.max}`);
       }
     }
     if (this._min !== undefined && this._max !== undefined && this._min > this._max) {
-      throw new RangeError('p.array range is empty: min exceeds max');
+      throw new RangeError(`p.array range is empty: min ${this._min} exceeds max ${this._max}`);
     }
 
     const prior = bounds.prior;
@@ -140,19 +142,19 @@ export class PArray<TItem> extends PNode<TItem[]> {
     const count = value.length;
 
     if (this._length !== undefined && count !== this._length) {
-      throw new RangeError('Array length differs from the fixed length');
+      throw new RangeError(`Array length ${count} differs from the fixed length ${this._length}`);
     }
     if (this._min !== undefined && count < this._min) {
-      throw new RangeError('Array length is below the minimum');
+      throw new RangeError(`Array length ${count} is below the minimum ${this._min}`);
     }
     if (this._max !== undefined && count > this._max) {
-      throw new RangeError('Array length exceeds maximum');
+      throw new RangeError(`Array length ${count} is above the maximum ${this._max}`);
     }
 
     if (this._cdf === undefined) {
       writeIndex(enc, count, this._countMin(), this._countMax());
     } else {
-      const [cum, freq] = cdfBucket(this._cdf, count, 'p.array');
+      const [cum, freq] = cdfBucket(this._cdf, count, 'p.array', () => `Array length ${count}`);
       enc.composeWeighted(cum, freq, this._total!);
     }
 

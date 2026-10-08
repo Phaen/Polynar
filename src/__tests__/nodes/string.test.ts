@@ -20,7 +20,7 @@ describe('Schema string', () => {
 
   it('string rejects a value outside its charset', () => {
     expect(() => p.string().charset('0123456789').encode('12a')).toThrow(
-      'String not compliant with character set'
+      new RangeError("Character 'a' at 2 is not in the character set")
     );
   });
 
@@ -60,15 +60,18 @@ describe('Schema string', () => {
   it('min and length narrow the length prefix', () => {
     const ranged = p.string().min(8).max(12);
     expect(trip(ranged, 'abcdefghij')).toBe('abcdefghij');
-    expect(() => ranged.encode('short')).toThrow('below min length');
+    expect(() => ranged.encode('short')).toThrow('String length 5 is below the minimum 8');
+    expect(() => ranged.encode('a'.repeat(13))).toThrow('String length 13 is above the maximum 12');
     expect(trip(p.string().min(2), 'abc')).toBe('abc');
-    expect(() => p.string().min(3).max(2)).toThrow('range is empty');
-    expect(() => p.string().min(-1)).toThrow('non-negative length');
+    expect(() => p.string().min(3).max(2)).toThrow('p.string range is empty: min 3 exceeds max 2');
+    expect(() => p.string().min(-1)).toThrow('p.string min must be a non-negative length, got -1');
     // A fixed length is both bounds, so it combines with neither.
     expect(() => p.string().length(5).max(8)).toThrow('cannot be combined');
     expect(() => p.string().min(2).length(5)).toThrow('cannot be combined');
-    expect(() => p.string().length(2.5)).toThrow('non-negative integer');
-    expect(() => p.string().length(3).encode('ab')).toThrow('differs from the fixed length');
+    expect(() => p.string().length(2.5)).toThrow('non-negative integer, got 2.5');
+    expect(() => p.string().length(3).encode('ab')).toThrow(
+      'String length 2 differs from the fixed length 3'
+    );
     // A fixed length spends nothing on the prefix: eight binary characters
     // fill one byte exactly, where a max of 8 needs a second.
     const bits = p.string().charset('ab');
@@ -110,7 +113,9 @@ describe('Schema string', () => {
     expect(trip(p.string().prose(lone), 'a\ud800\ud800a')).toBe('a\ud800\ud800a');
     expect(() => buildProseModel('abc')).toThrow('no characters to model');
     expect(() => buildProseModel('aa', { alphabet: '' })).toThrow('no characters to model');
-    expect(() => buildProseModel('aa', { minCount: 0 })).toThrow('positive integer');
+    expect(() => buildProseModel('aa', { minCount: 0 })).toThrow(
+      new RangeError('buildProseModel minCount must be a positive integer, got 0')
+    );
   });
 
   it('prose models must match their alphabet', () => {
@@ -120,7 +125,7 @@ describe('Schema string', () => {
       'free of duplicates'
     );
     expect(() => p.string().prose({ alphabet: 'ab', weights: [row, row] })).toThrow(
-      'a row per alphabet character'
+      'p.string prose weights need a row per alphabet character, plus one: expected 3, got 2'
     );
     expect(() => p.string().prose({ alphabet: 'ab', weights: [row, [1, 1], row] })).toThrow(
       'one weight per value'
@@ -176,10 +181,10 @@ describe('Schema string', () => {
   });
 
   it('rejects bad configuration and non-compliant values', () => {
-    expect(() => p.string().max(-1)).toThrow('max must be a non-negative length');
+    expect(() => p.string().max(-1)).toThrow('max must be a non-negative length, got -1');
     expect(() => p.string().prose().charset('ab')).toThrow('cannot combine prose with a charset');
     expect(() => p.string().charset([97, 98]).encode('abc')).toThrow(
-      'String not compliant with character set'
+      new RangeError("Character 'c' (code 99) at 2 is outside the range 97–98")
     );
   });
 });

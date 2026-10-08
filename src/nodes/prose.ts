@@ -290,7 +290,9 @@ export function compileProse(model: ProseModel): ProseTable {
     }
     const escape = codes.length;
     if (model.weights.length !== escape + 1) {
-      throw new TypeError('p.string prose weights need a row per alphabet character, plus one');
+      throw new TypeError(
+        `p.string prose weights need a row per alphabet character, plus one: expected ${escape + 1}, got ${model.weights.length}`
+      );
     }
     const rows = model.weights.map((row) => buildWeights(row, escape + 1, 'p.string prose'));
     table = {
@@ -329,7 +331,7 @@ export interface ProseModelOptions {
 export function buildProseModel(corpus: string, options: ProseModelOptions = {}): ProseModel {
   const { minCount = 2 } = options;
   if (!Number.isInteger(minCount) || minCount < 1) {
-    throw new RangeError('buildProseModel minCount must be a positive integer');
+    throw new RangeError(`buildProseModel minCount must be a positive integer, got ${minCount}`);
   }
   let chars = options.alphabet;
   if (chars === undefined) {

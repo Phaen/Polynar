@@ -53,7 +53,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
   }
 
   _write(enc: Encoder, value: A): void {
-    this._length.write(enc, value.length, () => `${value.length} elements`);
+    this._length.write(enc, value.length, 'Binary');
     const raw = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     const size = this._size;
     for (let at = 0; at < raw.length; at += size) {

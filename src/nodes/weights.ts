@@ -13,13 +13,15 @@ export interface WeightTable {
 
 export function buildWeights(weights: readonly number[], states: number, who: string): WeightTable {
   if (weights.length !== states) {
-    throw new TypeError(`${who} weights must list one weight per value`);
+    throw new TypeError(
+      `${who} weights must list one weight per value: expected ${states}, got ${weights.length}`
+    );
   }
   const cums: number[] = [];
   let total = 0;
   for (const w of weights) {
     if (!Number.isInteger(w) || w < 1) {
-      throw new TypeError(`${who} weights must be positive integers`);
+      throw new TypeError(`${who} weights must be positive integers, got ${w}`);
     }
     cums.push(total);
     total += w;
@@ -74,7 +76,7 @@ export function validateCdf(
   }
   const total = end - base;
   if (total < 1) {
-    throw new TypeError(`${who} cdf must put positive weight on the range`);
+    throw new TypeError(`${who} cdf must put positive weight on the range, got ${total}`);
   }
   return { cdf: base === 0 ? cdf : (v) => cdf(v) - base, total };
 }
@@ -100,15 +102,23 @@ export function resolvePrior(
   return { cdf: (v) => (v > hi ? total : cums[v - lo]), total };
 }
 
-/** The bucket of one value under a CDF, validated for the encode side. */
-export function cdfBucket(cdf: Cdf, v: number, who: string): readonly [number, number] {
+/**
+ * The bucket of one value under a CDF, validated for the encode side.
+ * `subject` names the value in an error, as in `Value '3'`.
+ */
+export function cdfBucket(
+  cdf: Cdf,
+  v: number,
+  who: string,
+  subject: () => string
+): readonly [number, number] {
   const cum = cdf(v);
   const freq = cdf(v + 1) - cum;
   if (!Number.isSafeInteger(cum) || !Number.isSafeInteger(freq) || cum < 0 || freq < 0) {
     throw new TypeError(`${who} cdf must be a non-decreasing integer function, fails at ${v}`);
   }
   if (freq === 0) {
-    throw new RangeError(`Value '${v}' has zero weight under the declared cdf`);
+    throw new RangeError(`${subject()} has zero weight under the declared cdf`);
   }
   return [cum, freq];
 }

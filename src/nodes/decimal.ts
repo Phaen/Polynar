@@ -46,7 +46,7 @@ export class PDecimal extends PNode<number> {
   constructor(step: number, min?: number, max?: number, prior?: Prior) {
     super();
     if (!(step > 0)) {
-      throw new TypeError('p.decimal step must be a positive number');
+      throw new TypeError(`p.decimal step must be a positive number, got ${step}`);
     }
 
     const places = [step, min, max].map((n) => (n == null ? 0 : decimalPlaces(n)));
@@ -69,14 +69,18 @@ export class PDecimal extends PNode<number> {
     if (min != null) {
       const scaledMin = Math.round(min * this._scale);
       if (Math.abs(scaledMin) > Number.MAX_SAFE_INTEGER) {
-        throw new RangeError('p.decimal min is outside the exact range of this step');
+        throw new RangeError(
+          `p.decimal min ${min} is outside the exact range ±${Number.MAX_SAFE_INTEGER / this._scale}`
+        );
       }
       this._kMin = Math.ceil(scaledMin / this._scaledStep);
     }
     if (max != null) {
       const scaledMax = Math.round(max * this._scale);
       if (Math.abs(scaledMax) > Number.MAX_SAFE_INTEGER) {
-        throw new RangeError('p.decimal max is outside the exact range of this step');
+        throw new RangeError(
+          `p.decimal max ${max} is outside the exact range ±${Number.MAX_SAFE_INTEGER / this._scale}`
+        );
       }
       this._kMax = Math.floor(scaledMax / this._scaledStep);
     }
@@ -142,7 +146,9 @@ export class PDecimal extends PNode<number> {
     // Beyond 2^53 the scaled integer (and the decode product) stops being
     // exact, which would silently violate the bit-exact contract.
     if (Math.abs(scaled) > Number.MAX_SAFE_INTEGER) {
-      throw new RangeError(`Value '${value}' is outside the exact range of this step`);
+      throw new RangeError(
+        `Value '${value}' is outside the exact range ±${Number.MAX_SAFE_INTEGER / this._scale}`
+      );
     }
     // Round-tripping through the scale proves the value carries no precision
     // beyond the grid; the remainder check proves it sits on a step multiple.
@@ -153,18 +159,18 @@ export class PDecimal extends PNode<number> {
     // `+ 0` normalizes the -0 quotient of a negative zero input.
     const k = scaled / this._scaledStep + 0;
 
-    if (
-      (this._kMin !== undefined && k < this._kMin) ||
-      (this._kMax !== undefined && k > this._kMax)
-    ) {
-      throw new RangeError(`Value '${value}' exceeds range bounds`);
+    if (this._kMin !== undefined && k < this._kMin) {
+      throw new RangeError(`Value '${value}' is below the minimum ${this._valueAt(this._kMin)}`);
+    }
+    if (this._kMax !== undefined && k > this._kMax) {
+      throw new RangeError(`Value '${value}' is above the maximum ${this._valueAt(this._kMax)}`);
     }
 
     if (this._cdf === undefined) {
-      writeIndex(enc, k, this._kMin, this._kMax);
+      writeIndex(enc, k, this._kMin, this._kMax, (i) => String(this._valueAt(i)));
       return;
     }
-    const [cum, freq] = cdfBucket(this._cdf, k, 'p.decimal');
+    const [cum, freq] = cdfBucket(this._cdf, k, 'p.decimal', () => `Value '${value}'`);
     enc.composeWeighted(cum, freq, this._total!);
   }
 
@@ -173,14 +179,20 @@ export class PDecimal extends PNode<number> {
       this._cdf === undefined
         ? readIndex(dec, this._kMin, this._kMax)
         : dec.parseWeighted(this._total!, locateCdf(this._cdf, this._kMin!, this._kMax!));
-    const scaled = k * this._scaledStep;
     // Mirror of the encode-side exactness guard: a product past 2^53 rounds,
     // and the encoder could never have emitted it.
-    if (Math.abs(scaled) > Number.MAX_SAFE_INTEGER) {
+    if (Math.abs(k * this._scaledStep) > Number.MAX_SAFE_INTEGER) {
       throw new CorruptInputError('Step multiple is outside the exact range of its step');
     }
-    // Integer times integer, divided once by the power-of-ten scale: exact at
-    // every step, so this lands on the same double the caller passed in.
-    return scaled / this._scale;
+    return this._valueAt(k);
+  }
+
+  /**
+   * The value of the k-th step multiple. Integer times integer, divided once
+   * by the power-of-ten scale: exact at every step, so this lands on the same
+   * double the caller passed in.
+   */
+  private _valueAt(k: number): number {
+    return (k * this._scaledStep) / this._scale;
   }
 }

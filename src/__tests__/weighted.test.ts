@@ -182,10 +182,21 @@ describe('Weighted packer primitive', () => {
 
   it('rejects invalid buckets at the source', () => {
     const enc = new Encoder();
-    expect(() => enc.composeWeighted(0, 0, 4)).toThrow(TypeError);
+    expect(() => enc.composeWeighted(0, 0, 4)).toThrow(
+      new RangeError('Frequency 0 is not positive')
+    );
     expect(() => enc.composeWeighted(-1, 2, 4)).toThrow(RangeError);
-    expect(() => enc.composeWeighted(3, 2, 4)).toThrow(RangeError);
-    expect(() => enc.composeWeighted(0, 1, 0)).toThrow(TypeError);
-    expect(() => enc.composeWeighted(0, 1, 2 ** 54)).toThrow(TypeError);
+    expect(() => enc.composeWeighted(3, 2, 4)).toThrow(
+      new RangeError('Bucket [3, 5) is outside [0, 4)')
+    );
+    expect(() => enc.composeWeighted(0, 1, 0)).toThrow(
+      new RangeError('Total 0 is not a positive safe integer')
+    );
+    expect(() => enc.composeWeighted(0, 1, 2 ** 54)).toThrow(RangeError);
+    expect(() => enc.composeWeighted(0, 1.5, 4)).toThrow(
+      new TypeError('Bucket must be integers, got cum 0, freq 1.5, total 4')
+    );
+    expect(() => enc.composeWeighted(0.5, 1, 4)).toThrow(TypeError);
+    expect(() => enc.composeWeighted(0, 1, 4.5)).toThrow(TypeError);
   });
 });

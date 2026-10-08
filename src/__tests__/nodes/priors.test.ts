@@ -22,7 +22,9 @@ describe('Schema priors', () => {
     expect(() => p.enum(['a', 'b']).weights([1])).toThrow(TypeError);
     expect(() => p.enum(['a', 'b']).weights([1, 0])).toThrow(TypeError);
     expect(() => p.bool().weights([1.5, 1])).toThrow(TypeError);
-    expect(() => p.optional(p.int()).weights([0, 1])).toThrow(TypeError);
+    expect(() => p.optional(p.int()).weights([0, 1])).toThrow(
+      new TypeError('p.optional weights must be positive integers [absent, present], got [0, 1]')
+    );
   });
 
   it('a cdf prior round-trips and spends by weight', () => {
@@ -46,7 +48,9 @@ describe('Schema priors', () => {
     const spike = (v: number) => (v <= 5 ? 0 : 10);
     const node = p.int().min(0).max(9).cdf(spike);
     expect(trip(node, 5)).toBe(5);
-    expect(() => node.encode(3)).toThrow('zero weight');
+    expect(() => node.encode(3)).toThrow(
+      new RangeError("Value '3' has zero weight under the declared cdf")
+    );
     expect(() => p.int().cdf((v) => v)).toThrow('requires both bounds');
     // Only relative masses matter: an offset cdf rebases instead of failing.
     const offset = p
@@ -64,7 +68,7 @@ describe('Schema priors', () => {
         .min(1)
         .max(5)
         .cdf(() => 1)
-    ).toThrow('positive weight');
+    ).toThrow('p.int cdf must put positive weight on the range, got 0');
     // Interior non-monotonicity is the caller's contract; it fails loudly at
     // the first encode or decode that touches the descent, not eagerly.
     const parabola = p
@@ -94,8 +98,12 @@ describe('Schema priors', () => {
       list(p.int().min(1).max(5)).encode(ratings).length
     );
     expect(() => p.int().weights([1])).toThrow('requires both bounds');
-    expect(() => p.int().min(1).max(5).weights([1, 2])).toThrow('one weight per value');
-    expect(() => p.int().min(1).max(5).weights([1, 2, 0, 4, 5])).toThrow('positive integers');
+    expect(() => p.int().min(1).max(5).weights([1, 2])).toThrow(
+      new TypeError('p.int weights must list one weight per value: expected 5, got 2')
+    );
+    expect(() => p.int().min(1).max(5).weights([1, 2, 0, 4, 5])).toThrow(
+      'p.int weights must be positive integers, got 0'
+    );
     // A bound change after the fact re-checks the count against the new range.
     expect(() => stars.max(6)).toThrow('one weight per value');
     expect(trip(stars.min(1), 4)).toBe(4);
@@ -215,6 +223,25 @@ describe('Schema priors', () => {
     const all = Array<'ok'>(100).fill('ok');
     expect(heavy.encode(all).length).toBeLessThanOrEqual(4);
     expect(flat.encode(all).length).toBeGreaterThan(18);
+  });
+
+  it('a zero-weight value names itself as the node sees it', () => {
+    const spike = (v: number) => (v <= 1 ? 0 : 10);
+    expect(() => p.array(p.bool()).max(2).cdf(spike).encode([])).toThrow(
+      new RangeError('Array length 0 has zero weight under the declared cdf')
+    );
+    expect(() => p.decimal(0.5).min(0).max(1).cdf(spike).encode(0)).toThrow(
+      "Value '0' has zero weight under the declared cdf"
+    );
+    const day = p
+      .date()
+      .min(new Date('2020-01-01Z'))
+      .max(new Date('2020-01-03Z'))
+      .precision('day')
+      .cdf(spike);
+    expect(() => day.encode(new Date('2020-01-01T12:00:00Z'))).toThrow(
+      "Date '2020-01-01T12:00:00.000Z' has zero weight under the declared cdf"
+    );
   });
 
   it('priors reject malformed weights and cdfs eagerly', () => {

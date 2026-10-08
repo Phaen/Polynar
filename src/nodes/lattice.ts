@@ -8,7 +8,13 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
  * wire reads. PInt, PDecimal and PDate all pack through here, so their
  * layouts can never drift apart.
  */
-export function writeIndex(enc: Encoder, index: number, min?: number, max?: number): void {
+export function writeIndex(
+  enc: Encoder,
+  index: number,
+  min?: number,
+  max?: number,
+  show: (index: number) => string = String
+): void {
   if (min !== undefined && max !== undefined) {
     enc.compose(index - min, max - min + 1);
   } else if (min !== undefined) {
@@ -17,13 +23,17 @@ export function writeIndex(enc: Encoder, index: number, min?: number, max?: numb
     // silently encode a neighbouring value. Refuse anything that cannot
     // reconstruct exactly — the check IS the decode expression.
     if (min + offset !== index) {
-      throw new RangeError(`Value '${index}' is too far from its bound to encode exactly`);
+      throw new RangeError(
+        `Value '${show(index)}' is too far from its bound ${show(min)} to encode exactly`
+      );
     }
     enc.composeTerm(offset);
   } else if (max !== undefined) {
     const offset = max - index;
     if (max - offset !== index) {
-      throw new RangeError(`Value '${index}' is too far from its bound to encode exactly`);
+      throw new RangeError(
+        `Value '${show(index)}' is too far from its bound ${show(max)} to encode exactly`
+      );
     }
     enc.composeTerm(offset);
   } else {
@@ -90,37 +100,39 @@ export class LengthPrefix {
     // No inward rounding for a fixed length: no length satisfies a
     // fractional one, so either rounding direction would invent a contract.
     if (length != null && (!Number.isInteger(length) || length < 0)) {
-      throw new RangeError(`${who} length must be a non-negative integer`);
+      throw new RangeError(`${who} length must be a non-negative integer, got ${length}`);
     }
     // Round each bound INWARD (ceil the min, floor the max) so a fractional
     // bound never admits a length beyond itself.
     const min = bounds.min == null ? undefined : Math.ceil(bounds.min);
     if (min !== undefined && (!Number.isInteger(min) || min < 0)) {
-      throw new RangeError(`${who} min must be a non-negative length`);
+      throw new RangeError(`${who} min must be a non-negative length, got ${bounds.min}`);
     }
     const max = bounds.max == null ? undefined : Math.floor(bounds.max);
     if (max !== undefined && (!Number.isInteger(max) || max < 0)) {
-      throw new RangeError(`${who} max must be a non-negative length`);
+      throw new RangeError(`${who} max must be a non-negative length, got ${bounds.max}`);
     }
     if (min !== undefined && max !== undefined && min > max) {
-      throw new RangeError(`${who} range is empty: min exceeds max`);
+      throw new RangeError(`${who} range is empty: min ${min} exceeds max ${max}`);
     }
     this.bounds = { min, max, length: length ?? undefined };
     this.lo = length ?? min ?? 0;
     this.hi = length ?? max;
   }
 
-  /** `describe` names the value in an error, built only when one throws. */
-  write(enc: Encoder, length: number, describe: () => string): void {
+  /** `what` names the value in an error, as in `String length 5`. */
+  write(enc: Encoder, length: number, what: string): void {
     const { min, max } = this.bounds;
     if (this.bounds.length !== undefined && length !== this.bounds.length) {
-      throw new RangeError(`${describe()} differs from the fixed length`);
+      throw new RangeError(
+        `${what} length ${length} differs from the fixed length ${this.bounds.length}`
+      );
     }
     if (min !== undefined && length < min) {
-      throw new RangeError(`${describe()} is below min length`);
+      throw new RangeError(`${what} length ${length} is below the minimum ${min}`);
     }
     if (max !== undefined && length > max) {
-      throw new RangeError(`${describe()} exceeds max length`);
+      throw new RangeError(`${what} length ${length} is above the maximum ${max}`);
     }
     writeIndex(enc, length, this.lo, this.hi);
   }

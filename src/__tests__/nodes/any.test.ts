@@ -88,8 +88,8 @@ describe('Schema any', () => {
   });
 
   it('rejects types it has no tag for', () => {
-    expect(() => p.any().encode(Symbol('s'))).toThrow("Type 'symbol' not supported");
-    expect(() => p.any().encode(1n)).toThrow("Type 'bigint' not supported");
+    expect(() => p.any().encode(Symbol('s'))).toThrow('p.any cannot encode symbol values');
+    expect(() => p.any().encode(1n)).toThrow('p.any cannot encode bigint values');
   });
 
   it('rejects a record whose wire form repeats a key', () => {

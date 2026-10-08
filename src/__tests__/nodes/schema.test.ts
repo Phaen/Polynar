@@ -18,7 +18,9 @@ describe('Schema validation', () => {
         .int()
         .max(1)
         .encode(-(2 ** 53))
-    ).toThrow('too far from its bound to encode exactly');
+    ).toThrow(
+      new RangeError("Value '-9007199254740992' is too far from its bound 1 to encode exactly")
+    );
     // The largest exactly indexable offset still round-trips.
     expect(
       p
@@ -39,7 +41,11 @@ describe('Schema validation', () => {
         .int()
         .min(-(2 ** 53))
         .max(2 ** 53)
-    ).toThrow(RangeError);
+    ).toThrow(
+      new RangeError(
+        'p.int range [-9007199254740992, 9007199254740992] is wider than exact integer arithmetic supports'
+      )
+    );
     expect(() =>
       p
         .decimal(1)
@@ -250,12 +256,12 @@ describe('Schema internals', () => {
     const Search = p.object({ filters: p.array(p.object({ op: p.enum(['eq', 'lt']) })) });
     const ops = [{ op: 'eq' }, { op: 'eq' }, { op: 'gt' }] as { op: 'eq' }[];
     expect(() => Search.encode({ filters: ops })).toThrow(
-      "filters[2].op: Value 'gt' not found in list"
+      "filters[2].op: Value 'gt' is not one of 'eq', 'lt'"
     );
 
     const Account = p.object({ user: p.object({ name: p.string() }) });
     expect(() => Account.encode({ user: {} as { name: string } })).toThrow(
-      new ReferenceError('user.name: required field is missing')
+      new TypeError('user.name: Required field is missing')
     );
 
     // The class survives, and the stack's first line carries the path too.
@@ -266,11 +272,11 @@ describe('Schema internals', () => {
       caught = error;
     }
     expect(caught).toBeInstanceOf(RangeError);
-    expect((caught as Error).stack).toMatch(/^RangeError: a: Value '5' exceeds range bounds/);
+    expect((caught as Error).stack).toMatch(/^RangeError: a: Value '5' is above the maximum 3/);
 
     expect(() => p.array(p.int().max(1)).encode([0, 5])).toThrow('[1]: ');
     expect(() => p.any().encode({ a: [1, Symbol('s')] })).toThrow(
-      "a[1]: Type 'symbol' not supported"
+      'a[1]: p.any cannot encode symbol values'
     );
 
     // Anything thrown that is not an Error passes through untouched.

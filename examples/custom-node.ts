@@ -17,7 +17,7 @@ interface Color {
 class PColor extends PNode<Color> {
   _write(enc: Encoder, value: Color): void {
     if (typeof value !== 'object' || value == null) {
-      throw new TypeError('color: expected an { r, g, b } object');
+      throw new TypeError('Expected an { r, g, b } object');
     }
     enc.compose(value.r, 256);
     enc.compose(value.g, 256);

@@ -21,15 +21,15 @@ describe('Schema binary', () => {
     expect(hash.encode(value)).toHaveLength(32);
     expect(trip(hash, value)).toEqual(value);
     expect(() => hash.encode(new Uint8Array(31))).toThrow(
-      '31 elements differs from the fixed length'
+      new RangeError('Binary length 31 differs from the fixed length 32')
     );
   });
 
   it('bounds the count like a string', () => {
     const node = p.binary().min(2).max(4);
     expect(trip(node, new Uint8Array([9, 9, 9]))).toEqual(new Uint8Array([9, 9, 9]));
-    expect(() => node.encode(new Uint8Array(1))).toThrow('below min length');
-    expect(() => node.encode(new Uint8Array(5))).toThrow('exceeds max length');
+    expect(() => node.encode(new Uint8Array(1))).toThrow('Binary length 1 is below the minimum 2');
+    expect(() => node.encode(new Uint8Array(5))).toThrow('Binary length 5 is above the maximum 4');
     expect(() => p.binary().length(4).max(8)).toThrow('cannot be combined');
     expect(() => p.binary().min(3).max(2)).toThrow('range is empty');
   });

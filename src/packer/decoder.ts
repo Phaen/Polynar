@@ -55,7 +55,9 @@ export class Decoder {
 
       // Validate range
       if (min < 0 || min > 255 || max < 0 || max > 255 || min >= max) {
-        throw new RangeError('Binary range must be between 0-255 and min must be < max');
+        throw new RangeError(
+          `Binary range [${min}, ${max}] must lie within 0–255 with min below max`
+        );
       }
 
       this.charset = [min, max];
@@ -153,7 +155,9 @@ export class Decoder {
       }
 
       if (this.blockStart + this.block!.digits >= this.inputLength()) {
-        throw new CorruptInputError('Unexpected end of input while parsing');
+        throw new CorruptInputError(
+          'Unexpected end of input while parsing: truncated or corrupted'
+        );
       }
 
       this.loadBlock(this.blockStart + this.block!.digits);
@@ -164,7 +168,7 @@ export class Decoder {
     // bound, so needing more state space than the block holds means the
     // input is truncated or is being read past its end.
     if (candidate > this.capacity! * this.boundDen) {
-      throw new CorruptInputError('Unexpected end of input while parsing');
+      throw new CorruptInputError('Unexpected end of input while parsing: truncated or corrupted');
     }
 
     return candidate;
@@ -221,7 +225,9 @@ export class Decoder {
       residual >= cum + freq ||
       cum + freq > total
     ) {
-      throw new TypeError('locate returned a bucket that does not contain the residual');
+      throw new TypeError(
+        `locate returned a bucket that does not contain the residual: [${cum}, ${cum + freq}) for ${residual}`
+      );
     }
 
     const freqBig = BigInt(freq);

@@ -86,7 +86,7 @@ export class PString extends PNode<string> {
   _write(enc: Encoder, value: string): void {
     // The length prefix counts UTF-16 code units (`.length`), not code
     // points, so `.max()` keeps plain JS string semantics.
-    this._length.write(enc, value.length, () => `String '${value}'`);
+    this._length.write(enc, value.length, 'String');
 
     if (this._charset === undefined) {
       // Code-point iteration merges every adjacent lead+trail pair, so the
@@ -111,13 +111,17 @@ export class PString extends PNode<string> {
       if (typeof this._charset === 'string') {
         const pos = this._charset.indexOf(value.charAt(i));
         if (pos === -1) {
-          throw new RangeError('String not compliant with character set');
+          throw new RangeError(
+            `Character '${value.charAt(i)}' at ${i} is not in the character set`
+          );
         }
         enc.compose(pos, this._charset.length);
       } else {
         const code = value.charCodeAt(i);
         if (code < this._charset[0] || code > this._charset[1]) {
-          throw new RangeError('String not compliant with character set');
+          throw new RangeError(
+            `Character '${value.charAt(i)}' (code ${code}) at ${i} is outside the range ${this._charset[0]}–${this._charset[1]}`
+          );
         }
         enc.compose(code - this._charset[0], this._size!);
       }
