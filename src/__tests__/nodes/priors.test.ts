@@ -72,7 +72,7 @@ describe('Schema priors', () => {
       .min(0)
       .max(100)
       .cdf((v) => v * (101 - v) + Math.floor(v / 100));
-    expect(() => parabola.encode(80)).toThrow(TypeError);
+    expect(() => parabola.encode(80)).toThrow('non-decreasing integer function, fails at 80');
   });
 
   it('int weights are a histogram over the bounded range', () => {
@@ -225,14 +225,14 @@ describe('Schema priors', () => {
         .min(0)
         .max(1)
         .cdf((v) => v + 0.5)
-    ).toThrow('cdf must return safe integers');
+    ).toThrow('cdf must return safe integers, got 0.5 at 0');
     expect(() =>
       p
         .int()
         .min(0)
         .max(100)
         .cdf((v) => v * 1.5)
-    ).toThrow('cdf must return safe integers');
+    ).toThrow('cdf must return safe integers, got 151.5 at 101');
     expect(() => p.date().cdf((t) => t)).toThrow('p.date cdf requires both bounds');
   });
 });

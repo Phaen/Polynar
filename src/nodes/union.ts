@@ -58,7 +58,7 @@ export class PUnion<T> extends PNode<T> {
     const kind = kindOf(value);
     const pos = this._byKind.get(kind);
     if (pos === undefined) {
-      throw new TypeError(`p.union has no member for a ${kind}`);
+      throw new TypeError(`p.union has no member for kind '${kind}'`);
     }
     if (this._weights === undefined) {
       enc.compose(pos, this._members.length);
