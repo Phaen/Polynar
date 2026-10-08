@@ -18,10 +18,11 @@ export { PDate } from './date';
 export type { DateUnit } from './date';
 export { PArray } from './array';
 export { PObject } from './object';
+export { PTagged } from './tagged';
 export { PAny } from './any';
 
 export { p } from './p';
-export type { Infer, InferShape } from './infer';
+export type { Infer, InferShape, InferTagged } from './infer';
 export type { Cdf } from './weights';
 export { ProseModels, buildProseModel } from './prose';
 export type { ProseModel, ProseModelOptions } from './prose';

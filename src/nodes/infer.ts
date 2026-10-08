@@ -23,3 +23,8 @@ type RequiredKeys<S> = Exclude<keyof S, OptionalKeys<S>>;
 export type InferShape<S> = Simplify<
   { [K in RequiredKeys<S>]: Infer<S[K]> } & { [K in OptionalKeys<S>]?: Infer<S[K]> }
 >;
+
+/** Infer the discriminated union for a `p.tagged(key, {...})` member map. */
+export type InferTagged<K extends string, M> = {
+  [T in keyof M & string]: Simplify<{ [P in K]: T } & Infer<M[T]>>;
+}[keyof M & string];

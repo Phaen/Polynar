@@ -17,6 +17,11 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     this._keys = Object.keys(this._shape);
   }
 
+  /** Whether the shape declares `key`. */
+  _has(key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(this._shape, key);
+  }
+
   _write(enc: Encoder, value: InferShape<S>): void {
     let key = '';
     try {

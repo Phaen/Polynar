@@ -9,7 +9,7 @@ import { buildWeights, locateWeighted, type WeightTable } from './weights';
  *
  * Each kind belongs to one member, so the encoder never guesses and every
  * value has exactly one encoding. Two array or two object members are
- * therefore rejected; `p.array(p.union([...]))` covers mixed items.
+ * therefore rejected; object shapes go in `p.tagged`.
  */
 export class PUnion<T> extends PNode<T> {
   readonly _kinds: readonly Kind[];
