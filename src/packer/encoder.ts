@@ -46,6 +46,11 @@ export class Encoder {
     if (integer < 0 || integer >= radix) {
       throw new RangeError(`Digit ${integer} is outside [0, ${radix})`);
     }
+    // A radix-1 digit carries nothing. Recording it would make it the
+    // message's last symbol and cost the one before it its index form.
+    if (radix === 1) {
+      return;
+    }
 
     this.cums.push(integer);
     this.freqs.push(1);

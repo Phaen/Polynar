@@ -207,6 +207,10 @@ export class Decoder {
    * non-canonical leftover instead.
    */
   parse(radix: number): number {
+    // The encoder records nothing for a radix-1 digit.
+    if (radix === 1) {
+      return 0;
+    }
     if (this.value == null) {
       this.loadBlock(0);
     }

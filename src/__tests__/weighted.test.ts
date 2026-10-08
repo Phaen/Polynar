@@ -291,6 +291,16 @@ describe('Indexed last symbol', () => {
     expect(() => node.decode(Uint8Array.of(...bytes, 0))).toThrow(CorruptInputError);
   });
 
+  it('keeps the index form when a constant field ends the message', () => {
+    const shape = { a: p.int().min(0).max(1000), flag: p.bool().weights([1, 99]) };
+    const bits = p.object(shape).encodeString({ a: 500, flag: true }, '01').length;
+    const node = p.object({ ...shape, c: p.enum(['v1']) });
+    const value = { a: 500, flag: true, c: 'v1' as const };
+    const text = node.encodeString(value, '01');
+    expect(text.length).toBe(bits);
+    expect(node.decodeString(text, '01')).toEqual(value);
+  });
+
   it('rejects an index that points at a value with no weight', () => {
     // Weights 500, 0, 1 over 0..2: the total needs two bytes as a bucket,
     // so a lone value goes out as its index in one.
