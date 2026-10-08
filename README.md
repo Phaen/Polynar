@@ -111,14 +111,15 @@ Any JS string round-trips bit-exact, lone surrogates included — where UTF-8-ba
 
 The built-in model is English. Any other is a matrix: `{ alphabet, weights }`, where `weights[row][col]` says how likely the character in column `col` is after the one in row `row`. Both run over `alphabet` plus one extra: the last row is for after a character outside the alphabet, the last column is the escape. A string starts in the space's row, or the last one if the alphabet has no space. `buildProseModel(corpus)` counts a model from sample text and returns plain JSON; characters it sees only once are left to the escape, which `{ minCount }` or an explicit `{ alphabet }` changes.
 
-### Bytes
+### Binary
 
 ```typescript
-p.bytes(); // a Uint8Array, eight bits per byte plus its length
-p.bytes().length(32); // a hash or key: exactly 32 bytes on the wire
+p.binary(); // a Uint8Array, eight bits per byte plus its length
+p.binary().length(32); // a hash or key: exactly 32 bytes on the wire
+p.binary(Int16Array).length(1024); // any typed array: 16 bits per element here
 ```
 
-Takes `.min()`, `.max()` and `.length()` like a string. Decodes to a fresh `Uint8Array`.
+Elements go on the wire as their raw bits, so floats keep NaN payloads and `-0`. Takes `.min()`, `.max()` and `.length()` like a string, counting elements, and decodes to a fresh array of the given class.
 
 ### Booleans and enums
 
@@ -143,7 +144,7 @@ p.union([p.string(), p.null()]); // a nullable string
 p.union([p.string(), p.null()]).weights([1, 99]); // nearly always null
 ```
 
-The member is picked by the value's kind: string, number, boolean, null, date, array, bytes or object. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. The tag costs log2(members) bits, or whatever `.weights()` says.
+The member is picked by the value's kind: string, number, boolean, null, date, array, object, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. The tag costs log2(members) bits, or whatever `.weights()` says.
 
 ```typescript
 p.tagged('type', {
