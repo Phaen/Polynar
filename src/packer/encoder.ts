@@ -19,7 +19,7 @@ import {
   TERM_PAYLOAD_BASE,
   TERM_PAYLOAD_MIN_DIGITS,
 } from './constants';
-import { validateCharset, blockCapacity } from './utils';
+import { validateCharset, validateByteRange, blockCapacity } from './utils';
 
 export class Encoder {
   private cums: number[] = [];
@@ -291,14 +291,7 @@ export class Encoder {
   }
 
   toUint8Array(charset?: ByteRange): Uint8Array {
-    const [min, max] = charset || [0, 255];
-
-    // Validate range
-    if (min < 0 || min > 255 || max < 0 || max > 255 || min >= max) {
-      throw new RangeError(
-        `Binary range [${min}, ${max}] must lie within 0–255 with min below max`
-      );
-    }
+    const [min, max] = validateByteRange(charset || [0, 255]);
 
     const digits = this.toDigits(max - min + 1);
     const bytes = new Uint8Array(digits.length);

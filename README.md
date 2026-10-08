@@ -305,7 +305,7 @@ const ascii = User.encode(user, [32, 126]); // bytes kept to printable ASCII
 User.decode(ascii, [32, 126]);
 ```
 
-The charset defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. A charset can also be any string of at least two unique characters, or a `[min, max]` range of character codes; the same goes for `p.string().charset()`.
+The charset defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. A charset can also be any string of at least two unique UTF-16 code units, or a `[min, max]` range of character codes; the same goes for `p.string().charset()`.
 
 | Name                    | Characters                 |
 | ----------------------- | -------------------------- |

@@ -85,6 +85,7 @@ describe('Binary output', () => {
       expect(() => enc.toUint8Array([-1, 255])).toThrow(RangeError);
       expect(() => enc.toUint8Array([0, 256])).toThrow(RangeError);
       expect(() => enc.toUint8Array([100, 50])).toThrow(RangeError);
+      expect(() => enc.toUint8Array([0.5, 10])).toThrow(RangeError);
     });
 
     it('rejects an out-of-bounds decoder range', () => {
@@ -92,6 +93,7 @@ describe('Binary output', () => {
       expect(() => new Decoder(bytes, [-1, 255])).toThrow(RangeError);
       expect(() => new Decoder(bytes, [0, 256])).toThrow(RangeError);
       expect(() => new Decoder(bytes, [200, 100])).toThrow(RangeError);
+      expect(() => new Decoder(bytes, [0.5, 10])).toThrow(RangeError);
     });
 
     it('rejects a string charset on binary input', () => {
