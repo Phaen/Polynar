@@ -89,13 +89,20 @@ export class PString extends PNode<string> {
     this._length.write(enc, value.length, 'String');
 
     if (this._charset === undefined) {
-      // Code-point iteration merges every adjacent lead+trail pair, so the
+      // Every adjacent lead+trail pair merges into one code point, so the
       // split spelling the decoder rejects as non-canonical is unreachable
-      // here; lone surrogates fall through as their own code points.
+      // here; lone surrogates fall through as their own code points. The
+      // pairing reads code units: V8's optimized `codePointAt` merges a
+      // sliced string's final lead with the trail beyond the slice.
       const table = this._table;
       let ctx = table?.start ?? 0;
       for (let i = 0; i < value.length; ) {
-        const code = value.codePointAt(i)!;
+        const unit = value.charCodeAt(i);
+        const next = i + 1 < value.length ? value.charCodeAt(i + 1) : 0;
+        const code =
+          unit >= 0xd800 && unit <= 0xdbff && next >= 0xdc00 && next <= 0xdfff
+            ? (unit - 0xd800) * 0x400 + (next - 0xdc00) + 0x10000
+            : unit;
         if (table !== undefined) {
           composeProsePoint(enc, table, code, ctx);
           ctx = proseContext(table, code);
