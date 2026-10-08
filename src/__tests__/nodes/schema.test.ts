@@ -11,12 +11,7 @@ describe('Schema validation', () => {
   });
 
   it('throws when a top-level optional encodes null/undefined', () => {
-    expect(() =>
-      p
-        .string()
-        .optional()
-        .encode(undefined as never)
-    ).toThrow();
+    expect(() => p.optional(p.string()).encode(undefined as never)).toThrow();
   });
 
   it('refuses values too far from a lone bound to index exactly', () => {
@@ -66,17 +61,17 @@ describe('Schema hardening', () => {
   });
 
   it('a top-level optional rejects null and undefined', () => {
-    const node = p.string().optional();
+    const node = p.optional(p.string());
     expect(() => node.encode(undefined as never)).toThrow(TypeError);
     expect(() => node.encode(null as never)).toThrow(TypeError);
   });
 
   it('a top-level optional round-trips present values through its inner node', () => {
-    const optStr = p.string().optional();
+    const optStr = p.optional(p.string());
     expect(optStr.decode(optStr.encode('here'))).toBe('here');
     // The wrapper delegates the whole codec to its inner node, so an optional
     // `any` keeps an array whole instead of losing all but the first element.
-    const optAny = p.any().optional();
+    const optAny = p.optional(p.any());
     expect(optAny.decode(optAny.encode([1, 2, 3]))).toEqual([1, 2, 3]);
   });
 });

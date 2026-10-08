@@ -1,7 +1,7 @@
 /**
  * Custom types are nodes: subclass PNode, write digits with compose/composeTerm,
  * read them back in the same order with parse/parseTerm. The node then nests
- * inside p.object / p.array and gets .optional() like any built-in.
+ * inside p.object / p.array and composes with p.optional like any built-in.
  * Run with: npx tsx examples/custom-node.ts
  */
 import { p, PNode, Encoder, Decoder, type Infer } from 'polynar';
@@ -36,7 +36,7 @@ const Theme = p.object({
   name: p.string().max(20),
   background: color(),
   accents: p.array(color()).max(4),
-  overlay: color().optional(),
+  overlay: p.optional(color()),
 });
 
 type Theme = Infer<typeof Theme>;

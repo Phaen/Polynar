@@ -37,7 +37,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
     // The presence bit only exists for object fields; an array slot is always
     // occupied, so an optional item type could never mark anything absent.
     if (item instanceof POptional) {
-      throw new TypeError('p.array items cannot be .optional(); make the array itself optional');
+      throw new TypeError('p.array items cannot be p.optional; the array itself can be');
     }
     this._item = item;
 

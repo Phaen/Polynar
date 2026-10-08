@@ -11,7 +11,7 @@
  *
  * Custom types are nodes too: subclass `PNode`, implement `_write`/`_read`
  * against the same primitives, and the node composes with `p.object`,
- * `p.array` and `.optional()` like any built-in; declaring `_kinds` makes it
+ * `p.array` and `p.optional` like any built-in; declaring `_kinds` makes it
  * a valid `p.union` member too.
  */
 import { Encoder, Decoder } from '../packer';
@@ -25,7 +25,7 @@ export abstract class PNode<TOut> {
   /**
    * The JS kinds this node's values can have, which `p.union` uses to pick a
    * member. Undefined means undeclared: a custom node sets it to be usable in
-   * a union, and `.optional()` leaves it unset.
+   * a union, and `p.optional` leaves it unset.
    */
   readonly _kinds?: readonly Kind[];
 
@@ -68,14 +68,9 @@ export abstract class PNode<TOut> {
     dec.finalize();
     return value;
   }
-
-  /** Mark this node optional. Only meaningful as a `p.object` field. */
-  optional(): POptional<TOut> {
-    return new POptional<TOut>(this);
-  }
 }
 
-/** Wraps a node, adding the object-field presence bit. */
+/** Wraps a node, adding the object-field presence bit. `p.optional`. */
 export class POptional<TOut> extends PNode<TOut> {
   declare readonly _optional: true;
 
@@ -96,7 +91,7 @@ export class POptional<TOut> extends PNode<TOut> {
         present < 1 ||
         !Number.isSafeInteger(absent + present)
       ) {
-        throw new TypeError('.optional() weights must be positive integers [absent, present]');
+        throw new TypeError('p.optional weights must be positive integers [absent, present]');
       }
       this.presence = [absent, present];
     }
@@ -116,7 +111,7 @@ export class POptional<TOut> extends PNode<TOut> {
     // direct write means top-level use, where absence has no slot to live in.
     if (value == null) {
       throw new TypeError(
-        '.optional() is only meaningful on object fields; a top-level optional cannot encode null/undefined'
+        'p.optional is only meaningful on object fields; a top-level optional cannot encode null/undefined'
       );
     }
     this.inner._write(enc, value);
@@ -124,11 +119,5 @@ export class POptional<TOut> extends PNode<TOut> {
 
   _read(dec: Decoder): TOut {
     return this.inner._read(dec);
-  }
-
-  optional(): POptional<TOut> {
-    // Optionality is a single presence bit; wrapping twice would change
-    // nothing but make PObject's one-level unwrap miss the real node.
-    return this;
   }
 }

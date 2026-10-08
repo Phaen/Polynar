@@ -11,7 +11,7 @@ describe('Schema object', () => {
     age: p.int().min(0).max(120),
     active: p.bool(),
     role: p.enum(['admin', 'user', 'guest']),
-    bio: p.string().optional(),
+    bio: p.optional(p.string()),
   });
 
   it('round-trips with an optional field present and absent', () => {
@@ -64,7 +64,7 @@ describe('Schema object', () => {
 
   it('an optional nested object stays all-or-nothing and keeps its sub-fields required', () => {
     const Schema = p.object({
-      inner: p.object({ a: p.int().min(0).max(9), b: p.int().min(0).max(9) }).optional(),
+      inner: p.optional(p.object({ a: p.int().min(0).max(9), b: p.int().min(0).max(9) })),
     });
     expect(Schema.decode(Schema.encode({}))).toEqual({});
     expect(Schema.decode(Schema.encode({ inner: { a: 3, b: 7 } }))).toEqual({
@@ -74,9 +74,9 @@ describe('Schema object', () => {
   });
 
   it('optional twice is still one presence bit', () => {
-    const once = p.string().optional();
-    expect(once.optional()).toBe(once);
-    const Schema = p.object({ nick: once.optional() });
+    const once = p.optional(p.string());
+    expect(p.optional(once)).toBe(once);
+    const Schema = p.object({ nick: p.optional(once) });
     expect(trip(Schema, {})).toEqual({});
     expect(trip(Schema, { nick: 'Ada' })).toEqual({ nick: 'Ada' });
   });

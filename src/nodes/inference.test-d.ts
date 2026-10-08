@@ -15,7 +15,7 @@ const Person = p.object({
   age: p.int().min(0).max(120),
   active: p.bool(),
   role: p.enum(['admin', 'user', 'guest']),
-  bio: p.string().optional(),
+  bio: p.optional(p.string()),
 });
 const _person: Equals<
   Infer<typeof Person>,
@@ -55,7 +55,7 @@ const Grid = p.array(p.array(p.int().min(0).max(9)));
 const _grid: Equals<Infer<typeof Grid>, number[][]> = true;
 const Tagged = p.object({
   tags: p.array(p.enum(['a', 'b'])),
-  scores: p.array(p.int()).optional(),
+  scores: p.optional(p.array(p.int())),
 });
 const _tagged: Equals<Infer<typeof Tagged>, { tags: ('a' | 'b')[]; scores?: number[] }> = true;
 
@@ -63,14 +63,14 @@ const _tagged: Equals<Infer<typeof Tagged>, { tags: ('a' | 'b')[]; scores?: numb
 // presence bit only exists for object fields, so it is the array that can be
 // optional, never its items.
 // @ts-expect-error — POptional is not a valid array item
-p.array(p.string().optional());
+p.array(p.optional(p.string()));
 
 // Unions infer the union of their members' types.
 const Nullable = p.union([p.string(), p.int(), p.null()]);
 const _union: Equals<Infer<typeof Nullable>, string | number | null> = true;
 
 // @ts-expect-error — POptional is not a valid union member
-p.union([p.string().optional(), p.int()]);
+p.union([p.optional(p.string()), p.int()]);
 
 // Tagged unions infer a discriminated union: each member gets the tag as a
 // literal, so the tag narrows to that member's fields.
@@ -102,4 +102,4 @@ const Later = p.lazy(() => p.object({ id: p.int() }));
 const _later: Equals<Infer<typeof Later>, { id: number }> = true;
 
 // @ts-expect-error — POptional is not a valid lazy target
-p.lazy(() => p.string().optional());
+p.lazy(() => p.optional(p.string()));

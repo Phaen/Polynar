@@ -12,7 +12,7 @@ const Player = p.object({
   alive: p.bool(),
   class: p.enum(['warrior', 'mage', 'rogue']),
   inventory: p.array(p.enum(['sword', 'staff', 'potion', 'rope'])).max(8),
-  guild: p.string().optional(),
+  guild: p.optional(p.string()),
 });
 
 type Player = Infer<typeof Player>;

@@ -2,7 +2,7 @@
  * Type-level inference for schema nodes.
  *
  * A schema node carries a phantom output type on `_t`. `Infer` extracts it.
- * Object shapes split required vs `.optional()` keys (detected via the `_optional`
+ * Object shapes split required vs `p.optional` keys (detected via the `_optional`
  * phantom marker), then flatten the intersection so the result is identity-equal
  * to a hand-written object type.
  */

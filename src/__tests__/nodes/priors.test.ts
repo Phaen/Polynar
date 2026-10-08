@@ -13,7 +13,7 @@ describe('Schema priors', () => {
     }
     expect(trip(p.bool().weights([1, 20]), true)).toBe(true);
     expect(trip(p.bool().weights([1, 20]), false)).toBe(false);
-    const o = p.object({ nick: p.string().max(8).optional().weights([1, 99]) });
+    const o = p.object({ nick: p.optional(p.string().max(8)).weights([1, 99]) });
     expect(trip(o, { nick: 'Ada' })).toEqual({ nick: 'Ada' });
     expect(trip(o, {})).toEqual({});
   });
@@ -22,7 +22,7 @@ describe('Schema priors', () => {
     expect(() => p.enum(['a', 'b']).weights([1])).toThrow(TypeError);
     expect(() => p.enum(['a', 'b']).weights([1, 0])).toThrow(TypeError);
     expect(() => p.bool().weights([1.5, 1])).toThrow(TypeError);
-    expect(() => p.int().optional().weights([0, 1])).toThrow(TypeError);
+    expect(() => p.optional(p.int()).weights([0, 1])).toThrow(TypeError);
   });
 
   it('a cdf prior round-trips and spends by weight', () => {

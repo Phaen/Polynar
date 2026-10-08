@@ -9,7 +9,7 @@ import { trip } from '../support';
 const Op = p.tagged('type', {
   insert: p.object({ pos: p.int().min(0), text: p.string().max(100) }),
   delete: p.object({ pos: p.int().min(0), len: p.int().min(1).max(1000) }),
-  format: p.object({ pos: p.int().min(0), bold: p.bool(), url: p.string().optional() }),
+  format: p.object({ pos: p.int().min(0), bold: p.bool(), url: p.optional(p.string()) }),
   cursor: p.object({ pos: p.int().min(0) }),
 });
 type Op = Infer<typeof Op>;
@@ -114,7 +114,7 @@ describe('Schema tagged union', () => {
     ];
     expect(trip(p.array(Op), ops)).toEqual(ops);
 
-    const Doc = p.object({ id: p.int(), last: Op.optional() });
+    const Doc = p.object({ id: p.int(), last: p.optional(Op) });
     expect(trip(Doc, { id: 1 })).toEqual({ id: 1 });
     expect(trip(Doc, { id: 1, last: { type: 'cursor', pos: 2 } })).toEqual({
       id: 1,

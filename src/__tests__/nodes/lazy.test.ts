@@ -58,7 +58,7 @@ describe('Schema lazy', () => {
     type Thread = { title: string; comments: Comment[] };
     const Comment: PNode<Comment> = p.object({
       text: p.string(),
-      replies: p.lazy(() => Thread).optional(),
+      replies: p.optional(p.lazy(() => Thread)),
     });
     const Thread: PNode<Thread> = p.object({ title: p.string(), comments: p.array(Comment) });
     const value: Thread = {
