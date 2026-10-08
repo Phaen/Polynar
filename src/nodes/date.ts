@@ -2,7 +2,15 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { isDate, type Kind } from './guards';
 import { PNode } from './base';
 import { writeIndex, readIndex } from './lattice';
-import { resolvePrior, priorKind, cdfBucket, locateCdf, type Cdf, type Prior } from './weights';
+import {
+  resolvePrior,
+  priorKind,
+  cdfBucket,
+  locateCdf,
+  atIndexCdf,
+  type Cdf,
+  type Prior,
+} from './weights';
 
 export type DateUnit =
   | 'millisecond'
@@ -226,7 +234,7 @@ export class PDate extends PNode<Date> {
       'p.date',
       () => `Date '${value.toISOString()}'`
     );
-    enc.composeWeighted(cum, freq, this._total!);
+    enc.composeWeighted(cum, freq, this._total!, bucket - this._lo!, this._hi! - this._lo! + 1);
   }
 
   _read(dec: Decoder): Date {
@@ -234,7 +242,12 @@ export class PDate extends PNode<Date> {
       this._cdf === undefined
         ? readIndex(dec, this._lo, this._hi)
         : this._lo! +
-          dec.parseWeighted(this._total!, locateCdf(this._cdf, 0, this._hi! - this._lo!));
+          dec.parseWeighted(
+            this._total!,
+            locateCdf(this._cdf, 0, this._hi! - this._lo!),
+            this._hi! - this._lo! + 1,
+            atIndexCdf(this._cdf, 0)
+          );
     const date = new Date(this._calendar.start(bucket));
     // A bucket starting beyond the ±8.64e15 ms Date range can only come from
     // a corrupted input or from a bucket that straddles the range's edge.

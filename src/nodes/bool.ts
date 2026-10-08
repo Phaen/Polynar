@@ -1,7 +1,7 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import type { Kind } from './guards';
-import { buildWeights, locateWeighted, type WeightTable } from './weights';
+import { buildWeights, locateWeighted, atIndexWeighted, type WeightTable } from './weights';
 
 /** Boolean. `p.bool`. */
 export class PBool extends PNode<boolean> {
@@ -30,7 +30,13 @@ export class PBool extends PNode<boolean> {
       enc.compose(value ? 1 : 0, 2);
     } else {
       const pos = value ? 1 : 0;
-      enc.composeWeighted(this._weights.cums[pos], this._weights.freqs[pos], this._weights.total);
+      enc.composeWeighted(
+        this._weights.cums[pos],
+        this._weights.freqs[pos],
+        this._weights.total,
+        pos,
+        this._weights.cums.length
+      );
     }
   }
 
@@ -38,6 +44,13 @@ export class PBool extends PNode<boolean> {
     if (this._weights === undefined) {
       return Boolean(dec.parse(2));
     }
-    return dec.parseWeighted(this._weights.total, locateWeighted(this._weights)) === 1;
+    return (
+      dec.parseWeighted(
+        this._weights.total,
+        locateWeighted(this._weights),
+        this._weights.cums.length,
+        atIndexWeighted(this._weights)
+      ) === 1
+    );
   }
 }

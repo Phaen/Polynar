@@ -2,7 +2,7 @@ import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import { kindOf, type Kind } from './guards';
 import { oneOf } from './path';
-import { buildWeights, locateWeighted, type WeightTable } from './weights';
+import { buildWeights, locateWeighted, atIndexWeighted, type WeightTable } from './weights';
 
 /**
  * Union: one of several member nodes, picked by the value's JS kind
@@ -64,7 +64,13 @@ export class PUnion<T> extends PNode<T> {
     if (this._weights === undefined) {
       enc.compose(pos, this._members.length);
     } else {
-      enc.composeWeighted(this._weights.cums[pos], this._weights.freqs[pos], this._weights.total);
+      enc.composeWeighted(
+        this._weights.cums[pos],
+        this._weights.freqs[pos],
+        this._weights.total,
+        pos,
+        this._weights.cums.length
+      );
     }
     this._members[pos]._write(enc, value);
   }
@@ -73,7 +79,12 @@ export class PUnion<T> extends PNode<T> {
     const pos =
       this._weights === undefined
         ? dec.parse(this._members.length)
-        : dec.parseWeighted(this._weights.total, locateWeighted(this._weights));
+        : dec.parseWeighted(
+            this._weights.total,
+            locateWeighted(this._weights),
+            this._weights.cums.length,
+            atIndexWeighted(this._weights)
+          );
     return this._members[pos]._read(dec);
   }
 }

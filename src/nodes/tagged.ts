@@ -4,7 +4,7 @@ import type { Kind } from './guards';
 import type { InferTagged } from './infer';
 import type { PObject } from './object';
 import { atPath, oneOf } from './path';
-import { buildWeights, locateWeighted, type WeightTable } from './weights';
+import { buildWeights, locateWeighted, atIndexWeighted, type WeightTable } from './weights';
 
 /**
  * Tagged union: object shapes picked by the value's tag field. `p.tagged`.
@@ -64,7 +64,13 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
     if (this._weights === undefined) {
       enc.compose(pos, this._tags.length);
     } else {
-      enc.composeWeighted(this._weights.cums[pos], this._weights.freqs[pos], this._weights.total);
+      enc.composeWeighted(
+        this._weights.cums[pos],
+        this._weights.freqs[pos],
+        this._weights.total,
+        pos,
+        this._weights.cums.length
+      );
     }
     // The member ignores the tag key as it ignores any key outside its shape.
     this._members[this._tags[pos]]._write(enc, value);
@@ -74,7 +80,12 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
     const pos =
       this._weights === undefined
         ? dec.parse(this._tags.length)
-        : dec.parseWeighted(this._weights.total, locateWeighted(this._weights));
+        : dec.parseWeighted(
+            this._weights.total,
+            locateWeighted(this._weights),
+            this._weights.cums.length,
+            atIndexWeighted(this._weights)
+          );
     const tag = this._tags[pos];
     return { [this._key]: tag, ...this._members[tag]._read(dec) } as InferTagged<K, M>;
   }

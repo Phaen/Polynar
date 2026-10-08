@@ -3,7 +3,15 @@ import { PNode } from './base';
 import { atPath } from './path';
 import type { Kind } from './guards';
 import { writeIndex, readIndex } from './lattice';
-import { resolvePrior, priorKind, cdfBucket, locateCdf, type Cdf, type Prior } from './weights';
+import {
+  resolvePrior,
+  priorKind,
+  cdfBucket,
+  locateCdf,
+  atIndexCdf,
+  type Cdf,
+  type Prior,
+} from './weights';
 
 /** Count constraints for an array node: min/max bounds, or a fixed length. */
 interface ArrayBounds {
@@ -155,7 +163,13 @@ export class PArray<TItem> extends PNode<TItem[]> {
       writeIndex(enc, count, this._countMin(), this._countMax());
     } else {
       const [cum, freq] = cdfBucket(this._cdf, count, 'p.array', () => `Array length ${count}`);
-      enc.composeWeighted(cum, freq, this._total!);
+      enc.composeWeighted(
+        cum,
+        freq,
+        this._total!,
+        count - this._countMin(),
+        this._max! - this._countMin() + 1
+      );
     }
 
     // Indexed iteration, not for-of over holes: a sparse array's holes read as
@@ -175,7 +189,12 @@ export class PArray<TItem> extends PNode<TItem[]> {
     const count =
       this._cdf === undefined
         ? readIndex(dec, this._countMin(), this._countMax())
-        : dec.parseWeighted(this._total!, locateCdf(this._cdf, this._countMin(), this._max!));
+        : dec.parseWeighted(
+            this._total!,
+            locateCdf(this._cdf, this._countMin(), this._max!),
+            this._max! - this._countMin() + 1,
+            atIndexCdf(this._cdf, this._countMin())
+          );
     const value: TItem[] = [];
     for (let i = 0; i < count; i++) {
       value.push(this._item._read(dec));

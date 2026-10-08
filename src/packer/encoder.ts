@@ -25,6 +25,10 @@ export class Encoder {
   private cums: number[] = [];
   private freqs: number[] = [];
   private totals: number[] = [];
+  /** Position of each symbol among its node's `counts` symbols, in bucket order. */
+  private indices: number[] = [];
+  /** Symbol count per slot: a uniform slot's radix, or a weighted node's member count. */
+  private counts: number[] = [];
 
   /** Push one value in a fixed radix: `integer` must lie in `[0, radix)`. */
   compose(integer: number, radix: number): void {
@@ -46,6 +50,8 @@ export class Encoder {
     this.cums.push(integer);
     this.freqs.push(1);
     this.totals.push(radix);
+    this.indices.push(integer);
+    this.counts.push(radix);
   }
 
   /**
@@ -53,8 +59,20 @@ export class Encoder {
    * states. Costs log2(total/freq) bits — fractional, exact. The decoder
    * recovers the symbol from which bucket the residual lands in, so both
    * sides must derive identical integer tables.
+   *
+   * `index` and `count` place the symbol among the node's members in bucket
+   * order. They let the message's last symbol be written as a plain index:
+   * a weighted bucket borrows its fractional bits from the symbols after it,
+   * and the last one has none to borrow, so as a bucket it would cost
+   * log2(total) bits. Without them the symbol is always written as a bucket.
    */
-  composeWeighted(cum: number, freq: number, total: number): void {
+  composeWeighted(
+    cum: number,
+    freq: number,
+    total: number,
+    index: number = cum,
+    count: number = total
+  ): void {
     if (!Number.isInteger(total) || !Number.isInteger(freq) || !Number.isInteger(cum)) {
       throw new TypeError(`Bucket must be integers, got cum ${cum}, freq ${freq}, total ${total}`);
     }
@@ -67,10 +85,22 @@ export class Encoder {
     if (cum < 0 || cum + freq > total) {
       throw new RangeError(`Bucket [${cum}, ${cum + freq}) is outside [0, ${total})`);
     }
+    if (!Number.isInteger(index) || !Number.isInteger(count) || count < 1) {
+      throw new TypeError(`Symbol position must be integers, got index ${index}, count ${count}`);
+    }
+    // A node with at least as many members as states gains nothing from an
+    // index, so its symbols stay buckets and the index goes unused; the
+    // decoder clamps identically.
+    const members = Math.min(count, total);
+    if (members < total && (index < 0 || index >= members)) {
+      throw new RangeError(`Index ${index} is outside [0, ${members})`);
+    }
 
     this.cums.push(cum);
     this.freqs.push(freq);
     this.totals.push(total);
+    this.indices.push(members < total ? index : 0);
+    this.counts.push(members);
   }
 
   /** Push one unbounded non-negative integer. */
@@ -160,6 +190,10 @@ export class Encoder {
       let den = 1n;
       let u = 1n;
       let v = 1n;
+      // The bound before the block's last symbol, which may be rewritten.
+      let prevDen = 1n;
+      let prevU = 1n;
+      let prevV = 1n;
       let end = start;
       while (end < this.totals.length) {
         const total = BigInt(this.totals[end]);
@@ -168,14 +202,46 @@ export class Encoder {
           break;
         }
         const freq = BigInt(this.freqs[end]);
+        prevDen = den;
+        prevU = u;
+        prevV = v;
         v = candidate * freq;
         u = u * total;
         den = den * freq;
         end++;
       }
 
+      // The message's last symbol has nothing after it to fill the fractional
+      // part of its bucket, so as a bucket it needs log2(total) bits of state.
+      // When that does not fit the digits its plain index needs, it is
+      // written as the index instead. The decoder sees the same digit count
+      // and makes the same call.
+      let indexed = false;
+      if (end === this.totals.length && end > start) {
+        const last = end - 1;
+        const total = BigInt(this.totals[last]);
+        const count = BigInt(this.counts[last]);
+        if (count < total) {
+          const asBucket = prevV + prevU * (total - 1n);
+          const asIndex = prevV + prevU * (count - 1n);
+          let fit = 1n;
+          while (fit * prevDen < asIndex) {
+            fit *= base;
+          }
+          if (asBucket > fit * prevDen) {
+            indexed = true;
+            v = asIndex;
+            den = prevDen;
+          }
+        }
+      }
+
       let value = 0n;
       for (let i = end - 1; i >= start; i--) {
+        if (indexed && i === end - 1) {
+          value = BigInt(this.indices[i]);
+          continue;
+        }
         const freq = BigInt(this.freqs[i]);
         value = (value / freq) * BigInt(this.totals[i]) + BigInt(this.cums[i]) + (value % freq);
       }

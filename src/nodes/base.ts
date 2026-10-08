@@ -125,14 +125,14 @@ export class POptional<TOut> extends PNode<TOut | undefined> {
       if (presence === undefined) {
         enc.compose(0, 2);
       } else {
-        enc.composeWeighted(0, presence[0], presence[0] + presence[1]);
+        enc.composeWeighted(0, presence[0], presence[0] + presence[1], 0, 2);
       }
       return;
     }
     if (presence === undefined) {
       enc.compose(1, 2);
     } else {
-      enc.composeWeighted(presence[0], presence[1], presence[0] + presence[1]);
+      enc.composeWeighted(presence[0], presence[1], presence[0] + presence[1], 1, 2);
     }
     this.inner._write(enc, value);
   }
@@ -142,8 +142,11 @@ export class POptional<TOut> extends PNode<TOut | undefined> {
     const there =
       presence === undefined
         ? dec.parse(2) === 1
-        : dec.parseWeighted(presence[0] + presence[1], (r) =>
-            r < presence[0] ? [false, 0, presence[0]] : [true, presence[0], presence[1]]
+        : dec.parseWeighted(
+            presence[0] + presence[1],
+            (r) => (r < presence[0] ? [false, 0, presence[0]] : [true, presence[0], presence[1]]),
+            2,
+            (i) => (i === 0 ? [false, 0, presence[0]] : [true, presence[0], presence[1]])
           );
     if (!there) {
       return undefined;

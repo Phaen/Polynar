@@ -2,7 +2,15 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { PNode } from './base';
 import type { Kind } from './guards';
 import { writeIndex, readIndex } from './lattice';
-import { resolvePrior, priorKind, cdfBucket, locateCdf, type Cdf, type Prior } from './weights';
+import {
+  resolvePrior,
+  priorKind,
+  cdfBucket,
+  locateCdf,
+  atIndexCdf,
+  type Cdf,
+  type Prior,
+} from './weights';
 
 // Smallest number of decimal places at which x is represented exactly, or
 // null when there is none within double precision (e.g. 1/3, Math.PI).
@@ -171,14 +179,19 @@ export class PDecimal extends PNode<number> {
       return;
     }
     const [cum, freq] = cdfBucket(this._cdf, k, 'p.decimal', () => `Value '${value}'`);
-    enc.composeWeighted(cum, freq, this._total!);
+    enc.composeWeighted(cum, freq, this._total!, k - this._kMin!, this._kMax! - this._kMin! + 1);
   }
 
   _read(dec: Decoder): number {
     const k =
       this._cdf === undefined
         ? readIndex(dec, this._kMin, this._kMax)
-        : dec.parseWeighted(this._total!, locateCdf(this._cdf, this._kMin!, this._kMax!));
+        : dec.parseWeighted(
+            this._total!,
+            locateCdf(this._cdf, this._kMin!, this._kMax!),
+            this._kMax! - this._kMin! + 1,
+            atIndexCdf(this._cdf, this._kMin!)
+          );
     // Mirror of the encode-side exactness guard: a product past 2^53 rounds,
     // and the encoder could never have emitted it.
     if (Math.abs(k * this._scaledStep) > Number.MAX_SAFE_INTEGER) {

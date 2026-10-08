@@ -4,7 +4,7 @@
  * runs, and corruption rejection. Seeded, so failures reproduce.
  */
 
-import { Encoder, Decoder, CorruptInputError } from '../index';
+import { Encoder, Decoder, CorruptInputError, p } from '../index';
 
 const mulberry32 = (seed: number) => (): number => {
   seed |= 0;
@@ -198,5 +198,106 @@ describe('Weighted packer primitive', () => {
     );
     expect(() => enc.composeWeighted(0.5, 1, 4)).toThrow(TypeError);
     expect(() => enc.composeWeighted(0, 1, 4.5)).toThrow(TypeError);
+  });
+});
+
+describe('Indexed last symbol', () => {
+  // Four members, weight k each: a bucket needs log2(4k) bits of state, the
+  // index two. Nothing follows the message's last symbol to fill the rest.
+  const four = (k: number) => ({ cums: [0, k, 2 * k, 3 * k], freqs: [k, k, k, k], total: 4 * k });
+  const atIndexIn = (d: Distribution) => (i: number) => [i, d.cums[i], d.freqs[i]] as const;
+
+  it('writes a lone weighted value as its index, whatever the total', () => {
+    for (const k of [1, 1000, 1e6, 1e12]) {
+      const dist = four(k);
+      for (let s = 0; s < 4; s++) {
+        const enc = new Encoder();
+        enc.compose(5, 7);
+        enc.composeWeighted(dist.cums[s], dist.freqs[s], dist.total, s, 4);
+        const bytes = enc.toUint8Array();
+        expect(bytes.length).toBe(1);
+        const dec = new Decoder(bytes);
+        expect(dec.parse(7)).toBe(5);
+        expect(dec.parseWeighted(dist.total, locateIn(dist), 4, atIndexIn(dist))).toBe(s);
+        dec.finalize();
+      }
+    }
+  });
+
+  it('keeps the bucket form when the digits hold it anyway', () => {
+    // Base 65536: both forms fit one digit, so the bytes equal the plain call.
+    const dist = four(1000);
+    const plain = new Encoder();
+    plain.composeWeighted(dist.cums[2], dist.freqs[2], dist.total);
+    const indexed = new Encoder();
+    indexed.composeWeighted(dist.cums[2], dist.freqs[2], dist.total, 2, 4);
+    expect(indexed.toString([0, 65535])).toBe(plain.toString([0, 65535]));
+  });
+
+  it('is unchanged when the member count reaches the total', () => {
+    for (let run = 0; run < 50; run++) {
+      const dist = randDistribution(randInt(2, 8));
+      const plain = new Encoder();
+      const counted = new Encoder();
+      for (let i = 0; i < randInt(1, 30); i++) {
+        const s = randInt(0, dist.cums.length - 1);
+        plain.composeWeighted(dist.cums[s], dist.freqs[s], dist.total);
+        counted.composeWeighted(dist.cums[s], dist.freqs[s], dist.total, s, dist.total + run);
+      }
+      expect(counted.toUint8Array()).toEqual(plain.toUint8Array());
+    }
+  });
+
+  it('rejects padding, truncation and reading past an indexed tail', () => {
+    const dist = four(1e12);
+    const enc = new Encoder();
+    for (let i = 0; i < 20; i++) {
+      enc.compose(i % 3, 3);
+    }
+    enc.composeWeighted(dist.cums[3], dist.freqs[3], dist.total, 3, 4);
+    const bytes = enc.toUint8Array();
+    expect(bytes.length).toBe(5);
+
+    const readAll = (input: Uint8Array, extra = false) => {
+      const dec = new Decoder(input);
+      for (let i = 0; i < 20; i++) {
+        dec.parse(3);
+      }
+      dec.parseWeighted(dist.total, locateIn(dist), 4, atIndexIn(dist));
+      if (extra) {
+        dec.parse(2);
+      }
+      dec.finalize();
+    };
+    readAll(bytes);
+    expect(() => readAll(bytes, true)).toThrow(CorruptInputError);
+    expect(() => readAll(bytes.subarray(0, 4))).toThrow(CorruptInputError);
+    expect(() => readAll(Uint8Array.of(...bytes, 0))).toThrow(CorruptInputError);
+    // Padded to where the bucket form fits: the digit count gives it away.
+    expect(() => readAll(Uint8Array.of(...bytes, 0, 0))).toThrow(CorruptInputError);
+  });
+
+  it('reads a single-value tail that opens a block of its own', () => {
+    // A full block of 256 bytes, then a value with one member: its index
+    // takes no digits, so the new block it opens is empty.
+    const node = p.object({
+      a: p.array(p.int().min(0).max(255)).length(256),
+      b: p.int().min(7).max(7).weights([5]),
+    });
+    const value = { a: Array.from({ length: 256 }, (_, i) => i), b: 7 };
+    const bytes = node.encode(value);
+    expect(bytes.length).toBe(256);
+    expect(node.decode(bytes)).toEqual(value);
+    expect(() => node.decode(Uint8Array.of(...bytes, 0))).toThrow(CorruptInputError);
+  });
+
+  it('rejects an index that points at a value with no weight', () => {
+    // Weights 500, 0, 1 over 0..2: the total needs two bytes as a bucket,
+    // so a lone value goes out as its index in one.
+    const cdf = (v: number) => [0, 500, 500, 501][v];
+    const node = p.int().min(0).max(2).cdf(cdf);
+    expect(node.encode(2)).toEqual(Uint8Array.of(2));
+    expect(node.decode(Uint8Array.of(2))).toBe(2);
+    expect(() => node.decode(Uint8Array.of(1))).toThrow(CorruptInputError);
   });
 });
