@@ -52,7 +52,7 @@ export class PEnum<T> extends PNode<T> {
   _write(enc: Encoder, value: T): void {
     const pos = this._list.indexOf(value);
     if (pos === -1) {
-      throw new Error(`Value '${String(value)}' not found in list`);
+      throw new RangeError(`Value '${String(value)}' not found in list`);
     }
     if (this._weights === undefined) {
       enc.compose(pos, this._list.length);

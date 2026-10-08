@@ -285,7 +285,7 @@ The charset defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.
 
 Input that doesn't decode — truncated, padded, or with characters outside the charset — throws a `CorruptInputError`. Where `instanceof` can't be trusted, such as with two copies of the package in one process, check `err.name === 'CorruptInputError'`. Its subclass `UnknownVersionError` is thrown when `p.versioned` gets data from a version it doesn't list; its `name` is still `'CorruptInputError'`.
 
-A value that can't be encoded throws with its path in front, like `filters[2].op: Value 'gt' not found in list`; the error keeps its class. An invalid schema throws a `TypeError` or `RangeError` as soon as it's defined.
+A value that can't be encoded throws with its path in front, like `filters[2].op: Value 'gt' not found in list`. A value outside what the schema allows — a bound, step, length, list, tag or charset — throws a `RangeError`; one that isn't a valid integer, finite number or date at all throws a `TypeError`. An invalid schema throws a `TypeError` or `RangeError` as soon as it's defined.
 
 ## Types
 

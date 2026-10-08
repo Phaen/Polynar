@@ -284,4 +284,14 @@ describe('Schema internals', () => {
     }
     expect(() => p.object({ a: new PThrows() }).encode({ a: 1 })).toThrow('not an error');
   });
+
+  it('values outside what the schema allows throw RangeError, invalid schemas TypeError', () => {
+    expect(() => p.enum(['a', 'b']).encode('c' as 'a')).toThrow(RangeError);
+    const members: Record<string, ReturnType<typeof p.object>> = { a: p.object({}) };
+    expect(() => p.tagged('type', members).encode({ type: 'x' })).toThrow(RangeError);
+    expect(() => p.string().charset('ab').encode('abc')).toThrow(RangeError);
+    expect(() => p.string().charset([97, 98]).encode('abc')).toThrow(RangeError);
+    expect(() => p.string().charset('a')).toThrow(TypeError);
+    expect(() => p.string().charset([97, 97])).toThrow(RangeError);
+  });
 });
