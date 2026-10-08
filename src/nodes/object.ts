@@ -4,7 +4,7 @@ import { PNode, POptional } from './base';
 import { atPath } from './path';
 import type { Kind } from './guards';
 
-/** Object with a fixed shape. Optional fields carry a single presence bit. */
+/** Object with a fixed shape. An optional field that is absent decodes with its key left out. */
 export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferShape<S>> {
   readonly _kinds: readonly Kind[] = ['object'];
 
@@ -35,36 +35,13 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
 
   private _writeField(enc: Encoder, value: InferShape<S>, key: string): void {
     const field = this._shape[key];
-    const optional = field instanceof POptional;
-    // Unwrap the optional marker so the presence bit is written here, once;
-    // the inner node never learns it was optional.
-    const node = optional ? (field as POptional<unknown>).inner : field;
     const v = (value as Record<string, unknown>)[key];
-
-    const presence = optional ? (field as POptional<unknown>).presence : undefined;
-
-    // Only `undefined` means absent. `null` is a value in its own right (the
-    // any type round-trips it), so it must reach the field's node.
-    if (v === undefined) {
-      if (optional) {
-        if (presence === undefined) {
-          enc.compose(0, 2);
-        } else {
-          enc.composeWeighted(0, presence[0], presence[0] + presence[1]);
-        }
-        return;
-      }
+    // An optional field writes its own presence bit, so an absent key and an
+    // `undefined` value encode the same way.
+    if (v === undefined && !(field instanceof POptional)) {
       throw new ReferenceError('required field is missing');
     }
-
-    if (optional) {
-      if (presence === undefined) {
-        enc.compose(1, 2);
-      } else {
-        enc.composeWeighted(presence[0], presence[1], presence[0] + presence[1]);
-      }
-    }
-    node._write(enc, v);
+    field._write(enc, v);
   }
 
   _read(dec: Decoder): InferShape<S> {
@@ -72,27 +49,14 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
 
     for (const key of this._keys) {
       const field = this._shape[key];
-      const optional = field instanceof POptional;
-      const node = optional ? (field as POptional<unknown>).inner : field;
-
-      if (optional) {
-        const presence = (field as POptional<unknown>).presence;
-        const there =
-          presence === undefined
-            ? dec.parse(2) === 1
-            : dec.parseWeighted(presence[0] + presence[1], (r) =>
-                r < presence[0] ? [false, 0, presence[0]] : [true, presence[0], presence[1]]
-              );
-        if (!there) {
+      const v = field._read(dec);
+      if (v === undefined) {
+        if (field instanceof POptional) {
           continue;
         }
-      }
-
-      const v = node._read(dec);
-      // `undefined` is the absence marker on encode, so no object can carry
-      // it as a field VALUE — a wire state decoding to one (an `any` field's
-      // undefined tag) has no canonical spelling and must read as corruption.
-      if (v === undefined) {
+        // `undefined` is the absence marker on encode, so no object can carry
+        // it as a required field's VALUE — a wire state decoding to one (an
+        // `any` field's undefined tag) has no canonical spelling.
         throw new CorruptInputError('Object field decoded as undefined, which is not encodable');
       }
 

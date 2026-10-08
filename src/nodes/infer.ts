@@ -3,7 +3,8 @@
  *
  * A schema node carries a phantom output type on `_t`. `Infer` extracts it.
  * Object shapes split required vs `p.optional` keys (detected via the `_optional`
- * phantom marker), then flatten the intersection so the result is identity-equal
+ * phantom marker; the `?` already says `undefined`, so it is left out of the
+ * value type), then flatten the intersection so the result is identity-equal
  * to a hand-written object type.
  */
 import type { PNode } from './base';
@@ -21,7 +22,9 @@ type RequiredKeys<S> = Exclude<keyof S, OptionalKeys<S>>;
 
 /** Infer the object type for a `p.object({...})` shape. */
 export type InferShape<S> = Simplify<
-  { [K in RequiredKeys<S>]: Infer<S[K]> } & { [K in OptionalKeys<S>]?: Infer<S[K]> }
+  { [K in RequiredKeys<S>]: Infer<S[K]> } & {
+    [K in OptionalKeys<S>]?: Exclude<Infer<S[K]>, undefined>;
+  }
 >;
 
 /** Infer the discriminated union for a `p.tagged(key, {...})` member map. */

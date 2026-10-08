@@ -179,7 +179,7 @@ An object with a fixed shape: `p.object({ x: p.int(), label: p.optional(p.string
 
 ### `p.array(item: PNode)`
 
-An array of one item type, stored with its length. Infers an array of the item's type. Arrays nest. Items can't be `p.optional(...)`; make the array itself optional.
+An array of one item type, stored with its length. Infers an array of the item's type. Arrays nest.
 
 | Method                            | Description                                                                                                  |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------ |
@@ -191,7 +191,7 @@ An array of one item type, stored with its length. Infers an array of the item's
 
 ### `p.optional(node: PNode)`
 
-An object field that may be absent, at the cost of one bit. Infers an optional key. Only `undefined` means absent; `null` is a value and goes to the inner node. Wrapping twice is the same as once. The object writes the presence bit, so absence only works on object fields: a top-level optional can't encode `undefined`, and an optional can't be an array item or a union member.
+A value or `undefined`, at the cost of one bit: `p.optional(p.int())` is `number | undefined`. As an object field it infers an optional key, and an absent key and an `undefined` value both count as absent, so the field decodes with its key left out. Only `undefined` means absent; `null` is a value and goes to the inner node. Wrapping twice is the same as once.
 
 | Method                          | Description                                |
 | ------------------------------- | ------------------------------------------ |
@@ -207,7 +207,7 @@ A value or `null`: `p.nullable(p.string())` is `string | null`, short for `p.uni
 
 ### `p.union(members: PNode[])`
 
-One of several members: `p.union([p.string(), p.int(), p.array(p.string())])` is `string | number | string[]`. The member is picked by the value's kind: string, number, boolean, null, date, array, object, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. Members must know their kinds, so `p.optional`, `p.lazy` and custom nodes without `_kinds` can't be members. A value whose kind has no member throws. Recording which member was used costs log2(members) bits.
+One of several members: `p.union([p.string(), p.int(), p.array(p.string())])` is `string | number | string[]`. The member is picked by the value's kind: string, number, boolean, null, undefined, date, array, object, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. Members must know their kinds, so `p.lazy` and custom nodes without `_kinds` can't be members. A value whose kind has no member throws. Recording which member was used costs log2(members) bits.
 
 | Method                  | Description                                  |
 | ----------------------- | -------------------------------------------- |
@@ -232,7 +232,7 @@ The tag costs log2(members) bits and is never written as text. The tag key belon
 
 ### `p.lazy(resolve: () => PNode)`
 
-A node looked up on first use, so a schema can contain itself or refer to one defined further down; it costs nothing on the wire. Infers the resolved node's type. Its kinds are unknown until first use, so it can't be a `p.union` member. No methods.
+A node looked up on first use, so a schema can contain itself or refer to one defined further down; it costs nothing on the wire. Infers the resolved node's type. Its kinds are unknown until first use, so it can't be a `p.union` member. The node it returns can't be `p.optional` either, because an object couldn't see that the field is optional. No methods.
 
 ### `p.versioned(first: PNode, ...later: (PNode | [PNode, (previous) => next])[])`
 

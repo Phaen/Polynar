@@ -59,18 +59,17 @@ const Tagged = p.object({
 });
 const _tagged: Equals<Infer<typeof Tagged>, { tags: ('a' | 'b')[]; scores?: number[] }> = true;
 
-// An optional ITEM type is rejected via the `_optional` phantom marker: the
-// presence bit only exists for object fields, so it is the array that can be
-// optional, never its items.
-// @ts-expect-error — POptional is not a valid array item
-p.array(p.optional(p.string()));
+// An optional item type admits undefined items.
+const Holes = p.array(p.optional(p.string()));
+const _holes: Equals<Infer<typeof Holes>, (string | undefined)[]> = true;
 
 // Unions infer the union of their members' types.
 const Nullable = p.union([p.string(), p.int(), p.null()]);
 const _union: Equals<Infer<typeof Nullable>, string | number | null> = true;
 
-// @ts-expect-error — POptional is not a valid union member
-p.union([p.optional(p.string()), p.int()]);
+// An optional member adds undefined to the union.
+const Maybe = p.union([p.optional(p.string()), p.int()]);
+const _maybe: Equals<Infer<typeof Maybe>, string | number | undefined> = true;
 
 // Tagged unions infer a discriminated union: each member gets the tag as a
 // literal, so the tag narrows to that member's fields.
@@ -132,5 +131,10 @@ p.versioned(UserV1, [
 const Profile = p.object({ nick: p.nullable(p.string()), bio: p.optional(p.nullable(p.string())) });
 const _nullable: Equals<Infer<typeof Profile>, { nick: string | null; bio?: string | null }> = true;
 
-// @ts-expect-error — POptional is not a valid nullable target
-p.nullable(p.optional(p.string()));
+// Nullable around optional admits both.
+const Either = p.nullable(p.optional(p.string()));
+const _either: Equals<Infer<typeof Either>, string | null | undefined> = true;
+
+// On its own an optional node is the value or undefined.
+const Lone = p.optional(p.int());
+const _lone: Equals<Infer<typeof Lone>, number | undefined> = true;

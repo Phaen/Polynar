@@ -1,5 +1,5 @@
 import { Encoder, Decoder } from '../packer';
-import { PNode, POptional } from './base';
+import { PNode } from './base';
 import { atPath } from './path';
 import type { Kind } from './guards';
 import { writeIndex, readIndex } from './lattice';
@@ -34,11 +34,6 @@ export class PArray<TItem> extends PNode<TItem[]> {
 
   constructor(item: PNode<TItem>, bounds: ArrayBounds = {}) {
     super();
-    // The presence bit only exists for object fields; an array slot is always
-    // occupied, so an optional item type could never mark anything absent.
-    if (item instanceof POptional) {
-      throw new TypeError('p.array items cannot be p.optional; the array itself can be');
-    }
     this._item = item;
 
     // A fixed length IS both bounds; combining the two spellings is a

@@ -124,9 +124,7 @@ export const p = {
    * One of several members, picked by the value's JS kind; one member per
    * kind.
    */
-  union<T extends readonly (PNode<any> & { _optional?: never })[]>(
-    members: T
-  ): PUnion<Infer<T[number]>> {
+  union<T extends readonly PNode<any>[]>(members: T): PUnion<Infer<T[number]>> {
     return new PUnion<Infer<T[number]>>(members);
   },
   /** Object shapes picked by a tag field: `p.tagged('type', { a: p.object(...), b: p.object(...) })`. */
@@ -152,7 +150,7 @@ export const p = {
    * A value or `null`: `p.union([node, p.null()])`, so `.weights()` reads
    * `[value, null]`.
    */
-  nullable<T>(node: PNode<T> & { _optional?: never }): PUnion<T | null> {
+  nullable<T>(node: PNode<T>): PUnion<T | null> {
     return new PUnion<T | null>([node, new PNull()]);
   },
   /** Date; chain `.min()`/`.max()` to bound, `.precision(unit, step?)` to coarsen to UTC calendar buckets. */
@@ -166,23 +164,24 @@ export const p = {
   /**
    * Array of one item type; chain `.min(n)`/`.max(n)` to bound the count
    * (bounds pack denser) or `.length(n)` to fix it — a fixed count costs
-   * zero bits on the wire. The item cannot be `p.optional` (rejected at the
-   * type level via the `_optional` phantom): an array slot is always occupied.
+   * zero bits on the wire.
    */
-  array<T>(item: PNode<T> & { _optional?: never }): PArray<T> {
+  array<T>(item: PNode<T>): PArray<T> {
     return new PArray<T>(item);
   },
   /**
    * A node looked up on first use, for schemas that refer to themselves:
    * `items: p.array(p.lazy(() => Block))`. TypeScript can't infer a type
    * that refers to itself, so the recursive const needs it written out:
-   * `const Block: PNode<Block> = …`.
+   * `const Block: PNode<Block> = …`. The target can't be `p.optional`: an
+   * object sees optionality only through the `_optional` phantom, which a
+   * lazy node can't show before it resolves.
    */
   lazy<T>(resolve: () => PNode<T> & { _optional?: never }): PLazy<T> {
     return new PLazy<T>(resolve);
   },
   /**
-   * An object field that may be absent: one presence bit, or less with
+   * A value or `undefined`: one presence bit, or less with
    * `.weights([absent, present])`. Only `undefined` means absent; wrapping
    * twice is the same as once.
    */
