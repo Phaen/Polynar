@@ -2,7 +2,7 @@
  * Schema bytes node (`p.bytes()`) — raw byte runs with a bounded count.
  */
 
-import { p } from '../../index';
+import { p, CorruptInputError } from '../../index';
 import { trip } from '../support';
 
 describe('Schema bytes', () => {
@@ -44,5 +44,14 @@ describe('Schema bytes', () => {
     expect(trip(node, new Uint8Array([7]))).toEqual(new Uint8Array([7]));
     expect(trip(node, { a: 1 })).toEqual({ a: 1 });
     expect(() => p.union([p.bytes(), p.bytes().max(4)])).toThrow("overlap on kind 'bytes'");
+  });
+
+  it('a tampered length runs out of input instead of allocating it', () => {
+    // An unbounded length prefix claiming 2^40 bytes, followed by nothing.
+    const claim = p
+      .int()
+      .min(0)
+      .encode(2 ** 40);
+    expect(() => p.bytes().decode(claim)).toThrow(CorruptInputError);
   });
 });
