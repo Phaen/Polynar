@@ -254,44 +254,57 @@ const scalarCase = (): Case => {
       }
     }
     default: {
-      // Interval buckets quantize the timestamp, so values are generated on
-      // the bucket grid: only there does the identity invariant hold.
-      const [spec, ms] = pick([
-        [1, 1],
-        [1, 1],
-        [1000, 1000],
-        ['minute', 60_000],
-        [3_600_000, 3_600_000],
-        ['day', 86_400_000],
+      // Precision floors the timestamp, so values are random timestamps
+      // floored by one round trip through the node: only bucket starts
+      // satisfy the identity invariant.
+      const unit = pick([
+        'millisecond',
+        'millisecond',
+        'second',
+        'minute',
+        'hour',
+        'day',
+        'week',
+        'month',
+        'year',
       ] as const);
-      const node = p.date().interval(spec);
+      const step = unit === 'minute' && rand() < 0.2 ? 15 : randInt(1, 4);
+      // Rough bucket length, only for sizing bounded spans.
+      const ms =
+        step *
+        {
+          millisecond: 1,
+          second: 1_000,
+          minute: 60_000,
+          hour: 3_600_000,
+          day: 86_400_000,
+          week: 604_800_000,
+          month: 2_678_400_000,
+          year: 31_622_400_000,
+        }[unit];
+      const base = p.date().precision(unit, step);
+      const floored = (node: PNode<Date>, ts: number): Date =>
+        node.decode(node.encode(new Date(ts)));
       switch (randInt(0, 3)) {
-        case 0: {
-          const kMax = Math.floor(8e15 / ms);
-          return { node, gen: () => new Date(randInt(-kMax, kMax) * ms) };
-        }
+        case 0:
+          return { node: base, gen: () => floored(base, randInt(-8e15, 8e15)) };
         case 1: {
           const min = randInt(-1e12, 1e12);
-          return {
-            node: node.min(rand() < 0.5 ? min : new Date(min)),
-            gen: () => new Date(min + randInt(0, 1e5) * ms),
-          };
+          const node = base.min(rand() < 0.5 ? min : new Date(min));
+          return { node, gen: () => floored(node, min + randInt(0, 1e15)) };
         }
         case 2: {
-          // With only a max, buckets anchor at the epoch and count down.
           const max = randInt(-1e12, 1e12);
-          const kMax = Math.floor(max / ms);
-          return { node: node.max(max), gen: () => new Date((kMax - randInt(0, 1e5)) * ms) };
+          const node = base.max(max);
+          return { node, gen: () => floored(node, max - randInt(0, 1e15)) };
         }
         default: {
           const min = randInt(-1e12, 1e12);
-          const span = randInt(0, 1000);
-          const bounded = node.min(min).max(min + span * ms);
+          const max = min + randInt(0, 1000) * ms;
+          const bounded = base.min(min).max(max);
           const cdf = randCdf();
-          return {
-            node: rand() < 0.5 ? bounded : bounded.cdf((b) => cdf(b)),
-            gen: () => new Date(min + randInt(0, span) * ms),
-          };
+          const node = rand() < 0.5 ? bounded : bounded.cdf((b) => cdf(b));
+          return { node, gen: () => floored(node, randInt(min, max)) };
         }
       }
     }

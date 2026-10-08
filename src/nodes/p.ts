@@ -22,7 +22,7 @@ import type { Infer } from './infer';
 /**
  * One rule across every node: the factory takes what the type IS (a step, an
  * item type, a list, a shape); chained refinements say what values are
- * ALLOWED (`.min`, `.max`, `.interval`, `.charset`). Constraints never hide
+ * ALLOWED (`.min`, `.max`, `.precision`, `.charset`). Constraints never hide
  * in positional arguments.
  */
 export const p = {
@@ -71,7 +71,7 @@ export const p = {
   null(): PNull {
     return new PNull();
   },
-  /** Date; chain `.min()`/`.max()` to bound, `.interval()` to coarsen. */
+  /** Date; chain `.min()`/`.max()` to bound, `.precision(unit, step?)` to coarsen to UTC calendar buckets. */
   date(): PDate {
     return new PDate();
   },

@@ -4,30 +4,106 @@ import { PNode } from './base';
 import { writeIndex, readIndex } from './lattice';
 import { resolvePrior, priorKind, cdfBucket, locateCdf, type Cdf, type Prior } from './weights';
 
-/**
- * Named date intervals in milliseconds. `month` is the mean Gregorian month
- * (30.4375 days) and `year` is twelve of them (365.25 days) — fixed-length
- * approximations for bucketing, not calendar arithmetic.
- */
-export const DATE_INTERVALS = {
+export type DateUnit =
+  | 'millisecond'
+  | 'second'
+  | 'minute'
+  | 'hour'
+  | 'day'
+  | 'week'
+  | 'month'
+  | 'year';
+
+/** Units of one fixed length in UTC, where every day is 86 400 000 ms. */
+const FIXED_MS = {
+  millisecond: 1,
   second: 1_000,
   minute: 60_000,
   hour: 3_600_000,
   day: 86_400_000,
-  week: 604_800_000,
-  month: 2_629_800_000,
-  year: 31_557_600_000,
 } as const;
 
-export type DateInterval = keyof typeof DATE_INTERVALS;
+const WEEK_MS = 604_800_000;
+/** Monday 1969-12-29 00:00 UTC, the start of the ISO week holding the epoch. */
+const WEEK_ORIGIN = -259_200_000;
 
-/** Date. Default interval is 1ms (lossless); larger intervals are lossy. `p.date`. */
+/**
+ * A bucketing of the UTC timeline: `index` maps a timestamp to its bucket,
+ * `start` maps a bucket back to the timestamp of its first instant. The bucket
+ * holding 1970-01-01 is index 0 for every unit.
+ */
+interface Calendar {
+  index(ts: number): number;
+  start(index: number): number;
+}
+
+/** The first instant of a UTC month; years 0–99 stay literal instead of 1900–1999. */
+const utcMonthStart = (year: number, month: number): number => {
+  const date = new Date(0);
+  date.setUTCFullYear(year, month, 1);
+  return date.getTime();
+};
+
+// Every valid timestamp and its offset from the week origin stay below 2^53,
+// so each floored division and each in-range bucket start is exact.
+const calendar = (unit: DateUnit, step: number): Calendar => {
+  if (unit === 'week') {
+    const size = WEEK_MS * step;
+    return {
+      index: (ts) => Math.floor((ts - WEEK_ORIGIN) / size),
+      start: (index) => index * size + WEEK_ORIGIN,
+    };
+  }
+  if (unit === 'month') {
+    const epoch = Math.floor((1970 * 12) / step);
+    return {
+      index: (ts) => {
+        const date = new Date(ts);
+        return Math.floor((date.getUTCFullYear() * 12 + date.getUTCMonth()) / step) - epoch;
+      },
+      start: (index) => {
+        const months = (index + epoch) * step;
+        const year = Math.floor(months / 12);
+        return utcMonthStart(year, months - year * 12);
+      },
+    };
+  }
+  if (unit === 'year') {
+    const epoch = Math.floor(1970 / step);
+    return {
+      index: (ts) => Math.floor(new Date(ts).getUTCFullYear() / step) - epoch,
+      start: (index) => utcMonthStart((index + epoch) * step, 0),
+    };
+  }
+  const size = FIXED_MS[unit] * step;
+  return {
+    index: (ts) => Math.floor(ts / size),
+    start: (index) => index * size,
+  };
+};
+
+/**
+ * Date, bucketed on the UTC calendar. `p.date`.
+ *
+ * Encoding floors a date to the start of its bucket, so the default
+ * `('millisecond', 1)` is lossless and coarser precisions are lossy. Units up
+ * to `day` align to the epoch, weeks start on Monday (ISO), and months and
+ * years are calendar months and years. A step groups that many units, with
+ * multiples aligned to the start of year 0: `('month', 3)` is calendar
+ * quarters, `('year', 10)` decades. The bounds admit the buckets from min's
+ * through max's, so a min inside a bucket decodes to that bucket's start,
+ * before min.
+ */
 export class PDate extends PNode<Date> {
   readonly _kinds: readonly Kind[] = ['date'];
 
   private readonly _min?: number;
   private readonly _max?: number;
-  private readonly _interval: number;
+  private readonly _unit: DateUnit;
+  private readonly _step: number;
+  private readonly _calendar: Calendar;
+  private readonly _lo?: number;
+  private readonly _hi?: number;
 
   /** The prior as declared, kept so a later bound change re-validates it. */
   private readonly _prior?: Prior;
@@ -37,7 +113,8 @@ export class PDate extends PNode<Date> {
   constructor(
     min?: number | Date,
     max?: number | Date,
-    interval: number | DateInterval = 1,
+    unit: DateUnit = 'millisecond',
+    step = 1,
     prior?: Prior
   ) {
     super();
@@ -56,40 +133,37 @@ export class PDate extends PNode<Date> {
       throw new RangeError('p.date minimum exceeds maximum');
     }
 
-    if (typeof interval === 'string') {
-      interval = DATE_INTERVALS[interval];
+    if (!Number.isInteger(step) || step < 1) {
+      throw new RangeError('p.date precision step must be a positive integer');
     }
-    // The interval is a divisor (ms per bucket). 0/negative/non-integer values
-    // have no coherent meaning and an interval of 0 would divide by zero.
-    if (!(interval > 0) || interval % 1 !== 0) {
-      throw new TypeError('Invalid date interval');
-    }
-    this._interval = interval;
-    // No span guard here: it would depend on the interval, which a chained
-    // `.interval()` sets only after the bounds construct intermediate nodes.
-    // The quantization check in `_write` catches drift per value instead.
+    this._unit = unit;
+    this._step = step;
+    this._calendar = calendar(unit, step);
+    this._lo = this._min === undefined ? undefined : this._calendar.index(this._min);
+    this._hi = this._max === undefined ? undefined : this._calendar.index(this._max);
 
     if (prior !== undefined) {
-      if (this._min === undefined || this._max === undefined) {
+      if (this._lo === undefined || this._hi === undefined) {
         throw new TypeError(`p.date ${priorKind(prior)} requires both bounds`);
       }
       this._prior = prior;
-      const resolved = resolvePrior(prior, 0, this._bucketMax()!, 'p.date');
+      const resolved = resolvePrior(prior, 0, this._hi - this._lo, 'p.date');
       this._cdf = resolved.cdf;
       this._total = resolved.total;
     }
   }
 
   min(n: number | Date): PDate {
-    return new PDate(n, this._max, this._interval, this._prior);
+    return this._with({ min: n });
   }
 
   max(n: number | Date): PDate {
-    return new PDate(this._min, n, this._interval, this._prior);
+    return this._with({ max: n });
   }
 
-  interval(i: number | DateInterval): PDate {
-    return new PDate(this._min, this._max, i, this._prior);
+  /** Coarsen to buckets of `step` UTC calendar units. */
+  precision(unit: DateUnit, step = 1): PDate {
+    return this._with({ unit, step });
   }
 
   /**
@@ -99,7 +173,7 @@ export class PDate extends PNode<Date> {
    * skewed fn; a zero-weight bucket cannot encode.
    */
   cdf(fn: Cdf): PDate {
-    return new PDate(this._min, this._max, this._interval, fn);
+    return this._with({ prior: fn });
   }
 
   /**
@@ -107,68 +181,67 @@ export class PDate extends PNode<Date> {
    * prior as `.cdf()`, given as the histogram instead of its running total.
    */
   weights(w: readonly number[]): PDate {
-    return new PDate(this._min, this._max, this._interval, w);
+    return this._with({ prior: w });
   }
 
   _write(enc: Encoder, value: Date): void {
     if (isNaN(value.getTime())) {
       throw new TypeError(`p.date expected a valid Date, got ${String(value)}`);
     }
-    const timestamp = value.getTime();
-
-    if (this._min !== undefined && timestamp < this._min) {
-      throw new RangeError(`Date '${value.toISOString()}' is before the minimum bound`);
-    }
-    if (this._max !== undefined && timestamp > this._max) {
-      throw new RangeError(`Date '${value.toISOString()}' is after the maximum bound`);
-    }
-
-    // Quantize relative to the min bound (or epoch when unbounded below).
-    // Anchoring at min guarantees every in-range date is representable AND
-    // that no decoded date falls below the declared minimum. Buckets count
-    // from 0 when a min exists, so the index bounds are [0, maxBucket].
-    const base = this._min ?? 0;
-    const bucket = Math.floor((timestamp - base) / this._interval);
-
-    // The bucket must land within one interval below the timestamp; float
-    // drift in the offset arithmetic past 2^53 would miss that silently.
-    const reconstructed = base + bucket * this._interval;
-    if (reconstructed > timestamp || timestamp - reconstructed >= this._interval) {
+    const bucket = this._calendar.index(value.getTime());
+    // The earliest Dates sit in a bucket that starts before the Date range,
+    // so the decoder could never rebuild them.
+    if (isNaN(new Date(this._calendar.start(bucket)).getTime())) {
       throw new RangeError(
-        `Date '${value.toISOString()}' is too far from its bound to quantize exactly`
+        `Date '${value.toISOString()}' falls in a bucket that starts before the earliest Date`
       );
     }
 
+    // Bounds compare buckets, so every decoded date, min's bucket start
+    // included, encodes again.
+    if (this._lo !== undefined && bucket < this._lo) {
+      throw new RangeError(`Date '${value.toISOString()}' is before the minimum bound`);
+    }
+    if (this._hi !== undefined && bucket > this._hi) {
+      throw new RangeError(`Date '${value.toISOString()}' is after the maximum bound`);
+    }
+
     if (this._cdf === undefined) {
-      writeIndex(enc, bucket, this._bucketMin(), this._bucketMax());
+      writeIndex(enc, bucket, this._lo, this._hi);
       return;
     }
-    const [cum, freq] = cdfBucket(this._cdf, bucket, 'p.date');
+    const [cum, freq] = cdfBucket(this._cdf, bucket - this._lo!, 'p.date');
     enc.composeWeighted(cum, freq, this._total!);
   }
 
   _read(dec: Decoder): Date {
-    const base = this._min ?? 0;
     const bucket =
       this._cdf === undefined
-        ? readIndex(dec, this._bucketMin(), this._bucketMax())
-        : dec.parseWeighted(this._total!, locateCdf(this._cdf, 0, this._bucketMax()!));
-    const date = new Date(base + bucket * this._interval);
-    // A bucket beyond the ±8.64e15 ms Date range can only come from a
-    // corrupted input; the encoder requires a valid Date.
+        ? readIndex(dec, this._lo, this._hi)
+        : this._lo! +
+          dec.parseWeighted(this._total!, locateCdf(this._cdf, 0, this._hi! - this._lo!));
+    const date = new Date(this._calendar.start(bucket));
+    // A bucket starting beyond the ±8.64e15 ms Date range can only come from
+    // a corrupted input or from a bucket that straddles the range's edge.
     if (isNaN(date.getTime())) {
       throw new CorruptInputError('Date is outside the representable time range');
     }
     return date;
   }
 
-  private _bucketMin(): number | undefined {
-    return this._min === undefined ? undefined : 0;
-  }
-
-  private _bucketMax(): number | undefined {
-    return this._max === undefined
-      ? undefined
-      : Math.floor((this._max - (this._min ?? 0)) / this._interval);
+  private _with(change: {
+    min?: number | Date;
+    max?: number | Date;
+    unit?: DateUnit;
+    step?: number;
+    prior?: Prior;
+  }): PDate {
+    return new PDate(
+      change.min ?? this._min,
+      change.max ?? this._max,
+      change.unit ?? this._unit,
+      change.step ?? this._step,
+      change.prior ?? this._prior
+    );
   }
 }
