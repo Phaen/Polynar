@@ -89,7 +89,7 @@ p.decimal(0.01).min(0).max(100); // a price in cents: 2 bytes
 p.float(); // any finite double, bit-exact; 0.1, 1/3 or 6.02e23 cost 2-6 bytes, noise costs 8
 ```
 
-`p.int` for whole numbers, `p.decimal` for a known step (values must already sit on it, so round first: `0.1 + 0.2` throws on step 0.1), `p.float` for arbitrary doubles. All bit-exact, except that `p.int` and `p.decimal` store `-0` as `0`; NaN and Infinity throw everywhere, and so does anything that can't round-trip exactly: ranges wider than 2^53, or a value farther than that from a lone bound.
+`p.int` for whole numbers, `p.decimal` for a known step (values must already sit on it, so round first: `0.1 + 0.2` throws on step 0.1), `p.float` for arbitrary doubles. All bit-exact, except that `p.int` and `p.decimal` store `-0` as `0`; NaN and Infinity throw everywhere. Huge values are fine as long as the arithmetic stays exact: `p.int().min(0).encode(2 ** 60)` round-trips, while `p.int().min(1).encode(2 ** 53 + 6)` throws because `2 ** 53 + 5` isn't a double. A pair of bounds can't span more than 2^53 values, and `p.decimal` stops where `value / step` passes 2^53.
 
 `.cdf()` tells the encoder which values are common. Hand it a running total: `cdf(v)` returns how much weight sits below `v` as a safe integer, so a value's own weight is `cdf(v + 1) - cdf(v)`. Common values cost fewer bits, rare ones more, zero-weight ones throw. You don't need to normalize anything — only the ratios matter — but the function must never go down; if it does, encoding a value in that stretch throws. Works the same on `p.decimal`, `p.date` and `p.array`, called with the grid index (`k` for the k-th multiple of the step), the bucket counted from `min`, and the item count. Encoder and decoder must get identical numbers out of it, so use BigInt or plain `+ - * /` — `Math.exp` and friends round differently per engine. And don't inflate the weights for sport: the last value in a message pays extra for a big total. On all four, `.weights([...])` takes the histogram directly instead, one positive integer per value from the lower bound up.
 
@@ -143,7 +143,7 @@ p.union([p.string(), p.null()]); // a nullable string
 p.union([p.string(), p.null()]).weights([1, 99]); // nearly always null
 ```
 
-The member is picked by the value's kind: string, number, boolean, null, date, array, bytes or object. Each kind can belong to one member, so two array or two object members throw. The tag costs log2(members) bits, or whatever `.weights()` says.
+The member is picked by the value's kind: string, number, boolean, null, date, array, bytes or object. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. The tag costs log2(members) bits, or whatever `.weights()` says.
 
 ```typescript
 p.tagged('type', {
@@ -206,7 +206,7 @@ Self-describing escape hatch: a type tag per value, everything round-trips bit-e
 ```typescript
 node.encode(value); // Uint8Array
 node.decode(bytes);
-node.encode(value, [32, 126]); // bytes restricted to a range
+node.encode(value, [32, 126]); // bytes restricted to a range: both ends in 0–255, min < max
 node.decode(bytes, [32, 126]);
 node.encodeString(value, CharSets.urlSafe); // text in a charset of your choice
 node.decodeString(text, CharSets.urlSafe);
