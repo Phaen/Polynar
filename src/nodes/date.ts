@@ -24,6 +24,12 @@ const FIXED_MS = {
 } as const;
 
 const WEEK_MS = 604_800_000;
+
+/** A timestamp in an error message: ISO when it is a valid Date, else the number. */
+const iso = (ts: number): string => {
+  const date = new Date(ts);
+  return isNaN(date.getTime()) ? String(ts) : date.toISOString();
+};
 /** Monday 1969-12-29 00:00 UTC, the start of the ISO week holding the epoch. */
 const WEEK_ORIGIN = -259_200_000;
 
@@ -130,11 +136,13 @@ export class PDate extends PNode<Date> {
     // Swapping the bounds silently would accept dates before the declared
     // minimum and reject dates the caller declared valid.
     if (this._min !== undefined && this._max !== undefined && this._min > this._max) {
-      throw new RangeError('p.date minimum exceeds maximum');
+      throw new RangeError(
+        `p.date minimum ${iso(this._min)} is after the maximum ${iso(this._max)}`
+      );
     }
 
     if (!Number.isInteger(step) || step < 1) {
-      throw new RangeError('p.date precision step must be a positive integer');
+      throw new RangeError(`p.date precision step must be a positive integer, got ${step}`);
     }
     this._unit = unit;
     this._step = step;
@@ -200,17 +208,24 @@ export class PDate extends PNode<Date> {
     // Bounds compare buckets, so every decoded date, min's bucket start
     // included, encodes again.
     if (this._lo !== undefined && bucket < this._lo) {
-      throw new RangeError(`Date '${value.toISOString()}' is before the minimum bound`);
+      throw new RangeError(
+        `Date '${value.toISOString()}' is before the minimum ${iso(this._min!)}`
+      );
     }
     if (this._hi !== undefined && bucket > this._hi) {
-      throw new RangeError(`Date '${value.toISOString()}' is after the maximum bound`);
+      throw new RangeError(`Date '${value.toISOString()}' is after the maximum ${iso(this._max!)}`);
     }
 
     if (this._cdf === undefined) {
-      writeIndex(enc, bucket, this._lo, this._hi);
+      writeIndex(enc, bucket, this._lo, this._hi, (b) => iso(this._calendar.start(b)));
       return;
     }
-    const [cum, freq] = cdfBucket(this._cdf, bucket - this._lo!, 'p.date');
+    const [cum, freq] = cdfBucket(
+      this._cdf,
+      bucket - this._lo!,
+      'p.date',
+      () => `Date '${value.toISOString()}'`
+    );
     enc.composeWeighted(cum, freq, this._total!);
   }
 

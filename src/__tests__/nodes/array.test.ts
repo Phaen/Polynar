@@ -54,7 +54,9 @@ describe('Schema array', () => {
   it('caps the count with max and packs the capped prefix denser', () => {
     const capped = p.array(p.int().min(0).max(9)).max(4);
     expect(capped.decode(capped.encode([1, 2, 3]))).toEqual([1, 2, 3]);
-    expect(() => capped.encode([1, 2, 3, 4, 5])).toThrow('Array length exceeds maximum');
+    expect(() => capped.encode([1, 2, 3, 4, 5])).toThrow(
+      new RangeError('Array length 5 is above the maximum 4')
+    );
     const uncapped = p.array(p.int().min(0).max(9));
     expect(capped.encode([1, 2, 3]).length).toBeLessThanOrEqual(uncapped.encode([1, 2, 3]).length);
   });
@@ -62,8 +64,10 @@ describe('Schema array', () => {
   it('rounds a fractional max inward and rejects invalid caps', () => {
     const node = p.array(p.int().min(0).max(9)).max(2.9); // -> cap of 2
     expect(node.decode(node.encode([1, 2]))).toEqual([1, 2]);
-    expect(() => node.encode([1, 2, 3])).toThrow('Array length exceeds maximum');
-    expect(() => p.array(p.int()).max(-1)).toThrow(RangeError);
+    expect(() => node.encode([1, 2, 3])).toThrow('Array length 3 is above the maximum 2');
+    expect(() => p.array(p.int()).max(-1)).toThrow(
+      new RangeError('p.array max must be a non-negative count, got -1')
+    );
     expect(() => p.array(p.int()).max(NaN)).toThrow(RangeError);
   });
 
@@ -71,10 +75,14 @@ describe('Schema array', () => {
     const node = p.array(p.int().min(0).max(9)).min(2).max(4);
     expect(node.decode(node.encode([1, 2]))).toEqual([1, 2]);
     expect(node.decode(node.encode([1, 2, 3, 4]))).toEqual([1, 2, 3, 4]);
-    expect(() => node.encode([1])).toThrow('Array length is below the minimum');
-    expect(() => node.encode([1, 2, 3, 4, 5])).toThrow('Array length exceeds maximum');
-    expect(() => p.array(p.int()).min(5).max(2)).toThrow(RangeError);
-    expect(() => p.array(p.int()).min(-1)).toThrow(RangeError);
+    expect(() => node.encode([1])).toThrow('Array length 1 is below the minimum 2');
+    expect(() => node.encode([1, 2, 3, 4, 5])).toThrow('Array length 5 is above the maximum 4');
+    expect(() => p.array(p.int()).min(5).max(2)).toThrow(
+      new RangeError('p.array range is empty: min 5 exceeds max 2')
+    );
+    expect(() => p.array(p.int()).min(-1)).toThrow(
+      new RangeError('p.array min must be a non-negative count, got -1')
+    );
   });
 
   it('length fixes the count, which then costs zero wire bits', () => {
@@ -88,7 +96,7 @@ describe('Schema array', () => {
   it('length rejects any other count, in both directions', () => {
     const node = p.array(p.int().min(0).max(9)).length(3);
     expect(node.decode(node.encode([1, 2, 3]))).toEqual([1, 2, 3]);
-    expect(() => node.encode([1, 2])).toThrow('differs from the fixed length');
+    expect(() => node.encode([1, 2])).toThrow('Array length 2 differs from the fixed length 3');
     expect(() => node.encode([1, 2, 3, 4])).toThrow('differs from the fixed length');
   });
 

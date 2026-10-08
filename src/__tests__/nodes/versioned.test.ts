@@ -140,10 +140,10 @@ describe('Schema versioned', () => {
 
   it('an error inside the chosen version keeps its path', () => {
     expect(() => Current.encode({ name: 'Ada', age: 200 })).toThrow(
-      "age: Value '200' exceeds range bounds"
+      "age: Value '200' is above the maximum 120"
     );
     expect(() => p.object({ user: Current }).encode({ user: { name: 'Ada', age: 200 } })).toThrow(
-      "user.age: Value '200' exceeds range bounds"
+      "user.age: Value '200' is above the maximum 120"
     );
   });
 });

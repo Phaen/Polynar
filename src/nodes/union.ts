@@ -1,6 +1,7 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import { kindOf, type Kind } from './guards';
+import { oneOf } from './path';
 import { buildWeights, locateWeighted, type WeightTable } from './weights';
 
 /**
@@ -58,7 +59,7 @@ export class PUnion<T> extends PNode<T> {
     const kind = kindOf(value);
     const pos = this._byKind.get(kind);
     if (pos === undefined) {
-      throw new TypeError(`p.union has no member for kind '${kind}'`);
+      throw new TypeError(`Kind '${kind}' is not ${oneOf(this._kinds)}`);
     }
     if (this._weights === undefined) {
       enc.compose(pos, this._members.length);

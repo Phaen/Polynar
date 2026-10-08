@@ -23,10 +23,10 @@ export class PInt extends PNode<number> {
     this._min = min == null ? undefined : Math.ceil(min);
     this._max = max == null ? undefined : Math.floor(max);
     if (this._min !== undefined && !Number.isFinite(this._min)) {
-      throw new TypeError('p.int min must be a finite number');
+      throw new TypeError(`p.int min must be a finite number, got ${this._min}`);
     }
     if (this._max !== undefined && !Number.isFinite(this._max)) {
-      throw new TypeError('p.int max must be a finite number');
+      throw new TypeError(`p.int max must be a finite number, got ${this._max}`);
     }
     // After inward rounding a fractional band can invert (.min(2.1).max(2.9))
     // when it contains no integer. Reject it rather than silently swapping the
@@ -44,7 +44,9 @@ export class PInt extends PNode<number> {
       this._max !== undefined &&
       this._max - this._min > Number.MAX_SAFE_INTEGER
     ) {
-      throw new RangeError('p.int range is wider than exact integer arithmetic supports');
+      throw new RangeError(
+        `p.int range [${this._min}, ${this._max}] is wider than exact integer arithmetic supports`
+      );
     }
 
     if (prior !== undefined) {
@@ -92,15 +94,18 @@ export class PInt extends PNode<number> {
     // `+ 0` normalizes -0 to 0 so the sign bit never records a negative zero.
     const v = value + 0;
 
-    if ((this._min !== undefined && v < this._min) || (this._max !== undefined && v > this._max)) {
-      throw new RangeError(`Value '${v}' exceeds range bounds`);
+    if (this._min !== undefined && v < this._min) {
+      throw new RangeError(`Value '${v}' is below the minimum ${this._min}`);
+    }
+    if (this._max !== undefined && v > this._max) {
+      throw new RangeError(`Value '${v}' is above the maximum ${this._max}`);
     }
 
     if (this._cdf === undefined) {
       writeIndex(enc, v, this._min, this._max);
       return;
     }
-    const [cum, freq] = cdfBucket(this._cdf, v, 'p.int');
+    const [cum, freq] = cdfBucket(this._cdf, v, 'p.int', () => `Value '${v}'`);
     enc.composeWeighted(cum, freq, this._total!);
   }
 

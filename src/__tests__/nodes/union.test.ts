@@ -32,6 +32,13 @@ describe('Schema union', () => {
     expect(() => p.union([p.enum(['a', 1]), p.int()])).toThrow("overlap on kind 'number'");
   });
 
+  it('union rejects a value whose kind has no member', () => {
+    const Node = p.union([p.string(), p.int()]);
+    expect(() => Node.encode(true as never)).toThrow(
+      new TypeError("Kind 'boolean' is not one of 'string', 'number'")
+    );
+  });
+
   it('union rejects members that claim the same kind', () => {
     expect(() => p.union([p.array(p.int()), p.array(p.string())])).toThrow(
       "overlap on kind 'array'"

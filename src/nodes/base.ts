@@ -102,7 +102,9 @@ export class POptional<TOut> extends PNode<TOut | undefined> {
         present < 1 ||
         !Number.isSafeInteger(absent + present)
       ) {
-        throw new TypeError('p.optional weights must be positive integers [absent, present]');
+        throw new TypeError(
+          `p.optional weights must be positive integers [absent, present], got [${absent}, ${present}]`
+        );
       }
       this.presence = [absent, present];
     }

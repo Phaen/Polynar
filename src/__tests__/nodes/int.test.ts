@@ -28,8 +28,8 @@ describe('Schema int', () => {
     const node = p.int().min(2.7).max(9.2); // -> [3, 9]
     expect(trip(node, 3)).toBe(3);
     expect(trip(node, 9)).toBe(9);
-    expect(() => node.encode(2)).toThrow(); // 2 < 2.7
-    expect(() => node.encode(10)).toThrow(); // 10 > 9.2
+    expect(() => node.encode(2)).toThrow(new RangeError("Value '2' is below the minimum 3"));
+    expect(() => node.encode(10)).toThrow(new RangeError("Value '10' is above the maximum 9"));
   });
 
   it('int round-trips unbounded values above 2^53 bit-exact', () => {
@@ -60,8 +60,10 @@ describe('Schema int', () => {
   });
 
   it('int rejects non-finite bounds', () => {
-    expect(() => p.int().min(-Infinity)).toThrow('p.int min must be a finite number');
-    expect(() => p.int().max(NaN)).toThrow('p.int max must be a finite number');
+    expect(() => p.int().min(-Infinity)).toThrow(
+      'p.int min must be a finite number, got -Infinity'
+    );
+    expect(() => p.int().max(NaN)).toThrow('p.int max must be a finite number, got NaN');
   });
 
   it('a lone bound refuses offsets that lose precision past 2^53', () => {
@@ -71,7 +73,7 @@ describe('Schema int', () => {
         .int()
         .min(1)
         .encode(2 ** 53 + 6)
-    ).toThrow('too far from its bound');
+    ).toThrow(`Value '${2 ** 53 + 6}' is too far from its bound 1`);
     // The decode side catches the same drift on a term from foreign bytes.
     const bytes = p
       .int()

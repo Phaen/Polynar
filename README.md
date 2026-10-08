@@ -100,7 +100,7 @@ An integer. Infers `number`. Non-integers, NaN and Infinity throw; `-0` is store
 
 ### `p.decimal(step: number)`
 
-A number on a fixed decimal step, like `p.decimal(0.01)` for cents. Infers `number`. The step and both bounds must be exact decimals of at most 15 places (`1 / 3` throws). Values must already sit on the step, so round first: `0.1 + 0.2` throws on step 0.1. Values are stored exactly, except that `-0` becomes `0`. NaN and Infinity throw, and so does a value more than 2^53 steps from zero.
+A number on a fixed decimal step, like `p.decimal(0.01)` for cents. Infers `number`. The step and both bounds must be exact decimals of at most 15 places (`1 / 3` throws). Values must already sit on the step, so round first: `0.1 + 0.2` throws on step 0.1. Values are stored exactly, except that `-0` becomes `0`. NaN and Infinity throw, and so do values too large to store exactly.
 
 | Method                            | Description                                                                                                                                                                                                                                                |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -285,7 +285,7 @@ The charset defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.
 
 Input that doesn't decode — truncated, padded, or with characters outside the charset — throws a `CorruptInputError`. Where `instanceof` can't be trusted, such as with two copies of the package in one process, check `err.name === 'CorruptInputError'`. Its subclass `UnknownVersionError` is thrown when `p.versioned` gets data from a version it doesn't list; its `name` is still `'CorruptInputError'`.
 
-A value that can't be encoded throws with its path in front, like `filters[2].op: Value 'gt' not found in list`. A value outside what the schema allows — a bound, step, length, list, tag or charset — throws a `RangeError`; one that isn't a valid integer, finite number or date at all throws a `TypeError`. An invalid schema throws a `TypeError` or `RangeError` as soon as it's defined.
+A value that can't be encoded throws with its path in front and the limit it broke, like `filters[2].op: Value 'gt' is not one of 'eq', 'lt'` or `tags: Array length 5 is above the maximum 3`. A value outside what the schema allows — a bound, step, length, list, tag or charset — throws a `RangeError`. A value the schema has no place for at all throws a `TypeError`: a non-integer, a non-finite number, an invalid date, a missing required field, a kind no union member takes, or a type `p.any` can't encode. An invalid schema throws a `TypeError` or `RangeError` as soon as it's defined.
 
 ## Types
 

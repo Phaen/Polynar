@@ -30,12 +30,17 @@ export class Encoder {
   compose(integer: number, radix: number): void {
     // An out-of-range value would not throw on its own; it would silently
     // corrupt every value packed after it. Fail here, at the source.
-    if (!Number.isInteger(radix) || radix < 1 || radix > Number.MAX_SAFE_INTEGER) {
-      throw new TypeError('Radix must be a positive safe integer');
+    if (!Number.isInteger(radix)) {
+      throw new TypeError(`Radix must be an integer, got ${radix}`);
     }
-
-    if (!Number.isInteger(integer) || integer < 0 || integer >= radix) {
-      throw new RangeError('Integer must be a non-negative integer below its radix');
+    if (radix < 1 || radix > Number.MAX_SAFE_INTEGER) {
+      throw new RangeError(`Radix ${radix} is not a positive safe integer`);
+    }
+    if (!Number.isInteger(integer)) {
+      throw new TypeError(`Digit must be an integer, got ${integer}`);
+    }
+    if (integer < 0 || integer >= radix) {
+      throw new RangeError(`Digit ${integer} is outside [0, ${radix})`);
     }
 
     this.cums.push(integer);
@@ -50,14 +55,17 @@ export class Encoder {
    * sides must derive identical integer tables.
    */
   composeWeighted(cum: number, freq: number, total: number): void {
-    if (!Number.isInteger(total) || total < 1 || total > Number.MAX_SAFE_INTEGER) {
-      throw new TypeError('Total must be a positive safe integer');
+    if (!Number.isInteger(total) || !Number.isInteger(freq) || !Number.isInteger(cum)) {
+      throw new TypeError(`Bucket must be integers, got cum ${cum}, freq ${freq}, total ${total}`);
     }
-    if (!Number.isInteger(freq) || freq < 1) {
-      throw new TypeError('Frequency must be a positive integer');
+    if (total < 1 || total > Number.MAX_SAFE_INTEGER) {
+      throw new RangeError(`Total ${total} is not a positive safe integer`);
     }
-    if (!Number.isInteger(cum) || cum < 0 || cum + freq > total) {
-      throw new RangeError('Bucket [cum, cum + freq) must lie within [0, total)');
+    if (freq < 1) {
+      throw new RangeError(`Frequency ${freq} is not positive`);
+    }
+    if (cum < 0 || cum + freq > total) {
+      throw new RangeError(`Bucket [${cum}, ${cum + freq}) is outside [0, ${total})`);
     }
 
     this.cums.push(cum);
@@ -67,9 +75,12 @@ export class Encoder {
 
   /** Push one unbounded non-negative integer. */
   composeTerm(integer: number): void {
-    if (!Number.isInteger(integer) || integer < 0) {
-      // The digit loops below only terminate for non-negative integers.
-      throw new TypeError('Term must be a non-negative integer');
+    // The digit loops below only terminate for non-negative integers.
+    if (!Number.isInteger(integer)) {
+      throw new TypeError(`Term must be an integer, got ${integer}`);
+    }
+    if (integer < 0) {
+      throw new RangeError(`Term ${integer} is negative`);
     }
 
     if (integer < TERM_ESCAPE_MIN) {
@@ -218,7 +229,9 @@ export class Encoder {
 
     // Validate range
     if (min < 0 || min > 255 || max < 0 || max > 255 || min >= max) {
-      throw new RangeError('Binary range must be between 0-255 and min must be < max');
+      throw new RangeError(
+        `Binary range [${min}, ${max}] must lie within 0–255 with min below max`
+      );
     }
 
     const digits = this.toDigits(max - min + 1);

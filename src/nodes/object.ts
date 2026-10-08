@@ -39,7 +39,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     // An optional field writes its own presence bit, so an absent key and an
     // `undefined` value encode the same way.
     if (v === undefined && !(field instanceof POptional)) {
-      throw new ReferenceError('required field is missing');
+      throw new TypeError('Required field is missing');
     }
     field._write(enc, v);
   }

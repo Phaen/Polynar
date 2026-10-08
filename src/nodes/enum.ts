@@ -1,6 +1,7 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import { kindOf, type Kind } from './guards';
+import { oneOf } from './path';
 import { buildWeights, locateWeighted, type WeightTable } from './weights';
 
 /**
@@ -52,7 +53,7 @@ export class PEnum<T> extends PNode<T> {
   _write(enc: Encoder, value: T): void {
     const pos = this._list.indexOf(value);
     if (pos === -1) {
-      throw new RangeError(`Value '${String(value)}' not found in list`);
+      throw new RangeError(`Value '${String(value)}' is not ${oneOf(this._list)}`);
     }
     if (this._weights === undefined) {
       enc.compose(pos, this._list.length);

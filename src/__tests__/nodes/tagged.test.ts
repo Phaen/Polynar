@@ -75,12 +75,14 @@ describe('Schema tagged union', () => {
       b: p.object({ y: p.int() }),
     };
     const Dynamic = p.tagged('type', members);
-    expect(() => Dynamic.encode({ type: 'c', x: 1 })).toThrow("type: Value 'c' not found in tags");
+    expect(() => Dynamic.encode({ type: 'c', x: 1 })).toThrow(
+      new RangeError("type: Value 'c' is not one of 'a', 'b'")
+    );
   });
 
   it('a field error inside a member names the field, with no extra segment', () => {
     expect(() => Two.encode({ type: 'delete', pos: 1, len: 0 })).toThrow(
-      "len: Value '0' exceeds range bounds"
+      "len: Value '0' is below the minimum 1"
     );
     const ops: Two[] = [
       { type: 'delete', pos: 1, len: 1 },
@@ -88,7 +90,7 @@ describe('Schema tagged union', () => {
       { type: 'delete', pos: 1, len: 1 },
       { type: 'delete', pos: 1, len: 0 },
     ];
-    expect(() => p.array(Two).encode(ops)).toThrow("[3].len: Value '0' exceeds range bounds");
+    expect(() => p.array(Two).encode(ops)).toThrow("[3].len: Value '0' is below the minimum 1");
   });
 
   it('rejects an empty member map and a member that declares the tag key', () => {

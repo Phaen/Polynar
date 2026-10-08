@@ -33,3 +33,15 @@ export function atPath(error: unknown, segment: string | number): unknown {
   }
   return error;
 }
+
+/**
+ * The allowed values in an error message: each one quoted while they are few
+ * primitives, else their count, since an object prints as `[object Object]`.
+ */
+export const oneOf = (values: readonly unknown[]): string =>
+  values.length <= 8 && values.every(isPrimitive)
+    ? `one of ${values.map((value) => `'${String(value)}'`).join(', ')}`
+    : `one of the ${values.length} listed values`;
+
+const isPrimitive = (value: unknown): boolean =>
+  value === null || (typeof value !== 'object' && typeof value !== 'function');

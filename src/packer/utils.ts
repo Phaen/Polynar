@@ -38,17 +38,20 @@ export function blockCapacity(size: number): { digits: number; cap: bigint } {
  * Validate character set
  */
 export function validateCharset(charset?: Charset): Charset {
-  const errChar = 'Invalid character set';
-  const errBin = 'Invalid binary range';
-
   if (charset == null) {
     return DEFAULT_CHARSET;
   } else if (typeof charset === 'string') {
     // A 1-character charset is base 1, whose digit loop never terminates. The
     // `s` flag makes `.` match line terminators, so a duplicate on either side
     // of a newline is still caught.
-    if (charset.length < 2 || charset.match(/(.).*\1/s)) {
-      throw new TypeError(errChar);
+    if (charset.length < 2) {
+      throw new TypeError(
+        `Invalid character set: needs at least 2 characters, got ${charset.length}`
+      );
+    }
+    const repeat = /(.).*\1/s.exec(charset);
+    if (repeat) {
+      throw new TypeError(`Invalid character set: '${repeat[1]}' appears more than once`);
     }
     return charset;
   } else {
@@ -62,13 +65,15 @@ export function validateCharset(charset?: Charset): Charset {
     // outside the UTF-16 code-unit space (or a fractional endpoint) would
     // round-trip through different characters and corrupt silently.
     if (!Number.isInteger(min) || !Number.isInteger(max) || min < 0 || max > 65535) {
-      throw new RangeError(errBin);
+      throw new RangeError(
+        `Invalid character range: [${min}, ${max}] must be integer codes within 0–65535`
+      );
     }
 
     // Two symbols (base 2) is the floor, same as string charsets and binary
     // mode; a single symbol would be base 1, which carries no digit variation.
     if (max - min < 1) {
-      throw new RangeError(errBin);
+      throw new RangeError(`Invalid character range: [${min}, ${max}] holds fewer than 2 codes`);
     }
 
     return [min, max];

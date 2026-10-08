@@ -37,7 +37,9 @@ describe('Schema decimal', () => {
   });
 
   it('decimal enforces bounds and rounds off-grid bounds inward', () => {
-    expect(() => p.decimal(0.01).min(0).max(100).encode(100.01)).toThrow(RangeError);
+    expect(() => p.decimal(0.01).min(0).max(100).encode(100.01)).toThrow(
+      new RangeError("Value '100.01' is above the maximum 100")
+    );
     // Bounds of [0.3, 2.2] on a 0.5 step admit only 0.5..2.0; the bounds
     // themselves are off-grid and must not become encodable.
     const node = p.decimal(0.5).min(0.3).max(2.2);
@@ -45,10 +47,15 @@ describe('Schema decimal', () => {
     expect(trip(node, 2)).toBe(2);
     expect(() => node.encode(0.3)).toThrow('not a multiple of step');
     expect(() => node.encode(2.2)).toThrow('not a multiple of step');
+    // The limit given is the bound as rounded onto the grid.
+    expect(() => node.encode(0)).toThrow("Value '0' is below the minimum 0.5");
+    expect(() => node.encode(2.5)).toThrow("Value '2.5' is above the maximum 2");
   });
 
   it('decimal rejects invalid steps and empty ranges at construction', () => {
-    expect(() => p.decimal(0)).toThrow(TypeError);
+    expect(() => p.decimal(0)).toThrow(
+      new TypeError('p.decimal step must be a positive number, got 0')
+    );
     expect(() => p.decimal(-0.1)).toThrow(TypeError);
     // 1/3 has no finite decimal form, so no value could ever sit on its grid.
     expect(() => p.decimal(1 / 3)).toThrow(TypeError);
@@ -67,9 +74,20 @@ describe('Schema decimal', () => {
   });
 
   it('refuses bounds, ranges and values outside exact arithmetic', () => {
-    expect(() => p.decimal(0.01).max(1e20)).toThrow('max is outside the exact range');
+    expect(() => p.decimal(0.01).max(1e20)).toThrow(
+      'p.decimal max 100000000000000000000 is outside the exact range ±90071992547409.9'
+    );
+    expect(() => p.decimal(0.01).min(-1e20)).toThrow('p.decimal min -100000000000000000000');
     expect(() => p.decimal(1).min(-9e15).max(9e15)).toThrow('more steps than exact arithmetic');
-    expect(() => p.decimal(1).encode(1e20)).toThrow('outside the exact range of this step');
+    expect(() => p.decimal(1).encode(1e20)).toThrow(
+      "Value '100000000000000000000' is outside the exact range ±9007199254740991"
+    );
+    expect(() =>
+      p
+        .decimal(1)
+        .min(-9e15)
+        .encode(9e15 + 1)
+    ).toThrow("Value '9000000000000001' is too far from its bound -9000000000000000");
     expect(() => p.decimal(1).encode(NaN)).toThrow('p.decimal expected a finite number');
   });
 });

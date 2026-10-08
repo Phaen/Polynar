@@ -108,9 +108,7 @@ export class PAny extends PNode<unknown> {
         } else {
           if (!isPlainObject(value)) {
             const name = value.constructor?.name ?? 'this type';
-            throw new TypeError(
-              `p.any cannot encode ${name} values; convert to a plain object first`
-            );
+            throw new TypeError(`p.any cannot encode ${name} values, only plain objects`);
           }
           if (path.has(value)) {
             throw new TypeError('p.any cannot encode a circular structure');
@@ -134,7 +132,7 @@ export class PAny extends PNode<unknown> {
         break;
 
       default:
-        throw new TypeError(`Type '${typeof value}' not supported`);
+        throw new TypeError(`p.any cannot encode ${typeof value} values`);
     }
   }
 
