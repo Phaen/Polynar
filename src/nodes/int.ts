@@ -2,7 +2,15 @@ import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import type { Kind } from './guards';
 import { writeIndex, readIndex } from './lattice';
-import { resolvePrior, priorKind, cdfBucket, locateCdf, type Cdf, type Prior } from './weights';
+import {
+  resolvePrior,
+  priorKind,
+  cdfBucket,
+  locateCdf,
+  atIndexCdf,
+  type Cdf,
+  type Prior,
+} from './weights';
 
 /** Integer (strict: non-integers throw). `p.int`. */
 export class PInt extends PNode<number> {
@@ -106,13 +114,18 @@ export class PInt extends PNode<number> {
       return;
     }
     const [cum, freq] = cdfBucket(this._cdf, v, 'p.int', () => `Value '${v}'`);
-    enc.composeWeighted(cum, freq, this._total!);
+    enc.composeWeighted(cum, freq, this._total!, v - this._min!, this._max! - this._min! + 1);
   }
 
   _read(dec: Decoder): number {
     if (this._cdf === undefined) {
       return readIndex(dec, this._min, this._max);
     }
-    return dec.parseWeighted(this._total!, locateCdf(this._cdf, this._min!, this._max!));
+    return dec.parseWeighted(
+      this._total!,
+      locateCdf(this._cdf, this._min!, this._max!),
+      this._max! - this._min! + 1,
+      atIndexCdf(this._cdf, this._min!)
+    );
   }
 }

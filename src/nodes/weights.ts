@@ -32,6 +32,11 @@ export function buildWeights(weights: readonly number[], states: number, who: st
   return { cums, freqs: [...weights], total };
 }
 
+/** Direct lookup for `parseWeighted`: the bucket of the i-th index. */
+export const atIndexWeighted =
+  (table: WeightTable) =>
+  (i: number): readonly [number, number, number] => [i, table.cums[i], table.freqs[i]];
+
 /** Bucket lookup for `parseWeighted`: the index owning the residual. */
 export const locateWeighted =
   (table: WeightTable) =>
@@ -122,6 +127,15 @@ export function cdfBucket(
   }
   return [cum, freq];
 }
+
+/** Direct lookup under a CDF: the bucket of the i-th value from `lo`. */
+export const atIndexCdf =
+  (cdf: Cdf, lo: number) =>
+  (i: number): readonly [number, number, number] => [
+    lo + i,
+    cdf(lo + i),
+    cdf(lo + i + 1) - cdf(lo + i),
+  ];
 
 /**
  * Bucket lookup under a CDF: the largest v in `[lo, hi]` with
