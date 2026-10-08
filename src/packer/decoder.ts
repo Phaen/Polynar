@@ -175,9 +175,8 @@ export class Decoder {
    *
    * No mid-parse saturation check: a weighted symbol can grow the state
    * bound by less than a doubling, so leftover value inside the last digit
-   * is not evidence of tampering the way it was in the uniform-only wire —
-   * block advancement and `finalize()` reject every non-canonical leftover
-   * instead.
+   * is not by itself corrupt. Block advancement and `finalize()` reject every
+   * non-canonical leftover instead.
    */
   parse(radix: number): number {
     if (this.value == null) {

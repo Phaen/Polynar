@@ -3,8 +3,8 @@
  */
 
 /**
- * Thrown when decode input is not the canonical encoding of a value: tampered
- * digits, truncation, trailing padding, or characters outside the charset.
+ * Thrown when decode input is not the canonical encoding of a value, such as
+ * truncated input, trailing padding, or characters outside the charset.
  * Catching this class separates "bad input" from "bug" at an untrusted-input
  * boundary. The literal `name` doubles as a stable discriminant
  * (`err.name === 'CorruptInputError'`) for contexts where `instanceof` can
