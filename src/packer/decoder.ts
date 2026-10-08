@@ -161,11 +161,11 @@ export class Decoder {
     let candidate = this.boundV + this.boundU * (totalBig - 1n);
     this.indexed = false;
 
-    // Mirror the encoder's greedy rule: a value whose total would push the
+    // The encoder's greedy rule applies: a value whose total would push the
     // block's state bound past the cap lives in the next block.
     if (this.closed || candidate > this.block!.cap * this.boundDen) {
       // The encoder leaves no remainder at a block boundary, so leftover value
-      // here means a digit was tampered past its saturation point.
+      // here means a digit was corrupted past its saturation point.
       if (this.value !== 0n) {
         throw new CorruptInputError('Oversaturated input');
       }
@@ -377,8 +377,8 @@ export class Decoder {
 
   /**
    * Assert the input is exactly the canonical encoding of everything read so
-   * far: no leftover packed value (a digit tampered within the input) and no
-   * unread trailing digits (padding appended to it). Call after the final read
+   * far: no leftover packed value (a digit corrupted within the input) and no
+   * unread trailing digits (padding appended to it). It runs after the final read
    * to reject corrupted input that the reads themselves could not detect.
    */
   finalize(): void {

@@ -321,12 +321,12 @@ describe('Block packing', () => {
     expect(encoder.toUint8Array().length).toBe(500);
   });
 
-  it('throws on a digit tampered past a block boundary', () => {
+  it('throws on a digit corrupted past a block boundary', () => {
     const values = Array.from({ length: 3000 }, (_, i) => (i * 7919) % 1001);
     const encoder = new Encoder();
     composeAll(encoder, values);
     const str = encoder.toString();
-    // Bump the first block's highest digit to the charset maximum: the block
+    // The first block's highest digit is bumped to the charset maximum: the block
     // value then exceeds its radix product, and the boundary check rejects the
     // remainder the encoder guarantees is never there.
     const top = blockCapacity(64).digits - 1;
@@ -339,7 +339,7 @@ describe('Block packing', () => {
     const encoder = new Encoder();
     composeAll(encoder, values);
     const decoder = new Decoder(encoder.toString().slice(0, -5));
-    // A cut-off tail is indistinguishable from tampered high digits, so either
+    // A cut-off tail is indistinguishable from corrupted high digits, so either
     // diagnosis may surface — reading must fail one way or the other.
     expect(() => parseAll(decoder, 3000)).toThrow();
   });
@@ -364,7 +364,7 @@ describe('Block packing', () => {
 });
 
 describe('Corruption detection', () => {
-  it('rejects a tampered digit that oversaturates the input', () => {
+  it('rejects a corrupted digit that oversaturates the input', () => {
     // Two radix-50 values nearly fill two Base64 chars (2500 of 4096 states).
     // A weighted symbol may legitimately leave value inside the last doubling
     // of state space, so the leftover is only provably corrupt once the
@@ -392,7 +392,7 @@ describe('Corruption detection', () => {
     expect(() => new Decoder('').finalize()).not.toThrow();
   });
 
-  it('finalize throws on a tampered digit the reads alone cannot see', () => {
+  it('finalize throws on a corrupted digit the reads alone cannot see', () => {
     // A boolean spans 2 of the 64 states its single Base64 char holds; bumping
     // the char leaves a remainder invisible to the read (which still returns a
     // valid boolean) but caught by the leftover-value check.
@@ -461,7 +461,7 @@ describe('Corruption detection', () => {
 
 describe('Public entrypoint', () => {
   it('exposes a non-empty, fully-defined surface', () => {
-    // Access every export so each lazy re-export getter runs; a barrel that
+    // Every export is accessed so each lazy re-export getter runs; a barrel that
     // points at an undefined/removed symbol fails here.
     const keys = Object.keys(root);
     expect(keys.length).toBeGreaterThan(0);

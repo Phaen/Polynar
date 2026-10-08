@@ -55,8 +55,8 @@ export const locateWeighted =
  * An integer CDF over an indexed range: `cdf(v)` is the cumulative weight of
  * all values below `v`, so a value's own weight is `cdf(v + 1) - cdf(v)`.
  * The function is part of the wire format, and both sides must compute
- * bit-identical values — stick to BigInt or the correctly-rounded float ops
- * (`+ - * /`, `Math.sqrt`); `Math.exp` and friends vary across engines.
+ * bit-identical values — only BigInt and the correctly-rounded float ops
+ * (`+ - * /`, `Math.sqrt`) qualify; `Math.exp` and friends vary across engines.
  */
 export type Cdf = (v: number) => number;
 

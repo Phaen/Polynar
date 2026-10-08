@@ -26,7 +26,7 @@ export class PInt extends PNode<number> {
 
   constructor(min?: number, max?: number, prior?: Prior) {
     super();
-    // Round each bound INWARD (ceil the min, floor the max) so a fractional
+    // Each bound rounds inward (ceil the min, floor the max) so a fractional
     // bound never widens the declared range: .min(10.9) admits 11 and up.
     this._min = min == null ? undefined : Math.ceil(min);
     this._max = max == null ? undefined : Math.floor(max);
@@ -37,8 +37,8 @@ export class PInt extends PNode<number> {
       throw new TypeError(`p.int max must be a finite number, got ${this._max}`);
     }
     // After inward rounding a fractional band can invert (.min(2.1).max(2.9))
-    // when it contains no integer. Reject it rather than silently swapping the
-    // bounds into a WIDER range that would admit values below the declared
+    // when it contains no integer. It is rejected because swapping the
+    // bounds would give a WIDER range that admits values below the declared
     // minimum.
     if (this._min !== undefined && this._max !== undefined && this._min > this._max) {
       throw new RangeError(

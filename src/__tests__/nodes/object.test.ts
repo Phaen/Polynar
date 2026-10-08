@@ -81,7 +81,7 @@ describe('Schema object', () => {
   });
 
   it('keeps the wire format of optional fields', () => {
-    // Pins the object layout: each optional field's presence bit, then its
+    // The object layout is pinned: each optional field's presence bit, then its
     // value.
     const Schema = p.object({
       a: p.int().min(0).max(9),

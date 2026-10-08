@@ -89,11 +89,11 @@ describe('Schema hardening', () => {
 });
 
 describe('Schema corruption rejection', () => {
-  it('decode rejects a tampered byte instead of returning plausible values', () => {
+  it('decode rejects a corrupted byte instead of returning plausible values', () => {
     const node = p.int().min(0).max(100);
     const bytes = node.encode(42);
     expect(bytes).toHaveLength(1);
-    // The tampered byte still yields an in-range value on read (192 % 101 =
+    // The corrupted byte still yields an in-range value on read (192 % 101 =
     // 91); only the leftover-value check can tell the byte was altered.
     expect(() => node.decode(Uint8Array.of(bytes[0] + 150))).toThrow(
       'Unread or corrupted data at end of input'
@@ -111,9 +111,9 @@ describe('Schema corruption rejection', () => {
     // boundary; its name doubles as the discriminant where instanceof cannot
     // reach (two package copies in one process).
     const node = p.int().min(0).max(100);
-    const tampered = Uint8Array.of(node.encode(42)[0] + 150);
+    const corrupted = Uint8Array.of(node.encode(42)[0] + 150);
     const padded = Uint8Array.of(...node.encode(42), 0);
-    expect(() => node.decode(tampered)).toThrow(CorruptInputError);
+    expect(() => node.decode(corrupted)).toThrow(CorruptInputError);
     expect(() => node.decode(padded)).toThrow(CorruptInputError);
     expect(() => node.decode(new Uint8Array(0))).toThrow(CorruptInputError);
     expect(() => node.decodeString('!', CharSets.digit)).toThrow(CorruptInputError);
