@@ -231,7 +231,7 @@ const scalarCase = (): Case => {
         { node: p.bool(), gen: () => rand() < 0.5 },
         { node: p.null(), gen: () => null },
         { node: p.array(p.int().min(0).max(9)).max(3), gen: () => [randInt(0, 9)] },
-        { node: p.bytes().max(4), gen: () => randBytes(randInt(0, 4)) },
+        { node: p.binary().max(4), gen: () => randBytes(randInt(0, 4)) },
       ]
         .sort(() => rand() - 0.5)
         .slice(0, randInt(2, 3));
@@ -243,14 +243,28 @@ const scalarCase = (): Case => {
     }
     case 9: {
       const max = randInt(0, 40);
+      // Raw bits, so any element pattern must survive: random bytes become
+      // random Int16, Float64 (NaN payloads included) and BigUint64 values.
+      if (rand() < 0.5) {
+        const [type, size] = pick([
+          [Int16Array, 2],
+          [Float64Array, 8],
+          [BigUint64Array, 8],
+        ] as const);
+        const typed = p.binary(type as typeof Int16Array).max(max);
+        return {
+          node: typed as PNode<unknown>,
+          gen: () => new type(randBytes(randInt(0, max) * size).buffer as ArrayBuffer),
+        };
+      }
       switch (randInt(0, 2)) {
         case 0:
-          return { node: p.bytes(), gen: () => randBytes(randInt(0, max)) };
+          return { node: p.binary(), gen: () => randBytes(randInt(0, max)) };
         case 1:
-          return { node: p.bytes().max(max), gen: () => randBytes(randInt(0, max)) };
+          return { node: p.binary().max(max), gen: () => randBytes(randInt(0, max)) };
         default:
           // A fixed count spends nothing on the prefix.
-          return { node: p.bytes().length(max), gen: () => randBytes(max) };
+          return { node: p.binary().length(max), gen: () => randBytes(max) };
       }
     }
     default: {

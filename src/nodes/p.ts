@@ -15,12 +15,14 @@ import {
   POptional,
   PObject,
   PString,
-  PBytes,
+  PBinary,
   PLazy,
   PUnion,
   PTagged,
 } from './';
 import type { Infer } from './infer';
+import type { TypedArray } from './guards';
+import type { TypedArrayClass } from './binary';
 
 /**
  * One rule across every node: the factory takes what the type IS (a step, an
@@ -74,9 +76,13 @@ export const p = {
     return new PTagged<K, M>(key, members);
   },
   /** Null; zero bits. Pairs with `p.union` for nullable fields. */
-  /** Raw bytes as a `Uint8Array`; chain `.max(n)`/`.length(n)` like a string. */
-  bytes(): PBytes {
-    return new PBytes();
+  /**
+   * A typed array as raw bits: a `Uint8Array` by default, or any class, e.g.
+   * `p.binary(Int16Array)`; chain `.max(n)`/`.length(n)` to bound the
+   * element count.
+   */
+  binary<A extends TypedArray = Uint8Array>(type?: TypedArrayClass<A>): PBinary<A> {
+    return new PBinary((type ?? Uint8Array) as TypedArrayClass<A>);
   },
   null(): PNull {
     return new PNull();

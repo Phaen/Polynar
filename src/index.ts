@@ -16,7 +16,7 @@ export {
   PFloat,
   PDecimal,
   PString,
-  PBytes,
+  PBinary,
   PLazy,
   PBool,
   PEnum,
@@ -38,6 +38,8 @@ export type {
   Kind,
   ProseModel,
   ProseModelOptions,
+  TypedArray,
+  TypedArrayClass,
 } from './nodes';
 
 export { Encoder, Decoder, CorruptInputError, CharSets } from './packer';
