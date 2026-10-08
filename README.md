@@ -3,7 +3,7 @@
 [![npm version](https://badge.fury.io/js/polynar.svg)](https://www.npmjs.com/package/polynar)
 [![Build Status](https://github.com/Phaen/Polynar/workflows/Tests/badge.svg)](https://github.com/Phaen/Polynar/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue.svg)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 
 Polynar encodes typed data into compact bytes or strings and reads it back. You describe the shape once with a small Zod-style schema, and every value spends only the bits its constraints allow: an integer you promise stays between 0 and 100 costs well under a byte, and a field that is one of three names costs a fraction of one. Custom types are one subclass away.
 
@@ -35,7 +35,7 @@ Seven payload shapes, mean sizes in bytes over 250 seeded random payloads each (
 
 JSON and MessagePack also encode the key name; Protobuf and Polynar read from a schema instead, and are both told the same decimal steps and bounds. The difference is that Protobuf rounds every field up to whole bytes and tags it, while Polynar spends fractional bits with no implicit tags.
 
-The url-safe column is `encodeString(value, CharSets.urlSafe)` — text you can drop straight into a URL, cookie or query parameter; which still beats the other formats' _binary_ output.
+The url-safe column is `encodeString(value, CharSets.urlSafe)` — text you can drop straight into a URL, cookie or query parameter, and it still beats the other formats' _binary_ output.
 
 ## Install
 
@@ -54,7 +54,8 @@ Or straight from a CDN in the browser:
 ## Quick start
 
 ```typescript
-import { p, type Infer } from 'polynar';
+import assert from 'node:assert';
+import { p, CharSets, type Infer, type PNode } from 'polynar';
 
 const User = p.object({
   name: p.string().max(40),
@@ -66,85 +67,155 @@ const User = p.object({
 
 type User = Infer<typeof User>;
 
-const bytes = User.encode({ name: 'Ada', age: 36, active: true, role: 'admin' });
-const user = User.decode(bytes); // typed as User
+const user: User = { name: 'Ada', age: 36, active: true, role: 'admin' };
+
+const text = User.encodeString(user, CharSets.urlSafe); // 'ChxRoLA'
+assert.deepStrictEqual(User.decodeString(text, CharSets.urlSafe), user);
+
+const bytes = User.encode(user); // Uint8Array [176, 253, 162, 98, 3]
+assert.deepStrictEqual(User.decode(bytes), user);
 ```
 
 ## API
 
-Refinements return fresh nodes. One rule throughout: the factory takes what the type is, chained refinements say what values are allowed. A value that breaks a declared bound, step, length or list throws; the TypeScript types are the contract for everything else, and object keys outside the shape are left out.
+Each `p.*` factory creates a node for one type, and the node's methods narrow which values it allows. Methods return a new node; they never change the one they're called on. A schema that contradicts itself, such as `.min(5).max(2)`, throws as soon as it's defined. A value outside a declared bound, step, length or list throws when it's encoded. Everything else, like a string where a number belongs, is left to TypeScript, and object keys outside the shape are dropped.
 
-### Numbers
+### Priors: `.weights()` and `.cdf()`
 
-```typescript
-p.int(); // any integer, signed
-p.int().min(0).max(100); // bounds pack denser; fractional bounds round inward
-p.int()
-  .min(0)
-  .max(100)
-  .cdf((v) => v * v); // tell it which values are common; here high ones pack cheap
-p.int().min(1).max(5).weights([5, 2, 3, 10, 80]); // or as a histogram, lowest value first
-p.decimal(0.01); // exact multiples of a step; off-grid values throw
-p.decimal(0.01).min(0).max(100); // a price in cents: 2 bytes
-p.float(); // any finite double, bit-exact; 0.1, 1/3 or 6.02e23 cost 2-6 bytes, noise costs 8
-```
+Several nodes accept a prior: a hint about which values are common. Common values then cost fewer bits and rare ones more. Only the ratios matter, and the prior is part of the encoding, so both sides need the same one.
 
-`p.int` for whole numbers, `p.decimal` for a known step (values must already sit on it, so round first: `0.1 + 0.2` throws on step 0.1), `p.float` for arbitrary doubles. All bit-exact, except that `p.int` and `p.decimal` store `-0` as `0`; NaN and Infinity throw everywhere. Huge values are fine as long as the arithmetic stays exact: `p.int().min(0).encode(2 ** 60)` round-trips, while `p.int().min(1).encode(2 ** 53 + 6)` throws because `2 ** 53 + 5` isn't a double. A pair of bounds can't span more than 2^53 values, and `p.decimal` stops where `value / step` passes 2^53.
+- `.weights([...])` is a histogram: one positive integer per value, in the order listed for that node. It never rejects anything; rare values still encode, they just cost more.
+- `.cdf(fn)` is the same prior written as a running total: `fn(i)` returns the total weight below index `i`, as a safe integer, so index `i` weighs `fn(i + 1) - fn(i)`. The function must never go down, and encoding an index with zero weight throws. Encoder and decoder must get identical numbers from it, so stick to BigInt or plain `+ - * /`; `Math.exp` and friends round differently per engine. Keep totals small: the last value in a message pays extra when the total is large.
 
-`.cdf()` tells the encoder which values are common. Hand it a running total: `cdf(v)` returns how much weight sits below `v` as a safe integer, so a value's own weight is `cdf(v + 1) - cdf(v)`. Common values cost fewer bits, rare ones more, zero-weight ones throw. You don't need to normalize anything — only the ratios matter — but the function must never go down; if it does, encoding a value in that stretch throws. Works the same on `p.decimal`, `p.date` and `p.array`, called with the grid index (`k` for the k-th multiple of the step), the bucket counted from `min`, and the item count. Encoder and decoder must get identical numbers out of it, so use BigInt or plain `+ - * /` — `Math.exp` and friends round differently per engine. And don't inflate the weights for sport: the last value in a message pays extra for a big total. On all four, `.weights([...])` takes the histogram directly instead, one positive integer per value from the lower bound up.
+### `p.int()`
 
-### Strings
+An integer. Infers `number`. Non-integers, NaN and Infinity throw; `-0` is stored as `0`. Huge values are fine as long as the arithmetic stays exact: `p.int().min(0).encode(2 ** 60)` round-trips, while `p.int().min(1).encode(2 ** 53 + 6)` throws because `2 ** 53 + 5` isn't a double.
 
-```typescript
-p.string(); // any text, length-prefixed; ~7 bits per ASCII character
-p.string().max(40); // a bounded length packs smaller
-p.string().min(8).max(12); // a floor narrows it further
-p.string().length(2); // a fixed length costs nothing
-p.string().prose(); // weighted for natural language; ~4 bits per character
-p.string().prose(buildProseModel(sample)); // or for your own language, counted from sample text
-p.string().charset('0123456789'); // restrict the alphabet for density
-```
+| Method                            | Description                                                                                                                                                                 |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                 | Lower bound; smaller values throw. A fractional bound rounds up, so `.min(10.9)` allows 11 and up.                                                                          |
+| `.max(n: number)`                 | Upper bound; larger values throw. With both bounds the value takes exactly log2(max − min + 1) bits. The range can't span more than 2^53 values, and an empty range throws. |
+| `.cdf(fn: (v: number) => number)` | Prior over the values from `min` to `max`, called with the value itself; needs both bounds.                                                                                 |
+| `.weights(w: number[])`           | Prior: one weight per value from `min` to `max`, lowest first; needs both bounds.                                                                                           |
 
-Any JS string round-trips bit-exact, lone surrogates included — where UTF-8-based formats substitute U+FFFD, Polynar returns what went in. Lengths count UTF-16 code units, as `.length` does.
+### `p.decimal(step: number)`
 
-`.prose()` weights each character by the one before it — common characters drop to 2–5 bits, `u` after `q` to under one; anything outside the model — other scripts, emoji — pays a small escape on top. Every string still encodes. You can't combine it with `.charset()`; both decide the alphabet.
+A number on a fixed decimal step, like `p.decimal(0.01)` for cents. Infers `number`. The step and both bounds must be exact decimals of at most 15 places (`1 / 3` throws). Values must already sit on the step, so round first: `0.1 + 0.2` throws on step 0.1. Values are stored exactly, except that `-0` becomes `0`. NaN and Infinity throw, and so does a value more than 2^53 steps from zero.
 
-The built-in model is English. Any other is a matrix: `{ alphabet, weights }`, where `weights[row][col]` says how likely the character in column `col` is after the one in row `row`. Both run over `alphabet` plus one extra: the last row is for after a character outside the alphabet, the last column is the escape. A string starts in the space's row, or the last one if the alphabet has no space. `buildProseModel(corpus)` counts a model from sample text and returns plain JSON; characters it sees only once are left to the escape, which `{ minCount }` or an explicit `{ alphabet }` changes.
+| Method                            | Description                                                                                                                                                                                                                                                |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                 | Lower bound; smaller values throw. An off-step bound rounds up to the next step.                                                                                                                                                                           |
+| `.max(n: number)`                 | Upper bound; larger values throw. An off-step bound rounds down. With both bounds the value takes a fixed number of bits: `p.decimal(0.01).min(0).max(100)` fits a price in 2 bytes. The range can't span more than 2^53 steps, and an empty range throws. |
+| `.cdf(fn: (k: number) => number)` | Prior over the grid, called with `k` for the k-th multiple of the step (`value / step`); needs both bounds.                                                                                                                                                |
+| `.weights(w: number[])`           | Prior: one weight per grid point from `min` to `max`, lowest first; needs both bounds.                                                                                                                                                                     |
 
-### Binary
+### `p.float()`
 
-```typescript
-p.binary(); // a Uint8Array, eight bits per byte plus its length
-p.binary().length(32); // a hash or key: exactly 32 bytes on the wire
-p.binary(Int16Array).length(1024); // any typed array: 16 bits per element here
-```
+Any finite double, bit-exact, `-0` included. Infers `number`. Short decimals and simple fractions like `0.1`, `1/3` or `6.02e23` take 2–6 bytes; arbitrary doubles take 8. NaN and Infinity throw. No methods.
 
-Elements go on the wire as their raw bits, so floats keep NaN payloads and `-0`. Takes `.min()`, `.max()` and `.length()` like a string, counting elements, and decodes to a fresh array of the given class.
+### `p.string()`
 
-### Booleans and enums
+Any text, stored with its length; about 7 bits per ASCII character. Infers `string`. Any JS string round-trips bit-exact, lone surrogates included — where UTF-8-based formats substitute U+FFFD, Polynar returns what went in. Lengths count UTF-16 code units, as `.length` does.
 
-```typescript
-p.bool();
-p.bool().weights([1, 20]); // a flag that is nearly always true
-p.enum(['red', 'green', 'blue']); // one base-3 slot
-p.enum([256, 512, 1024]); // numbers too
-p.enum([Strategy.fast, Strategy.safe]); // any value, matched by identity
-p.enum(['ok', 'warn', 'error']).weights([90, 9, 1]); // 'ok' costs 0.15 bits
-```
+| Method                       | Description                                                                                                                                                                                                                |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`            | Lower bound on the length; shorter strings throw.                                                                                                                                                                          |
+| `.max(n: number)`            | Upper bound on the length; longer strings throw. With both bounds the length takes a fixed number of bits.                                                                                                                 |
+| `.length(n: number)`         | Fixed length; costs zero bits. Can't be combined with `.min` or `.max`.                                                                                                                                                    |
+| `.charset(c: Charset)`       | Limits the alphabet, so each character costs fewer bits: a string of unique characters or a `[min, max]` range of character codes. Other characters throw. Can't be combined with `.prose()`, since both set the alphabet. |
+| `.prose(model?: ProseModel)` | Weighted for natural language, about 4 bits per character; English by default, or a model of your own. Every string still encodes.                                                                                         |
 
-The list order is the encoding, so keep it stable if old bytes must keep decoding. Membership is `===`, so objects and functions work as members; decode returns the listed reference itself.
+`.prose()` prices each character by the one before it: common characters drop to 2–5 bits, and `u` after `q` to under one. Characters outside the model, such as other scripts or emoji, cost a little extra.
 
-`.weights()` says how likely each value is, as positive integers in list order (`[false, true]` for booleans). It never rejects anything: rare values still encode, they just cost more. The weights are part of the wire format.
+The built-in model is English (`ProseModels.english`). Any other is a matrix: `{ alphabet, weights }`, where `weights[row][col]` says how likely the character in column `col` is after the one in row `row`. Rows and columns follow `alphabet`, plus one extra each: the last row is used after a character outside the alphabet, and the last column is the escape for such characters. A string's first character uses the space's row, or the last row if the alphabet has no space. `buildProseModel(corpus, options?)` builds a model from sample text and returns plain JSON. Characters it sees only once are left out of the alphabet; `{ minCount }` or an explicit `{ alphabet }` changes that.
 
-### Unions
+### `p.binary(type?: TypedArrayClass)`
 
-```typescript
-p.union([p.string(), p.int(), p.array(p.string())]); // string | number | string[]
-p.nullable(p.string()); // string | null, short for p.union([p.string(), p.null()])
-p.nullable(p.string()).weights([1, 99]); // [value, null]: nearly always null
-```
+A typed array: a `Uint8Array` by default, or any typed array class, like `p.binary(Int16Array)`. Infers that class and decodes to a new array of it. Elements are stored as their raw bytes, plus the element count, so floats keep NaN payloads and `-0`.
 
-The member is picked by the value's kind: string, number, boolean, null, date, array, object, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. The tag costs log2(members) bits, or whatever `.weights()` says.
+| Method               | Description                                                                                                     |
+| -------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`    | Lower bound on the element count; shorter arrays throw.                                                         |
+| `.max(n: number)`    | Upper bound on the element count; longer arrays throw. With both bounds the count takes a fixed number of bits. |
+| `.length(n: number)` | Fixed element count; costs zero bits. Can't be combined with `.min` or `.max`.                                  |
+
+### `p.bool()`
+
+A boolean, one bit. Infers `boolean`.
+
+| Method                  | Description                                      |
+| ----------------------- | ------------------------------------------------ |
+| `.weights(w: number[])` | Prior: one weight per value, as `[false, true]`. |
+
+### `p.enum(list: readonly unknown[])`
+
+One value out of a fixed list: `p.enum(['red', 'green', 'blue'])` costs log2(3) ≈ 1.58 bits. Infers the union of the members' types. Members can be anything — strings, numbers, objects, functions — matched by identity (`===`), and decode returns the listed reference itself. The list must be non-empty with unique members, and NaN can't be one. A value outside the list throws. The order of the list is part of the encoding, so reordering it breaks old data unless the schema is wrapped in `p.versioned`.
+
+| Method                  | Description                                  |
+| ----------------------- | -------------------------------------------- |
+| `.weights(w: number[])` | Prior: one weight per member, in list order. |
+
+### `p.date()`
+
+A `Date`, lossless to the millisecond by default. Infers `Date`. An invalid date throws.
+
+| Method                                 | Description                                                                                                                                                                                    |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.min(d: Date \| number)`              | Lower bound, as a `Date` or an integer timestamp; earlier dates throw.                                                                                                                         |
+| `.max(d: Date \| number)`              | Upper bound; later dates throw. With both bounds the date takes a fixed number of bits. A min above the max throws.                                                                            |
+| `.precision(unit: DateUnit, step = 1)` | Rounds each date down to the start of its UTC bucket: smaller, but lossy. Weeks start on Monday, months and years follow the calendar, and `step` groups units, so `('month', 3)` is quarters. |
+| `.cdf(fn: (b: number) => number)`      | Prior over the buckets, called with the bucket number, counting `min`'s bucket as 0; needs both bounds.                                                                                        |
+| `.weights(w: number[])`                | Prior: one weight per bucket from `min` to `max`, earliest first; needs both bounds.                                                                                                           |
+
+`DateUnit` is `'millisecond' | 'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'`. Bounds compare buckets, so a `min` in the middle of a bucket allows that whole bucket, and a date can decode to a time before `min`.
+
+### `p.null()`
+
+`null`, zero bits. Infers `null`. No methods.
+
+### `p.object(shape: Record<string, PNode>)`
+
+An object with a fixed shape: `p.object({ x: p.int(), label: p.optional(p.string()) })`. Infers the object type, with `p.optional` fields as optional keys. Fields are written in shape order; a required field that is `undefined` throws, and keys outside the shape are left out. No methods.
+
+### `p.array(item: PNode)`
+
+An array of one item type, stored with its length. Infers an array of the item's type. Arrays nest. Items can't be `p.optional(...)`; make the array itself optional.
+
+| Method                            | Description                                                                                                  |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `.min(n: number)`                 | Lower bound on the item count; shorter arrays throw. A fractional bound rounds up.                           |
+| `.max(n: number)`                 | Upper bound on the item count; longer arrays throw. With both bounds the count takes a fixed number of bits. |
+| `.length(n: number)`              | Fixed item count; costs zero bits. Can't be combined with `.min` or `.max`.                                  |
+| `.cdf(fn: (n: number) => number)` | Prior over the item count, called with the count; needs `.max` and no `.length`.                             |
+| `.weights(w: number[])`           | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max` and no `.length`.         |
+
+### `p.optional(node: PNode)`
+
+An object field that may be absent, at the cost of one bit. Infers an optional key. Only `undefined` means absent; `null` is a value and goes to the inner node. Wrapping twice is the same as once. The object writes the presence bit, so absence only works on object fields: a top-level optional can't encode `undefined`, and an optional can't be an array item or a union member.
+
+| Method                          | Description                                |
+| ------------------------------- | ------------------------------------------ |
+| `.weights(w: [number, number])` | Prior on presence, as `[absent, present]`. |
+
+### `p.nullable(node: PNode)`
+
+A value or `null`: `p.nullable(p.string())` is `string | null`, short for `p.union([p.string(), p.null()])`.
+
+| Method                  | Description                                       |
+| ----------------------- | ------------------------------------------------- |
+| `.weights(w: number[])` | Prior: one weight per member, as `[value, null]`. |
+
+### `p.union(members: PNode[])`
+
+One of several members: `p.union([p.string(), p.int(), p.array(p.string())])` is `string | number | string[]`. The member is picked by the value's kind: string, number, boolean, null, date, array, object, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. Members must know their kinds, so `p.optional`, `p.lazy` and custom nodes without `_kinds` can't be members. A value whose kind has no member throws. Recording which member was used costs log2(members) bits.
+
+| Method                  | Description                                  |
+| ----------------------- | -------------------------------------------- |
+| `.weights(w: number[])` | Prior: one weight per member, in list order. |
+
+### `p.tagged(key: string, members: Record<string, PObject>)`
+
+Object shapes picked by a tag field:
 
 ```typescript
 p.tagged('type', {
@@ -153,85 +224,36 @@ p.tagged('type', {
 }); // { type: 'move'; x: number; y: number } | { type: 'chat'; text: string }
 ```
 
-Object shapes go in `p.tagged`: the tag field picks the member, costs log2(members) bits (or whatever `.weights()` says), and is never written as text. A tagged union is of kind object, so it mixes with other kinds in `p.union`.
+The tag costs log2(members) bits and is never written as text. The tag key belongs to the tagged union, so a member shape that also declares it throws, and so does a value whose tag isn't listed. A tagged union counts as an object, so it can sit next to other kinds in `p.union`.
 
-### Dates
+| Method                  | Description                                 |
+| ----------------------- | ------------------------------------------- |
+| `.weights(w: number[])` | Prior: one weight per member, in key order. |
 
-```typescript
-p.date(); // lossless to the ms
-p.date().min(new Date('2020-01-01')).max(new Date('2030-01-01'));
-p.date().precision('day'); // coarser, smaller, lossy
-p.date().precision('minute', 15);
-p.date().precision('month');
-```
+### `p.lazy(resolve: () => PNode)`
 
-`precision` takes `'millisecond' | 'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'` and floors each date to the start of its UTC bucket: weeks start on Monday, months and years are calendar months and years, and a step groups units, so `('month', 3)` is quarters. A min in the middle of a bucket admits that whole bucket, so a date can decode to before the min.
+A node looked up on first use, so a schema can contain itself or refer to one defined further down; it costs nothing on the wire. Infers the resolved node's type. Its kinds are unknown until first use, so it can't be a `p.union` member. No methods.
 
-### Objects
+### `p.versioned(first: PNode, ...later: (PNode | [PNode, (previous) => next])[])`
 
-```typescript
-p.object({
-  x: p.int().min(-1000).max(1000),
-  label: p.optional(p.string()), // one presence bit; only undefined means absent
-  nick: p.optional(p.string()).weights([1, 99]), // [absent, present]: a 99%-present field pays ~0.015 bits
-});
-```
+A schema that can change after data has been written. The first argument is the first version. Each later argument is either a plain node, when old values still fit it (a wider bound, an added optional field), or `[node, migrate]`, where `migrate` turns a value of the previous version into one of the new. Infers the newest version's type; up to eight versions are typed. Earlier versions stay in the list: replacing one instead of adding after it makes data written with it undecodable.
 
-### Arrays
+Data written by any listed version decodes and is migrated step by step to the newest. The encoder always writes the newest, so decoding old data and encoding it again gives new bytes. Data from a version the schema doesn't list throws `UnknownVersionError`. The version number costs a couple of bits. The wrapper has to be there before the first data is written: data written without it carries no version, and nothing can tell its versions apart later. No methods.
 
-```typescript
-p.array(p.int()); // any count, length-prefixed
-p.array(p.int()).min(1).max(4); // a bounded count packs denser
-p.array(p.float()).length(3); // a fixed count costs zero bits
-p.array(p.array(p.bool())); // arrays nest
-```
+### `p.any()`
 
-`.length` is both bounds at once, so combining it with `.min` or `.max` throws. Items can't be `p.optional(...)`; make the array itself optional.
+Self-describing escape hatch: numbers, strings, booleans, dates, null, undefined, arrays and plain objects, with a type tag per value. Infers `unknown`. Everything round-trips bit-exact; a class instance (a `Map`, a `Set`) or a circular structure throws. Costs more than a precise node. No methods.
 
-### Recursion
+## Encoding and decoding
 
-```typescript
-type Block = { type: 'paragraph'; text: string } | { type: 'list'; items: Block[] };
+Every node has these four methods, where `T` is the type it infers.
 
-const Block: PNode<Block> = p.tagged('type', {
-  paragraph: p.object({ text: p.string() }),
-  list: p.object({ items: p.array(p.lazy(() => Block)) }),
-});
-```
-
-`p.lazy` looks its node up on first use, so a schema can contain itself or refer to one defined further down; it costs nothing on the wire. TypeScript can't infer a type from its own definition, so the recursive const carries its type as an annotation. Its kinds are unknown until first use, so it can't be a `p.union` member.
-
-### Versioning
-
-```typescript
-const User = p.versioned(p.object({ name: p.string().max(40) })); // day one
-
-// later
-const User = p.versioned(
-  p.object({ name: p.string().max(40) }),
-  p.object({ name: p.string().max(60) }), // a wider bound: old values fit as they are
-  [
-    p.object({ name: p.string().max(60), age: p.int().min(0).max(120) }),
-    (user) => ({ ...user, age: 0 }), // a required field: how an old value becomes a new one
-  ]
-);
-```
-
-Data written by any listed version decodes, migrated step by step to the newest; the encoder always writes the newest. Data from a version the schema doesn't list throws `UnknownVersionError`. The version number costs a couple of bits. The wrapper has to be there before the first data is written: data written without it carries no version, and nothing can tell its versions apart later.
-
-### Anything
-
-```typescript
-p.any(); // numbers, strings, booleans, dates, null, undefined, arrays, plain objects
-```
-
-Self-describing escape hatch: a type tag per value, everything round-trips bit-exact. Costs more than a precise node.
-
-### Inference
-
-`Infer<typeof Node>` is the decoded type of any node; `p.optional(...)` fields become optional keys.
-
-### Output
+| Method                                           | Description                                                                                                                                       |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.encode(value: T, range?: ByteRange)`           | Encodes to a `Uint8Array`. With a range, every byte stays within `[min, max]` (inside 0–255, min below max); without one, bytes use all of 0–255. |
+| `.decode(bytes: Uint8Array, range?: ByteRange)`  | Decodes bytes made by `encode` with the same range.                                                                                               |
+| `.encodeString(value: T, charset?: Charset)`     | Encodes to text in the charset; Base64 when omitted.                                                                                              |
+| `.decodeString(text: string, charset?: Charset)` | Decodes text made by `encodeString` with the same charset.                                                                                        |
 
 ```typescript
 const bytes = User.encode(user); // Uint8Array
@@ -240,11 +262,11 @@ User.decode(bytes);
 const link = User.encodeString(user, CharSets.urlSafe); // text, here safe to put in a URL
 User.decodeString(link, CharSets.urlSafe);
 
-const ascii = User.encode(user, [32, 126]); // bytes kept to printable ASCII; a range within 0–255, min < max
+const ascii = User.encode(user, [32, 126]); // bytes kept to printable ASCII
 User.decode(ascii, [32, 126]);
 ```
 
-The charset defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. Any string of unique characters or a `[min, max]` code-unit range works too, on both the string form and `p.string().charset()`.
+The charset defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. A charset can also be any string of at least two unique characters, or a `[min, max]` range of character codes; the same goes for `p.string().charset()`.
 
 | Name                    | Characters                 |
 | ----------------------- | -------------------------- |
@@ -259,11 +281,29 @@ The charset defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.
 | `CharSets.Base64`       | standard Base64            |
 | `CharSets.urlSafe`      | letters, digits and `-._~` |
 
-Input that does not decode as the schema expects throws a `CorruptInputError` (also matchable via `err.name`), or its subclass `UnknownVersionError` when `p.versioned` meets data from a version it doesn't list. A value that can't encode throws with the path to it in front, like `filters[2].op: Value 'gt' not found in list`.
+## Errors
 
-### Custom types
+Input that doesn't decode — truncated, padded, or with characters outside the charset — throws a `CorruptInputError`. Where `instanceof` can't be trusted, such as with two copies of the package in one process, check `err.name === 'CorruptInputError'`. Its subclass `UnknownVersionError` is thrown when `p.versioned` gets data from a version it doesn't list; its `name` is still `'CorruptInputError'`.
 
-Subclass `PNode`: `_write` validates one value and pushes its digits with `compose(integer, radix)` / `composeTerm(integer)` — or `composeWeighted(cum, freq, total)` when some values are more common than others — and `_read` mirrors it with `parse`/`parseTerm`/`parseWeighted` in the same order. The node then composes with `p.object`, `p.array` and `p.optional` like any built-in; to use it in `p.union`, also set `_kinds` to the kinds its values have, e.g. `readonly _kinds = ['object'] as const`. See [`examples/custom-node.ts`](examples/custom-node.ts) for a runnable version.
+A value that can't be encoded throws with its path in front, like `filters[2].op: Value 'gt' not found in list`; the error keeps its class. An invalid schema throws a `TypeError` or `RangeError` as soon as it's defined.
+
+## Types
+
+- `Infer<typeof Node>` — the decoded type of any node.
+- `InferShape<S>`, `InferTagged<K, M>` — the types `p.object` and `p.tagged` infer, from a shape or a member map.
+- `Cdf` — `(v: number) => number`, the function `.cdf()` takes.
+- `DateUnit` — the units `.precision()` takes.
+- `Kind` — the kinds `p.union` tells apart, and the type of `_kinds`.
+- `ProseModel`, `ProseModelOptions` — a prose matrix and the options of `buildProseModel`.
+- `TypedArray`, `TypedArrayClass` — what `p.binary` takes and returns.
+- `Charset` — `string | [number, number]`, for text output and `.charset()`.
+- `ByteRange` — `[number, number]`, for byte output.
+
+The node classes are exported too (`PNode`, `PInt`, `PString`, `PObject`, …), along with `ProseModels` and `buildProseModel`.
+
+## Custom nodes
+
+Subclass `PNode` and implement two methods: `_write` writes one value's digits, and `_read` reads them back in the same order. The node then works inside `p.object`, `p.array` and `p.optional` like any built-in. To use it in `p.union`, also set `_kinds` to the kinds its values have, like `readonly _kinds = ['object'] as const`. See [`examples/custom-node.ts`](examples/custom-node.ts) for a runnable version.
 
 ```typescript
 import { p, PNode, Encoder, Decoder } from 'polynar';
@@ -282,24 +322,114 @@ class PColor extends PNode<{ r: number; g: number; b: number }> {
 const Theme = p.object({ name: p.string().max(20), accent: new PColor() });
 ```
 
-### Encoder and Decoder
+`_write` and `_read` work with these:
 
-The primitives a custom node's `_write` and `_read` run against.
+| Method                                                                                                      | Description                                                                                                                                               |
+| ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `new Encoder()`                                                                                             | An empty message.                                                                                                                                         |
+| `enc.compose(integer: number, radix: number)`                                                               | One digit in a fixed radix: `integer` in `[0, radix)`, `radix` a positive safe integer; anything else throws.                                             |
+| `enc.composeTerm(integer: number)`                                                                          | Any non-negative integer, no bound needed.                                                                                                                |
+| `enc.composeWeighted(cum: number, freq: number, total: number)`                                             | Writes a weighted value: the range `[cum, cum + freq)` out of `total`. Costs log2(total / freq) bits.                                                     |
+| `enc.toString(charset?: Charset)`                                                                           | The message as text; Base64 when omitted.                                                                                                                 |
+| `enc.toUint8Array(range?: ByteRange)`                                                                       | The message as bytes within `[min, max]`; the whole byte when omitted.                                                                                    |
+| `new Decoder(input: string \| Uint8Array, charset?: Charset \| ByteRange)`                                  | A string with a `Charset`, or a `Uint8Array` with a `[min, max]` byte range.                                                                              |
+| `dec.parse(radix: number)`                                                                                  | Reads what `compose` wrote.                                                                                                                               |
+| `dec.parseTerm()`                                                                                           | Reads what `composeTerm` wrote.                                                                                                                           |
+| `dec.parseWeighted<T>(total: number, locate: (residual: number) => [symbol: T, cum: number, freq: number])` | Reads what `composeWeighted` wrote. `locate` gets a number below `total` and returns the symbol whose range holds it, with that range's `cum` and `freq`. |
+| `dec.finalize()`                                                                                            | Throws `CorruptInputError` unless the input was consumed exactly; `decode` and `decodeString` call it for you.                                            |
+
+## Examples
+
+### Shareable URL state
 
 ```typescript
-const enc = new Encoder();
-enc.compose(integer, radix); // integer in [0, radix)
-enc.composeTerm(integer); // any non-negative integer
-enc.composeWeighted(cum, freq, total); // the bucket [cum, cum + freq) of total
-enc.toString(charset); // Base64 when omitted
-enc.toUint8Array(range); // [min, max] byte range, the whole byte when omitted
+const View = p.object({
+  page: p.int().min(1).max(10000),
+  sort: p.enum(['date', 'name', 'size']),
+  tags: p.array(p.string().max(20)).max(5),
+});
 
-const dec = new Decoder(input, charset); // a string with a Charset, or a Uint8Array with a [min, max] range
-dec.parse(radix);
-dec.parseTerm();
-dec.parseWeighted(total, locate); // locate(residual) returns [symbol, cum, freq]
-dec.finalize(); // throws CorruptInputError unless the input was consumed exactly
+const hash = View.encodeString({ page: 3, sort: 'name', tags: ['ts'] }, CharSets.urlSafe);
+location.hash = hash;
+
+const view = View.decodeString(location.hash.slice(1), CharSets.urlSafe);
 ```
+
+### Common values
+
+```typescript
+p.int()
+  .min(0)
+  .max(100)
+  .cdf((v) => v * v); // high values are common, so they cost less
+p.int().min(1).max(5).weights([5, 2, 3, 10, 80]); // or as a histogram, lowest value first
+p.bool().weights([1, 20]); // a flag that is nearly always true
+p.enum(['ok', 'warn', 'error']).weights([90, 9, 1]); // 'ok' costs 0.15 bits
+```
+
+### Nullable and optional fields
+
+```typescript
+p.object({
+  x: p.int().min(-1000).max(1000),
+  label: p.optional(p.string()), // one presence bit; only undefined means absent
+  nick: p.optional(p.string()).weights([1, 99]), // [absent, present]: present 99% of the time, so it costs ~0.015 bits
+  parent: p.nullable(p.int()).weights([1, 99]), // [value, null]: nearly always null
+});
+```
+
+### Recursion
+
+```typescript
+type Block = { type: 'paragraph'; text: string } | { type: 'list'; items: Block[] };
+
+const Block: PNode<Block> = p.tagged('type', {
+  paragraph: p.object({ text: p.string() }),
+  list: p.object({ items: p.array(p.lazy(() => Block)) }),
+});
+```
+
+TypeScript can't infer a type that refers to itself, hence the explicit `PNode<Block>`.
+
+### Versioning
+
+Day one:
+
+```typescript
+const User = p.versioned(p.object({ name: p.string().max(40) }));
+```
+
+After two schema changes:
+
+```typescript
+const User = p.versioned(
+  p.object({ name: p.string().max(40) }),
+  p.object({ name: p.string().max(60) }), // a wider bound: old values fit as they are
+  [
+    p.object({ name: p.string().max(60), age: p.int().min(0).max(120) }),
+    (user) => ({ ...user, age: 0 }), // a new required field: old values get a default
+  ]
+);
+```
+
+### Typed arrays
+
+```typescript
+p.binary().length(32); // a hash or key: exactly 32 bytes on the wire
+p.binary(Int16Array).length(1024); // 16 bits per element
+p.binary(Float64Array).max(100); // doubles as their raw bits, NaN payloads and -0 included
+```
+
+### Prose with a custom model
+
+```typescript
+import { p, buildProseModel } from 'polynar';
+
+const model = buildProseModel(sample); // built from sample text in your language; plain JSON you can store
+const Comment = p.string().max(500).prose(model);
+```
+
+Both sides need the same model, like any other part of the schema.
 
 ## Development
 
