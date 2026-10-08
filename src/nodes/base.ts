@@ -14,7 +14,7 @@
  * `p.array` and `p.optional` like any built-in; declaring `_kinds` makes it
  * a valid `p.union` member too.
  */
-import { Encoder, Decoder } from '../packer';
+import { Encoder, Decoder, CorruptInputError } from '../packer';
 import type { Charset, ByteRange } from '../packer';
 import type { Kind } from './guards';
 
@@ -25,7 +25,7 @@ export abstract class PNode<TOut> {
   /**
    * The JS kinds this node's values can have, which `p.union` uses to pick a
    * member. Undefined means undeclared: a custom node sets it to be usable in
-   * a union, and `p.optional` leaves it unset.
+   * a union.
    */
   readonly _kinds?: readonly Kind[];
 
@@ -70,9 +70,18 @@ export abstract class PNode<TOut> {
   }
 }
 
-/** Wraps a node, adding the object-field presence bit. `p.optional`. */
-export class POptional<TOut> extends PNode<TOut> {
+/**
+ * A value or `undefined`, at the cost of one presence bit. `p.optional`.
+ * Only `undefined` means absent; `null` reaches the inner node.
+ */
+export class POptional<TOut> extends PNode<TOut | undefined> {
   declare readonly _optional: true;
+
+  /**
+   * The inner node's kinds plus `'undefined'`, or undeclared when the inner
+   * node is, so an optional node is a union member whenever its inner node is.
+   */
+  declare readonly _kinds?: readonly Kind[];
 
   /** A prior on presence as `[absent, present]`; undefined means one bit. */
   readonly presence?: readonly [number, number];
@@ -82,6 +91,9 @@ export class POptional<TOut> extends PNode<TOut> {
     presence?: readonly [number, number]
   ) {
     super();
+    if (inner._kinds !== undefined) {
+      this._kinds = [...new Set<Kind>([...inner._kinds, 'undefined'])];
+    }
     if (presence !== undefined) {
       const [absent, present] = presence;
       if (
@@ -98,26 +110,51 @@ export class POptional<TOut> extends PNode<TOut> {
   }
 
   /**
-   * Declare how likely the field is to be there, as `[absent, present]`
-   * weights: a 99%-present field costs ~0.015 bits instead of a full bit.
+   * Declare how likely the value is to be there, as `[absent, present]`
+   * weights: a 99%-present value costs ~0.015 bits instead of a full bit.
    * A prior, not a constraint, and part of the wire format.
    */
   weights(w: readonly [number, number]): POptional<TOut> {
     return new POptional<TOut>(this.inner, w);
   }
 
-  _write(enc: Encoder, value: TOut): void {
-    // The presence bit is emitted by PObject, which unwraps this node; a
-    // direct write means top-level use, where absence has no slot to live in.
-    if (value == null) {
-      throw new TypeError(
-        'p.optional is only meaningful on object fields; a top-level optional cannot encode null/undefined'
-      );
+  _write(enc: Encoder, value: TOut | undefined): void {
+    const presence = this.presence;
+    if (value === undefined) {
+      if (presence === undefined) {
+        enc.compose(0, 2);
+      } else {
+        enc.composeWeighted(0, presence[0], presence[0] + presence[1]);
+      }
+      return;
+    }
+    if (presence === undefined) {
+      enc.compose(1, 2);
+    } else {
+      enc.composeWeighted(presence[0], presence[1], presence[0] + presence[1]);
     }
     this.inner._write(enc, value);
   }
 
-  _read(dec: Decoder): TOut {
-    return this.inner._read(dec);
+  _read(dec: Decoder): TOut | undefined {
+    const presence = this.presence;
+    const there =
+      presence === undefined
+        ? dec.parse(2) === 1
+        : dec.parseWeighted(presence[0] + presence[1], (r) =>
+            r < presence[0] ? [false, 0, presence[0]] : [true, presence[0], presence[1]]
+          );
+    if (!there) {
+      return undefined;
+    }
+    const value = this.inner._read(dec);
+    // `undefined` is spelled by the absent bit, so a present value decoding
+    // to it (an inner `any`'s undefined tag) has no canonical encoding.
+    if (value === undefined) {
+      throw new CorruptInputError(
+        'Present optional value decoded as undefined, which is not encodable'
+      );
+    }
+    return value;
   }
 }

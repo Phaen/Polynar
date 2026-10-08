@@ -114,10 +114,12 @@ describe('Schema array', () => {
     expect(() => p.array(p.int()).length(NaN)).toThrow(RangeError);
   });
 
-  it('rejects an optional item type at construction', () => {
-    // The presence bit only exists for object fields; an array slot is always
-    // occupied. The array itself can be optional instead.
-    expect(() => p.array(p.optional(p.string()) as never)).toThrow(TypeError);
+  it('carries undefined items through an optional item type', () => {
+    const Holes = p.array(p.optional(p.int().min(0).max(9)));
+    const decoded = Holes.decode(Holes.encode([1, undefined, 3]));
+    expect(decoded).toEqual([1, undefined, 3]);
+    // A dense array: the undefined is a value, not a hole.
+    expect(1 in decoded).toBe(true);
   });
 
   it('is denser than per-value encode over many records', () => {

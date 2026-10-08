@@ -10,10 +10,6 @@ describe('Schema validation', () => {
     expect(() => p.float().encode(Infinity)).toThrow();
   });
 
-  it('throws when a top-level optional encodes null/undefined', () => {
-    expect(() => p.optional(p.string()).encode(undefined as never)).toThrow();
-  });
-
   it('refuses values too far from a lone bound to index exactly', () => {
     // The offset against the bound is float arithmetic; past 2^53 it rounds
     // to a neighbouring integer, so encoding must throw rather than drift.
@@ -60,19 +56,29 @@ describe('Schema hardening', () => {
     expect(() => p.any().encode(NaN)).toThrow(TypeError);
   });
 
-  it('a top-level optional rejects null and undefined', () => {
-    const node = p.optional(p.string());
-    expect(() => node.encode(undefined as never)).toThrow(TypeError);
-    expect(() => node.encode(null as never)).toThrow(TypeError);
-  });
-
   it('a top-level optional round-trips present values through its inner node', () => {
     const optStr = p.optional(p.string());
     expect(optStr.decode(optStr.encode('here'))).toBe('here');
-    // The wrapper delegates the whole codec to its inner node, so an optional
-    // `any` keeps an array whole instead of losing all but the first element.
+    // An optional `any` keeps an array whole instead of losing all but the
+    // first element.
     const optAny = p.optional(p.any());
     expect(optAny.decode(optAny.encode([1, 2, 3]))).toEqual([1, 2, 3]);
+    // Only undefined means absent; null reaches the inner node.
+    expect(optAny.decode(optAny.encode(null))).toBeNull();
+  });
+
+  it('a top-level optional spends one bit on undefined, or less with weights', () => {
+    const optInt = p.optional(p.int());
+    expect(optInt.decode(optInt.encode(1))).toBe(1);
+    expect(optInt.decode(optInt.encode(undefined))).toBeUndefined();
+    expect(optInt.encode(undefined)).toEqual(p.bool().encode(false));
+    const likely = p.optional(p.int().min(0).max(9)).weights([1, 99]);
+    expect(likely.decode(likely.encode(4))).toBe(4);
+    expect(likely.decode(likely.encode(undefined))).toBeUndefined();
+    const many = Array.from({ length: 50 }, () => 4);
+    expect(p.array(likely).encode(many).length).toBeLessThan(
+      p.array(p.optional(p.int().min(0).max(9))).encode(many).length
+    );
   });
 });
 
@@ -146,6 +152,12 @@ describe('Schema corruption rejection', () => {
     expect(() => p.object({ a: p.any() }).decode(field.toUint8Array())).toThrow(
       'decoded as undefined'
     );
+    // A present optional whose inner `any` reads its undefined tag: undefined
+    // is spelled by the absent bit alone.
+    const present = new Encoder();
+    present.compose(1, 2);
+    present.compose(0, 9); // TAG_UNDEFINED
+    expect(() => p.optional(p.any()).decode(present.toUint8Array())).toThrow(CorruptInputError);
   });
 });
 

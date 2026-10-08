@@ -75,6 +75,17 @@ describe('Schema union', () => {
     expect(trip(Skewed, 'x')).toBe('x');
   });
 
+  it('an optional member owns undefined', () => {
+    const Maybe = p.union([p.optional(p.string()), p.int()]);
+    expect(trip(Maybe, undefined)).toBeUndefined();
+    expect(trip(Maybe, 'x')).toBe('x');
+    expect(trip(Maybe, 7)).toBe(7);
+    // p.any already claims undefined, so a second optional member overlaps.
+    expect(() => p.union([p.optional(p.int()), p.optional(p.any())])).toThrow(
+      "overlap on kind 'undefined'"
+    );
+  });
+
   it('p.nullable is a union with p.null', () => {
     const nick = p.nullable(p.string().max(8));
     expect(trip(nick, null)).toBeNull();

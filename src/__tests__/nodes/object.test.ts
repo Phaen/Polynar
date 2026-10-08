@@ -73,6 +73,34 @@ describe('Schema object', () => {
     expect(() => Schema.encode({ inner: { a: 1 } } as never)).toThrow();
   });
 
+  it('treats an undefined value on an optional field as absent', () => {
+    const decoded = Person.decode(
+      Person.encode({ name: 'Ada', age: 36, active: true, role: 'user', bio: undefined })
+    );
+    expect('bio' in decoded).toBe(false);
+  });
+
+  it('keeps the wire format of optional fields', () => {
+    // Pins the object layout: each optional field's presence bit, then its
+    // value.
+    const Schema = p.object({
+      a: p.int().min(0).max(9),
+      b: p.optional(p.string()),
+      c: p.optional(p.nullable(p.bool())).weights([1, 30]),
+      d: p.optional(p.any()),
+    });
+    const cases: [Parameters<typeof Schema.encode>[0], number[]][] = [
+      [{ a: 3 }, [3, 0]],
+      [{ a: 7, b: 'hi', c: true, d: null }, [237, 185, 119, 6]],
+      [{ a: 0, c: null, d: [1, 'x'] }, [32, 193, 11, 248, 26]],
+      [{ a: 9, c: false }, [29, 0]],
+    ];
+    for (const [value, bytes] of cases) {
+      expect(Array.from(Schema.encode(value))).toEqual(bytes);
+      expect(Schema.decode(Uint8Array.from(bytes))).toEqual(value);
+    }
+  });
+
   it('optional twice is still one presence bit', () => {
     const once = p.optional(p.string());
     expect(p.optional(once)).toBe(once);
