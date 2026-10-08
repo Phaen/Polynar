@@ -27,6 +27,7 @@ export {
   PNull,
   PUnion,
   PTagged,
+  PVersioned,
 } from './nodes';
 export { ProseModels, buildProseModel } from './nodes';
 export type {
@@ -42,5 +43,5 @@ export type {
   TypedArrayClass,
 } from './nodes';
 
-export { Encoder, Decoder, CorruptInputError, CharSets } from './packer';
+export { Encoder, Decoder, CorruptInputError, UnknownVersionError, CharSets } from './packer';
 export type { Charset, ByteRange } from './packer';

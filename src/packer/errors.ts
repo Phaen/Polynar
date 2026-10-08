@@ -13,3 +13,9 @@
 export class CorruptInputError extends Error {
   readonly name = 'CorruptInputError';
 }
+
+/**
+ * Thrown when a `p.versioned` schema meets data written by a version it does
+ * not list, such as a newer writer.
+ */
+export class UnknownVersionError extends CorruptInputError {}

@@ -108,3 +108,22 @@ p.lazy(() => p.optional(p.string()));
 // A binary node decodes to the class it was given.
 const Samples = p.binary(Int16Array);
 const _int16: Equals<Infer<typeof Samples>, Int16Array> = true;
+
+// A versioned node infers the newest version's type.
+const UserV1 = p.object({ name: p.string() });
+const UserV2 = p.object({ name: p.string(), age: p.int() });
+const Users = p.versioned(UserV1, [UserV2, (user) => ({ ...user, age: 0 })]);
+const _users: Equals<Infer<typeof Users>, { name: string; age: number }> = true;
+const Widened = p.versioned(p.int().min(0).max(100), p.int().min(0).max(1000));
+const _widened: Equals<Infer<typeof Widened>, number> = true;
+const Relaxed = p.versioned(UserV1, p.object({ name: p.string(), age: p.optional(p.int()) }));
+const _relaxed: Equals<Infer<typeof Relaxed>, { name: string; age?: number }> = true;
+
+// @ts-expect-error — a required field added without a migration
+p.versioned(UserV1, UserV2);
+
+p.versioned(UserV1, [
+  UserV2,
+  // @ts-expect-error — the migration must produce the new version's type
+  (user) => ({ ...user }),
+]);
