@@ -33,9 +33,9 @@ Seven payload shapes, mean sizes in bytes over 250 seeded random payloads each (
 | Status feed    | 521.8 (63.4) | 323.8 (60.4) |   102.0 (27.8) |      10.4 (14.4) |  **7.9** (11.9) |
 | Lorem ipsum    |   1375 (641) |   1372 (631) | 1372 (**629**) |        980 (764) |       741 (745) |
 
-JSON and MessagePack pay for every key name; Protobuf and Polynar read from a schema instead, both told the same decimal steps and bounds. The difference is that Protobuf rounds every field up to whole bytes and tags it, while Polynar spends fractional bits with no tags.
+JSON and MessagePack also encode the key name; Protobuf and Polynar read from a schema instead, and are both told the same decimal steps and bounds. The difference is that Protobuf rounds every field up to whole bytes and tags it, while Polynar spends fractional bits with no implicit tags.
 
-The url-safe column is `encodeString(value, CharSets.urlSafe)` — text you can drop straight into a URL, cookie or query parameter. On the constrained payloads it beats even the other formats' _binary_ output; long text is the one place the smaller alphabet costs more than it saves.
+The url-safe column is `encodeString(value, CharSets.urlSafe)` — text you can drop straight into a URL, cookie or query parameter; which still beats the other formats' _binary_ output.
 
 ## Install
 
@@ -177,8 +177,6 @@ p.object({
 });
 ```
 
-Fields are required by default. Objects nest, and falsy-but-defined values are never mistaken for missing.
-
 ### Arrays
 
 ```typescript
@@ -193,9 +191,7 @@ p.array(p.array(p.bool())); // arrays nest
 ### Recursion
 
 ```typescript
-type Block =
-  | { type: 'paragraph'; text: string }
-  | { type: 'list'; items: Block[] };
+type Block = { type: 'paragraph'; text: string } | { type: 'list'; items: Block[] };
 
 const Block: PNode<Block> = p.tagged('type', {
   paragraph: p.object({ text: p.string() }),
@@ -238,17 +234,17 @@ Self-describing escape hatch: a type tag per value, everything round-trips bit-e
 ### Output
 
 ```typescript
-node.encode(value); // Uint8Array
-node.decode(bytes);
-node.encode(value, [32, 126]); // bytes restricted to a range: both ends in 0–255, min < max
-node.decode(bytes, [32, 126]);
-node.encodeString(value, CharSets.urlSafe); // text in a charset of your choice
-node.decodeString(text, CharSets.urlSafe);
+const bytes = User.encode(user); // Uint8Array
+User.decode(bytes);
+
+const link = User.encodeString(user, CharSets.urlSafe); // text, here safe to put in a URL
+User.decodeString(link, CharSets.urlSafe);
+
+const ascii = User.encode(user, [32, 126]); // bytes kept to printable ASCII; a range within 0–255, min < max
+User.decode(ascii, [32, 126]);
 ```
 
 The charset defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. Any string of unique characters or a `[min, max]` code-unit range works too, on both the string form and `p.string().charset()`.
-
-Input that does not decode as the schema expects throws a `CorruptInputError` (also matchable via `err.name`), or its subclass `UnknownVersionError` when `p.versioned` meets data from a version it doesn't list. A value that can't encode throws with the path to it in front, like `filters[2].op: Value 'gt' not found in list`.
 
 | Name                    | Characters                 |
 | ----------------------- | -------------------------- |
@@ -262,6 +258,8 @@ Input that does not decode as the schema expects throws a `CorruptInputError` (a
 | `CharSets.htmlSafe`     | HTML-safe characters       |
 | `CharSets.Base64`       | standard Base64            |
 | `CharSets.urlSafe`      | letters, digits and `-._~` |
+
+Input that does not decode as the schema expects throws a `CorruptInputError` (also matchable via `err.name`), or its subclass `UnknownVersionError` when `p.versioned` meets data from a version it doesn't list. A value that can't encode throws with the path to it in front, like `filters[2].op: Value 'gt' not found in list`.
 
 ### Custom types
 
