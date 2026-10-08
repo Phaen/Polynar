@@ -205,6 +205,24 @@ const Block: PNode<Block> = p.tagged('type', {
 
 `p.lazy` looks its node up on first use, so a schema can contain itself or refer to one defined further down; it costs nothing on the wire. TypeScript can't infer a type from its own definition, so the recursive const carries its type as an annotation. Its kinds are unknown until first use, so it can't be a `p.union` member.
 
+### Versioning
+
+```typescript
+const User = p.versioned(p.object({ name: p.string().max(40) })); // day one
+
+// later
+const User = p.versioned(
+  p.object({ name: p.string().max(40) }),
+  p.object({ name: p.string().max(60) }), // a wider bound: old values fit as they are
+  [
+    p.object({ name: p.string().max(60), age: p.int().min(0).max(120) }),
+    (user) => ({ ...user, age: 0 }), // a required field: how an old value becomes a new one
+  ]
+);
+```
+
+Data written by any listed version decodes, migrated step by step to the newest; the encoder always writes the newest. Data from a version the schema doesn't list throws `UnknownVersionError`. The version number costs a couple of bits. The wrapper has to be there before the first data is written: data written without it carries no version, and nothing can tell its versions apart later.
+
 ### Anything
 
 ```typescript
@@ -230,7 +248,7 @@ node.decodeString(text, CharSets.urlSafe);
 
 The charset defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. Any string of unique characters or a `[min, max]` code-unit range works too, on both the string form and `p.string().charset()`.
 
-Input that does not decode as the schema expects throws a `CorruptInputError` (also matchable via `err.name`). A value that can't encode throws with the path to it in front, like `filters[2].op: Value 'gt' not found in list`.
+Input that does not decode as the schema expects throws a `CorruptInputError` (also matchable via `err.name`), or its subclass `UnknownVersionError` when `p.versioned` meets data from a version it doesn't list. A value that can't encode throws with the path to it in front, like `filters[2].op: Value 'gt' not found in list`.
 
 | Name                    | Characters                 |
 | ----------------------- | -------------------------- |

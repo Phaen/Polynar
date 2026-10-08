@@ -444,10 +444,14 @@ const taggedCase = (depth: number): Case => {
 };
 
 const randomCase = (depth: number): Case => {
-  if (depth > 0 && rand() < 0.4) {
-    return pick([arrayCase, objectCase, taggedCase, () => anyCase()] as const)(depth);
-  }
-  return rand() < 0.9 ? scalarCase() : anyCase();
+  const chosen =
+    depth > 0 && rand() < 0.4
+      ? pick([arrayCase, objectCase, taggedCase, () => anyCase()] as const)(depth)
+      : rand() < 0.9
+        ? scalarCase()
+        : anyCase();
+  // One case in ten under a version prefix, so the prefix is fuzzed too.
+  return rand() < 0.1 ? { node: p.versioned(chosen.node), gen: chosen.gen } : chosen;
 };
 
 describe('Property fuzz', () => {
