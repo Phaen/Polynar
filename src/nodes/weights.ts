@@ -66,11 +66,11 @@ export function validateCdf(
 ): { cdf: Cdf; total: number } {
   const base = cdf(lo);
   if (!Number.isSafeInteger(base)) {
-    throw new TypeError(`${who} cdf must return safe integers`);
+    throw new TypeError(`${who} cdf must return safe integers, got ${base} at ${lo}`);
   }
   const end = cdf(hi + 1);
   if (!Number.isSafeInteger(end)) {
-    throw new TypeError(`${who} cdf must return safe integers`);
+    throw new TypeError(`${who} cdf must return safe integers, got ${end} at ${hi + 1}`);
   }
   const total = end - base;
   if (total < 1) {
@@ -105,7 +105,7 @@ export function cdfBucket(cdf: Cdf, v: number, who: string): readonly [number, n
   const cum = cdf(v);
   const freq = cdf(v + 1) - cum;
   if (!Number.isSafeInteger(cum) || !Number.isSafeInteger(freq) || cum < 0 || freq < 0) {
-    throw new TypeError(`${who} cdf must be a non-decreasing integer function`);
+    throw new TypeError(`${who} cdf must be a non-decreasing integer function, fails at ${v}`);
   }
   if (freq === 0) {
     throw new RangeError(`Value '${v}' has zero weight under the declared cdf`);
