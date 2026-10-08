@@ -29,7 +29,7 @@ export const DEFAULT_CHARSET = CharSets.Base64;
  * Unbounded integers (`composeTerm`/`parseTerm`) ride in terminated base-3
  * digit runs: radix-4 slots where 0 terminates. Base 3 is the measured
  * optimum for the small values that dominate term traffic (lengths, counts),
- * re-verified 2026 against bases 2..15 over realistic distributions.
+ * across bases 2..15 over realistic distributions.
  *
  * The FIRST slot of a term is one state wider (radix 5); its extra symbol
  * escapes to a length-prefixed form for values >= 3^TERM_INLINE_DIGITS:

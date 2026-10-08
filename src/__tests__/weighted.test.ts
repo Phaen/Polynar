@@ -137,7 +137,7 @@ describe('Weighted packer primitive', () => {
     dec.finalize();
   });
 
-  it('rejects tampering, truncation and padding on weighted payloads', () => {
+  it('rejects corruption, truncation and padding on weighted payloads', () => {
     const dist = randDistribution(16);
     for (let run = 0; run < 100; run++) {
       const enc = new Encoder();

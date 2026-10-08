@@ -61,7 +61,7 @@ export class PDecimal extends PNode<number> {
     if (places.some((n) => n === null)) {
       // A step or bound without a finite decimal form (1/3, Math.PI) has no
       // exact scaled-integer representation, so every value would be off-grid
-      // by a rounding hair. Reject the schema instead of guessing.
+      // by a rounding hair. The schema is rejected rather than guessed at.
       throw new TypeError('p.decimal step and bounds must be exact decimals (<= 15 places)');
     }
 
@@ -71,7 +71,7 @@ export class PDecimal extends PNode<number> {
     this._scale = 10 ** Math.max(...(places as number[]));
     this._scaledStep = Math.round(step * this._scale);
 
-    // Like p.int bounds, round each bound INWARD onto the grid (ceil the min
+    // Like p.int bounds, each bound rounds inward onto the grid (ceil the min
     // multiple, floor the max multiple) so a bound off the grid never admits
     // a value beyond itself.
     if (min != null) {
@@ -192,7 +192,7 @@ export class PDecimal extends PNode<number> {
             this._kMax! - this._kMin! + 1,
             atIndexCdf(this._cdf, this._kMin!)
           );
-    // Mirror of the encode-side exactness guard: a product past 2^53 rounds,
+    // Counterpart of the encode-side exactness guard: a product past 2^53 rounds,
     // and the encoder could never have emitted it.
     if (Math.abs(k * this._scaledStep) > Number.MAX_SAFE_INTEGER) {
       throw new CorruptInputError('Step multiple is outside the exact range of its step');

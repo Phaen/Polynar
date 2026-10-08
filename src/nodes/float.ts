@@ -188,8 +188,8 @@ function canonicalSignificand(significand: bigint, value: number): SignificandFo
  * keep the two-adic part of their denominator below 2^22.
  */
 function roundToSignificand(num: bigint, den: bigint): bigint {
-  // The bit-length estimate can be off by one; re-divide at the corrected
-  // scale rather than halving a rounded result, which would round twice.
+  // The bit-length estimate can be off by one, so the division is redone at the corrected
+  // scale; halving a rounded result would round twice.
   for (let shift = 52 + bitLength(den) - bitLength(num); ; ) {
     let n = num;
     let d = den;

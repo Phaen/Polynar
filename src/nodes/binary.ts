@@ -64,7 +64,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
   }
 
   _read(dec: Decoder): A {
-    // Read before allocating: a tampered length prefix then runs out of
+    // Reading before allocating means a corrupt length prefix runs out of
     // input as corrupt data instead of requesting an absurd buffer.
     const count = this._length.read(dec) * this._size;
     const bytes: number[] = [];

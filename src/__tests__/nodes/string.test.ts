@@ -136,8 +136,8 @@ describe('Schema string', () => {
   });
 
   it('string packs ASCII near seven bits per character', () => {
-    // 24 slots of log2(131) bits plus the length prefix: 22 bytes, where the
-    // former flat 16-bit code units spent 49.
+    // 24 slots of log2(131) bits plus the length prefix: 22 bytes, where flat
+    // 16-bit code units would spend 49.
     expect(p.string().max(24).encode('twenty four ascii chars!')).toHaveLength(22);
   });
 

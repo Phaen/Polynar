@@ -134,7 +134,6 @@ export const p = {
   ): PTagged<K, M> {
     return new PTagged<K, M>(key, members);
   },
-  /** Null; zero bits. Pairs with `p.union` for nullable fields. */
   /**
    * A typed array as raw bits: a `Uint8Array` by default, or any class, e.g.
    * `p.binary(Int16Array)`; chain `.max(n)`/`.length(n)` to bound the
@@ -143,6 +142,7 @@ export const p = {
   binary<A extends TypedArray = Uint8Array>(type?: TypedArrayClass<A>): PBinary<A> {
     return new PBinary((type ?? Uint8Array) as TypedArrayClass<A>);
   },
+  /** Null; zero bits. Pairs with `p.union` for nullable fields. */
   null(): PNull {
     return new PNull();
   },

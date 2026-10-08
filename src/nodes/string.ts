@@ -151,7 +151,7 @@ export class PString extends PNode<string> {
         }
         // A trail directly after a lone lead spells a surrogate pair as two
         // code points; the encoder always merges the pair, so the split form
-        // only appears in tampered input.
+        // only appears in corrupt input.
         if (lead && code >= 0xdc00 && code <= 0xdfff) {
           throw new CorruptInputError('Non-canonical split surrogate pair');
         }

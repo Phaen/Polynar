@@ -9,7 +9,7 @@
  * states costs exactly log2(total/freq) bits, because the position inside
  * its bucket carries the next value's information instead of being wasted.
  * A uniform slot is the special case freq = 1, which reduces the update to
- * plain multiply-add — the original mixed-radix arithmetic.
+ * plain multiply-add, which is mixed-radix arithmetic.
  */
 
 import type { Charset, ByteRange } from './types';
@@ -33,7 +33,7 @@ export class Encoder {
   /** Push one value in a fixed radix: `integer` must lie in `[0, radix)`. */
   compose(integer: number, radix: number): void {
     // An out-of-range value would not throw on its own; it would silently
-    // corrupt every value packed after it. Fail here, at the source.
+    // corrupt every value packed after it, so it fails here, at the source.
     if (!Number.isInteger(radix)) {
       throw new TypeError(`Radix must be an integer, got ${radix}`);
     }
@@ -129,7 +129,7 @@ export class Encoder {
     // (offset by its known minimum, as a plain run), then the digits.
     this.compose(TERM_BASE + 1, TERM_BASE + 2);
 
-    // Extract digits in BigInt: integer-valued doubles are exact, but float
+    // Digits come out in BigInt: integer-valued doubles are exact, but float
     // division above 2^53 is not, and escaped terms live in that range.
     const base = BigInt(TERM_PAYLOAD_BASE);
     const digits: number[] = [];
@@ -187,7 +187,7 @@ export class Encoder {
    * tail from a bucket by whether the bucket's candidate fits the digits.
    * S pays the freq-blind slack once per block, for the symbol with the most
    * of it, while V would pay it once per symbol. With every freq at 1, V and
-   * S both equal the radix product: the original wire format, byte for byte.
+   * S both equal the radix product: the plain mixed-radix wire format, byte for byte.
    */
   private toDigits(size: number): number[] {
     const base = BigInt(size);
@@ -196,7 +196,7 @@ export class Encoder {
 
     let start = 0;
     while (start < this.totals.length) {
-      // Extend the block while the freq-blind bound stays within the cap.
+      // The block extends while the freq-blind bound stays within the cap.
       let den = 1n;
       let u = 1n;
       let v = 1n;

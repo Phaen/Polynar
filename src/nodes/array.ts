@@ -60,7 +60,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
       }
       this._length = bounds.length;
     }
-    // Like p.int bounds, round each bound INWARD (ceil the min, floor the
+    // Like p.int bounds, each bound rounds inward (ceil the min, floor the
     // max) so a fractional bound never admits a count beyond itself.
     if (bounds.min != null) {
       this._min = Math.ceil(bounds.min);

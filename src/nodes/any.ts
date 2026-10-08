@@ -180,7 +180,7 @@ export class PAny extends PNode<unknown> {
           if (Object.prototype.hasOwnProperty.call(value, key)) {
             throw new CorruptInputError('Duplicate key in record');
           }
-          // Define an own property: plain assignment would follow a
+          // An own property is defined because plain assignment would follow a
           // '__proto__' key to the prototype setter, letting wire data replace
           // the decoded object's prototype.
           Object.defineProperty(value, key, {

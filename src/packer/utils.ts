@@ -65,7 +65,7 @@ export function validateCharset(charset?: Charset): Charset {
     }
     return charset;
   } else {
-    // Normalize into a fresh array so the caller's is never mutated.
+    // A fresh array is built so the caller's is never mutated.
     let [min, max] = charset;
     if (min > max) {
       [min, max] = [max, min];

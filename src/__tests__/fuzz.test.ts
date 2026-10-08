@@ -3,7 +3,7 @@
  * round-trip identity (decode(encode(v)) equals v) and canonical closure
  * (bytes that decode at all must re-encode to exactly themselves, so no value
  * ever has a second wire spelling). Both are checked over the byte and text
- * transports, and against corrupted inputs (padding, tampering, truncation).
+ * transports, and against corrupted inputs (padding, flipped bytes, truncation).
  * The generator is seeded, so every run exercises the same cases and a
  * failure is reproducible.
  */
@@ -46,7 +46,7 @@ const randString = (max: number): string => {
 const FLOAT_SCRATCH = new Float64Array(1);
 const FLOAT_BITS = new BigUint64Array(FLOAT_SCRATCH.buffer);
 
-// Step a value a few doubles up or down. Neighbours of a cheap fraction are
+// Steps a value a few doubles up or down. Neighbours of a cheap fraction are
 // the adversarial region for the float codec: their rounding intervals abut
 // the fraction's, and the significand search must not claim its name.
 const nudge = (value: number): number => {
@@ -55,7 +55,7 @@ const nudge = (value: number): number => {
   return Number.isFinite(FLOAT_SCRATCH[0]) ? FLOAT_SCRATCH[0] : value;
 };
 
-// Cover all three significand spellings — noise, ratios, decimals, dyadics
+// Covers all three significand spellings — noise, ratios, decimals, dyadics
 // and scientific magnitudes — plus the values with no [1, 2) significand at
 // all: zeros, subnormals and the extremes of the finite range, which live on
 // the flat paths the fraction search never reaches.
@@ -69,7 +69,7 @@ const FLOAT_GENS = [
   () => randInt(1, 2 ** 40) * 2 ** -1074,
 ] as const;
 
-// Nudge a share of every family so the codec also sees the doubles adjacent
+// Nudges a share of every family so the codec also sees the doubles adjacent
 // to cheap fractions, binade edges and the subnormal boundary.
 const randFloat = (): number => {
   const raw = pick(FLOAT_GENS)();
@@ -481,7 +481,7 @@ describe('Property fuzz', () => {
         } else {
           const copy = Uint8Array.from(bytes);
           const at = randInt(0, copy.length - 1);
-          copy[at] = (copy[at] + randInt(1, 255)) % 256; // tampering
+          copy[at] = (copy[at] + randInt(1, 255)) % 256; // flipped byte
           mutated = copy;
         }
         let decoded: unknown;
@@ -498,7 +498,7 @@ describe('Property fuzz', () => {
     }
   });
 
-  it('round-trips through the text transport and rejects tampered text', () => {
+  it('round-trips through the text transport and rejects corrupted text', () => {
     const transports: readonly (Charset | undefined)[] = [
       undefined, // the library default (Base64)
       CharSets.digit,

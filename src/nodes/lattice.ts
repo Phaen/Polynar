@@ -20,8 +20,8 @@ export function writeIndex(
   } else if (min !== undefined) {
     const offset = index - min;
     // Float subtraction rounds once the offset passes 2^53, which would
-    // silently encode a neighbouring value. Refuse anything that cannot
-    // reconstruct exactly — the check IS the decode expression.
+    // silently encode a neighbouring value, so anything that cannot
+    // reconstruct exactly is refused; the check IS the decode expression.
     if (min + offset !== index) {
       throw new RangeError(
         `Value '${show(index)}' is too far from its bound ${show(min)} to encode exactly`
@@ -49,7 +49,7 @@ export function readIndex(dec: Decoder, min?: number, max?: number): number {
   if (min !== undefined) {
     const offset = dec.parseTerm();
     const index = min + offset;
-    // Mirror of the encode-side exactness guard: an offset whose sum rounds
+    // Counterpart of the encode-side exactness guard: an offset whose sum rounds
     // could never have been emitted.
     if (index - min !== offset) {
       throw new CorruptInputError('Term offset is outside the exact range of its bound');
@@ -102,7 +102,7 @@ export class LengthPrefix {
     if (length != null && (!Number.isInteger(length) || length < 0)) {
       throw new RangeError(`${who} length must be a non-negative integer, got ${length}`);
     }
-    // Round each bound INWARD (ceil the min, floor the max) so a fractional
+    // Each bound rounds inward (ceil the min, floor the max) so a fractional
     // bound never admits a length beyond itself.
     const min = bounds.min == null ? undefined : Math.ceil(bounds.min);
     if (min !== undefined && (!Number.isInteger(min) || min < 0)) {
