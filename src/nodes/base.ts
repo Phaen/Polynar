@@ -46,9 +46,8 @@ export abstract class PNode<TOut> {
   decode(bytes: Uint8Array, range?: ByteRange): TOut {
     const dec = new Decoder(bytes, range);
     const value = this._read(dec);
-    // The schema is the whole message, so the input must be exactly consumed.
-    // This rejects tampered digits and trailing padding instead of silently
-    // decoding them into plausible-looking values.
+    // The schema is the whole message, so the input must be exactly consumed:
+    // leftover digits and trailing padding throw.
     dec.finalize();
     return value;
   }
