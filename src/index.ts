@@ -17,6 +17,7 @@ export {
   PDecimal,
   PString,
   PBytes,
+  PLazy,
   PBool,
   PEnum,
   PDate,

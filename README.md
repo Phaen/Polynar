@@ -189,6 +189,21 @@ p.array(p.array(p.bool())); // arrays nest
 
 `.length` is both bounds at once, so combining it with `.min` or `.max` throws. Items can't be `.optional()`; make the array itself optional.
 
+### Recursion
+
+```typescript
+type Block =
+  | { type: 'paragraph'; text: string }
+  | { type: 'list'; items: Block[] };
+
+const Block: PNode<Block> = p.tagged('type', {
+  paragraph: p.object({ text: p.string() }),
+  list: p.object({ items: p.array(p.lazy(() => Block)) }),
+});
+```
+
+`p.lazy` looks its node up on first use, so a schema can contain itself or refer to one defined further down; it costs nothing on the wire. TypeScript can't infer a type from its own definition, so the recursive const carries its type as an annotation. Its kinds are unknown until first use, so it can't be a `p.union` member.
+
 ### Anything
 
 ```typescript

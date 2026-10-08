@@ -96,3 +96,10 @@ p.tagged('type', { a: p.object({ x: p.int() }), b: p.string() });
 
 // Bytes decode to a Uint8Array.
 const _bytes: Equals<Infer<ReturnType<typeof p.bytes>>, Uint8Array> = true;
+
+// A lazy node infers like the node it returns.
+const Later = p.lazy(() => p.object({ id: p.int() }));
+const _later: Equals<Infer<typeof Later>, { id: number }> = true;
+
+// @ts-expect-error — POptional is not a valid lazy target
+p.lazy(() => p.string().optional());
