@@ -48,7 +48,7 @@ export function validateCharset(charset?: Charset): Charset {
     // `s` flag makes `.` match line terminators, so a duplicate on either side
     // of a newline is still caught.
     if (charset.length < 2 || charset.match(/(.).*\1/s)) {
-      throw new Error(errChar);
+      throw new TypeError(errChar);
     }
     return charset;
   } else {
@@ -68,7 +68,7 @@ export function validateCharset(charset?: Charset): Charset {
     // Two symbols (base 2) is the floor, same as string charsets and binary
     // mode; a single symbol would be base 1, which carries no digit variation.
     if (max - min < 1) {
-      throw new Error(errBin);
+      throw new RangeError(errBin);
     }
 
     return [min, max];

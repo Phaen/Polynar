@@ -111,13 +111,13 @@ export class PString extends PNode<string> {
       if (typeof this._charset === 'string') {
         const pos = this._charset.indexOf(value.charAt(i));
         if (pos === -1) {
-          throw new Error('String not compliant with character set');
+          throw new RangeError('String not compliant with character set');
         }
         enc.compose(pos, this._charset.length);
       } else {
         const code = value.charCodeAt(i);
         if (code < this._charset[0] || code > this._charset[1]) {
-          throw new Error('String not compliant with character set');
+          throw new RangeError('String not compliant with character set');
         }
         enc.compose(code - this._charset[0], this._size!);
       }
