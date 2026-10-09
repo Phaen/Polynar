@@ -151,13 +151,6 @@ describe('Schema corruption rejection', () => {
     expect(() => p.any().decode(tagged.toUint8Array())).toThrow(
       'Non-canonical float tag on an integer value'
     );
-    // An undefined-tagged required object field: undefined marks absence on
-    // encode, so no object can carry it as a value.
-    const field = new Encoder();
-    field.compose(0, 9); // TAG_UNDEFINED
-    expect(() => p.object({ a: p.any() }).decode(field.toUint8Array())).toThrow(
-      'decoded as undefined'
-    );
     // A present optional whose inner `any` reads its undefined tag: undefined
     // is spelled by the absent bit alone.
     const present = new Encoder();

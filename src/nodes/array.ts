@@ -1,9 +1,11 @@
-import { Encoder, Decoder } from '../packer';
+import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { PNode } from './base';
 import { atPath } from './path';
 import type { Kind } from './guards';
 import { writeIndex, readIndex } from './lattice';
 import { RangePrior, priorKind, type Cdf, type Prior } from './weights';
+
+const MAX_ARRAY_LENGTH = 2 ** 32 - 1;
 
 /** Count constraints for an array node: min/max bounds, or a fixed length. */
 interface ArrayBounds {
@@ -169,6 +171,11 @@ export class PArray<TItem> extends PNode<TItem[]> {
       this._prior === undefined
         ? readIndex(dec, this._countMin(), this._countMax())
         : this._prior.read(dec);
+    // No array is longer than 2^32 - 1, so a larger count was never written.
+    // Items that take no bits never run out of input to say so themselves.
+    if (count > MAX_ARRAY_LENGTH) {
+      throw new CorruptInputError(`Array length ${count} is above the largest possible array`);
+    }
     const value: TItem[] = [];
     for (let i = 0; i < count; i++) {
       value.push(this._item._read(dec));

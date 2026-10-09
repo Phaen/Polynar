@@ -189,7 +189,7 @@ A `Date`, lossless to the millisecond by default. Infers `Date`. An invalid date
 
 ### `p.object(shape: Record<string, PNode>)`
 
-An object with a fixed shape: `p.object({ x: p.int(), label: p.optional(p.string()) })`. Infers the object type, with `p.optional` fields as optional keys. Fields are written in shape order; a required field that is `undefined` throws, and keys outside the shape are left out. No methods.
+An object with a fixed shape: `p.object({ x: p.int(), label: p.optional(p.string()) })`. Infers the object type, with `p.optional` fields as optional keys. Fields are written in shape order; a required field that is `undefined` throws unless its node takes `undefined` (`p.any()`, or a union with a `p.optional` member), and keys outside the shape are left out. No methods.
 
 ### `p.array(item: PNode)`
 

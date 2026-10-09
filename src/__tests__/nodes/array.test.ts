@@ -2,7 +2,7 @@
  * Schema array node (`p.array()`) — homogeneous sequences with optional bounds.
  */
 
-import { p } from '../../index';
+import { p, CorruptInputError } from '../../index';
 
 describe('Schema array', () => {
   it('round-trips empty, single and many elements', () => {
@@ -11,6 +11,14 @@ describe('Schema array', () => {
     expect(node.decode(node.encode([42]))).toEqual([42]);
     const many = Array.from({ length: 250 }, (_, i) => i * 3);
     expect(node.decode(node.encode(many))).toEqual(many);
+  });
+
+  it('rejects a count no array can have, even when items take no bits', () => {
+    const count = p
+      .int()
+      .min(0)
+      .encode(2 ** 33);
+    expect(() => p.array(p.null()).decode(count)).toThrow(CorruptInputError);
   });
 
   it('round-trips an array of objects', () => {
