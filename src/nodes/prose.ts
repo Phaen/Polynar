@@ -10,13 +10,7 @@
  */
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { composeCodePoint, parseCodePoint } from './codepoint';
-import {
-  buildWeights,
-  locateWeighted,
-  atIndexWeighted,
-  writeTable,
-  type WeightTable,
-} from './weights';
+import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
 
 /** Occurrences per ten thousand characters of running English text. */
 const BASE_WEIGHTS: Record<string, number> = {
@@ -278,7 +272,6 @@ export interface ProseTable {
   /** Row of the imaginary character before the first. */
   readonly start: number;
   readonly rows: readonly WeightTable[];
-  readonly locates: readonly ((residual: number) => readonly [number, number, number])[];
 }
 
 const SPACE = 32;
@@ -307,7 +300,6 @@ export function compileProse(model: ProseModel): ProseTable {
       escape,
       start: index.get(SPACE) ?? escape,
       rows,
-      locates: rows.map(locateWeighted),
     };
     compiled.set(model, table);
   }
@@ -388,12 +380,7 @@ export function composeProsePoint(
 }
 
 export function parseProsePoint(dec: Decoder, table: ProseTable, ctx: number): number {
-  const sym = dec.parseWeighted(
-    table.rows[ctx].total,
-    table.locates[ctx],
-    table.rows[ctx].cums.length,
-    atIndexWeighted(table.rows[ctx])
-  );
+  const sym = readTable(dec, table.rows[ctx]);
   if (sym !== table.escape) {
     return table.codes[sym];
   }

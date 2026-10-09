@@ -15,44 +15,44 @@ import {
   TERM_PAYLOAD_MIN_DIGITS,
 } from './constants';
 import { CorruptInputError } from './errors';
-import { validateCharset, validateByteRange, blockCapacity, charsetSize } from './utils';
+import {
+  validateCharset,
+  validateByteRange,
+  charsetSize,
+  charsetLookup,
+  digitChunk,
+  log2Exact,
+  SHIFTS,
+  type DigitChunk,
+} from './utils';
+import { BlockBound } from './bound';
 
 const TERM_ESCAPE_MIN_BIG = BigInt(TERM_ESCAPE_MIN);
+const MAX_SAFE = Number.MAX_SAFE_INTEGER;
+const MAX_SAFE_BIG = BigInt(MAX_SAFE);
 
 export class Decoder {
   private str: string;
   private charset: Charset;
   private size: number;
   private bytes?: Uint8Array;
-  /** The remaining value of the current block, as one big mixed-radix integer. */
-  private value?: bigint;
-  /** size^(digits loaded for the current block) — its available state space. */
-  private capacity?: bigint;
+  /** Digit by ASCII code unit for a string charset. */
+  private lookup?: Int32Array;
   /**
-   * Rational state bound V/den of the current block (with U/den its running
-   * density factor) and its digit bound S/den, the largest freq-blind
-   * candidate the block saw, mirroring the encoder's per-symbol updates
-   * exactly. With every freq at 1 (uniform slots only), V and S are both
-   * the plain radix product.
+   * The remaining value of the current block, as one big mixed-radix
+   * integer: `num` while it fits a safe integer, else `big`.
    */
-  private boundV = 1n;
-  private boundU = 1n;
-  private boundDen = 1n;
-  private boundS = 1n;
-  /**
-   * Tightest digit bound the last read admits (numerator over `tightDen`):
-   * the block's digit bound so far raised to the read's index form where the
-   * symbol has one, else to its bucket form. The encoder sizes the final
-   * block by this, so `finalize` checks the digit count against it.
-   */
-  private tightV = 1n;
-  private tightDen = 1n;
+  private big = 0n;
+  private num = 0;
+  private small = true;
+  private loaded = false;
+  /** The current block's state bound, mirroring the encoder's exactly. */
+  private bound?: BlockBound;
+  private chunk?: DigitChunk;
   /** An index closes its block: any further read must start the next one. */
   private closed = false;
   /** Digit index where the current block starts. */
   private blockStart = 0;
-  /** Digits-per-block and block state-space cap for this charset size. */
-  private block?: { digits: number; cap: bigint };
 
   constructor(str: string | Uint8Array, charset?: Charset) {
     if (str instanceof Uint8Array) {
@@ -73,6 +73,9 @@ export class Decoder {
       this.str = str;
       this.charset = validateCharset(charset);
       this.size = charsetSize(this.charset);
+      if (typeof this.charset === 'string') {
+        this.lookup = charsetLookup(this.charset);
+      }
     }
   }
 
@@ -89,7 +92,8 @@ export class Decoder {
     }
 
     if (typeof this.charset === 'string') {
-      const digit = this.charset.indexOf(this.str.charAt(i));
+      const code = this.str.charCodeAt(i);
+      const digit = code < 128 ? this.lookup![code] : this.charset.indexOf(this.str.charAt(i));
 
       if (digit === -1) {
         throw new CorruptInputError('Character at ' + i + ' not found in character set');
@@ -113,89 +117,121 @@ export class Decoder {
 
   /**
    * Rebuild one block of the encoder's mixed-radix packing from the
-   * base-`size` digits of the input. Deferred to the first parse so charset
-   * errors surface on read, not construction.
+   * base-`size` digits of the input, a chunk of digits at a time. Deferred
+   * to the first parse so charset errors surface on read, not construction.
    */
   private loadBlock(start: number): void {
-    const base = BigInt(this.size);
-    this.block ??= blockCapacity(this.size);
+    const bound = (this.bound ??= new BlockBound(this.size));
+    const chunk = (this.chunk ??= digitChunk(this.size));
+    const size = this.size;
 
-    const end = Math.min(start + this.block.digits, this.inputLength());
-    let value = 0n;
-    let capacity = 1n;
-
-    for (let i = end - 1; i >= start; i--) {
-      value = value * base + BigInt(this.digitAt(i));
-      capacity *= base;
+    const end = Math.min(start + bound.blockDigits, this.inputLength());
+    const count = end - start;
+    // The top chunk takes the digits left over above a whole number of them.
+    let run = count % chunk.digits || Math.min(count, chunk.digits);
+    let i = end;
+    let num = 0;
+    for (const stop = i - run; i > stop; ) {
+      num = num * size + this.digitAt(--i);
+    }
+    if (i === start) {
+      this.small = true;
+      this.num = num;
+    } else {
+      let big = BigInt(num);
+      run = chunk.digits;
+      while (i > start) {
+        num = 0;
+        for (const stop = i - run; i > stop; ) {
+          num = num * size + this.digitAt(--i);
+        }
+        big = big * chunk.big + BigInt(num);
+      }
+      this.small = false;
+      this.big = big;
     }
 
     this.blockStart = start;
-    this.value = value;
-    this.capacity = capacity;
-    this.boundV = 1n;
-    this.boundU = 1n;
-    this.boundDen = 1n;
-    this.boundS = 1n;
+    this.loaded = true;
     this.closed = false;
+    bound.reset(count);
+  }
+
+  private valueIsZero(): boolean {
+    return this.small ? this.num === 0 : this.big === 0n;
   }
 
   /**
-   * Advance the freq-blind bound candidate for a symbol of `total` states:
-   * block-boundary decision and truncation check, mirroring the encoder.
-   * Returns the candidate V numerator, which the caller commits (scaled by
-   * the symbol's freq once known) after the read, and whether the symbol is
-   * written as an index.
-   *
-   * `count` is the symbol's index form: when the bucket form needs more
-   * state than the digits hold but the index form fits, the encoder wrote
-   * the index (it only does so for the message's last symbol).
+   * Advance the block for a symbol of `total` states: block-boundary
+   * decision and truncation check, mirroring the encoder. Returns whether
+   * the symbol is written as an index over `count` members: when the bucket
+   * form needs more state than the digits hold but the index form fits, the
+   * encoder wrote the index (it only does so for the message's last symbol).
    */
-  private stepBound(totalBig: bigint, countBig: bigint): [bigint, boolean] {
-    let candidate = this.boundV + this.boundU * (totalBig - 1n);
+  private stepBound(total: number, count: number): boolean {
+    const bound = this.bound!;
 
     // The encoder's greedy rule applies: a value whose total would push the
     // block's state bound past the cap lives in the next block.
-    if (this.closed || candidate > this.block!.cap * this.boundDen) {
+    if (this.closed || bound.exceedsCap(total)) {
       // The encoder leaves no remainder at a block boundary, so leftover value
       // here means a digit was corrupted past its saturation point.
-      if (this.value !== 0n) {
+      if (!this.valueIsZero()) {
         throw new CorruptInputError('Oversaturated input');
       }
 
-      if (this.blockStart + this.block!.digits > this.inputLength()) {
+      if (this.blockStart + bound.blockDigits > this.inputLength()) {
         throw new CorruptInputError(
           'Unexpected end of input while parsing: truncated or corrupted'
         );
       }
 
-      this.loadBlock(this.blockStart + this.block!.digits);
-      candidate = totalBig;
+      this.loadBlock(this.blockStart + bound.blockDigits);
     }
-
-    const asIndex = countBig < totalBig ? this.boundV + this.boundU * (countBig - 1n) : candidate;
-    this.tightV = this.boundS < asIndex ? asIndex : this.boundS;
-    this.tightDen = this.boundDen;
 
     // The encoder emits exactly enough digits to cover the block's digit
     // bound, which covers every bucket candidate, so needing more state
     // space than the block holds means the input is truncated or is being
     // read past its end — unless the symbol's index form fits, which is how
     // the encoder wrote it.
-    if (candidate > this.capacity! * this.boundDen) {
-      if (asIndex > this.capacity! * this.boundDen) {
+    if (bound.exceedsCapacity(total)) {
+      if (bound.indexExceedsCapacity(total, count)) {
         throw new CorruptInputError(
           'Unexpected end of input while parsing: truncated or corrupted'
         );
       }
       this.closed = true;
-      this.boundS = this.tightV;
-      return [asIndex, true];
+      return true;
     }
 
-    if (this.boundS < candidate) {
-      this.boundS = candidate;
+    return false;
+  }
+
+  /** Peel one radix-`radix` digit off the value. */
+  private divide(radix: number): number {
+    if (this.small) {
+      const digit = this.num % radix;
+      this.num = (this.num - digit) / radix;
+      return digit;
     }
-    return [candidate, false];
+    let digit: number;
+    let quotient: bigint;
+    const bits = log2Exact(radix);
+    if (bits < 0) {
+      const radixBig = BigInt(radix);
+      quotient = this.big / radixBig;
+      digit = Number(this.big - quotient * radixBig);
+    } else {
+      digit = Number(BigInt.asUintN(bits, this.big));
+      quotient = this.big >> SHIFTS[bits];
+    }
+    if (quotient <= MAX_SAFE_BIG) {
+      this.small = true;
+      this.num = Number(quotient);
+    } else {
+      this.big = quotient;
+    }
+    return digit;
   }
 
   /**
@@ -211,18 +247,14 @@ export class Decoder {
     if (radix === 1) {
       return 0;
     }
-    if (this.value == null) {
+    if (!this.loaded) {
       this.loadBlock(0);
     }
 
-    const radixBig = BigInt(radix);
-    [this.boundV] = this.stepBound(radixBig, radixBig);
-    this.boundU *= radixBig;
+    this.stepBound(radix, radix);
+    this.bound!.update(radix, 1, radix);
 
-    const integer = this.value! % radixBig;
-    this.value = this.value! / radixBig;
-
-    return Number(integer);
+    return this.divide(radix);
   }
 
   /**
@@ -243,34 +275,47 @@ export class Decoder {
     count: number = total,
     atIndex?: (index: number) => readonly [T, number, number]
   ): T {
-    if (this.value == null) {
+    if (!this.loaded) {
       this.loadBlock(0);
     }
 
     if (!Number.isInteger(count) || count < 1) {
       throw new TypeError(`Symbol count must be a positive integer, got ${count}`);
     }
-    const totalBig = BigInt(total);
-    const countBig = BigInt(Math.min(count, total));
-    if (countBig < totalBig && atIndex === undefined) {
+    const members = Math.min(count, total);
+    if (members < total && atIndex === undefined) {
       throw new TypeError('parseWeighted needs atIndex when count is below total');
     }
-    const [candidate, indexed] = this.stepBound(totalBig, countBig);
+    const bound = this.bound!;
 
-    if (indexed) {
-      const index = Number(this.value! % countBig);
-      this.value = this.value! / countBig;
+    if (this.stepBound(total, members)) {
+      const index = this.divide(members);
       const [symbol, , freq] = atIndex!(index);
       // The encoder refuses zero-weight values, so one here was never written.
       if (!Number.isInteger(freq) || freq < 1) {
         throw new CorruptInputError('Index of a value with no weight');
       }
-      this.boundV = candidate;
-      this.boundU *= countBig;
+      bound.update(members, 1, members);
       return symbol;
     }
 
-    const residual = Number(this.value! % totalBig);
+    let residual: number;
+    let quotient = 0;
+    let quotientBig = 0n;
+    if (this.small) {
+      residual = this.num % total;
+      quotient = (this.num - residual) / total;
+    } else {
+      const bits = log2Exact(total);
+      if (bits < 0) {
+        const totalBig = BigInt(total);
+        quotientBig = this.big / totalBig;
+        residual = Number(this.big - quotientBig * totalBig);
+      } else {
+        residual = Number(BigInt.asUintN(bits, this.big));
+        quotientBig = this.big >> SHIFTS[bits];
+      }
+    }
     const [symbol, cum, freq] = locate(residual);
     // A bucket that fails to contain its own residual is a model bug on this
     // side, not corrupt input.
@@ -288,16 +333,19 @@ export class Decoder {
       );
     }
 
-    const freqBig = BigInt(freq);
-    if (freqBig === 1n) {
-      this.boundV = candidate;
+    bound.update(total, freq, members);
+    if (this.small) {
+      // A weighted step never grows the value, so it stays a safe integer.
+      this.num = freq * quotient + (residual - cum);
     } else {
-      this.boundV = (this.boundV + this.boundU * (totalBig - freqBig)) * freqBig;
-      this.boundS *= freqBig;
-      this.boundDen *= freqBig;
+      const next = BigInt(freq) * quotientBig + BigInt(residual - cum);
+      if (next <= MAX_SAFE_BIG) {
+        this.small = true;
+        this.num = Number(next);
+      } else {
+        this.big = next;
+      }
     }
-    this.boundU *= totalBig;
-    this.value = freqBig * (this.value! / totalBig) + BigInt(residual - cum);
 
     return symbol;
   }
@@ -373,11 +421,11 @@ export class Decoder {
    * to reject corrupted input that the reads themselves could not detect.
    */
   finalize(): void {
-    if (this.value == null) {
+    if (!this.loaded) {
       this.loadBlock(0);
     }
 
-    if (this.value !== 0n) {
+    if (!this.valueIsZero()) {
       throw new CorruptInputError('Unread or corrupted data at end of input');
     }
 
@@ -385,10 +433,8 @@ export class Decoder {
     // ceil(log_size(state bound)) digits — the bound in the last symbol's
     // tightest form — so its state space never reaches a full unread digit
     // beyond what the reads consumed.
-    if (
-      this.blockStart + this.block!.digits < this.inputLength() ||
-      this.tightV * BigInt(this.size) <= this.capacity! * this.tightDen
-    ) {
+    const bound = this.bound!;
+    if (this.blockStart + bound.blockDigits < this.inputLength() || bound.tightFitsAnotherDigit()) {
       throw new CorruptInputError('Input is longer than its contents');
     }
   }
