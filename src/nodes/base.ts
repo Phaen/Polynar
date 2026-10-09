@@ -82,7 +82,7 @@ export class POptional<TOut> extends PNode<TOut | undefined> {
    */
   declare readonly _kinds?: readonly Kind[];
 
-  /** A prior on presence as `[absent, present]`; undefined means one bit. */
+  /** A prior on presence as `[present, absent]`; undefined means one bit. */
   readonly presence?: readonly [number, number];
 
   constructor(
@@ -94,24 +94,24 @@ export class POptional<TOut> extends PNode<TOut | undefined> {
       this._kinds = [...new Set<Kind>([...inner._kinds, 'undefined'])];
     }
     if (presence !== undefined) {
-      const [absent, present] = presence;
+      const [present, absent] = presence;
       if (
         !Number.isInteger(absent) ||
         !Number.isInteger(present) ||
-        absent < 1 ||
         present < 1 ||
-        !Number.isSafeInteger(absent + present)
+        absent < 1 ||
+        !Number.isSafeInteger(present + absent)
       ) {
         throw new TypeError(
-          `p.optional weights must be positive integers [absent, present], got [${absent}, ${present}]`
+          `p.optional weights must be positive integers [present, absent], got [${present}, ${absent}]`
         );
       }
-      this.presence = [absent, present];
+      this.presence = [present, absent];
     }
   }
 
   /**
-   * Declare how likely the value is to be there, as `[absent, present]`
+   * Declare how likely the value is to be there, as `[present, absent]`
    * weights: a 99%-present value costs ~0.015 bits instead of a full bit.
    * A prior, not a constraint, and part of the wire format.
    */
@@ -125,14 +125,14 @@ export class POptional<TOut> extends PNode<TOut | undefined> {
       if (presence === undefined) {
         enc.compose(0, 2);
       } else {
-        enc.composeWeighted(0, presence[0], presence[0] + presence[1], 0, 2);
+        enc.composeWeighted(presence[0], presence[1], presence[0] + presence[1], 1, 2);
       }
       return;
     }
     if (presence === undefined) {
       enc.compose(1, 2);
     } else {
-      enc.composeWeighted(presence[0], presence[1], presence[0] + presence[1], 1, 2);
+      enc.composeWeighted(0, presence[0], presence[0] + presence[1], 0, 2);
     }
     this.inner._write(enc, value);
   }
@@ -144,9 +144,9 @@ export class POptional<TOut> extends PNode<TOut | undefined> {
         ? dec.parse(2) === 1
         : dec.parseWeighted(
             presence[0] + presence[1],
-            (r) => (r < presence[0] ? [false, 0, presence[0]] : [true, presence[0], presence[1]]),
+            (r) => (r < presence[0] ? [true, 0, presence[0]] : [false, presence[0], presence[1]]),
             2,
-            (i) => (i === 0 ? [false, 0, presence[0]] : [true, presence[0], presence[1]])
+            (i) => (i === 0 ? [true, 0, presence[0]] : [false, presence[0], presence[1]])
           );
     if (!there) {
       return undefined;

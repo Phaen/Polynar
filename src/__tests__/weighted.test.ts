@@ -201,7 +201,7 @@ describe('Weighted packer primitive', () => {
   });
 
   it('rejects a likely run padded to the digits its per-symbol slack would need', () => {
-    const node = p.array(p.bool().weights([1, 99])).length(100);
+    const node = p.array(p.bool().weights([99, 1])).length(100);
     const text = node.encodeString(Array(100).fill(true), '01');
     expect(text).toHaveLength(9);
     expect(node.decodeString(text, '01')).toEqual(Array(100).fill(true));
@@ -322,7 +322,7 @@ describe('Indexed last symbol', () => {
   });
 
   it('keeps the index form when a constant field ends the message', () => {
-    const shape = { a: p.int().min(0).max(1000), flag: p.bool().weights([1, 99]) };
+    const shape = { a: p.int().min(0).max(1000), flag: p.bool().weights([99, 1]) };
     const bits = p.object(shape).encodeString({ a: 500, flag: true }, '01').length;
     const node = p.object({ ...shape, c: p.enum(['v1']) });
     const value = { a: 500, flag: true, c: 'v1' as const };

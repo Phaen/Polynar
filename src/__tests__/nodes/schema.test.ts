@@ -78,7 +78,7 @@ describe('Schema hardening', () => {
     expect(optInt.decode(optInt.encode(1))).toBe(1);
     expect(optInt.decode(optInt.encode(undefined))).toBeUndefined();
     expect(optInt.encode(undefined)).toEqual(p.bool().encode(false));
-    const likely = p.optional(p.int().min(0).max(9)).weights([1, 99]);
+    const likely = p.optional(p.int().min(0).max(9)).weights([99, 1]);
     expect(likely.decode(likely.encode(4))).toBe(4);
     expect(likely.decode(likely.encode(undefined))).toBeUndefined();
     const many = Array.from({ length: 50 }, () => 4);

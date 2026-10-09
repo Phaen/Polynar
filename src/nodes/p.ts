@@ -182,7 +182,7 @@ export const p = {
   },
   /**
    * A value or `undefined`: one presence bit, or less with
-   * `.weights([absent, present])`. Only `undefined` means absent; wrapping
+   * `.weights([present, absent])`. Only `undefined` means absent; wrapping
    * twice is the same as once.
    */
   optional<T>(node: PNode<T>): POptional<T> {
