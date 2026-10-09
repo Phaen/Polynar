@@ -246,7 +246,7 @@ The tag costs log2(members) bits and is never written as text. The order of the 
 
 ### `p.lazy(resolve: () => PNode)`
 
-A node looked up on first use, so a schema can contain itself or refer to one defined further down; it costs nothing on the wire. Infers the resolved node's type. Its kinds are unknown until first use, so it can't be a `p.union` member. The node it returns can't be `p.optional` either, because an object couldn't see that the field is optional. No methods.
+A node looked up on first use, so a schema can contain itself or refer to one defined further down; it costs nothing on the wire. Infers the resolved node's type. Its kinds are unknown until first use, so it can't be a `p.union` member, and so can't go inside `p.nullable` either; `p.lazy(() => p.nullable(Node))` puts the nullable inside instead. For an optional field it goes the other way round: `p.optional(p.lazy(() => Node))` works, while `p.lazy(() => p.optional(Node))` doesn't, because the object can't see the optional through the lazy. No methods.
 
 ### `p.versioned(first: PNode, ...later: (PNode | [PNode, (previous) => next])[])`
 
