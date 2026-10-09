@@ -5,6 +5,8 @@
  * normalize differently across platforms.
  */
 
+import type { Encoder, Decoder } from '../packer';
+
 export interface WeightTable {
   readonly cums: readonly number[];
   readonly freqs: readonly number[];
@@ -51,6 +53,21 @@ export const locateWeighted =
     return [lo, table.cums[lo], table.freqs[lo]];
   };
 
+/** Write the `pos`-th entry of a weight table as one weighted symbol. */
+export function writeTable(enc: Encoder, table: WeightTable, pos: number): void {
+  enc.composeWeighted(table.cums[pos], table.freqs[pos], table.total, pos, table.cums.length);
+}
+
+/** Read one weighted symbol written by `writeTable`: the entry's position. */
+export function readTable(dec: Decoder, table: WeightTable): number {
+  return dec.parseWeighted(
+    table.total,
+    locateWeighted(table),
+    table.cums.length,
+    atIndexWeighted(table)
+  );
+}
+
 /**
  * An integer CDF over an indexed range: `cdf(v)` is the cumulative weight of
  * all values below `v`, so a value's own weight is `cdf(v + 1) - cdf(v)`.
@@ -93,7 +110,7 @@ export const priorKind = (prior: Prior): 'cdf' | 'weights' =>
   typeof prior === 'function' ? 'cdf' : 'weights';
 
 /** A prior over `[lo, hi]` as a validated, rebased CDF and its total mass. */
-export function resolvePrior(
+function resolvePrior(
   prior: Prior,
   lo: number,
   hi: number,
@@ -111,7 +128,7 @@ export function resolvePrior(
  * The bucket of one value under a CDF, validated for the encode side.
  * `subject` names the value in an error, as in `Value '3'`.
  */
-export function cdfBucket(
+function cdfBucket(
   cdf: Cdf,
   v: number,
   who: string,
@@ -129,7 +146,7 @@ export function cdfBucket(
 }
 
 /** Direct lookup under a CDF: the bucket of the i-th value from `lo`. */
-export const atIndexCdf =
+const atIndexCdf =
   (cdf: Cdf, lo: number) =>
   (i: number): readonly [number, number, number] => [
     lo + i,
@@ -142,7 +159,7 @@ export const atIndexCdf =
  * `cdf(v) <= residual`. Zero-weight plateaus resolve past themselves, so
  * unencodable values stay unreachable.
  */
-export const locateCdf =
+const locateCdf =
   (cdf: Cdf, lo: number, hi: number) =>
   (residual: number): readonly [number, number, number] => {
     while (lo < hi) {
@@ -152,3 +169,43 @@ export const locateCdf =
     }
     return [lo, cdf(lo), cdf(lo + 1) - cdf(lo)];
   };
+
+/**
+ * A prior resolved over `[lo, hi]`: each value in the range writes and reads
+ * as one weighted symbol. `declared` is the prior as given, kept so a later
+ * bound change re-validates it.
+ */
+export class RangePrior {
+  readonly declared: Prior;
+  private readonly cdf: Cdf;
+  /** cdf(hi + 1), the weight of the whole range. */
+  private readonly total: number;
+  private readonly lo: number;
+  private readonly hi: number;
+  private readonly who: string;
+
+  constructor(declared: Prior, lo: number, hi: number, who: string) {
+    const { cdf, total } = resolvePrior(declared, lo, hi, who);
+    this.declared = declared;
+    this.cdf = cdf;
+    this.total = total;
+    this.lo = lo;
+    this.hi = hi;
+    this.who = who;
+  }
+
+  /** `subject` names the value in an error, as in `Value '3'`. */
+  write(enc: Encoder, v: number, subject: () => string): void {
+    const [cum, freq] = cdfBucket(this.cdf, v, this.who, subject);
+    enc.composeWeighted(cum, freq, this.total, v - this.lo, this.hi - this.lo + 1);
+  }
+
+  read(dec: Decoder): number {
+    return dec.parseWeighted(
+      this.total,
+      locateCdf(this.cdf, this.lo, this.hi),
+      this.hi - this.lo + 1,
+      atIndexCdf(this.cdf, this.lo)
+    );
+  }
+}

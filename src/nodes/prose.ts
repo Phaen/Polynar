@@ -10,7 +10,13 @@
  */
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { composeCodePoint, parseCodePoint } from './codepoint';
-import { buildWeights, locateWeighted, atIndexWeighted, type WeightTable } from './weights';
+import {
+  buildWeights,
+  locateWeighted,
+  atIndexWeighted,
+  writeTable,
+  type WeightTable,
+} from './weights';
 
 /** Occurrences per ten thousand characters of running English text. */
 const BASE_WEIGHTS: Record<string, number> = {
@@ -375,8 +381,7 @@ export function composeProsePoint(
   ctx: number
 ): void {
   const sym = table.index.get(code) ?? table.escape;
-  const row = table.rows[ctx];
-  enc.composeWeighted(row.cums[sym], row.freqs[sym], row.total, sym, row.cums.length);
+  writeTable(enc, table.rows[ctx], sym);
   if (sym === table.escape) {
     composeCodePoint(enc, code);
   }

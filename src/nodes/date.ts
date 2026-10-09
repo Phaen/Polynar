@@ -2,15 +2,7 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { isDate, type Kind } from './guards';
 import { PNode } from './base';
 import { writeIndex, readIndex } from './lattice';
-import {
-  resolvePrior,
-  priorKind,
-  cdfBucket,
-  locateCdf,
-  atIndexCdf,
-  type Cdf,
-  type Prior,
-} from './weights';
+import { RangePrior, priorKind, type Cdf, type Prior } from './weights';
 
 export type DateUnit =
   | 'millisecond'
@@ -119,10 +111,8 @@ export class PDate extends PNode<Date> {
   private readonly _lo?: number;
   private readonly _hi?: number;
 
-  /** The prior as declared, kept so a later bound change re-validates it. */
-  private readonly _prior?: Prior;
-  private readonly _cdf?: Cdf;
-  private readonly _total?: number;
+  /** A prior over the bounded buckets, counted from min's; undefined means uniform. */
+  private readonly _prior?: RangePrior;
 
   constructor(
     min?: number | Date,
@@ -162,10 +152,7 @@ export class PDate extends PNode<Date> {
       if (this._lo === undefined || this._hi === undefined) {
         throw new TypeError(`p.date ${priorKind(prior)} requires both bounds`);
       }
-      this._prior = prior;
-      const resolved = resolvePrior(prior, 0, this._hi - this._lo, 'p.date');
-      this._cdf = resolved.cdf;
-      this._total = resolved.total;
+      this._prior = new RangePrior(prior, 0, this._hi - this._lo, 'p.date');
     }
   }
 
@@ -224,30 +211,18 @@ export class PDate extends PNode<Date> {
       throw new RangeError(`Date '${value.toISOString()}' is after the maximum ${iso(this._max!)}`);
     }
 
-    if (this._cdf === undefined) {
+    if (this._prior === undefined) {
       writeIndex(enc, bucket, this._lo, this._hi, (b) => iso(this._calendar.start(b)));
       return;
     }
-    const [cum, freq] = cdfBucket(
-      this._cdf,
-      bucket - this._lo!,
-      'p.date',
-      () => `Date '${value.toISOString()}'`
-    );
-    enc.composeWeighted(cum, freq, this._total!, bucket - this._lo!, this._hi! - this._lo! + 1);
+    this._prior.write(enc, bucket - this._lo!, () => `Date '${value.toISOString()}'`);
   }
 
   _read(dec: Decoder): Date {
     const bucket =
-      this._cdf === undefined
+      this._prior === undefined
         ? readIndex(dec, this._lo, this._hi)
-        : this._lo! +
-          dec.parseWeighted(
-            this._total!,
-            locateCdf(this._cdf, 0, this._hi! - this._lo!),
-            this._hi! - this._lo! + 1,
-            atIndexCdf(this._cdf, 0)
-          );
+        : this._lo! + this._prior.read(dec);
     const date = new Date(this._calendar.start(bucket));
     // A bucket starting beyond the ±8.64e15 ms Date range can only come from
     // a corrupted input or from a bucket that straddles the range's edge.
@@ -269,7 +244,7 @@ export class PDate extends PNode<Date> {
       change.max ?? this._max,
       change.unit ?? this._unit,
       change.step ?? this._step,
-      change.prior ?? this._prior
+      change.prior ?? this._prior?.declared
     );
   }
 }

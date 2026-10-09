@@ -7,7 +7,7 @@
  */
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import type { Charset } from '../packer';
-import { validateCharset } from '../packer/utils';
+import { validateCharset, charsetSize } from '../packer/utils';
 import { PNode } from './base';
 import { LengthPrefix, type LengthBounds } from './lattice';
 import type { Kind } from './guards';
@@ -49,7 +49,7 @@ export class PString extends PNode<string> {
       // a range array can't change the node.
       this._charset = validateCharset(charset);
       if (typeof this._charset !== 'string') {
-        this._size = this._charset[1] - this._charset[0] + 1;
+        this._size = charsetSize(this._charset);
       }
     }
   }

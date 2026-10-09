@@ -15,7 +15,7 @@ import {
   TERM_PAYLOAD_MIN_DIGITS,
 } from './constants';
 import { CorruptInputError } from './errors';
-import { validateCharset, validateByteRange, blockCapacity } from './utils';
+import { validateCharset, validateByteRange, blockCapacity, charsetSize } from './utils';
 
 const TERM_ESCAPE_MIN_BIG = BigInt(TERM_ESCAPE_MIN);
 
@@ -47,8 +47,6 @@ export class Decoder {
    */
   private tightV = 1n;
   private tightDen = 1n;
-  /** Whether the last read was an index. Set by `stepBound`. */
-  private indexed = false;
   /** An index closes its block: any further read must start the next one. */
   private closed = false;
   /** Digit index where the current block starts. */
@@ -74,12 +72,7 @@ export class Decoder {
       // String mode
       this.str = str;
       this.charset = validateCharset(charset);
-
-      if (typeof this.charset === 'string') {
-        this.size = this.charset.length;
-      } else {
-        this.size = this.charset[1] - this.charset[0] + 1;
-      }
+      this.size = charsetSize(this.charset);
     }
   }
 
@@ -149,17 +142,16 @@ export class Decoder {
   /**
    * Advance the freq-blind bound candidate for a symbol of `total` states:
    * block-boundary decision and truncation check, mirroring the encoder.
-   * Returns the candidate V numerator; the caller commits it (scaled by the
-   * symbol's freq once known) after the read.
+   * Returns the candidate V numerator, which the caller commits (scaled by
+   * the symbol's freq once known) after the read, and whether the symbol is
+   * written as an index.
    *
    * `count` is the symbol's index form: when the bucket form needs more
    * state than the digits hold but the index form fits, the encoder wrote
-   * the index (it only does so for the message's last symbol), and
-   * `indexed` is set for the caller.
+   * the index (it only does so for the message's last symbol).
    */
-  private stepBound(totalBig: bigint, countBig: bigint): bigint {
+  private stepBound(totalBig: bigint, countBig: bigint): [bigint, boolean] {
     let candidate = this.boundV + this.boundU * (totalBig - 1n);
-    this.indexed = false;
 
     // The encoder's greedy rule applies: a value whose total would push the
     // block's state bound past the cap lives in the next block.
@@ -195,16 +187,15 @@ export class Decoder {
           'Unexpected end of input while parsing: truncated or corrupted'
         );
       }
-      this.indexed = true;
       this.closed = true;
       this.boundS = this.tightV;
-      return asIndex;
+      return [asIndex, true];
     }
 
     if (this.boundS < candidate) {
       this.boundS = candidate;
     }
-    return candidate;
+    return [candidate, false];
   }
 
   /**
@@ -225,7 +216,7 @@ export class Decoder {
     }
 
     const radixBig = BigInt(radix);
-    this.boundV = this.stepBound(radixBig, radixBig);
+    [this.boundV] = this.stepBound(radixBig, radixBig);
     this.boundU *= radixBig;
 
     const integer = this.value! % radixBig;
@@ -264,9 +255,9 @@ export class Decoder {
     if (countBig < totalBig && atIndex === undefined) {
       throw new TypeError('parseWeighted needs atIndex when count is below total');
     }
-    const candidate = this.stepBound(totalBig, countBig);
+    const [candidate, indexed] = this.stepBound(totalBig, countBig);
 
-    if (this.indexed) {
+    if (indexed) {
       const index = Number(this.value! % countBig);
       this.value = this.value! / countBig;
       const [symbol, , freq] = atIndex!(index);
