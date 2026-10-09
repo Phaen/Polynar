@@ -102,6 +102,19 @@ describe('Low-level primitives', () => {
     expect(encoder.toUint8Array().length).toBeLessThanOrEqual(128);
   });
 
+  it('folds radices whose product rounds to exactly 2^53 as doubles', () => {
+    // 3002399751580331 · 3 = 2^53 + 1, which a double rounds to 2^53.
+    const radices = [3002399751580331, 3, 2 ** 52];
+    const enc = new Encoder();
+    for (const radix of radices) {
+      enc.compose(1, radix);
+    }
+    const bytes = enc.toUint8Array();
+    const dec = new Decoder(bytes);
+    expect(radices.map((radix) => dec.parse(radix))).toEqual([1, 1, 1]);
+    dec.finalize();
+  });
+
   it('rejects a compose integer outside its radix', () => {
     const encoder = new Encoder();
     expect(() => encoder.compose(10, 10)).toThrow(RangeError);
@@ -264,6 +277,30 @@ describe('Charset validation', () => {
   it('throws when a character is absent from the charset', () => {
     const decoder = new Decoder('!', CharSets.digit);
     expect(() => decoder.parse(2)).toThrow(/not found in character set/);
+  });
+
+  it('reads ASCII digits that sit past index 32767 of a long charset', () => {
+    const charset = Array.from({ length: 65536 }, (_, i) => String.fromCharCode(65535 - i)).join(
+      ''
+    );
+    const enc = new Encoder();
+    enc.compose(65535, 65536);
+    enc.compose(65, 65536);
+    const dec = new Decoder(enc.toString(charset), charset);
+    expect([dec.parse(65536), dec.parse(65536)]).toEqual([65535, 65]);
+    dec.finalize();
+  });
+
+  it('keeps validating past the charsets it remembers', () => {
+    // Validated charsets are remembered, up to a bound; a long stream of
+    // distinct ones keeps being checked and keeps round-tripping.
+    for (let i = 0; i < 300; i++) {
+      const charset = String.fromCharCode(0x100 + i, 0x1000 + i, 0x2000 + i);
+      const encoder = new Encoder();
+      encoder.compose(i % 7, 7);
+      expect(new Decoder(encoder.toString(charset), charset).parse(7)).toBe(i % 7);
+    }
+    expect(() => new Decoder('aa', 'aa')).toThrow('Invalid character set');
   });
 
   it('throws when a character falls just past a range charset', () => {

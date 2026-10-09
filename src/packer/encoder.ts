@@ -19,15 +19,61 @@ import {
   TERM_PAYLOAD_BASE,
   TERM_PAYLOAD_MIN_DIGITS,
 } from './constants';
-import { validateCharset, validateByteRange, blockCapacity, charsetSize } from './utils';
+import {
+  validateCharset,
+  validateByteRange,
+  charsetSize,
+  digitChunk,
+  SHIFTS,
+  type DigitChunk,
+} from './utils';
+import { BlockBound } from './bound';
 
-/** The fewest base-`base` digits whose state space covers the bound `v/den`. */
-function digitsFor(v: bigint, den: bigint, base: bigint): number {
-  let digits = 0;
-  for (let space = den; space < v; space *= base) {
-    digits++;
+const MAX_SAFE = Number.MAX_SAFE_INTEGER;
+const TWO_53 = 2 ** 53;
+
+/**
+ * Append `count` base-`size` digits of `value`, lowest first. A big value
+ * sheds a chunk of digits per division, split further in Number arithmetic.
+ */
+function emitDigits(
+  digits: number[],
+  value: bigint | number,
+  count: number,
+  size: number,
+  chunk: DigitChunk
+): void {
+  let big = typeof value === 'bigint' ? value : undefined;
+  let num = typeof value === 'number' ? value : 0;
+  const shift = chunk.bits === 0 ? undefined : SHIFTS[chunk.bits];
+  while (count > 0) {
+    let run = count;
+    if (big !== undefined) {
+      if (count > chunk.digits) {
+        if (shift === undefined) {
+          num = Number(big % chunk.big);
+          big /= chunk.big;
+        } else {
+          num = Number(BigInt.asUintN(chunk.bits, big));
+          big >>= shift;
+        }
+        run = chunk.digits;
+      } else {
+        // The digit count covers the value, so what remains fits the chunk.
+        num = Number(big);
+        big = undefined;
+      }
+    }
+    count -= run;
+    for (let d = 0; d < run; d++) {
+      // Below 2^53 the float quotient rounds to the exact integer part: the
+      // integer part is itself a double, and the quotient would have to be
+      // closer to the next integer, which the value's size rules out.
+      const quotient = Math.floor(num / size);
+      digits.push(num - quotient * size);
+      num = quotient;
+    }
   }
-  return digits;
 }
 
 export class Encoder {
@@ -197,95 +243,119 @@ export class Encoder {
    * S pays the freq-blind slack once per block, for the symbol with the most
    * of it, while V would pay it once per symbol. With every freq at 1, V and
    * S both equal the radix product: the plain mixed-radix wire format, byte for byte.
+   * `BlockBound` carries these rationals for both sides.
    */
   private toDigits(size: number): number[] {
-    const base = BigInt(size);
-    const block = blockCapacity(size);
+    const bound = new BlockBound(size);
+    const chunk = digitChunk(size);
     const digits: number[] = [];
+    const totals = this.totals;
+    const n = totals.length;
 
     let start = 0;
-    while (start < this.totals.length) {
+    while (start < n) {
       // The block extends while the freq-blind bound stays within the cap.
-      let den = 1n;
-      let u = 1n;
-      let v = 1n;
-      let s = 1n;
-      // The bounds before the block's last symbol, which may be rewritten.
-      let prevDen = 1n;
-      let prevU = 1n;
-      let prevV = 1n;
-      let prevS = 1n;
-      let end = start;
-      while (end < this.totals.length) {
-        const total = BigInt(this.totals[end]);
-        const candidate = v + u * (total - 1n);
-        if (candidate > block.cap * den) {
-          break;
-        }
-        const freq = BigInt(this.freqs[end]);
-        prevDen = den;
-        prevU = u;
-        prevV = v;
-        prevS = s;
-        if (s < candidate) {
-          s = candidate;
-        }
-        if (freq === 1n) {
-          v = candidate;
-        } else {
-          v = (v + u * (total - freq)) * freq;
-          s = s * freq;
-          den = den * freq;
-        }
-        u = u * total;
-        end++;
-      }
-
+      bound.reset();
       // The message's last symbol has nothing after it to fill the fractional
       // part of its bucket, so as a bucket it needs log2(total) bits of state.
       // When that does not fit the digits its plain index needs, it is
       // written as the index instead. The decoder sees the same digit count
       // and makes the same call.
       let indexed = false;
-      if (end === this.totals.length && end > start) {
-        const last = end - 1;
-        const total = BigInt(this.totals[last]);
-        const count = BigInt(this.counts[last]);
-        if (count < total) {
-          const asBucket = prevV + prevU * (total - 1n);
-          const asIndex = prevV + prevU * (count - 1n);
-          const sizing = prevS < asIndex ? asIndex : prevS;
-          if (digitsFor(asBucket, prevDen, base) > digitsFor(sizing, prevDen, base)) {
-            indexed = true;
-            s = sizing;
-            den = prevDen;
-          }
+      let count = 0;
+      let end = start;
+      while (end < n) {
+        const total = totals[end];
+        if (bound.exceedsCap(total)) {
+          break;
         }
-      }
-
-      let value = 0n;
-      for (let i = end - 1; i >= start; i--) {
-        if (indexed && i === end - 1) {
-          value = BigInt(this.indices[i]);
-          continue;
+        if (end === n - 1 && this.counts[end] < total) {
+          const decision = bound.indexDecision(total, this.counts[end]);
+          indexed = decision.indexed;
+          count = decision.digits;
         }
-        const freq = BigInt(this.freqs[i]);
-        value = (value / freq) * BigInt(this.totals[i]) + BigInt(this.cums[i]) + (value % freq);
+        bound.update(total, this.freqs[end], this.counts[end]);
+        end++;
       }
 
       // A full block spans every digit of the block, filled or not, since
       // more values follow; the final block spans the minimum digits its
       // digit bound needs.
-      const count = end < this.totals.length ? block.digits : digitsFor(s, den, base);
-      for (let d = 0; d < count; d++) {
-        digits.push(Number(value % base));
-        value /= base;
+      if (end < n) {
+        count = bound.blockDigits;
+      } else if (!indexed) {
+        count = bound.digitsForS();
       }
 
+      emitDigits(digits, this.fold(start, end, indexed), count, size, chunk);
       start = end;
     }
 
     return digits;
+  }
+
+  /**
+   * The block's values folded into one integer, in reverse. A run of uniform
+   * slots is an affine step `value·product + offset` that accumulates in
+   * Number arithmetic while the product stays below 2^53, so the big integer
+   * grows once per run rather than once per value; a weighted slot folds the
+   * exact value, which stays a Number until it outgrows one.
+   */
+  private fold(start: number, end: number, indexed: boolean): bigint | number {
+    const { cums, freqs, totals } = this;
+    let big: bigint | undefined;
+    /** The pending affine step on `big`: `big·product + offset`, offset below product. */
+    let product = 1;
+    let offset = 0;
+    let i = end - 1;
+    if (indexed) {
+      product = this.counts[i];
+      offset = this.indices[i];
+      i--;
+    }
+    for (; i >= start; i--) {
+      const total = totals[i];
+      const freq = freqs[i];
+      if (freq === 1) {
+        const grown = product * total;
+        // A true product above 2^53 can round down to 2^53 itself, so only a
+        // result below it is known exact.
+        if (grown < TWO_53) {
+          product = grown;
+          offset = offset * total + cums[i];
+          continue;
+        }
+        big = big === undefined ? BigInt(offset) : big * BigInt(product) + BigInt(offset);
+        product = total;
+        offset = cums[i];
+        continue;
+      }
+      if (big === undefined) {
+        const rem = offset % freq;
+        const quotient = (offset - rem) / freq;
+        const next = quotient * total + (cums[i] + rem);
+        if (next <= MAX_SAFE) {
+          product = next + 1;
+          offset = next;
+          continue;
+        }
+        big = BigInt(quotient) * BigInt(total) + BigInt(cums[i] + rem);
+      } else {
+        if (product !== 1) {
+          big = big * BigInt(product) + BigInt(offset);
+        }
+        const freqBig = BigInt(freq);
+        const quotient = big / freqBig;
+        const rem = big - quotient * freqBig;
+        big = quotient * BigInt(total) + BigInt(cums[i] + Number(rem));
+      }
+      product = 1;
+      offset = 0;
+    }
+    if (big === undefined) {
+      return offset;
+    }
+    return product === 1 ? big : big * BigInt(product) + BigInt(offset);
   }
 
   toString(charset?: Charset): string {

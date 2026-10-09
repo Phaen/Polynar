@@ -7,10 +7,17 @@
 
 import type { Encoder, Decoder } from '../packer';
 
+/** The triple `parseWeighted` lookups return: the member and its bucket. */
+export type Bucket = readonly [number, number, number];
+
 export interface WeightTable {
   readonly cums: readonly number[];
   readonly freqs: readonly number[];
   readonly total: number;
+  /** Bucket lookup for `parseWeighted`: the index owning the residual. */
+  readonly locate: (residual: number) => Bucket;
+  /** Direct lookup for `parseWeighted`: the bucket of the i-th index. */
+  readonly atIndex: (i: number) => Bucket;
 }
 
 export function buildWeights(weights: readonly number[], states: number, who: string): WeightTable {
@@ -31,27 +38,20 @@ export function buildWeights(weights: readonly number[], states: number, who: st
   if (!Number.isSafeInteger(total)) {
     throw new RangeError(`${who} weights must sum to a safe integer`);
   }
-  return { cums, freqs: [...weights], total };
-}
-
-/** Direct lookup for `parseWeighted`: the bucket of the i-th index. */
-export const atIndexWeighted =
-  (table: WeightTable) =>
-  (i: number): readonly [number, number, number] => [i, table.cums[i], table.freqs[i]];
-
-/** Bucket lookup for `parseWeighted`: the index owning the residual. */
-export const locateWeighted =
-  (table: WeightTable) =>
-  (residual: number): readonly [number, number, number] => {
+  const freqs = [...weights];
+  const locate = (residual: number): Bucket => {
     let lo = 0;
-    let hi = table.cums.length - 1;
+    let hi = cums.length - 1;
     while (lo < hi) {
       const mid = (lo + hi + 1) >> 1;
-      if (table.cums[mid] <= residual) lo = mid;
+      if (cums[mid] <= residual) lo = mid;
       else hi = mid - 1;
     }
-    return [lo, table.cums[lo], table.freqs[lo]];
+    return [lo, cums[lo], freqs[lo]];
   };
+  const atIndex = (i: number): Bucket => [i, cums[i], freqs[i]];
+  return { cums, freqs, total, locate, atIndex };
+}
 
 /** Write the `pos`-th entry of a weight table as one weighted symbol. */
 export function writeTable(enc: Encoder, table: WeightTable, pos: number): void {
@@ -60,12 +60,7 @@ export function writeTable(enc: Encoder, table: WeightTable, pos: number): void 
 
 /** Read one weighted symbol written by `writeTable`: the entry's position. */
 export function readTable(dec: Decoder, table: WeightTable): number {
-  return dec.parseWeighted(
-    table.total,
-    locateWeighted(table),
-    table.cums.length,
-    atIndexWeighted(table)
-  );
+  return dec.parseWeighted(table.total, table.locate, table.cums.length, table.atIndex);
 }
 
 /**
@@ -160,8 +155,10 @@ const atIndexCdf =
  * unencodable values stay unreachable.
  */
 const locateCdf =
-  (cdf: Cdf, lo: number, hi: number) =>
+  (cdf: Cdf, min: number, max: number) =>
   (residual: number): readonly [number, number, number] => {
+    let lo = min;
+    let hi = max;
     while (lo < hi) {
       const mid = lo + Math.ceil((hi - lo) / 2);
       if (cdf(mid) <= residual) lo = mid;
@@ -183,6 +180,8 @@ export class RangePrior {
   private readonly lo: number;
   private readonly hi: number;
   private readonly who: string;
+  private readonly locate: (residual: number) => Bucket;
+  private readonly atIndex: (i: number) => Bucket;
 
   constructor(declared: Prior, lo: number, hi: number, who: string) {
     const { cdf, total } = resolvePrior(declared, lo, hi, who);
@@ -192,6 +191,8 @@ export class RangePrior {
     this.lo = lo;
     this.hi = hi;
     this.who = who;
+    this.locate = locateCdf(cdf, lo, hi);
+    this.atIndex = atIndexCdf(cdf, lo);
   }
 
   /** `subject` names the value in an error, as in `Value '3'`. */
@@ -201,11 +202,6 @@ export class RangePrior {
   }
 
   read(dec: Decoder): number {
-    return dec.parseWeighted(
-      this.total,
-      locateCdf(this.cdf, this.lo, this.hi),
-      this.hi - this.lo + 1,
-      atIndexCdf(this.cdf, this.lo)
-    );
+    return dec.parseWeighted(this.total, this.locate, this.hi - this.lo + 1, this.atIndex);
   }
 }
