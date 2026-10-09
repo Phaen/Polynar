@@ -11,9 +11,9 @@ describe('Schema priors', () => {
     for (const v of ['ok', 'warn', 'error'] as const) {
       expect(trip(status, v)).toBe(v);
     }
-    expect(trip(p.bool().weights([1, 20]), true)).toBe(true);
-    expect(trip(p.bool().weights([1, 20]), false)).toBe(false);
-    const o = p.object({ nick: p.optional(p.string().max(8)).weights([1, 99]) });
+    expect(trip(p.bool().weights([20, 1]), true)).toBe(true);
+    expect(trip(p.bool().weights([20, 1]), false)).toBe(false);
+    const o = p.object({ nick: p.optional(p.string().max(8)).weights([99, 1]) });
     expect(trip(o, { nick: 'Ada' })).toEqual({ nick: 'Ada' });
     expect(trip(o, {})).toEqual({});
   });
@@ -23,7 +23,7 @@ describe('Schema priors', () => {
     expect(() => p.enum(['a', 'b']).weights([1, 0])).toThrow(TypeError);
     expect(() => p.bool().weights([1.5, 1])).toThrow(TypeError);
     expect(() => p.optional(p.int()).weights([0, 1])).toThrow(
-      new TypeError('p.optional weights must be positive integers [absent, present], got [0, 1]')
+      new TypeError('p.optional weights must be positive integers [present, absent], got [0, 1]')
     );
   });
 

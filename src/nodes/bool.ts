@@ -7,7 +7,7 @@ import { buildWeights, writeTable, readTable, type WeightTable } from './weights
 export class PBool extends PNode<boolean> {
   readonly _kinds: readonly Kind[] = ['boolean'];
 
-  /** A prior as `[false, true]` weights; undefined means one bit each way. */
+  /** A prior as `[true, false]` weights; undefined means one bit each way. */
   private readonly _weights?: WeightTable;
 
   constructor(weights?: readonly number[]) {
@@ -18,7 +18,7 @@ export class PBool extends PNode<boolean> {
   }
 
   /**
-   * Declare how likely each value is, as `[false, true]`. A prior, not a
+   * Declare how likely each value is, as `[true, false]`. A prior, not a
    * constraint, and part of the wire format.
    */
   weights(w: readonly number[]): PBool {
@@ -29,8 +29,7 @@ export class PBool extends PNode<boolean> {
     if (this._weights === undefined) {
       enc.compose(value ? 1 : 0, 2);
     } else {
-      const pos = value ? 1 : 0;
-      writeTable(enc, this._weights, pos);
+      writeTable(enc, this._weights, value ? 0 : 1);
     }
   }
 
@@ -38,6 +37,6 @@ export class PBool extends PNode<boolean> {
     if (this._weights === undefined) {
       return Boolean(dec.parse(2));
     }
-    return readTable(dec, this._weights) === 1;
+    return readTable(dec, this._weights) === 0;
   }
 }

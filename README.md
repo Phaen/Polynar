@@ -159,7 +159,7 @@ A boolean, one bit. Infers `boolean`.
 
 | Method                  | Description                                      |
 | ----------------------- | ------------------------------------------------ |
-| `.weights(w: number[])` | Prior: one weight per value, as `[false, true]`. |
+| `.weights(w: number[])` | Prior: one weight per value, as `[true, false]`. |
 
 ### `p.enum(list: readonly unknown[])`
 
@@ -209,7 +209,7 @@ A value or `undefined`, at the cost of one bit: `p.optional(p.int())` is `number
 
 | Method                          | Description                                |
 | ------------------------------- | ------------------------------------------ |
-| `.weights(w: [number, number])` | Prior on presence, as `[absent, present]`. |
+| `.weights(w: [number, number])` | Prior on presence, as `[present, absent]`. |
 
 ### `p.nullable(node: PNode)`
 
@@ -402,7 +402,7 @@ p.int()
   .max(100)
   .cdf((v) => v * v); // high values are common, so they cost less
 p.int().min(1).max(5).weights([5, 2, 3, 10, 80]); // or as a histogram, lowest value first
-p.bool().weights([1, 20]); // a flag that is nearly always true
+p.bool().weights([20, 1]); // a flag that is nearly always true
 p.enum(['ok', 'warn', 'error']).weights([90, 9, 1]); // 'ok' costs 0.15 bits
 ```
 
@@ -412,7 +412,7 @@ p.enum(['ok', 'warn', 'error']).weights([90, 9, 1]); // 'ok' costs 0.15 bits
 p.object({
   x: p.int().min(-1000).max(1000),
   label: p.optional(p.string()), // one presence bit; only undefined means absent
-  nick: p.optional(p.string()).weights([1, 99]), // [absent, present]: present 99% of the time, so it costs ~0.015 bits
+  nick: p.optional(p.string()).weights([99, 1]), // [present, absent]: present 99% of the time, so it costs ~0.015 bits
   parent: p.nullable(p.int()).weights([1, 99]), // [value, null]: nearly always null
 });
 ```

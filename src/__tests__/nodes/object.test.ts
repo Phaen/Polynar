@@ -86,14 +86,14 @@ describe('Schema object', () => {
     const Schema = p.object({
       a: p.int().min(0).max(9),
       b: p.optional(p.string()),
-      c: p.optional(p.nullable(p.bool())).weights([1, 30]),
+      c: p.optional(p.nullable(p.bool())).weights([30, 1]),
       d: p.optional(p.any()),
     });
     const cases: [Parameters<typeof Schema.encode>[0], number[]][] = [
-      [{ a: 3 }, [3, 0]],
-      [{ a: 7, b: 'hi', c: true, d: null }, [237, 185, 119, 6]],
-      [{ a: 0, c: null, d: [1, 'x'] }, [32, 193, 11, 248, 26]],
-      [{ a: 9, c: false }, [29, 0]],
+      [{ a: 3 }, [91, 2]],
+      [{ a: 7, b: 'hi', c: true, d: null }, [221, 251, 14, 6]],
+      [{ a: 0, c: null, d: [1, 'x'] }, [12, 193, 11, 248, 26]],
+      [{ a: 9, c: false }, [9, 0]],
     ];
     for (const [value, bytes] of cases) {
       expect(Array.from(Schema.encode(value))).toEqual(bytes);
