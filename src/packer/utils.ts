@@ -89,3 +89,8 @@ export function validateCharset(charset?: Charset): Charset {
     return [min, max];
   }
 }
+
+/** The number of digit symbols a validated charset holds. */
+export function charsetSize(charset: Charset): number {
+  return typeof charset === 'string' ? charset.length : charset[1] - charset[0] + 1;
+}

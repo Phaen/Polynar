@@ -3,15 +3,7 @@ import { PNode } from './base';
 import { atPath } from './path';
 import type { Kind } from './guards';
 import { writeIndex, readIndex } from './lattice';
-import {
-  resolvePrior,
-  priorKind,
-  cdfBucket,
-  locateCdf,
-  atIndexCdf,
-  type Cdf,
-  type Prior,
-} from './weights';
+import { RangePrior, priorKind, type Cdf, type Prior } from './weights';
 
 /** Count constraints for an array node: min/max bounds, or a fixed length. */
 interface ArrayBounds {
@@ -34,11 +26,8 @@ export class PArray<TItem> extends PNode<TItem[]> {
   private readonly _min?: number;
   private readonly _max?: number;
   private readonly _length?: number;
-  /** The prior as declared, kept so a later bound change re-validates it. */
-  private readonly _prior?: Prior;
   /** A prior over the item count; undefined means uniform. */
-  private readonly _cdf?: Cdf;
-  private readonly _total?: number;
+  private readonly _prior?: RangePrior;
 
   constructor(item: PNode<TItem>, bounds: ArrayBounds = {}) {
     super();
@@ -86,10 +75,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
       if (this._max === undefined) {
         throw new TypeError(`p.array ${priorKind(prior)} requires a max count`);
       }
-      this._prior = prior;
-      const resolved = resolvePrior(prior, this._countMin(), this._max, 'p.array');
-      this._cdf = resolved.cdf;
-      this._total = resolved.total;
+      this._prior = new RangePrior(prior, this._countMin(), this._max, 'p.array');
     }
   }
 
@@ -99,7 +85,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
       min: n,
       max: this._max,
       length: this._length,
-      prior: this._prior,
+      prior: this._prior?.declared,
     });
   }
 
@@ -109,7 +95,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
       min: this._min,
       max: n,
       length: this._length,
-      prior: this._prior,
+      prior: this._prior?.declared,
     });
   }
 
@@ -159,17 +145,10 @@ export class PArray<TItem> extends PNode<TItem[]> {
       throw new RangeError(`Array length ${count} is above the maximum ${this._max}`);
     }
 
-    if (this._cdf === undefined) {
+    if (this._prior === undefined) {
       writeIndex(enc, count, this._countMin(), this._countMax());
     } else {
-      const [cum, freq] = cdfBucket(this._cdf, count, 'p.array', () => `Array length ${count}`);
-      enc.composeWeighted(
-        cum,
-        freq,
-        this._total!,
-        count - this._countMin(),
-        this._max! - this._countMin() + 1
-      );
+      this._prior.write(enc, count, () => `Array length ${count}`);
     }
 
     // Indexed iteration, not for-of over holes: a sparse array's holes read as
@@ -187,14 +166,9 @@ export class PArray<TItem> extends PNode<TItem[]> {
 
   _read(dec: Decoder): TItem[] {
     const count =
-      this._cdf === undefined
+      this._prior === undefined
         ? readIndex(dec, this._countMin(), this._countMax())
-        : dec.parseWeighted(
-            this._total!,
-            locateCdf(this._cdf, this._countMin(), this._max!),
-            this._max! - this._countMin() + 1,
-            atIndexCdf(this._cdf, this._countMin())
-          );
+        : this._prior.read(dec);
     const value: TItem[] = [];
     for (let i = 0; i < count; i++) {
       value.push(this._item._read(dec));

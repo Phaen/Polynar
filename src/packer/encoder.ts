@@ -19,7 +19,16 @@ import {
   TERM_PAYLOAD_BASE,
   TERM_PAYLOAD_MIN_DIGITS,
 } from './constants';
-import { validateCharset, validateByteRange, blockCapacity } from './utils';
+import { validateCharset, validateByteRange, blockCapacity, charsetSize } from './utils';
+
+/** The fewest base-`base` digits whose state space covers the bound `v/den`. */
+function digitsFor(v: bigint, den: bigint, base: bigint): number {
+  let digits = 0;
+  for (let space = den; space < v; space *= base) {
+    digits++;
+  }
+  return digits;
+}
 
 export class Encoder {
   private cums: number[] = [];
@@ -246,11 +255,7 @@ export class Encoder {
           const asBucket = prevV + prevU * (total - 1n);
           const asIndex = prevV + prevU * (count - 1n);
           const sizing = prevS < asIndex ? asIndex : prevS;
-          let fit = 1n;
-          while (fit * prevDen < sizing) {
-            fit *= base;
-          }
-          if (asBucket > fit * prevDen) {
+          if (digitsFor(asBucket, prevDen, base) > digitsFor(sizing, prevDen, base)) {
             indexed = true;
             s = sizing;
             den = prevDen;
@@ -268,21 +273,13 @@ export class Encoder {
         value = (value / freq) * BigInt(this.totals[i]) + BigInt(this.cums[i]) + (value % freq);
       }
 
-      if (end < this.totals.length) {
-        // A full block: more values follow, so every digit of the block is
-        // emitted, filled or not.
-        for (let d = 0; d < block.digits; d++) {
-          digits.push(Number(value % base));
-          value /= base;
-        }
-      } else {
-        // The final block: emit the minimum digits its digit bound needs.
-        let capacity = (s + den - 1n) / den;
-        while (capacity > 1n) {
-          digits.push(Number(value % base));
-          value /= base;
-          capacity = (capacity + base - 1n) / base;
-        }
+      // A full block spans every digit of the block, filled or not, since
+      // more values follow; the final block spans the minimum digits its
+      // digit bound needs.
+      const count = end < this.totals.length ? block.digits : digitsFor(s, den, base);
+      for (let d = 0; d < count; d++) {
+        digits.push(Number(value % base));
+        value /= base;
       }
 
       start = end;
@@ -294,10 +291,7 @@ export class Encoder {
   toString(charset?: Charset): string {
     const validatedCharset = validateCharset(charset);
 
-    const size =
-      typeof validatedCharset === 'string'
-        ? validatedCharset.length
-        : validatedCharset[1] - validatedCharset[0] + 1;
+    const size = charsetSize(validatedCharset);
 
     let str = '';
 

@@ -2,15 +2,7 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { PNode } from './base';
 import type { Kind } from './guards';
 import { writeIndex, readIndex } from './lattice';
-import {
-  resolvePrior,
-  priorKind,
-  cdfBucket,
-  locateCdf,
-  atIndexCdf,
-  type Cdf,
-  type Prior,
-} from './weights';
+import { RangePrior, priorKind, type Cdf, type Prior } from './weights';
 
 // Smallest number of decimal places at which x is represented exactly, or
 // null when there is none within double precision (e.g. 1/3, Math.PI).
@@ -46,10 +38,8 @@ export class PDecimal extends PNode<number> {
   /** Multiple-of-step bounds, rounded inward onto the grid. */
   private readonly _kMin?: number;
   private readonly _kMax?: number;
-  /** The prior as declared, kept so a later bound change re-validates it. */
-  private readonly _prior?: Prior;
-  private readonly _cdf?: Cdf;
-  private readonly _total?: number;
+  /** A prior over the bounded grid; undefined means uniform. */
+  private readonly _prior?: RangePrior;
 
   constructor(step: number, min?: number, max?: number, prior?: Prior) {
     super();
@@ -111,19 +101,16 @@ export class PDecimal extends PNode<number> {
       if (this._kMin === undefined || this._kMax === undefined) {
         throw new TypeError(`p.decimal ${priorKind(prior)} requires both bounds`);
       }
-      this._prior = prior;
-      const resolved = resolvePrior(prior, this._kMin, this._kMax, 'p.decimal');
-      this._cdf = resolved.cdf;
-      this._total = resolved.total;
+      this._prior = new RangePrior(prior, this._kMin, this._kMax, 'p.decimal');
     }
   }
 
   min(n: number): PDecimal {
-    return new PDecimal(this._step, n, this._maxRaw, this._prior);
+    return new PDecimal(this._step, n, this._maxRaw, this._prior?.declared);
   }
 
   max(n: number): PDecimal {
-    return new PDecimal(this._step, this._minRaw, n, this._prior);
+    return new PDecimal(this._step, this._minRaw, n, this._prior?.declared);
   }
 
   /**
@@ -174,24 +161,16 @@ export class PDecimal extends PNode<number> {
       throw new RangeError(`Value '${value}' is above the maximum ${this._valueAt(this._kMax)}`);
     }
 
-    if (this._cdf === undefined) {
+    if (this._prior === undefined) {
       writeIndex(enc, k, this._kMin, this._kMax, (i) => String(this._valueAt(i)));
       return;
     }
-    const [cum, freq] = cdfBucket(this._cdf, k, 'p.decimal', () => `Value '${value}'`);
-    enc.composeWeighted(cum, freq, this._total!, k - this._kMin!, this._kMax! - this._kMin! + 1);
+    this._prior.write(enc, k, () => `Value '${value}'`);
   }
 
   _read(dec: Decoder): number {
     const k =
-      this._cdf === undefined
-        ? readIndex(dec, this._kMin, this._kMax)
-        : dec.parseWeighted(
-            this._total!,
-            locateCdf(this._cdf, this._kMin!, this._kMax!),
-            this._kMax! - this._kMin! + 1,
-            atIndexCdf(this._cdf, this._kMin!)
-          );
+      this._prior === undefined ? readIndex(dec, this._kMin, this._kMax) : this._prior.read(dec);
     // Counterpart of the encode-side exactness guard: a product past 2^53 rounds,
     // and the encoder could never have emitted it.
     if (Math.abs(k * this._scaledStep) > Number.MAX_SAFE_INTEGER) {

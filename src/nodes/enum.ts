@@ -2,7 +2,7 @@ import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import { kindOf, type Kind } from './guards';
 import { oneOf } from './path';
-import { buildWeights, locateWeighted, atIndexWeighted, type WeightTable } from './weights';
+import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
 
 /**
  * Enum: a fixed list of values, packed as a sub-byte index. `p.enum`.
@@ -58,13 +58,7 @@ export class PEnum<T> extends PNode<T> {
     if (this._weights === undefined) {
       enc.compose(pos, this._list.length);
     } else {
-      enc.composeWeighted(
-        this._weights.cums[pos],
-        this._weights.freqs[pos],
-        this._weights.total,
-        pos,
-        this._weights.cums.length
-      );
+      writeTable(enc, this._weights, pos);
     }
   }
 
@@ -72,13 +66,6 @@ export class PEnum<T> extends PNode<T> {
     if (this._weights === undefined) {
       return this._list[dec.parse(this._list.length)];
     }
-    return this._list[
-      dec.parseWeighted(
-        this._weights.total,
-        locateWeighted(this._weights),
-        this._weights.cums.length,
-        atIndexWeighted(this._weights)
-      )
-    ];
+    return this._list[readTable(dec, this._weights)];
   }
 }
