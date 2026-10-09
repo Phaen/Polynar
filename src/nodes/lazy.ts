@@ -17,7 +17,8 @@ export class PLazy<T> extends PNode<T> {
     this._resolve = resolve;
   }
 
-  private get _target(): PNode<T> {
+  /** The node `resolve` returns, resolved on first use. */
+  get _target(): PNode<T> {
     return (this._node ??= this._resolve());
   }
 

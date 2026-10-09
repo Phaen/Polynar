@@ -26,6 +26,7 @@ export {
   PAny,
   PNull,
   PUnion,
+  PNullable,
   PTagged,
   PVersioned,
 } from './nodes';

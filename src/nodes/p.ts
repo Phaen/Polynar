@@ -18,6 +18,7 @@ import {
   PBinary,
   PLazy,
   PUnion,
+  PNullable,
   PTagged,
   PVersioned,
 } from './';
@@ -147,11 +148,11 @@ export const p = {
     return new PNull();
   },
   /**
-   * A value or `null`: `p.union([node, p.null()])`, so `.weights()` reads
-   * `[value, null]`.
+   * A value or `null`, written like `p.union([node, p.null()])`, so
+   * `.weights()` reads `[value, null]`. Wrapping twice is the same as once.
    */
-  nullable<T>(node: PNode<T>): PUnion<T | null> {
-    return new PUnion<T | null>([node, new PNull()]);
+  nullable<T>(node: PNode<T>): PNullable<T> {
+    return node instanceof PNullable ? (node as PNullable<T>) : new PNullable<T>(node);
   },
   /** Date; chain `.min()`/`.max()` to bound, `.precision(unit, step?)` to coarsen to UTC calendar buckets. */
   date(): PDate {
@@ -173,11 +174,9 @@ export const p = {
    * A node looked up on first use, for schemas that refer to themselves:
    * `items: p.array(p.lazy(() => Block))`. TypeScript can't infer a type
    * that refers to itself, so the recursive const needs it written out:
-   * `const Block: PNode<Block> = …`. The target can't be `p.optional`: an
-   * object sees optionality only through the `_optional` phantom, which a
-   * lazy node can't show before it resolves.
+   * `const Block: PNode<Block> = …`.
    */
-  lazy<T>(resolve: () => PNode<T> & { _optional?: never }): PLazy<T> {
+  lazy<T>(resolve: () => PNode<T>): PLazy<T> {
     return new PLazy<T>(resolve);
   },
   /**

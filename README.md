@@ -213,11 +213,11 @@ A value or `undefined`, at the cost of one bit: `p.optional(p.int())` is `number
 
 ### `p.nullable(node: PNode)`
 
-A value or `null`: `p.nullable(p.string())` is `string | null`, short for `p.union([p.string(), p.null()])`.
+A value or `null`: `p.nullable(p.string())` is `string | null`, written the same as `p.union([p.string(), p.null()])`. Unlike a union it takes any node, `p.lazy` and `p.any()` included. Wrapping twice is the same as once.
 
-| Method                  | Description                                       |
-| ----------------------- | ------------------------------------------------- |
-| `.weights(w: number[])` | Prior: one weight per member, as `[value, null]`. |
+| Method                  | Description                                     |
+| ----------------------- | ----------------------------------------------- |
+| `.weights(w: number[])` | Prior: one weight per side, as `[value, null]`. |
 
 ### `p.union(members: PNode[])`
 
@@ -246,7 +246,7 @@ The tag costs log2(members) bits and is never written as text. The order of the 
 
 ### `p.lazy(resolve: () => PNode)`
 
-A node looked up on first use, so a schema can contain itself or refer to one defined further down; it costs nothing on the wire. Infers the resolved node's type. Its kinds are unknown until first use, so it can't be a `p.union` member, and that includes `p.nullable(p.lazy(...))`. Write `p.lazy(() => p.nullable(Node))` instead. Optional is the other way round: `p.optional(p.lazy(() => Node))` works, `p.lazy(() => p.optional(Node))` doesn't. No methods.
+A node looked up on first use, so a schema can contain itself or refer to one defined further down; it costs nothing on the wire. Infers the resolved node's type. Its kinds are unknown until first use, so it can't be a `p.union` member; `p.nullable` and `p.optional` take it either way round. No methods.
 
 ### `p.versioned(first: PNode, ...later: (PNode | [PNode, (previous) => next])[])`
 
@@ -307,18 +307,18 @@ User.decode(ascii, [32, 126]);
 
 The charset defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. A charset can also be any string of at least two different characters (an emoji counts as two), or a `[min, max]` range of character codes; the same goes for `p.string().charset()`.
 
-| Name                    | Characters                 |
-| ----------------------- | -------------------------- |
-| `CharSets.digit`        | `0123456789`               |
-| `CharSets.hex`          | `0123456789ABCDEF`         |
-| `CharSets.lowalpha`     | `a`–`z`                    |
-| `CharSets.hialpha`      | `A`–`Z`                    |
-| `CharSets.alpha`        | all letters                |
-| `CharSets.alphanumeric` | letters and digits         |
-| `CharSets.printable`    | printable ASCII            |
-| `CharSets.htmlSafe`     | HTML-safe characters       |
-| `CharSets.Base64`       | standard Base64            |
-| `CharSets.urlSafe`      | letters, digits and `-._~` |
+| Name                    | Characters                      |
+| ----------------------- | ------------------------------- |
+| `CharSets.digit`        | `0123456789`                    |
+| `CharSets.hex`          | `0123456789ABCDEF`              |
+| `CharSets.lowalpha`     | `a`–`z`                         |
+| `CharSets.hialpha`      | `A`–`Z`                         |
+| `CharSets.alpha`        | all letters                     |
+| `CharSets.alphanumeric` | letters and digits              |
+| `CharSets.printable`    | printable ASCII                 |
+| `CharSets.htmlSafe`     | printable ASCII without `"&'<>` |
+| `CharSets.Base64`       | standard Base64                 |
+| `CharSets.urlSafe`      | letters, digits and `-._~`      |
 
 ## Errors
 

@@ -2,7 +2,7 @@
  * Schema union node (`p.union()`) — one member per JS kind, picked by value.
  */
 
-import { p, PNode, Encoder, Decoder } from '../../index';
+import { p, PNode, Encoder, Decoder, CorruptInputError } from '../../index';
 import { trip } from '../support';
 
 describe('Schema union', () => {
@@ -93,7 +93,7 @@ describe('Schema union', () => {
     );
   });
 
-  it('p.nullable is a union with p.null', () => {
+  it('p.nullable writes the same bits as a union with p.null', () => {
     const nick = p.nullable(p.string().max(8));
     expect(trip(nick, null)).toBeNull();
     expect(trip(nick, 'Ada')).toBe('Ada');
@@ -104,6 +104,25 @@ describe('Schema union', () => {
     const User = p.object({ bio: p.optional(p.nullable(p.string())) });
     expect(trip(User, {})).toEqual({});
     expect(trip(User, { bio: null })).toEqual({ bio: null });
-    expect(() => p.nullable(p.any())).toThrow("overlap on kind 'null'");
+    expect(p.nullable(nick)).toBe(nick);
+  });
+
+  it('p.nullable takes inner nodes a union cannot', () => {
+    type Link = { id: number; next: Link | null };
+    const Link: PNode<Link> = p.object({
+      id: p.int().min(0).max(9),
+      next: p.nullable(p.lazy(() => Link)),
+    });
+    const chain = { id: 1, next: { id: 2, next: null } };
+    expect(trip(Link, chain)).toEqual(chain);
+
+    const loose = p.nullable(p.any());
+    expect(trip(loose, null)).toBeNull();
+    expect(trip(loose, [1, 'x'])).toEqual([1, 'x']);
+    // The value side holding `any`'s own null tag is a second spelling of null.
+    const enc = new Encoder();
+    enc.compose(0, 2);
+    p.any()._write(enc, null);
+    expect(() => loose.decode(enc.toUint8Array())).toThrow(CorruptInputError);
   });
 });
