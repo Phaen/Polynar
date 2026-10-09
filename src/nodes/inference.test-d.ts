@@ -101,8 +101,9 @@ const _bytes: Equals<Infer<typeof Bytes>, Uint8Array> = true;
 const Later = p.lazy(() => p.object({ id: p.int() }));
 const _later: Equals<Infer<typeof Later>, { id: number }> = true;
 
-// @ts-expect-error — POptional is not a valid lazy target
-p.lazy(() => p.optional(p.string()));
+// A lazy optional infers its undefined, so as a field its key stays required.
+const LaterOptional = p.object({ nick: p.lazy(() => p.optional(p.string())) });
+const _laterOptional: Equals<Infer<typeof LaterOptional>, { nick: string | undefined }> = true;
 
 // A binary node decodes to the class it was given.
 const Samples = p.binary(Int16Array);

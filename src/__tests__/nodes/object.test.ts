@@ -91,6 +91,12 @@ describe('Schema object', () => {
     expect(trip(Schema, { x: 'a', y: [1], z: 3 })).toEqual({ x: 'a', y: [1], z: 3 });
   });
 
+  it('takes a missing key on a lazy field that resolves to an optional', () => {
+    const Schema = p.object({ nick: p.lazy(() => p.optional(p.string())) });
+    expect(trip(Schema, { nick: undefined })).toEqual({ nick: undefined });
+    expect(trip(Schema, { nick: 'Ada' })).toEqual({ nick: 'Ada' });
+  });
+
   it('keeps the wire format of optional fields', () => {
     // The object layout is pinned: each optional field's presence bit, then its
     // value.

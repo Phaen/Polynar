@@ -1,6 +1,7 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import type { InferShape } from './infer';
 import { PNode, POptional } from './base';
+import { PLazy } from './lazy';
 import { atPath } from './path';
 import type { Kind } from './guards';
 
@@ -80,4 +81,6 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
 }
 
 const takesUndefined = (field: PNode<unknown>): boolean =>
-  field instanceof POptional || (field._kinds?.includes('undefined') ?? false);
+  field instanceof PLazy
+    ? takesUndefined(field._target)
+    : field instanceof POptional || (field._kinds?.includes('undefined') ?? false);
