@@ -80,6 +80,17 @@ describe('Schema object', () => {
     expect('bio' in decoded).toBe(false);
   });
 
+  it('takes undefined on any field whose node takes it', () => {
+    const Schema = p.object({
+      x: p.union([p.optional(p.int()), p.string()]),
+      y: p.any(),
+      z: p.versioned(p.optional(p.int())),
+    });
+    const value = { x: undefined, y: undefined, z: undefined };
+    expect(trip(Schema, value)).toEqual(value);
+    expect(trip(Schema, { x: 'a', y: [1], z: 3 })).toEqual({ x: 'a', y: [1], z: 3 });
+  });
+
   it('keeps the wire format of optional fields', () => {
     // The object layout is pinned: each optional field's presence bit, then its
     // value.

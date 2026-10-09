@@ -36,9 +36,10 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
   private _writeField(enc: Encoder, value: InferShape<S>, key: string): void {
     const field = this._shape[key];
     const v = (value as Record<string, unknown>)[key];
-    // An optional field writes its own presence bit, so an absent key and an
+    // A field that takes `undefined` (an optional, or a union or `any` that
+    // includes it) writes it like any other value, so an absent key and an
     // `undefined` value encode the same way.
-    if (v === undefined && !(field instanceof POptional)) {
+    if (v === undefined && !takesUndefined(field)) {
       throw new TypeError('Required field is missing');
     }
     field._write(enc, v);
@@ -54,10 +55,10 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
         if (field instanceof POptional) {
           continue;
         }
-        // `undefined` is the absence marker on encode, so no object can carry
-        // it as a required field's VALUE — a wire state decoding to one (an
-        // `any` field's undefined tag) has no canonical spelling.
-        throw new CorruptInputError('Object field decoded as undefined, which is not encodable');
+        // Only a field that takes `undefined` can have written it.
+        if (!takesUndefined(field)) {
+          throw new CorruptInputError('Object field decoded as undefined, which is not encodable');
+        }
       }
 
       // A schema key named '__proto__' must land as an own property; plain
@@ -77,3 +78,6 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     return value as InferShape<S>;
   }
 }
+
+const takesUndefined = (field: PNode<unknown>): boolean =>
+  field instanceof POptional || (field._kinds?.includes('undefined') ?? false);
