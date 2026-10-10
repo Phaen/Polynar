@@ -143,7 +143,7 @@ export const p = {
   binary<A extends TypedArray = Uint8Array>(type?: TypedArrayClass<A>): PBinary<A> {
     return new PBinary((type ?? Uint8Array) as TypedArrayClass<A>);
   },
-  /** Null; zero bits. Pairs with `p.union` for nullable fields. */
+  /** Null; zero bits. Mostly a `p.union` member; `p.nullable` covers the usual case. */
   null(): PNull {
     return new PNull();
   },
