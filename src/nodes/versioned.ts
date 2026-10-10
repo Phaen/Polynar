@@ -42,6 +42,10 @@ export class PVersioned<T> extends PNode<T> {
     this._kinds = this._nodes[this._nodes.length - 1]._kinds;
   }
 
+  _takesUndefined(): boolean {
+    return this._nodes[this._nodes.length - 1]._takesUndefined();
+  }
+
   _write(enc: Encoder, value: T): void {
     const newest = this._nodes.length - 1;
     writeIndex(enc, newest, 0);

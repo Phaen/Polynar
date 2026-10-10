@@ -2,10 +2,10 @@
  * Type-level inference for schema nodes.
  *
  * A schema node carries a phantom output type on `_t`. `Infer` extracts it.
- * Object shapes split required vs `p.optional` keys (detected via the `_optional`
- * phantom marker; the `?` already says `undefined`, so it is left out of the
- * value type), then flatten the intersection so the result is identity-equal
- * to a hand-written object type.
+ * Object shapes split required keys from optional ones, where a key is
+ * optional when its node's type includes `undefined` (the `?` already says
+ * `undefined`, so it is left out of the value type), then flatten the
+ * intersection so the result is identity-equal to a hand-written object type.
  */
 import type { PNode } from './base';
 
@@ -16,7 +16,7 @@ export type Infer<N> = N extends PNode<infer T> ? T : never;
 export type Simplify<T> = { [K in keyof T]: T[K] } & {};
 
 type OptionalKeys<S> = {
-  [K in keyof S]: S[K] extends { readonly _optional: true } ? K : never;
+  [K in keyof S]: undefined extends Infer<S[K]> ? K : never;
 }[keyof S];
 type RequiredKeys<S> = Exclude<keyof S, OptionalKeys<S>>;
 

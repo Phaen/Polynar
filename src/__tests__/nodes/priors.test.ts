@@ -23,7 +23,10 @@ describe('Schema priors', () => {
     expect(() => p.enum(['a', 'b']).weights([1, 0])).toThrow(TypeError);
     expect(() => p.bool().weights([1.5, 1])).toThrow(TypeError);
     expect(() => p.optional(p.int()).weights([0, 1])).toThrow(
-      new TypeError('p.optional weights must be positive integers [present, absent], got [0, 1]')
+      new TypeError('p.optional weights must be positive integers, got 0')
+    );
+    expect(() => p.optional(p.int()).weights([1, 2, 3] as never)).toThrow(
+      new TypeError('p.optional weights must list one weight per value: expected 2, got 3')
     );
   });
 

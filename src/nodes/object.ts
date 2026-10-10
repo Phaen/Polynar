@@ -1,11 +1,13 @@
-import { Encoder, Decoder, CorruptInputError } from '../packer';
+import { Encoder, Decoder } from '../packer';
 import type { InferShape } from './infer';
-import { PNode, POptional } from './base';
-import { PLazy } from './lazy';
+import { PNode } from './base';
 import { atPath } from './path';
 import type { Kind } from './guards';
 
-/** Object with a fixed shape. An optional field that is absent decodes with its key left out. */
+/**
+ * Object with a fixed shape. A field whose node takes `undefined` may be
+ * absent or `undefined`, and then decodes with its key left out.
+ */
 export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferShape<S>> {
   readonly _kinds: readonly Kind[] = ['object'];
 
@@ -40,7 +42,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     // A field that takes `undefined` (an optional, or a union or `any` that
     // includes it) writes it like any other value, so an absent key and an
     // `undefined` value encode the same way.
-    if (v === undefined && !takesUndefined(field)) {
+    if (v === undefined && !field._takesUndefined()) {
       throw new TypeError('Required field is missing');
     }
     field._write(enc, v);
@@ -50,16 +52,9 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     const value: Record<string, unknown> = {};
 
     for (const key of this._keys) {
-      const field = this._shape[key];
-      const v = field._read(dec);
+      const v = this._shape[key]._read(dec);
       if (v === undefined) {
-        if (field instanceof POptional) {
-          continue;
-        }
-        // Only a field that takes `undefined` can have written it.
-        if (!takesUndefined(field)) {
-          throw new CorruptInputError('Object field decoded as undefined, which is not encodable');
-        }
+        continue;
       }
 
       // A schema key named '__proto__' must land as an own property; plain
@@ -79,8 +74,3 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     return value as InferShape<S>;
   }
 }
-
-const takesUndefined = (field: PNode<unknown>): boolean =>
-  field instanceof PLazy
-    ? takesUndefined(field._target)
-    : field instanceof POptional || (field._kinds?.includes('undefined') ?? false);

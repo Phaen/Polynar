@@ -189,7 +189,7 @@ A `Date`, lossless to the millisecond by default. Infers `Date`. An invalid date
 
 ### `p.object(shape: Record<string, PNode>)`
 
-An object with a fixed shape: `p.object({ x: p.int(), label: p.optional(p.string()) })`. Infers the object type, with `p.optional` fields as optional keys. Fields are written in shape order; a required field that is `undefined` throws unless its node takes `undefined` (`p.any()`, or a union with a `p.optional` member), and keys outside the shape are left out. No methods.
+An object with a fixed shape: `p.object({ x: p.int(), label: p.optional(p.string()) })`. Infers the object type. Fields are written in shape order, and keys outside the shape are left out. A field can be left out when its node takes `undefined`, such as `p.optional`, `p.any()` or a union with a `p.optional` member. Such a field infers an optional key and decodes with its key left out. Any other field that is missing or `undefined` throws. No methods.
 
 ### `p.array(item: PNode)`
 
@@ -205,7 +205,7 @@ An array of one item type, stored with its length. Infers an array of the item's
 
 ### `p.optional(node: PNode)`
 
-A value or `undefined`, at the cost of one bit: `p.optional(p.int())` is `number | undefined`. As an object field it infers an optional key, and an absent key and an `undefined` value both count as absent, so the field decodes with its key left out. Only `undefined` means absent; `null` is a value and goes to the inner node. Wrapping twice is the same as once.
+A value or `undefined`, at the cost of one bit: `p.optional(p.int())` is `number | undefined`. As an object field it can be left out: it infers an optional key, and a missing key and an `undefined` value both decode with the key left out. Only `undefined` means absent; `null` is a value and goes to the inner node. Wrapping twice is the same as once.
 
 | Method                          | Description                                |
 | ------------------------------- | ------------------------------------------ |
@@ -342,7 +342,7 @@ The node classes are exported too (`PNode`, `PInt`, `PString`, `PObject`, …), 
 
 ## Custom nodes
 
-Subclass `PNode` and implement two methods: `_write` writes one value's digits, and `_read` reads them back in the same order. The node then works inside `p.object`, `p.array` and `p.optional` like any built-in. To use it in `p.union`, also set `_kinds` to the kinds its values have, like `readonly _kinds = ['object'] as const`. See [`examples/custom-node.ts`](examples/custom-node.ts) for a runnable version.
+Subclass `PNode` and implement two methods: `_write` writes one value's digits, and `_read` reads them back in the same order. The node then works inside `p.object`, `p.array` and `p.optional` like any built-in. To use it in `p.union`, also set `_kinds` to the kinds its values have, like `readonly _kinds = ['object'] as const`. A node that can return `undefined` overrides `_takesUndefined()` to return `true`, so an object field using it can be left out. See [`examples/custom-node.ts`](examples/custom-node.ts) for a runnable version.
 
 ```typescript
 import { p, PNode, Encoder, Decoder } from 'polynar';

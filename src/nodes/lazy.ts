@@ -22,6 +22,10 @@ export class PLazy<T> extends PNode<T> {
     return (this._node ??= this._resolve());
   }
 
+  _takesUndefined(): boolean {
+    return this._target._takesUndefined();
+  }
+
   _write(enc: Encoder, value: T): void {
     this._target._write(enc, value);
   }

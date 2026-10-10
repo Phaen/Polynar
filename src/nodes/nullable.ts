@@ -31,6 +31,10 @@ export class PNullable<T> extends PNode<T | null> {
     }
   }
 
+  _takesUndefined(): boolean {
+    return this.inner._takesUndefined();
+  }
+
   /**
    * Declare how likely each side is, as `[value, null]`. A prior, not a
    * constraint, and part of the wire format.

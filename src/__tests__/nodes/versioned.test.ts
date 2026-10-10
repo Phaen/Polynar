@@ -22,7 +22,7 @@ const Current = p.versioned(V1, [V2, toV2]);
 
 /** The same digits spelled as an object: the version index, then the value. */
 const Spelled = <T>(node: PNode<T>, version: number, value: T): Uint8Array =>
-  p.object({ version: p.int().min(0), value: node }).encode({ version, value });
+  p.object({ version: p.int().min(0), value: node }).encode({ version, value } as never);
 
 describe('Schema versioned', () => {
   it('a single version round-trips behind the version number', () => {

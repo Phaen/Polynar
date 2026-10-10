@@ -101,9 +101,19 @@ const _bytes: Equals<Infer<typeof Bytes>, Uint8Array> = true;
 const Later = p.lazy(() => p.object({ id: p.int() }));
 const _later: Equals<Infer<typeof Later>, { id: number }> = true;
 
-// A lazy optional infers its undefined, so as a field its key stays required.
+// Any field whose node takes undefined is an optional key; a plain one stays required.
 const LaterOptional = p.object({ nick: p.lazy(() => p.optional(p.string())) });
-const _laterOptional: Equals<Infer<typeof LaterOptional>, { nick: string | undefined }> = true;
+const _laterOptional: Equals<Infer<typeof LaterOptional>, { nick?: string }> = true;
+const TakesUndefined = p.object({
+  id: p.int(),
+  tag: p.union([p.optional(p.string()), p.int()]),
+  extra: p.any(),
+  note: p.versioned(p.optional(p.string())),
+});
+const _takesUndefined: Equals<
+  Infer<typeof TakesUndefined>,
+  { id: number; tag?: string | number; extra?: unknown; note?: string }
+> = true;
 
 // A binary node decodes to the class it was given.
 const Samples = p.binary(Int16Array);

@@ -2,7 +2,8 @@
  * Schema object node (`p.object()`) — structured records with optional fields.
  */
 
-import { p } from '../../index';
+import { p, PNode } from '../../index';
+import type { Encoder, Decoder } from '../../index';
 import { trip } from '../support';
 
 describe('Schema object', () => {
@@ -86,15 +87,49 @@ describe('Schema object', () => {
       y: p.any(),
       z: p.versioned(p.optional(p.int())),
     });
-    const value = { x: undefined, y: undefined, z: undefined };
-    expect(trip(Schema, value)).toEqual(value);
+    expect(Object.keys(trip(Schema, { x: undefined, y: undefined, z: undefined }))).toEqual([]);
+    expect(Object.keys(trip(Schema, {}))).toEqual([]);
     expect(trip(Schema, { x: 'a', y: [1], z: 3 })).toEqual({ x: 'a', y: [1], z: 3 });
   });
 
   it('takes a missing key on a lazy field that resolves to an optional', () => {
     const Schema = p.object({ nick: p.lazy(() => p.optional(p.string())) });
-    expect(trip(Schema, { nick: undefined })).toEqual({ nick: undefined });
+    expect(Object.keys(trip(Schema, { nick: undefined }))).toEqual([]);
+    expect(Object.keys(trip(Schema, {}))).toEqual([]);
     expect(trip(Schema, { nick: 'Ada' })).toEqual({ nick: 'Ada' });
+  });
+
+  it('takes a missing key through nullable and versioned around a lazy optional', () => {
+    const Schema = p.object({
+      a: p.nullable(p.optional(p.lazy(() => p.int()))),
+      b: p.versioned(p.optional(p.lazy(() => p.int()))),
+    });
+    expect(Object.keys(trip(Schema, { a: undefined, b: undefined }))).toEqual([]);
+    expect(Object.keys(trip(Schema, {}))).toEqual([]);
+    expect(trip(Schema, { a: null, b: 2 })).toEqual({ a: null, b: 2 });
+  });
+
+  it('takes a missing key on a custom node that declares it takes undefined', () => {
+    class PMaybeWord extends PNode<string | undefined> {
+      _write(enc: Encoder, value: string | undefined): void {
+        enc.compose(value === undefined ? 0 : 1, 2);
+      }
+      _read(dec: Decoder): string | undefined {
+        return dec.parse(2) === 1 ? 'word' : undefined;
+      }
+    }
+    class PMaybeWordTakingUndefined extends PMaybeWord {
+      _takesUndefined(): boolean {
+        return true;
+      }
+    }
+    const Schema = p.object({ w: new PMaybeWordTakingUndefined() });
+    expect(Object.keys(trip(Schema, { w: undefined }))).toEqual([]);
+    expect(Object.keys(trip(Schema, {}))).toEqual([]);
+    expect(trip(Schema, { w: 'word' })).toEqual({ w: 'word' });
+    expect(() => p.object({ w: new PMaybeWord() }).encode({})).toThrow(
+      new TypeError('w: Required field is missing')
+    );
   });
 
   it('keeps the wire format of optional fields', () => {

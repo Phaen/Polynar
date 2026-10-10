@@ -17,6 +17,7 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import type { Charset, ByteRange } from '../packer';
 import type { Kind } from './guards';
+import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
 
 /** Base class for every schema node. `_t` is a phantom carrying the output type. */
 export abstract class PNode<TOut> {
@@ -28,6 +29,15 @@ export abstract class PNode<TOut> {
    * a union.
    */
   readonly _kinds?: readonly Kind[];
+
+  /**
+   * Whether the node can write `undefined`, which lets an object leave the
+   * field's key out. Read off `_kinds`; a custom node that returns
+   * `undefined` overrides it.
+   */
+  _takesUndefined(): boolean {
+    return this._kinds?.includes('undefined') ?? false;
+  }
 
   /** Validate one value and write its digits. The whole codec for this type. */
   abstract _write(enc: Encoder, value: TOut): void;
@@ -74,40 +84,30 @@ export abstract class PNode<TOut> {
  * Only `undefined` means absent; `null` reaches the inner node.
  */
 export class POptional<TOut> extends PNode<TOut | undefined> {
-  declare readonly _optional: true;
-
   /**
    * The inner node's kinds plus `'undefined'`, or undeclared when the inner
    * node is, so an optional node is a union member whenever its inner node is.
    */
   declare readonly _kinds?: readonly Kind[];
 
-  /** A prior on presence as `[present, absent]`; undefined means one bit. */
-  readonly presence?: readonly [number, number];
+  /** A prior as `[present, absent]` weights; undefined means one bit. */
+  private readonly _weights?: WeightTable;
 
   constructor(
     readonly inner: PNode<TOut>,
-    presence?: readonly [number, number]
+    weights?: readonly [number, number]
   ) {
     super();
     if (inner._kinds !== undefined) {
       this._kinds = [...new Set<Kind>([...inner._kinds, 'undefined'])];
     }
-    if (presence !== undefined) {
-      const [present, absent] = presence;
-      if (
-        !Number.isInteger(absent) ||
-        !Number.isInteger(present) ||
-        present < 1 ||
-        absent < 1 ||
-        !Number.isSafeInteger(present + absent)
-      ) {
-        throw new TypeError(
-          `p.optional weights must be positive integers [present, absent], got [${present}, ${absent}]`
-        );
-      }
-      this.presence = [present, absent];
+    if (weights !== undefined) {
+      this._weights = buildWeights(weights, 2, 'p.optional');
     }
+  }
+
+  _takesUndefined(): boolean {
+    return true;
   }
 
   /**
@@ -120,34 +120,20 @@ export class POptional<TOut> extends PNode<TOut | undefined> {
   }
 
   _write(enc: Encoder, value: TOut | undefined): void {
-    const presence = this.presence;
-    if (value === undefined) {
-      if (presence === undefined) {
-        enc.compose(0, 2);
-      } else {
-        enc.composeWeighted(presence[0], presence[1], presence[0] + presence[1], 1, 2);
-      }
-      return;
-    }
-    if (presence === undefined) {
-      enc.compose(1, 2);
+    if (this._weights === undefined) {
+      // The plain bit is 1 for present, 0 for absent.
+      enc.compose(value === undefined ? 0 : 1, 2);
     } else {
-      enc.composeWeighted(0, presence[0], presence[0] + presence[1], 0, 2);
+      writeTable(enc, this._weights, value === undefined ? 1 : 0);
     }
-    this.inner._write(enc, value);
+    if (value !== undefined) {
+      this.inner._write(enc, value);
+    }
   }
 
   _read(dec: Decoder): TOut | undefined {
-    const presence = this.presence;
     const there =
-      presence === undefined
-        ? dec.parse(2) === 1
-        : dec.parseWeighted(
-            presence[0] + presence[1],
-            (r) => (r < presence[0] ? [true, 0, presence[0]] : [false, presence[0], presence[1]]),
-            2,
-            (i) => (i === 0 ? [true, 0, presence[0]] : [false, presence[0], presence[1]])
-          );
+      this._weights === undefined ? dec.parse(2) === 1 : readTable(dec, this._weights) === 0;
     if (!there) {
       return undefined;
     }
