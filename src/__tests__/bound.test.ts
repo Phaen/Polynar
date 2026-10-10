@@ -209,6 +209,32 @@ describe('Block packing', () => {
     );
   });
 
+  it('settles a final tight bound one part in 2^50 above half the digit space', () => {
+    // A two-in-(2^50 + 1) symbol leaves the digit bound at 2^50 + 1. A last
+    // symbol of two states with one member keeps it as the tight bound while
+    // its bucket candidate, 2^50 + 2^49 + 1/2, sets 51 digits. The tight
+    // bound against half of them is too close for the float margins, so
+    // finalize replays the block exactly, with the last symbol's one member
+    // as its index candidate.
+    const total = 2 ** 50 + 1;
+    const head = (r: number): readonly [number, number, number] =>
+      r < 2 ? [0, 0, 2] : [1, 2, total - 2];
+    const tail = (r: number): readonly [number, number, number] => [r, r, 1];
+    const enc = new Encoder();
+    enc.composeWeighted(0, 2, total);
+    enc.composeWeighted(0, 1, 2, { index: 0, count: 1 });
+    const bytes = enc.output({ charset: BITS });
+    expect(bytes.length).toBe(51);
+    const read = (input: Uint8Array): void => {
+      const dec = new Decoder(input, { charset: BITS });
+      expect(dec.parseWeighted(total, head)).toBe(0);
+      expect(dec.parseWeighted(2, tail, { count: 1, at: tail })).toBe(0);
+      dec.finalize();
+    };
+    read(bytes);
+    expect(() => read(Uint8Array.of(...bytes, 0))).toThrow(CorruptInputError);
+  });
+
   it('carries a uniform run past 2^256 into its first weighted symbol', () => {
     // 256 bits leave the bound at 2^256 when the half arrives; its candidate
     // is then exactly 2^258, the digit bound of the final block.

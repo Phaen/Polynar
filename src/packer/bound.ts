@@ -70,16 +70,19 @@ function floatOf(x: bigint): [number, number] {
  * Compares a scaled double x·2^E, known to within k error units, with the
  * constant m·2^e: 1 when it is certainly larger, -1 when it is certainly
  * not, 0 when the margins overlap. The scaled doubles lie in
- * [2^-53, 2^400) and constant mantissas in [1, 2^STEP), so a gap of four
- * steps or more decides on its own.
+ * [2^-53, 2^400) and constant mantissas in [1, 2^STEP), so a constant four
+ * steps or more above decides on its own. No value is ever compared with a
+ * constant four steps below it: every candidate stays within 2^110 of the
+ * block's digit space, and a digit search starts within two digits of the
+ * value.
  */
 function compareFloat(x: number, E: number, m: number, e: number, k: number): -1 | 0 | 1 {
   if (k > MAX_OPS) {
     return 0;
   }
   const d = (E - e) / STEP;
-  if (d >= 4 || d <= -4) {
-    return d > 0 ? 1 : -1;
+  if (d <= -4) {
+    return -1;
   }
   const y = m * SCALES[3 - d];
   // The margins cover the k roundings of x, the one rounding of m, and the

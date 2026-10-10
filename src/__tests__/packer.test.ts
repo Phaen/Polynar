@@ -202,6 +202,29 @@ describe('compose / parse / parseMany', () => {
     }
   });
 
+  it('parseMany folds a run whose first power overshoots its bit-length estimate', () => {
+    // After 2^52 - 1 and 2^52 + 1 the room left in the 208-bit block is
+    // 2^104 + 1. Math.log2(2^52 + 1) rounds to 52, so the estimate takes two
+    // more digits, whose product 2^104 + 2^53 + 1 does not fit; one does.
+    const o = { charset: [0, 1] as [number, number], blockBits: 208 };
+    const radix = 2 ** 52 + 1;
+    const digits = [radix - 1, 0, 12345];
+    const enc = new Encoder();
+    enc.compose(2 ** 52 - 2, 2 ** 52 - 1);
+    enc.compose(7, radix);
+    for (const d of digits) {
+      enc.compose(d, radix);
+    }
+    const input = enc.output(o);
+    // A full 208-digit block, then the last two digits in the 105 digits of
+    // (2^52 + 1)^2.
+    expect(input.length).toBe(208 + 105);
+    const outcome = agree(input, o, radix, digits.length, (dec, values) => {
+      values.push(dec.parse(2 ** 52 - 1), dec.parse(radix));
+    });
+    expect(outcome).toEqual({ values: [2 ** 52 - 2, 7, ...digits] });
+  });
+
   it('parseMany splits a run between reads of other radices', () => {
     const o = { blockBits: 128 };
     const digits = digitsIn(10, 300);
