@@ -36,6 +36,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     }
   }
 
+  /** `key` is one of the shape's keys. */
   private _writeField(enc: Encoder, value: InferShape<S>, key: string): void {
     const field = this._shape[key];
     const v = (value as Record<string, unknown>)[key];

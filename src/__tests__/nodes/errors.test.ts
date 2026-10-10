@@ -1,10 +1,11 @@
 /**
  * The error surface every node shares: which class a failure throws, the
  * path prefix on errors from inside a schema, and the CorruptInputError
- * contract on decode.
+ * contract on decode, then the path module's helpers directly.
  */
 
 import { p, CharSets, CorruptInputError, Encoder, PNode, type PObject } from '../../index';
+import { atPath, describe as show, formatPath, oneOf } from '../../nodes/path';
 
 /** A runtime-built member list, typed as plain strings. */
 const letters = (): string[] => ['a', 'b'];
@@ -123,4 +124,103 @@ describe('CorruptInputError', () => {
       expect(() => node.decode(enc.output())).toThrow('Non-canonical negative zero');
     }
   );
+});
+
+describe('formatPath', () => {
+  it.each([
+    [[], ''],
+    [['a'], 'a'],
+    [[0], '[0]'],
+    [['a', 0, 'b'], 'a[0].b'],
+    [[0, 'a', 1], '[0].a[1]'],
+    [[''], ''],
+  ])('formats %p as %p', (segments, path) => {
+    expect(formatPath(segments)).toBe(path);
+  });
+});
+
+describe('atPath', () => {
+  it('passes anything but an Error through untouched', () => {
+    const thrown = { message: 'x' };
+    for (const value of [thrown, 'boom', undefined, null, 3]) {
+      expect(atPath(value, 'a')).toBe(value);
+    }
+    expect(thrown.message).toBe('x');
+  });
+
+  it('prepends segments to the message and the stack, keeping the class', () => {
+    const error = new RangeError('bad');
+    expect(atPath(atPath(error, 1), 'list')).toBe(error);
+    expect(error.message).toBe('list[1]: bad');
+    expect(error.stack?.startsWith('RangeError: list[1]: bad')).toBe(true);
+  });
+
+  it('leaves a missing or foreign stack alone', () => {
+    const bare = new Error('bad');
+    bare.stack = undefined;
+    atPath(bare, 'a');
+    expect([bare.message, bare.stack]).toEqual(['a: bad', undefined]);
+    const foreign = new Error('bad');
+    foreign.stack = 'elsewhere';
+    atPath(foreign, 'a');
+    expect([foreign.message, foreign.stack]).toEqual(['a: bad', 'elsewhere']);
+  });
+});
+
+describe('oneOf', () => {
+  it('lists one to eight primitives and counts anything else', () => {
+    expect(oneOf(['a'])).toBe('one of "a"');
+    expect(oneOf([1, null, true, 'x', undefined, 2n, -0, NaN])).toBe(
+      'one of 1, null, true, "x", undefined, 2n, 0, NaN'
+    );
+    expect(oneOf([1, 2, 3, 4, 5, 6, 7, 8, 9])).toBe('one of the 9 listed values');
+    expect(oneOf(['a', {}])).toBe('one of the 2 listed values');
+    expect(oneOf([() => 1])).toBe('one of the 1 listed values');
+    expect(oneOf([])).toBe('one of the 0 listed values');
+  });
+});
+
+describe('describe', () => {
+  it('shows primitives as text, strings quoted', () => {
+    expect(show('5')).toBe('"5"');
+    expect(show(5)).toBe('5');
+    expect(show(-Infinity)).toBe('-Infinity');
+    expect(show(NaN)).toBe('NaN');
+    expect(show(10n)).toBe('10n');
+    expect(show(undefined)).toBe('undefined');
+    expect(show(null)).toBe('null');
+    expect(show(Symbol('s'))).toBe('Symbol(s)');
+  });
+
+  it('shows dates, objects and arrays as JSON', () => {
+    expect(show(new Date(0))).toBe('"1970-01-01T00:00:00.000Z"');
+    expect(show(new Date(NaN))).toBe('Invalid Date');
+    expect(show({ a: [1, 'b'] })).toBe('{"a":[1,"b"]}');
+    expect(show(Object.create(null))).toBe('{}');
+  });
+
+  it("shows what JSON can't write by its tag", () => {
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    expect(show(cycle)).toBe('[object Object]');
+    const bare: Record<string, unknown> = Object.create(null);
+    bare.self = bare;
+    expect(show(bare)).toBe('[object Object]');
+    const list: unknown[] = [];
+    list.push(list);
+    expect(show(list)).toBe('[object Array]');
+    expect(show({ n: 1n })).toBe('[object Object]');
+    const hostile = () => 0;
+    hostile.toString = () => {
+      throw new Error('no');
+    };
+    expect(show(hostile)).toBe('[object Function]');
+  });
+
+  it('cuts a long rendering short', () => {
+    const text = show('x'.repeat(200));
+    expect(text).toHaveLength(80);
+    expect(text.endsWith('xx…')).toBe(true);
+    expect(show('x'.repeat(78))).toHaveLength(80);
+  });
 });

@@ -41,7 +41,8 @@ export class PAny extends PNode<unknown> {
   }
 
   /**
-   * `path` holds the containers between the root and the current value.
+   * `path` holds the containers between the root and the current value,
+   * empty at the root.
    * Membership means a cycle, which would otherwise recurse forever; it is
    * removed again on the way out so a shared (diamond) reference still
    * encodes — once per occurrence, as separate copies.

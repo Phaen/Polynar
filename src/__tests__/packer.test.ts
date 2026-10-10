@@ -10,6 +10,9 @@
 import { Encoder, Decoder, CorruptInputError, p } from '../index';
 import * as root from '../index';
 import type { CodecOptions, OutputType } from '../index';
+import { emitDigits } from '../packer/encoder';
+import type { Radix } from '../packer/types';
+import { digitChunk } from '../packer/utils';
 import { mulberry32 } from './support';
 
 const rand = mulberry32(0xa15eed);
@@ -159,6 +162,51 @@ describe('compose / parse / parseMany', () => {
     expect(() => encoder.compose(0, 2.5)).toThrow(
       new TypeError('Radix must be an integer, got 2.5')
     );
+  });
+
+  it('parse and parseMany reject an invalid radix like compose', () => {
+    const decoder = new Decoder(new Uint8Array(0));
+    for (const read of [(r: number) => decoder.parse(r), (r: number) => decoder.parseMany(r, 1)]) {
+      expect(() => read(0)).toThrow(new RangeError('Radix 0 is not a positive safe integer'));
+      expect(() => read(-1)).toThrow(RangeError);
+      expect(() => read(2 ** 53)).toThrow(RangeError);
+      expect(() => read(2.5)).toThrow(new TypeError('Radix must be an integer, got 2.5'));
+      expect(() => read(NaN)).toThrow(TypeError);
+      expect(() => read(Infinity)).toThrow(TypeError);
+    }
+  });
+
+  it('parseMany rejects a count that is no non-negative integer', () => {
+    const decoder = new Decoder(new Uint8Array(0));
+    expect(() => decoder.parseMany(2, -1)).toThrow(new RangeError('Count -1 is negative'));
+    expect(() => decoder.parseMany(2, 1.5)).toThrow(
+      new TypeError('Count must be an integer, got 1.5')
+    );
+    expect(() => decoder.parseMany(2, NaN)).toThrow(TypeError);
+    expect(() => decoder.parseMany(1, Infinity)).toThrow(TypeError);
+    expect(() => decoder.parseMany(1, 2 ** 32)).toThrow(
+      new RangeError('Count 4294967296 exceeds the longest array, 4294967295')
+    );
+    expect(decoder.parseMany(2, 0)).toEqual([]);
+    expect(decoder.parseMany(1, 3)).toEqual([0, 0, 0]);
+    decoder.finalize();
+  });
+
+  it('reads the edges of the radix domain', () => {
+    const enc = new Encoder();
+    enc.compose(0, 1);
+    enc.compose(1, 2);
+    enc.compose(Number.MAX_SAFE_INTEGER - 1, Number.MAX_SAFE_INTEGER);
+    const bytes = enc.output();
+    const dec = new Decoder(bytes);
+    expect(dec.parse(1)).toBe(0);
+    expect(dec.parse(2)).toBe(1);
+    expect(dec.parse(Number.MAX_SAFE_INTEGER)).toBe(Number.MAX_SAFE_INTEGER - 1);
+    dec.finalize();
+    const many = new Decoder(bytes);
+    expect(many.parseMany(2, 1)).toEqual([1]);
+    expect(many.parseMany(Number.MAX_SAFE_INTEGER, 1)).toEqual([Number.MAX_SAFE_INTEGER - 1]);
+    many.finalize();
   });
 
   it('packs to the information-theoretic minimum length', () => {
@@ -664,6 +712,20 @@ describe('composeWeighted / parseWeighted', () => {
     expect(() => enc.composeWeighted(0, 1, 4.5)).toThrow(TypeError);
   });
 
+  it('parseWeighted rejects an invalid total like composeWeighted', () => {
+    const dec = new Decoder(new Uint8Array(0));
+    const locate = () => [0, 0, 1] as const;
+    expect(() => dec.parseWeighted(0, locate)).toThrow(
+      new RangeError('Total 0 is not a positive safe integer')
+    );
+    expect(() => dec.parseWeighted(2 ** 53, locate)).toThrow(RangeError);
+    expect(() => dec.parseWeighted(2.5, locate)).toThrow(
+      new TypeError('Total must be an integer, got 2.5')
+    );
+    expect(() => dec.parseWeighted(NaN, locate)).toThrow(TypeError);
+    expect(dec.parseWeighted(1, () => ['only', 0, 1] as const)).toBe('only');
+  });
+
   it('rejects a locate that misses the residual', () => {
     const encoder = new Encoder();
     encoder.composeWeighted(0, 1, 2);
@@ -884,5 +946,62 @@ describe('Corruption detection', () => {
     decoder.parse(1001);
     expect(() => decoder.parse(1001)).toThrow('Unexpected end of input while parsing');
     expect(() => new Decoder('').parse(1001)).toThrow('Unexpected end of input while parsing');
+  });
+});
+
+describe('emitDigits', () => {
+  const emit = (value: bigint | number, count: number, size: number): number[] => {
+    const digits: number[] = [];
+    emitDigits(digits, value, count, digitChunk(size as Radix));
+    return digits;
+  };
+
+  it('writes a value lowest digit first, padded to the count', () => {
+    expect(emit(123, 5, 10)).toEqual([3, 2, 1, 0, 0]);
+    expect(emit(123n, 5, 10)).toEqual([3, 2, 1, 0, 0]);
+    expect(emit(0, 3, 2)).toEqual([0, 0, 0]);
+    expect(emit(Number.MAX_SAFE_INTEGER, 53, 2)).toEqual(Array(53).fill(1));
+  });
+
+  it('writes nothing for a count of zero', () => {
+    expect(emit(0, 0, 10)).toEqual([]);
+    expect(emit(10n ** 40n, 0, 10)).toEqual([]);
+  });
+
+  it('splits a big value a chunk at a time, by division or by shift', () => {
+    const value = 10n ** 40n + 12345n;
+    const decimal = emit(value, 41, 10);
+    expect(decimal.slice(0, 6)).toEqual([5, 4, 3, 2, 1, 0]);
+    expect(decimal[40]).toBe(1);
+    const bits = emit(2n ** 100n + 5n, 101, 2);
+    expect(bits.slice(0, 3)).toEqual([1, 0, 1]);
+    expect(bits[100]).toBe(1);
+    expect(bits.reduce((a, b) => a + b, 0)).toBe(3);
+  });
+
+  it('keeps only the lowest digits when the count is short of the value', () => {
+    expect(emit(123, 2, 10)).toEqual([3, 2]);
+    expect(emit(10n ** 30n + 987n, 3, 10)).toEqual([7, 8, 9]);
+    expect(emit(2n ** 80n + 6n, 3, 2)).toEqual([0, 1, 1]);
+    expect(emit(10n ** 30n + 987n, 20, 10).slice(0, 4)).toEqual([7, 8, 9, 0]);
+  });
+
+  it('writes a Number above 2^53 exactly', () => {
+    expect(emit(2 ** 60 + 2 ** 10, 61, 2).filter((d) => d === 1)).toHaveLength(2);
+    expect(emit(1e20, 21, 10)).toEqual([...Array(20).fill(0), 1]);
+  });
+
+  it('rejects a count or value that is negative or no integer', () => {
+    expect(() => emit(1, -1, 10)).toThrow(new RangeError('Digit count -1 is negative'));
+    expect(() => emit(1, 1.5, 10)).toThrow(
+      new TypeError('Digit count must be an integer, got 1.5')
+    );
+    expect(() => emit(1, NaN, 10)).toThrow(TypeError);
+    expect(() => emit(1, Infinity, 10)).toThrow(TypeError);
+    expect(() => emit(-1, 2, 10)).toThrow(new RangeError('Value -1 is negative'));
+    expect(() => emit(-1n, 2, 10)).toThrow(new RangeError('Value -1 is negative'));
+    expect(() => emit(1.5, 2, 10)).toThrow(new TypeError('Value must be an integer, got 1.5'));
+    expect(() => emit(NaN, 2, 10)).toThrow(TypeError);
+    expect(() => emit(Infinity, 2, 10)).toThrow(TypeError);
   });
 });

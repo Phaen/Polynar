@@ -2,8 +2,22 @@
  * Utility functions for packer
  */
 
-import type { Charset, OutputType } from './types';
+import type { Base, Charset, OutputType, Radix } from './types';
 import { DEFAULT_BLOCK_BITS, DEFAULT_CHARSET } from './constants';
+
+/**
+ * `value` as a radix: an integer in [1, 2^53), else a TypeError or a
+ * RangeError that calls it `name`.
+ */
+export function radixOf(value: number, name: 'Radix' | 'Total'): Radix {
+  if (!Number.isInteger(value)) {
+    throw new TypeError(`${name} must be an integer, got ${value}`);
+  }
+  if (value < 1 || value > Number.MAX_SAFE_INTEGER) {
+    throw new RangeError(`${name} ${value} is not a positive safe integer`);
+  }
+  return value as Radix;
+}
 
 /**
  * The longest run of base-`size` digits whose values stay below 2^53:
@@ -13,6 +27,7 @@ import { DEFAULT_BLOCK_BITS, DEFAULT_CHARSET } from './constants';
  * fl(a/b) lies in [q, q+1) around the integer quotient q, so its floor is q.
  */
 export interface DigitChunk {
+  readonly size: Radix;
   readonly digits: number;
   readonly num: number;
   readonly big: bigint;
@@ -20,24 +35,28 @@ export interface DigitChunk {
   readonly bits: number;
 }
 
-export function digitChunk(size: number): DigitChunk {
+/** The chunk of base-`size` digits. A base-1 digit holds nothing, so size 1 is a RangeError. */
+export function digitChunk(size: Radix): DigitChunk {
+  if (size < 2) {
+    throw new RangeError(`Digit base ${size} is below 2`);
+  }
   let digits = 1;
-  let num = size;
+  let num: number = size;
   while (num * size <= 2 ** 53) {
     num *= size;
     digits++;
   }
   const exponent = log2Exact(size);
-  return { digits, num, big: BigInt(num), bits: exponent < 0 ? 0 : exponent * digits };
+  return { size, digits, num, big: BigInt(num), bits: exponent < 0 ? 0 : exponent * digits };
 }
 
 /**
- * The exponent of a positive integer that is a power of two, else -1. Below
- * 2^31 a bit test answers, several times faster than a logarithm on the
- * decoder's per-symbol path; above, the rounded logarithm is checked against
- * the power it names.
+ * The exponent of a radix that is a power of two, else -1. Below 2^31 a bit
+ * test answers, several times faster than a logarithm on the decoder's
+ * per-symbol path; above, the rounded logarithm is checked against the power
+ * it names, and the logarithm of a power of two below 2^53 is exact.
  */
-export function log2Exact(n: number): number {
+export function log2Exact(n: Radix): number {
   if (n < 2 ** 31) {
     return (n & (n - 1)) === 0 ? 31 - Math.clz32(n) : -1;
   }
@@ -45,9 +64,9 @@ export function log2Exact(n: number): number {
   return 2 ** exponent === n ? exponent : -1;
 }
 
-/** Bit length of a positive BigInt. */
+/** Bit length of the magnitude of a BigInt: 0 for 0n, the same for x and -x. */
 export function bitLength(x: bigint): number {
-  const hex = x.toString(16);
+  const hex = (x < 0n ? -x : x).toString(16);
   return (hex.length - 1) * 4 + (32 - Math.clz32(parseInt(hex[0], 16)));
 }
 
@@ -100,7 +119,7 @@ export class Alphabet {
   /** The first code of a range charset. */
   private readonly min: number;
 
-  constructor(charset: Charset, minSize = 2) {
+  constructor(charset: Charset, minSize: 1 | 2 = 2) {
     if (typeof charset === 'string') {
       if (charset.length < minSize) {
         throw new TypeError(
@@ -168,43 +187,80 @@ export class Alphabet {
     this.min = min;
   }
 
-  /** The digit a code spells, or -1 when the charset has no such symbol. */
+  /**
+   * The digit a code spells, or -1 when the charset has no such symbol,
+   * including for a number that is no code at all.
+   */
   digitOf(code: number): number {
     const table = this.table;
     if (table !== undefined) {
-      return code < table.length ? table[code] : -1;
+      // A typed array reads undefined at any index it lacks: past its end,
+      // negative, fractional or NaN.
+      return table[code] ?? -1;
     }
     const map = this.map;
     if (map !== undefined) {
       return map.get(code) ?? -1;
     }
     const digit = code - this.min;
-    return digit >= 0 && digit < this.size ? digit : -1;
+    return digit >= 0 && digit < this.size && Number.isInteger(digit) ? digit : -1;
   }
 
-  /** The code spelling a digit below `size`. */
-  codeAt(digit: number): number {
-    return typeof this.charset === 'string' ? this.charset.charCodeAt(digit) : this.min + digit;
+  /**
+   * The digits as bytes, each the code that spells it. A digit outside
+   * [0, size) throws, and so does a charset with codes past a byte.
+   */
+  bytesOf(digits: readonly number[]): Uint8Array {
+    if (this.top > 255) {
+      throw new RangeError(`Code ${this.top} is not a byte`);
+    }
+    const size = this.size;
+    const charset = this.charset;
+    const bytes = new Uint8Array(digits.length);
+    for (let i = 0; i < digits.length; i++) {
+      const digit = digits[i];
+      // An unsigned shift returns the digit itself only for an integer in [0, 2^32).
+      if (digit >>> 0 !== digit || digit >= size) {
+        this.rejectDigit(digit);
+      }
+      bytes[i] = typeof charset === 'string' ? charset.charCodeAt(digit) : this.min + digit;
+    }
+    return bytes;
   }
 
-  /** The character spelling a digit below `size`. */
+  /** The character spelling a digit in [0, size); any other digit throws. */
   charAt(digit: number): string {
+    if (digit >>> 0 !== digit || digit >= this.size) {
+      return this.rejectDigit(digit);
+    }
     return typeof this.charset === 'string'
       ? this.charset.charAt(digit)
       : String.fromCharCode(this.min + digit);
   }
+
+  /** The error for a digit that is not an integer in [0, size). */
+  private rejectDigit(digit: number): never {
+    if (!Number.isInteger(digit)) {
+      throw new TypeError(`Digit must be an integer, got ${digit}`);
+    }
+    throw new RangeError(`Digit ${digit} is outside [0, ${this.size})`);
+  }
 }
 
+/** An alphabet a whole message is spelled in: at least two symbols, so its size is a digit base. */
+export type OutputAlphabet = Alphabet & { readonly size: Base };
+
 /** Every byte value: binary output's symbols unless a message sets its own. */
-const BYTES = new Alphabet([0, 255]);
+const BYTES = new Alphabet([0, 255]) as OutputAlphabet;
 
 /** Alphabets of the string charsets seen most recently, since building one walks every character. */
-const alphabets = new Map<string, Alphabet>();
+const alphabets = new Map<string, OutputAlphabet>();
 
-function stringAlphabet(charset: string): Alphabet {
+/** The alphabet of a string charset of at least two characters, cached by the charset. */
+export function stringAlphabet(charset: string): OutputAlphabet {
   let alphabet = alphabets.get(charset);
   if (alphabet === undefined) {
-    alphabet = new Alphabet(charset);
+    alphabet = new Alphabet(charset) as OutputAlphabet;
     if (alphabets.size >= 256) {
       alphabets.clear();
     }
@@ -216,14 +272,18 @@ function stringAlphabet(charset: string): Alphabet {
 /**
  * The alphabet a message of the given type is spelled in, which needs at
  * least two symbols: a base-1 digit carries nothing, so the digit loops would
- * never end. Binary output writes each symbol's code as a byte, so every code
+ * never end. No charset holds more than 65536 distinct codes, so its size is
+ * a `Base`. Binary output writes each symbol's code as a byte, so every code
  * must fit one.
  */
-export function outputAlphabet(type: OutputType, charset?: Charset): Alphabet {
+export function outputAlphabet(type: OutputType, charset?: Charset): OutputAlphabet {
   if (charset === undefined) {
     return type === 'binary' ? BYTES : stringAlphabet(DEFAULT_CHARSET);
   }
-  const alphabet = typeof charset === 'string' ? stringAlphabet(charset) : new Alphabet(charset);
+  const alphabet =
+    typeof charset === 'string'
+      ? stringAlphabet(charset)
+      : (new Alphabet(charset) as OutputAlphabet);
   if (type === 'binary' && alphabet.top > 255) {
     throw new RangeError(
       typeof charset === 'string'

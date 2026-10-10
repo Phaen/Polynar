@@ -85,7 +85,7 @@ function versioned<T1, T2, T3, T4, T5, T6, T7, T8>(
   v8: Step<T7, T8>
 ): PVersioned<T8, T1>;
 function versioned(
-  ...versions: readonly (PNode<any> | readonly [PNode<any>, (prev: any) => any])[]
+  ...versions: [PNode<any>, ...(PNode<any> | readonly [PNode<any>, (prev: any) => any])[]]
 ): PVersioned<any> {
   return new PVersioned<any>(versions);
 }

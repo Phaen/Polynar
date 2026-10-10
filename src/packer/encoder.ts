@@ -12,7 +12,7 @@
  * plain multiply-add, which is mixed-radix arithmetic.
  */
 
-import type { CodecOptions, OutputType } from './types';
+import type { Base, CodecOptions, OutputType, Radix } from './types';
 import {
   TERM_BASE,
   TERM_ESCAPE_MIN,
@@ -24,36 +24,51 @@ import { BlockBound } from './bound';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const TWO_53 = 2 ** 53;
+const ONE = 1 as Radix;
 
 /**
- * Append `count` base-`size` digits of `value`, lowest first. A big value
- * sheds a chunk of digits per division, split further in Number arithmetic.
+ * Append the lowest `count` digits of `value` in the chunk's base, lowest
+ * first; digits above them are dropped. A big value sheds a chunk of digits
+ * per division, split further in Number arithmetic. A negative or
+ * fractional value or count throws.
  */
-function emitDigits(
+export function emitDigits(
   digits: number[],
   value: bigint | number,
   count: number,
-  size: number,
   chunk: DigitChunk
 ): void {
-  let big = typeof value === 'bigint' ? value : undefined;
-  let num = typeof value === 'number' ? value : 0;
+  if (!Number.isInteger(count)) {
+    throw new TypeError(`Digit count must be an integer, got ${count}`);
+  }
+  if (count < 0) {
+    throw new RangeError(`Digit count ${count} is negative`);
+  }
+  let big: bigint | undefined;
+  let num = 0;
+  if (typeof value === 'bigint') {
+    big = value;
+  } else if (!Number.isInteger(value)) {
+    throw new TypeError(`Value must be an integer, got ${value}`);
+  } else if (value > MAX_SAFE) {
+    // Float division is exact only below 2^53.
+    big = BigInt(value);
+  } else {
+    num = value;
+  }
+  if (value < 0) {
+    throw new RangeError(`Value ${value} is negative`);
+  }
+  const size = chunk.size;
   const shift = chunk.bits === 0 ? undefined : SHIFTS[chunk.bits];
   while (count > 0) {
     let run = count;
     if (big !== undefined) {
+      num = shift === undefined ? Number(big % chunk.big) : Number(BigInt.asUintN(chunk.bits, big));
       if (count > chunk.digits) {
-        if (shift === undefined) {
-          num = Number(big % chunk.big);
-          big /= chunk.big;
-        } else {
-          num = Number(BigInt.asUintN(chunk.bits, big));
-          big >>= shift;
-        }
+        big = shift === undefined ? big / chunk.big : big >> shift;
         run = chunk.digits;
       } else {
-        // The digit count covers the value, so what remains fits the chunk.
-        num = Number(big);
         big = undefined;
       }
     }
@@ -71,8 +86,8 @@ function emitDigits(
 
 export class Encoder {
   private cums: number[] = [];
-  private freqs: number[] = [];
-  private totals: number[] = [];
+  private freqs: Radix[] = [];
+  private totals: Radix[] = [];
   /**
    * The last recorded symbol's position among its node's `lastCount`
    * symbols, in bucket order; only the message's last symbol is ever
@@ -80,18 +95,21 @@ export class Encoder {
    */
   private lastIndex = 0;
   /** The last recorded symbol's count: a uniform slot's radix, or a weighted node's member count. */
-  private lastCount = 1;
+  private lastCount = ONE;
 
   /** Push one value in a fixed radix: `integer` must lie in `[0, radix)`. */
   compose(integer: number, radix: number): void {
     // An out-of-range value would not throw on its own; it would silently
     // corrupt every value packed after it, so it fails here, at the source.
+    // The same check as `radixOf`, inline: compose runs once per value, and
+    // the call measurably slows it.
     if (!Number.isInteger(radix)) {
       throw new TypeError(`Radix must be an integer, got ${radix}`);
     }
     if (radix < 1 || radix > Number.MAX_SAFE_INTEGER) {
       throw new RangeError(`Radix ${radix} is not a positive safe integer`);
     }
+    const states = radix as Radix;
     if (!Number.isInteger(integer)) {
       throw new TypeError(`Digit must be an integer, got ${integer}`);
     }
@@ -105,10 +123,10 @@ export class Encoder {
     }
 
     this.cums.push(integer);
-    this.freqs.push(1);
-    this.totals.push(radix);
+    this.freqs.push(ONE);
+    this.totals.push(states);
     this.lastIndex = integer;
-    this.lastCount = radix;
+    this.lastCount = states;
   }
 
   /**
@@ -163,11 +181,12 @@ export class Encoder {
       return;
     }
 
+    // Total is a radix, and freq and the member count lie in [1, total].
     this.cums.push(cum);
-    this.freqs.push(freq);
-    this.totals.push(total);
+    this.freqs.push(freq as Radix);
+    this.totals.push(total as Radix);
     this.lastIndex = members < total ? index : 0;
-    this.lastCount = members;
+    this.lastCount = members as Radix;
   }
 
   /** Push one unbounded non-negative integer. */
@@ -214,6 +233,8 @@ export class Encoder {
    * A terminated base-TERM_BASE digit run, lowest digit first: digit d rides
    * as symbol d+1, symbol 0 terminates. The first slot's radix is a parameter
    * because a term's opening slot carries one extra state for the escape.
+   * `value` is a non-negative integer, so the run ends; `firstRadix` is
+   * TERM_BASE + 1 or TERM_BASE + 2.
    */
   private composeRun(value: number, firstRadix: number): void {
     let radix = firstRadix;
@@ -253,7 +274,7 @@ export class Encoder {
    * S both equal the radix product: the plain mixed-radix wire format, byte for byte.
    * `BlockBound` carries these rationals for both sides.
    */
-  private toDigits(size: number, blockBits: number): number[] {
+  private toDigits(size: Base, blockBits: number): number[] {
     const bound = new BlockBound(size, blockBits);
     const chunk = digitChunk(size);
     const digits: number[] = [];
@@ -301,7 +322,8 @@ export class Encoder {
         count = bound.digitsForS();
       }
 
-      emitDigits(digits, this.fold(start, end, indexed), count, size, chunk);
+      const tail = indexed ? { index: this.lastIndex, count: this.lastCount } : undefined;
+      emitDigits(digits, this.fold(start, end, tail), count, chunk);
       start = end;
     }
 
@@ -314,17 +336,25 @@ export class Encoder {
    * Number arithmetic while the product stays below 2^53, so the big integer
    * grows once per run rather than once per value; a weighted slot folds the
    * exact value, which stays a Number until it outgrows one.
+   *
+   * The symbols are those in [start, end) of the buffer. A `tail` stands in
+   * for the last of them, written as `index` among `count` members, with
+   * `index` in [0, count) and `count` below that symbol's total.
    */
-  private fold(start: number, end: number, indexed: boolean): bigint | number {
+  private fold(
+    start: number,
+    end: number,
+    tail?: { index: number; count: number }
+  ): bigint | number {
     const { cums, freqs, totals } = this;
     let big: bigint | undefined;
     /** The pending affine step on `big`: `big·product + offset`, offset below product. */
     let product = 1;
     let offset = 0;
     let i = end - 1;
-    if (indexed) {
-      product = this.lastCount;
-      offset = this.lastIndex;
+    if (tail !== undefined) {
+      product = tail.count;
+      offset = tail.index;
       i--;
     }
     for (; i >= start; i--) {
@@ -389,10 +419,6 @@ export class Encoder {
       return str;
     }
 
-    const bytes = new Uint8Array(digits.length);
-    for (let i = 0; i < digits.length; i++) {
-      bytes[i] = alphabet.codeAt(digits[i]);
-    }
-    return bytes;
+    return alphabet.bytesOf(digits);
   }
 }

@@ -1,7 +1,7 @@
 import { Encoder, Decoder, UnknownVersionError } from '../packer';
 import { PNode } from './base';
 import type { Kind } from './guards';
-import { readIndex, writeIndex } from './lattice';
+import { IndexRange } from './lattice';
 
 /**
  * A later version of a `p.versioned` schema: the node alone when a value of
@@ -14,6 +14,9 @@ export type Step<Prev, Next> = [Prev] extends [Next]
   : readonly [PNode<Next>, (prev: Prev) => NoInfer<Next>];
 
 type Migrate = (prev: unknown) => unknown;
+
+/** The version index: a lattice term counting up from 0. */
+const VERSION = new IndexRange('p.versioned', 0);
 
 /**
  * A schema that can change after data has been written. `p.versioned`.
@@ -33,7 +36,7 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
   /** `_migrations[i]` turns a value of version i into one of version i + 1. */
   private readonly _migrations: readonly Migrate[];
 
-  constructor(versions: readonly (PNode<any> | readonly [PNode<any>, Migrate])[]) {
+  constructor(versions: readonly [PNode<any>, ...(PNode<any> | readonly [PNode<any>, Migrate])[]]) {
     super();
     this._nodes = versions.map((step) => (step instanceof PNode ? step : step[0]));
     this._migrations = versions
@@ -48,12 +51,12 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
 
   _write(enc: Encoder, value: T): void {
     const newest = this._nodes.length - 1;
-    writeIndex(enc, newest, 0);
+    VERSION.write(enc, newest);
     this._nodes[newest]._write(enc, value);
   }
 
   _read(dec: Decoder): T {
-    const index = readIndex(dec, 0);
+    const index = VERSION.read(dec);
     if (index >= this._nodes.length) {
       throw new UnknownVersionError(
         `Data was written by version ${index + 1}; this schema knows ${this._nodes.length}`
@@ -80,6 +83,7 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
     return this._upgrade(value, start);
   }
 
+  /** `index` is the version `value` is of, one of the listed versions. */
   private _upgrade(value: unknown, index: number): T {
     for (let i = index; i < this._migrations.length; i++) {
       value = this._migrations[i](value);

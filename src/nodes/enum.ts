@@ -72,6 +72,7 @@ export class PEnum<T> extends PNode<T> {
     return this._list[readTable(dec, this._weights)];
   }
 
+  /** `digit` lies in `[0, _radix)`, as a digit read in `_radix` does. */
   _fromDigit(digit: number): T {
     return this._list[digit];
   }

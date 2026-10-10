@@ -43,6 +43,7 @@ export class PBool extends PNode<boolean> {
     return readTable(dec, this._weights) === 0;
   }
 
+  /** `digit` lies in `[0, _radix)`, as a digit read in `_radix` does. */
   _fromDigit(digit: number): boolean {
     return digit === 1;
   }

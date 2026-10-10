@@ -26,3 +26,16 @@ export interface CodecOptions<T extends OutputType = never> {
   /** Block size in bits, 2048 when omitted. */
   blockBits?: number;
 }
+
+declare const radixBrand: unique symbol;
+declare const baseBrand: unique symbol;
+
+/**
+ * An integer radix in [1, 2^53): the states of one symbol. Only the radix
+ * and total checks of the Encoder and Decoder produce one, so code taking a
+ * `Radix` relies on that domain without checking it again.
+ */
+export type Radix = number & { readonly [radixBrand]: true };
+
+/** A digit base: the size of an output charset, an integer in [2, 65536]. */
+export type Base = Radix & { readonly [baseBrand]: true };

@@ -167,12 +167,20 @@ const ENGLISH_ALPHABET: string = (() => {
   return alphabet;
 })();
 
-const isUpper = (ch: string): boolean => ch >= 'A' && ch <= 'Z';
-const isLower = (ch: string): boolean => ch >= 'a' && ch <= 'z';
-const isDigit = (ch: string): boolean => ch >= '0' && ch <= '9';
-const isLetter = (ch: string): boolean => isUpper(ch) || isLower(ch);
+const UPPER = /^[A-Z]$/;
+const LETTER = /^[A-Za-z]$/;
+const DIGIT = /^[0-9]$/;
+const PUNCTUATION = /^[.!?,;:]$/;
 
-const baseWeight = (ch: string): number => {
+/**
+ * Running-text weight of one UTF-16 unit; 1 for anything the table omits.
+ * Every table key is one unit and no key of a table's prototype is, so the
+ * lookups below only ever hit English weights.
+ */
+export const baseWeight = (ch: string): number => {
+  if (ch.length !== 1) {
+    throw new RangeError(`baseWeight expected a single character, got ${JSON.stringify(ch)}`);
+  }
   const own = BASE_WEIGHTS[ch];
   if (own !== undefined) {
     return own;
@@ -181,8 +189,16 @@ const baseWeight = (ch: string): number => {
   return lower === undefined ? 1 : Math.max(1, Math.round(lower / UPPERCASE_DIVISOR));
 };
 
-/** How much likelier `next` is after `prev` than its base weight says. */
-const contextMultiplier = (prev: string, next: string): number => {
+/**
+ * How much likelier `next` is after `prev` than its base weight says; both
+ * are single UTF-16 units, like baseWeight's.
+ */
+export const contextMultiplier = (prev: string, next: string): number => {
+  if (prev.length !== 1 || next.length !== 1) {
+    throw new RangeError(
+      `contextMultiplier expected single characters, got ${JSON.stringify(prev)} and ${JSON.stringify(next)}`
+    );
+  }
   const pair = prev.toLowerCase() + next.toLowerCase();
   const boost = BIGRAM_BOOSTS[pair];
   let m = boost ?? 1;
@@ -194,29 +210,29 @@ const contextMultiplier = (prev: string, next: string): number => {
     if (initial !== undefined) {
       m = initial / baseWeight(next.toLowerCase());
     }
-    if (isUpper(next)) m *= 15;
+    if (UPPER.test(next)) m *= 15;
     if (next === ' ') m /= 8;
-  } else if (isLetter(prev) && isUpper(next)) {
+  } else if (LETTER.test(prev) && UPPER.test(next)) {
     m /= 8;
   }
 
   // English alternates vowels and consonants; a same-class pair without its
   // own boost is a poor bet.
-  if (boost === undefined && isLetter(prev) && isLetter(next)) {
+  if (boost === undefined && LETTER.test(prev) && LETTER.test(next)) {
     const prevVowel = VOWELS.includes(prev.toLowerCase());
     const nextVowel = VOWELS.includes(next.toLowerCase());
     if (prevVowel === nextVowel) m /= 3;
     else m *= 1.7;
   }
 
-  if ('.!?,;:'.includes(prev)) {
+  if (PUNCTUATION.test(prev)) {
     if (next === ' ') m *= 12;
-    else if (isLetter(next)) m /= 3;
+    else if (LETTER.test(next)) m /= 3;
   }
 
-  if (isDigit(prev)) {
-    if (isDigit(next) || next === '.' || next === ',') m *= 10;
-    else if (isLetter(next)) m /= 3;
+  if (DIGIT.test(prev)) {
+    if (DIGIT.test(next) || next === '.' || next === ',') m *= 10;
+    else if (LETTER.test(next)) m /= 3;
   }
 
   // After q almost nothing but u happens; the qu boost above carries u.
@@ -238,7 +254,8 @@ export interface ProseModel {
   readonly weights: readonly (readonly number[])[];
 }
 
-const englishWeights = (): number[][] => {
+/** The English model's matrix: a frozen row per alphabet character, plus one. */
+export const englishWeights = (): number[][] => {
   const size = ENGLISH_ALPHABET.length;
   const rows: number[][] = [];
   for (let ctx = 0; ctx <= size; ctx++) {
@@ -272,7 +289,11 @@ export interface ProseTable {
   /** Row of the imaginary character before the first. */
   readonly start: number;
   readonly rows: readonly WeightTable[];
+  /** Type-only mark: compileProse is the one source of a consistent table. */
+  readonly [compiledTable]: true;
 }
+
+declare const compiledTable: unique symbol;
 
 const SPACE = 32;
 
@@ -294,13 +315,14 @@ export function compileProse(model: ProseModel): ProseTable {
       );
     }
     const rows = model.weights.map((row) => buildWeights(row, escape + 1, 'p.string prose'));
-    table = {
+    const fields: Omit<ProseTable, typeof compiledTable> = {
       codes,
       index,
       escape,
       start: index.get(SPACE) ?? escape,
       rows,
     };
+    table = fields as ProseTable;
     compiled.set(model, table);
   }
   return table;
@@ -310,7 +332,16 @@ export function compileProse(model: ProseModel): ProseTable {
 export const proseContext = (table: ProseTable, code: number): number =>
   table.index.get(code) ?? table.escape;
 
-const isSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdfff;
+/** The bucket table of row `ctx`, which must be one of the table's rows. */
+export function contextRow(table: ProseTable, ctx: number): WeightTable {
+  const row = table.rows[ctx];
+  // Any index outside the rows (negative, fractional, NaN, past the end)
+  // reads undefined.
+  if (row === undefined) {
+    throw new RangeError(`Prose context ${ctx} is not a row of the model (0–${table.escape})`);
+  }
+  return row;
+}
 
 export interface ProseModelOptions {
   /** The modeled characters; overrides `minCount`. */
@@ -340,7 +371,10 @@ export function buildProseModel(corpus: string, options: ProseModelOptions = {})
     // Lone surrogates stay with the escape: joined into one alphabet string,
     // a lead next to a trail would read back as a single astral character.
     chars = [...counts]
-      .filter(([ch, count]) => count >= minCount && !isSurrogate(ch.codePointAt(0)!))
+      .filter(([ch, count]) => {
+        const code = ch.codePointAt(0)!;
+        return count >= minCount && (code < 0xd800 || code > 0xdfff);
+      })
       .map(([ch]) => ch)
       .sort((a, b) => a.codePointAt(0)! - b.codePointAt(0)!)
       .join('');
@@ -350,6 +384,9 @@ export function buildProseModel(corpus: string, options: ProseModelOptions = {})
   }
   const codes = Array.from(chars, (ch) => ch.codePointAt(0)!);
   const index = new Map(codes.map((code, i) => [code, i]));
+  if (index.size !== codes.length) {
+    throw new RangeError('buildProseModel alphabet must be free of duplicates');
+  }
   const escape = codes.length;
   const weights = Array.from({ length: escape + 1 }, () => Array<number>(escape + 1).fill(1));
   let ctx = index.get(SPACE) ?? escape;
@@ -373,14 +410,15 @@ export function composeProsePoint(
   ctx: number
 ): void {
   const sym = table.index.get(code) ?? table.escape;
-  writeTable(enc, table.rows[ctx], sym);
+  writeTable(enc, contextRow(table, ctx), sym);
   if (sym === table.escape) {
     composeCodePoint(enc, code);
   }
 }
 
+/** Read one prose-weighted code point in the given row. */
 export function parseProsePoint(dec: Decoder, table: ProseTable, ctx: number): number {
-  const sym = readTable(dec, table.rows[ctx]);
+  const sym = readTable(dec, contextRow(table, ctx));
   if (sym !== table.escape) {
     return table.codes[sym];
   }

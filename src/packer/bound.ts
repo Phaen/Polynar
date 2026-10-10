@@ -22,10 +22,13 @@
  */
 
 import { DEFAULT_BLOCK_BITS } from './constants';
-import { bitLength } from './utils';
+import type { Base, Radix } from './types';
+import { bitLength, validateBlockBits } from './utils';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const MAX_SAFE_BIG = BigInt(MAX_SAFE);
+/** Weight one, the weight of every uniform symbol. */
+const ONE = 1 as Radix;
 const TWO_53_BIG = 1n << 53n;
 /** Exponent granularity of the scaled doubles and of constant floats. */
 const STEP = 256;
@@ -60,9 +63,12 @@ export function setExactOnly(on: boolean): void {
  * A positive BigInt as a double mantissa in [1, 2^STEP) times 2^exponent,
  * the exponent a multiple of STEP. The top 53 bits convert exactly and the
  * rest truncate, so the mantissa is below the value by less than 2^-52 of it,
- * two roundings' worth.
+ * two roundings' worth. Zero and negatives have no such form and throw.
  */
-function floatOf(x: bigint): [number, number] {
+export function floatOf(x: bigint): [number, number] {
+  if (x < 1n) {
+    throw new RangeError(`Value ${x} is not positive`);
+  }
   const bits = bitLength(x);
   const e = Math.floor((bits - 1) / STEP) * STEP;
   const drop = Math.max(0, bits - 53);
@@ -72,17 +78,17 @@ function floatOf(x: bigint): [number, number] {
 /**
  * Compares a scaled double x·2^E, known to within k roundings, with the
  * constant m·2^e: 1 when it is certainly larger, -1 when it is certainly
- * not, 0 when the margins overlap. The scaled doubles lie in
- * [2^-53, 2^400) and constant mantissas in [1, 2^STEP), so a constant four
- * steps or more above decides on its own. No value is ever compared with a
- * constant four steps below it: every candidate stays within 2^110 of the
- * block's digit space, and a digit search starts within two digits of the
- * value.
+ * not, 0 when the margins overlap. Its domain is k ≥ 0 and E, e multiples
+ * of STEP; scaled doubles lie in [2^-53, 2^400) and constant mantissas in
+ * [1, 2^STEP), so exponents four steps or more apart decide on their own.
  */
-function compareFloat(x: number, E: number, m: number, e: number, k: number): -1 | 0 | 1 {
+export function compareFloat(x: number, E: number, m: number, e: number, k: number): -1 | 0 | 1 {
   const d = (E - e) / STEP;
   if (d <= -4) {
     return -1;
+  }
+  if (d >= 4) {
+    return 1;
   }
   const y = m * SCALES[3 - d];
   // The margins cover k + 4 roundings: the k of x, two for m (truncated to
@@ -117,7 +123,8 @@ class Powers {
   readonly cap: bigint;
   private readonly base: bigint;
 
-  constructor(base: number, blockBits: number) {
+  /** `blockBits` is a validated block size. */
+  constructor(base: Base, blockBits: number) {
     this.base = BigInt(base);
     const limit = 1n << BigInt(blockBits);
     let digits = 1;
@@ -130,7 +137,14 @@ class Powers {
     this.cap = this.big[digits];
   }
 
+  /**
+   * Extends the tables through base^d, a fractional d counting as its floor.
+   * Infinitely many powers never finish, so Infinity throws.
+   */
   ensure(d: number): void {
+    if (d === Infinity) {
+      throw new RangeError('Digit count Infinity has no power to reach');
+    }
     while (this.big.length <= d) {
       const next = this.big[this.big.length - 1] * this.base;
       const [m, e] = floatOf(next);
@@ -149,12 +163,21 @@ class Powers {
  */
 const powersCache = new Map<number, Powers>();
 const POWERS_CACHE_SIZE = 16;
+const MAX_BASE = 0x10000;
 
+/** The powers of a charset size `base` for blocks of `blockBits` bits. */
 export function powersOf(base: number, blockBits: number = DEFAULT_BLOCK_BITS): Powers {
+  if (!Number.isInteger(base)) {
+    throw new TypeError(`Digit base must be an integer, got ${base}`);
+  }
+  if (base < 2 || base > MAX_BASE) {
+    throw new RangeError(`Digit base ${base} is outside [2, ${MAX_BASE}]`);
+  }
+  validateBlockBits(blockBits);
   const key = blockBits * 0x20000 + base;
   let powers = powersCache.get(key);
   if (powers === undefined) {
-    powers = new Powers(base, blockBits);
+    powers = new Powers(base as Base, blockBits);
     if (powersCache.size >= POWERS_CACHE_SIZE) {
       powersCache.delete(powersCache.keys().next().value as number);
     }
@@ -166,7 +189,7 @@ export function powersOf(base: number, blockBits: number = DEFAULT_BLOCK_BITS): 
 }
 
 export class BlockBound {
-  private readonly base: number;
+  private readonly base: Base;
   private readonly log2Base: number;
   private readonly powers: Powers;
   readonly blockDigits: number;
@@ -213,7 +236,7 @@ export class BlockBound {
   private tightV = 1n;
   private tightDen = 1n;
 
-  constructor(size: number, blockBits: number) {
+  constructor(size: Base, blockBits: number) {
     const powers = powersOf(size, blockBits);
     this.base = size;
     this.log2Base = Math.log2(size);
@@ -228,8 +251,14 @@ export class BlockBound {
     this.capacityDen = powers.cap;
   }
 
-  /** Start a fresh block whose digit space is `digits` base-`size` digits. */
+  /** Start a fresh block whose digit space is `digits` base-`size` digits, at most a full block's. */
   reset(digits: number = this.blockDigits): void {
+    if (!Number.isInteger(digits)) {
+      throw new TypeError(`Digit count must be an integer, got ${digits}`);
+    }
+    if (digits < 0 || digits > this.blockDigits) {
+      throw new RangeError(`Digit count ${digits} is outside [0, ${this.blockDigits}]`);
+    }
     this.capacity = this.powers.big[digits];
     this.capacityM = this.powers.m[digits];
     this.capacityE = this.powers.e[digits];
@@ -248,40 +277,57 @@ export class BlockBound {
   }
 
   /** Whether a symbol of `total` states pushes the bound past the block cap. */
-  exceedsCap(total: number): boolean {
+  exceedsCap(total: Radix): boolean {
     return this.exceeds(total, true);
   }
 
-  /** Whether the symbol's bucket candidate needs more state than the block's digits hold. */
-  exceedsCapacity(total: number): boolean {
+  /**
+   * Whether the symbol's bucket candidate needs more state than the block's
+   * digits hold. A full block's digit space is its cap, which `exceedsCap`
+   * judges, so there the answer is false.
+   */
+  exceedsCapacity(total: Radix): boolean {
     return !this.capacityIsCap && this.exceeds(total, false);
   }
 
   /**
-   * Whether even the symbol's index form, over `count` members, needs more
-   * state than the digits hold, given that its bucket form already does
-   * (`exceedsCapacity(total)`). With `count` at `total` the index form is
-   * the bucket form, so the answer is true without a check.
+   * Whether the symbol's index form, over `count` members, needs more state
+   * than the block's digits hold. A count of `total` or more makes the index
+   * form the bucket form.
    */
-  indexExceedsCapacity(total: number, count: number): boolean {
-    return count >= total || this.exceeds(count, false);
+  indexExceedsCapacity(total: Radix, count: Radix): boolean {
+    return this.exceeds(count < total ? count : total, false);
   }
 
   /**
-   * Fold one symbol into the bound, after `exceedsCap` has judged the same
-   * `total`. `count` is its member count (the index form's radix, at most
-   * `total`); the tight bound the symbol admits is S or its index
-   * candidate, whichever is larger, taken before the update.
+   * Fold one symbol of `total` states and weight `freq` into the bound.
+   * `count` is its member count, the index form's radix, which counts as
+   * `total` when larger; the tight bound the symbol admits is S or its index
+   * candidate, whichever is larger, taken before the update. A weight above
+   * the total names no bucket, so it throws.
    */
-  update(total: number, freq: number, count: number): void {
+  update(total: Radix, freq: Radix, count: Radix): void {
     if (this.regime === Regime.Uniform) {
       if (freq === 1) {
         this.record(total, freq, count);
         this.tBig = this.uBig;
         this.tNum = this.uNum;
         this.uNum *= total;
+        // A preceding `exceedsCap` has committed any factor that would
+        // overflow; an update without one commits here.
+        if (this.uNum > MAX_SAFE) {
+          this.uNum = this.tNum;
+          this.commit();
+          this.uNum = total;
+        }
         return;
       }
+    }
+    // The uniform path above carries weight one, which no total is below.
+    if (freq > total) {
+      throw new RangeError(`Frequency ${freq} exceeds total ${total}`);
+    }
+    if (this.regime === Regime.Uniform) {
       this.toFloat();
     }
     if (this.regime === Regime.Float) {
@@ -335,13 +381,19 @@ export class BlockBound {
    * as each fits the block's digits, and return how many were folded. The
    * state afterwards is the one that many `exceedsCap`, `exceedsCapacity`
    * and `update` steps reach; the first symbol that would cross the cap or
-   * the digit space stays unfolded, for the per-symbol path to judge.
+   * the digit space stays unfolded, for the per-symbol path to judge. A
+   * fractional `max` counts as its floor. A radix-1 symbol never fills the
+   * digits, so radix 1 throws.
    */
-  fold(radix: number, max: number): number {
+  fold(radix: Radix, max: number): number {
+    if (radix < 2) {
+      throw new RangeError(`Radix ${radix} carries nothing to fold`);
+    }
+    max = Math.floor(max);
     let n = 0;
     if (this.regime !== Regime.Uniform) {
       while (n < max && !this.exceedsCap(radix) && !this.exceedsCapacity(radix)) {
-        this.update(radix, 1, radix);
+        this.update(radix, ONE, radix);
         n++;
       }
       return n;
@@ -356,7 +408,7 @@ export class BlockBound {
       if (q > this.roomCapacity) {
         break;
       }
-      this.record(radix, 1, radix);
+      this.record(radix, ONE, radix);
       this.tBig = this.uBig;
       this.tNum = this.uNum;
       this.uNum = q;
@@ -367,9 +419,10 @@ export class BlockBound {
   /**
    * Uniform regime, once the pending factor is full: fold the most symbols
    * of `radix`, up to `max`, whose product with the bound stays within the
-   * block's digit space, as one power of the radix.
+   * block's digit space, as one power of the radix. `radix` is at least 2
+   * and `max` a positive integer or Infinity.
    */
-  private foldProduct(radix: number, max: number): number {
+  private foldProduct(radix: Radix, max: number): number {
     const product = this.uBig * BigInt(this.uNum);
     const room = this.capacity / product;
     const radixBig = BigInt(radix);
@@ -388,7 +441,7 @@ export class BlockBound {
       pow *= radixBig;
     }
     for (let i = 0; i < n; i++) {
-      this.record(radix, 1, radix);
+      this.record(radix, ONE, radix);
     }
     // room >= radix and max >= 1 leave n >= 1, so pow / radixBig is the
     // whole power before the last symbol, never a truncated 0.
@@ -451,7 +504,10 @@ export class BlockBound {
    * needs more digits than its index form over `count` members, and the
    * digits the index form needs.
    */
-  indexDecision(total: number, count: number): { indexed: boolean; digits: number } {
+  indexDecision(total: Radix, count: Radix): { indexed: boolean; digits: number } {
+    if (count > total) {
+      count = total;
+    }
     switch (this.regime) {
       case Regime.Uniform: {
         const before = this.uBig * BigInt(this.uNum);
@@ -483,7 +539,7 @@ export class BlockBound {
   }
 
   /** Whether the candidate for `k` states exceeds the block cap, or the block's digit space when `toCap` is false. */
-  private exceeds(k: number, toCap: boolean): boolean {
+  private exceeds(k: Radix, toCap: boolean): boolean {
     switch (this.regime) {
       case Regime.Uniform:
         return this.pending(k) > (toCap ? this.roomCap : this.roomCapacity);
@@ -507,16 +563,19 @@ export class BlockBound {
     }
   }
 
-  /** Note a symbol folded into the bound, for the exact recomputation. */
-  private record(total: number, freq: number, count: number): void {
+  /**
+   * Note a symbol folded into the bound, for the exact recomputation. A
+   * member count above the total counts as the total in every regime.
+   */
+  private record(total: Radix, freq: Radix, count: Radix): void {
     this.recTotal[this.n] = total;
     this.recFreq[this.n] = freq;
     this.n++;
-    this.lastCount = count;
+    this.lastCount = count < total ? count : total;
   }
 
   /** Uniform regime: the pending factor with `k` folded in, committing first when it would overflow. */
-  private pending(k: number): number {
+  private pending(k: Radix): number {
     const q = this.uNum * k;
     if (q > MAX_SAFE) {
       this.commit();
@@ -554,11 +613,12 @@ export class BlockBound {
       x *= STEP_DOWN;
       E += STEP;
     }
-    // tight stays unset: update(), the only caller, sets it before anything
-    // reads it.
+    // The whole bound covers the latest symbol's tight form, so it is a
+    // sound tight bound until the next symbol sets its own.
     this.v = x;
     this.u = x;
     this.s = x;
+    this.tight = x;
     this.E = E;
     // Two for the truncated mantissa (within 2u), one for the product.
     this.ops = 3;
@@ -566,7 +626,7 @@ export class BlockBound {
   }
 
   /** Float regime: the candidate for `k` states. */
-  private candidate(k: number): number {
+  private candidate(k: Radix): number {
     return this.v + this.u * (k - 1);
   }
 
@@ -617,7 +677,8 @@ export class BlockBound {
   /**
    * The fewest d with den·base^d ≥ x. The search starts one below the
    * digit count of the bit-length estimate, which no float rounding of the
-   * estimate can lift to the answer, and walks up.
+   * estimate can lift to the answer, and walks up. `x` is non-negative and
+   * `den` positive.
    */
   private exactDigits(x: bigint, den: bigint): number {
     const powers = this.powers;
@@ -643,7 +704,8 @@ export class BlockBound {
    * below the digit count of the logarithm estimate, which no rounding of
    * the logarithm can lift to the answer, and walks up while the value is
    * certainly above the power; the first power it is certainly not above
-   * is the answer, with the one below it certainly exceeded.
+   * is the answer, with the one below it certainly exceeded. `x` is a
+   * positive finite double under the bound's scale E, and `k` ≥ 0.
    */
   private floatDigits(x: number, k: number): number {
     const powers = this.powers;

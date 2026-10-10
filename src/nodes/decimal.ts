@@ -7,9 +7,15 @@ import type { Cdf, Prior } from './weights';
 
 const valueSubject = (value: number): string => `Value ${value}`;
 
-// Smallest number of decimal places at which x is represented exactly, or
-// null when there is none within double precision (e.g. 1/3, Math.PI).
-const decimalPlaces = (x: number): number | null => {
+/**
+ * The smallest number of decimal places at which `x` is represented exactly,
+ * or null when there is none within 15 places (1/3, 1e-16) or `x`
+ * is not finite.
+ */
+export const decimalPlaces = (x: number): number | null => {
+  if (!Number.isFinite(x)) {
+    return null;
+  }
   let e = 1;
   for (let places = 0; places <= 15; places++, e *= 10) {
     if (Math.round(x * e) / e === x) {
@@ -50,7 +56,7 @@ export class PDecimal extends PNode<number> {
 
     const stepPlaces = decimalPlaces(step);
     if (stepPlaces === null) {
-      // A step without a finite decimal form (1/3, Math.PI) has no exact
+      // A step without a decimal form of at most 15 places (1/3) has no exact
       // scaled-integer representation, so every value would be off-grid by a
       // rounding hair. The schema is rejected rather than guessed at.
       throw new TypeError('p.decimal step must be an exact decimal (<= 15 places)');
@@ -67,6 +73,12 @@ export class PDecimal extends PNode<number> {
     const kMax = max === undefined ? undefined : this._bound(max, 'max');
     this._range = new IndexRange('p.decimal', kMin, kMax, prior, (k) => String(this._valueAt(k)));
     this._radix = this._range.radix;
+    const fromDigit = this._range.fromDigit;
+    if (fromDigit !== undefined) {
+      // Both bounds sit within the exact range, so every multiple between
+      // them does too and the read-side range check cannot fail.
+      this._fromDigit = (digit) => this._valueAt(fromDigit(digit));
+    }
   }
 
   min(n: number): PDecimal {
@@ -117,14 +129,6 @@ export class PDecimal extends PNode<number> {
     return this._valueAt(k);
   }
 
-  /**
-   * Both bounds sit within the exact range, so every multiple between them
-   * does too and the read-side range check cannot fail.
-   */
-  _fromDigit(digit: number): number {
-    return this._valueAt(this._range.fromDigit(digit));
-  }
-
   /** The step multiple a bound sits on; anything else rejects the schema. */
   private _bound(bound: number, which: string): number {
     if (!Number.isFinite(bound)) {
@@ -134,8 +138,8 @@ export class PDecimal extends PNode<number> {
   }
 
   /**
-   * The k for which `value` is the k-th step multiple. `subject` names the
-   * value in an error, as in `Value 0.15`.
+   * The k for which `value`, a finite number, is the k-th step multiple.
+   * `subject` names the value in an error, as in `Value 0.15`.
    */
   private _multiple(value: number, subject: (value: number) => string): number {
     const scaled = Math.round(value * this._scale);
@@ -156,7 +160,8 @@ export class PDecimal extends PNode<number> {
   }
 
   /**
-   * The value of the k-th step multiple. Integer times integer, divided once
+   * The value of the k-th step multiple, for an integer k whose product with
+   * the scaled step is exact. Integer times integer, divided once
    * by the power-of-ten scale: exact at every step, so this lands on the same
    * double the caller passed in.
    */

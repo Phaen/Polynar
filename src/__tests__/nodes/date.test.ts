@@ -4,6 +4,7 @@
 
 import { p, type DateUnit } from '../../index';
 import { trip } from '../support';
+import { calendar, checkInRange, iso, utcMonthStart } from '../../nodes/date';
 
 describe('Schema date', () => {
   it.each([
@@ -139,5 +140,91 @@ describe('Schema date', () => {
     // forge a bucket the encoder never could.
     const late = p.date().min(new Date(8.64e15)).precision('day');
     expect(() => late.decode(p.int().min(0).encode(1))).toThrow('representable time range');
+  });
+});
+
+describe('calendar', () => {
+  it.each([0, -1, 1.5, NaN, Infinity])('refuses step %p', (step) => {
+    expect(() => calendar('day', step)).toThrow(
+      new RangeError(`p.date precision step must be a positive integer, got ${step}`)
+    );
+  });
+
+  it('puts the epoch in bucket 0 for every unit', () => {
+    const units: DateUnit[] = ['millisecond', 'second', 'minute', 'hour', 'day', 'week', 'month'];
+    for (const unit of [...units, 'year' as const]) {
+      for (const step of [1, 3]) {
+        const cal = calendar(unit, step);
+        expect(cal.index(0)).toBe(0);
+        expect(cal.start(0)).toBeLessThanOrEqual(0);
+        expect(cal.index(cal.start(1))).toBe(1);
+        expect(cal.index(cal.start(1) - 1)).toBe(0);
+      }
+    }
+    expect(calendar('week', 1).start(0)).toBe(Date.UTC(1969, 11, 29));
+    expect(calendar('month', 7).start(0)).toBe(Date.UTC(1969, 11, 1));
+    expect(calendar('year', 10).start(0)).toBe(Date.UTC(1970, 0, 1));
+  });
+
+  it('starts a bucket past the Date range outside it', () => {
+    expect(calendar('day', 1).start(1e8 + 1)).toBe(8.64e15 + 86_400_000);
+    expect(calendar('month', 1).start(4e6)).toBeNaN();
+    expect(calendar('year', 1).start(-3e5)).toBeNaN();
+  });
+});
+
+describe('utcMonthStart', () => {
+  it('keeps years 0-99 literal', () => {
+    expect(utcMonthStart(1970, 0)).toBe(0);
+    expect(utcMonthStart(99, 0)).toBe(new Date('0099-01-01T00:00:00Z').getTime());
+    expect(utcMonthStart(0, 1)).toBe(new Date('0000-02-01T00:00:00Z').getTime());
+    expect(utcMonthStart(-1, 11)).toBe(new Date('-000001-12-01T00:00:00Z').getTime());
+  });
+
+  it('rolls a month outside 0-11 into a neighbouring year and truncates fractions', () => {
+    expect(utcMonthStart(1970, 12)).toBe(Date.UTC(1971, 0, 1));
+    expect(utcMonthStart(1970, -1)).toBe(Date.UTC(1969, 11, 1));
+    expect(utcMonthStart(1970.9, 1.7)).toBe(Date.UTC(1970, 1, 1));
+  });
+
+  it('is NaN outside the Date range', () => {
+    expect(utcMonthStart(275761, 0)).toBeNaN();
+    expect(utcMonthStart(NaN, 0)).toBeNaN();
+    expect(utcMonthStart(1970, Infinity)).toBeNaN();
+  });
+});
+
+describe('iso', () => {
+  it('spells a valid timestamp as ISO and anything else as the number', () => {
+    expect(iso(0)).toBe('1970-01-01T00:00:00.000Z');
+    expect(iso(-8.64e15)).toBe('-271821-04-20T00:00:00.000Z');
+    expect(iso(8.64e15 + 1)).toBe('8640000000000001');
+    expect(iso(NaN)).toBe('NaN');
+    expect(iso(-Infinity)).toBe('-Infinity');
+  });
+});
+
+describe('checkInRange', () => {
+  it('passes a bound within the Date range or none', () => {
+    for (const bound of [undefined, 0, 8.64e15, -8.64e15]) {
+      expect(() => checkInRange(bound, 'min')).not.toThrow();
+    }
+  });
+
+  it.each([8.64e15 + 1, -8.64e15 - 1, Infinity, NaN])('refuses %p', (bound) => {
+    expect(() => checkInRange(bound, 'max')).toThrow(
+      new RangeError(`p.date max ${bound} is outside the Date range ±8640000000000000`)
+    );
+  });
+});
+
+describe('Digit reads', () => {
+  it('map a digit only with both bounds and no prior', () => {
+    const day = new Date('2020-01-01Z');
+    const bounded = p.date().min(day).max(new Date('2020-01-03Z')).precision('day');
+    expect(bounded._fromDigit?.(2)).toEqual(new Date('2020-01-03Z'));
+    expect(p.date()._fromDigit).toBeUndefined();
+    expect(p.date().min(day)._fromDigit).toBeUndefined();
+    expect(bounded.weights([1, 1, 1])._fromDigit).toBeUndefined();
   });
 });

@@ -44,4 +44,11 @@ describe('Schema int', () => {
     expect(() => node.encode(2)).toThrow(new RangeError('Value 2 is below the minimum 3'));
     expect(() => node.encode(10)).toThrow(new RangeError('Value 10 is above the maximum 9'));
   });
+
+  it('maps a digit only with both bounds and no prior', () => {
+    expect(p.int().min(-5).max(5)._fromDigit?.(10)).toBe(5);
+    expect(p.int()._fromDigit).toBeUndefined();
+    expect(p.int().min(0)._fromDigit).toBeUndefined();
+    expect(p.int().min(0).max(1).weights([1, 2])._fromDigit).toBeUndefined();
+  });
 });

@@ -9,7 +9,7 @@ interface Located {
   [PATH]?: { segments: (string | number)[]; message: string };
 }
 
-const formatPath = (segments: readonly (string | number)[]): string =>
+export const formatPath = (segments: readonly (string | number)[]): string =>
   segments
     .map((segment, i) =>
       typeof segment === 'number' ? `[${segment}]` : i === 0 ? segment : `.${segment}`
@@ -36,10 +36,11 @@ export function atPath(error: unknown, segment: string | number): unknown {
 
 /**
  * The allowed values in an error message: each one described while they are
- * few primitives, else their count, since an object prints as `[object Object]`.
+ * one to eight primitives, else their count, since an object prints as
+ * `[object Object]`.
  */
 export const oneOf = (values: readonly unknown[]): string =>
-  values.length <= 8 && values.every(isPrimitive)
+  values.length > 0 && values.length <= 8 && values.every(isPrimitive)
     ? `one of ${values.map(describe).join(', ')}`
     : `one of the ${values.length} listed values`;
 
@@ -56,10 +57,12 @@ export const describe = (value: unknown): string => {
   } else if (typeof value === 'bigint') {
     text = `${value}n`;
   } else {
+    // A cycle, a nested BigInt or a throwing toJSON or toString leaves the
+    // value's tag, as in `[object Object]`.
     try {
       text = JSON.stringify(value) ?? String(value);
     } catch {
-      text = String(value);
+      text = Object.prototype.toString.call(value);
     }
   }
   return text.length > 80 ? `${text.slice(0, 79)}…` : text;

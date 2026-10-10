@@ -5,7 +5,7 @@
  * nothing about types.
  */
 
-import type { CodecOptions, OutputType } from './types';
+import type { Base, CodecOptions, OutputType, Radix } from './types';
 import {
   TERM_BASE,
   TERM_COUNT_RUN_DIGITS,
@@ -18,9 +18,10 @@ import { CorruptInputError } from './errors';
 import {
   outputAlphabet,
   validateBlockBits,
-  type Alphabet,
+  type OutputAlphabet,
   digitChunk,
   log2Exact,
+  radixOf,
   SHIFTS,
   type DigitChunk,
 } from './utils';
@@ -29,12 +30,20 @@ import { BlockBound } from './bound';
 const TERM_ESCAPE_MIN_BIG = BigInt(TERM_ESCAPE_MIN);
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const MAX_SAFE_BIG = BigInt(MAX_SAFE);
+const ONE = 1 as Radix;
+/** The radices of a term's slots: its first, the rest of a run, and the payload digits. */
+const TERM_FIRST_RADIX = (TERM_BASE + 2) as Radix;
+const TERM_RUN_RADIX = (TERM_BASE + 1) as Radix;
+const PAYLOAD_RADIX = TERM_PAYLOAD_BASE as Radix;
+const PAYLOAD_TOP_RADIX = (TERM_PAYLOAD_BASE - 1) as Radix;
+/** The longest array a JavaScript engine builds. */
+const MAX_COUNT = 2 ** 32 - 1;
 
 /** `I` is the input's type, which pairs it with the matching options. */
 export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
   private readonly input: string | Uint8Array;
-  private readonly alphabet: Alphabet;
-  private readonly size: number;
+  private readonly alphabet: OutputAlphabet;
+  private readonly size: Base;
   /**
    * The remaining value of the current block, as one big mixed-radix
    * integer: `num` while it fits a safe integer, else `big`.
@@ -63,7 +72,7 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
     this.loadBlock(0);
   }
 
-  /** Digit value of the input at position `i`, validated against the charset. */
+  /** Digit value of the input at position `i`, in [0, input.length), validated against the charset. */
   private digitAt(i: number): number {
     const input = this.input;
     const text = typeof input === 'string';
@@ -78,7 +87,9 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
 
   /**
    * Rebuild one block of the encoder's mixed-radix packing from the
-   * base-`size` digits of the input, a chunk of digits at a time.
+   * base-`size` digits of the input, a chunk of digits at a time. `start`
+   * is a block boundary, a multiple of the block's digits no further than
+   * the input's end.
    */
   private loadBlock(start: number): void {
     const bound = this.bound;
@@ -125,8 +136,9 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
    * the symbol is written as an index over `count` members: when the bucket
    * form needs more state than the digits hold but the index form fits, the
    * encoder wrote the index (it only does so for the message's last symbol).
+   * `count` is at most `total`.
    */
-  private stepBound(total: number, count: number): boolean {
+  private stepBound(total: Radix, count: Radix): boolean {
     const bound = this.bound;
 
     // The encoder's greedy rule applies: a value whose total would push the
@@ -165,7 +177,7 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
   }
 
   /** Peel one radix-`radix` digit off the value. */
-  private divide(radix: number): number {
+  private divide(radix: Radix): number {
     if (this.small) {
       const digit = this.num % radix;
       this.num = (this.num - digit) / radix;
@@ -200,13 +212,18 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
    * non-canonical leftover instead.
    */
   parse(radix: number): number {
+    return this.parseRadix(radixOf(radix, 'Radix'));
+  }
+
+  /** `parse` past its radix check. */
+  private parseRadix(radix: Radix): number {
     // The encoder records nothing for a radix-1 digit.
     if (radix === 1) {
       return 0;
     }
 
     this.stepBound(radix, radix);
-    this.bound.update(radix, 1, radix);
+    this.bound.update(radix, ONE, radix);
 
     return this.divide(radix);
   }
@@ -219,27 +236,43 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
    * `parse`, which makes the same decisions and throws the same errors.
    */
   parseMany(radix: number, count: number): number[] {
+    const states = radixOf(radix, 'Radix');
+    if (!Number.isInteger(count)) {
+      throw new TypeError(`Count must be an integer, got ${count}`);
+    }
+    if (count < 0) {
+      throw new RangeError(`Count ${count} is negative`);
+    }
     const digits: number[] = [];
-    if (radix === 1) {
+    // Values of a larger radix run out of input long before an array of
+    // them outgrows its limit; radix-1 values read nothing, so only the
+    // limit stops them.
+    if (states === 1) {
+      if (count > MAX_COUNT) {
+        throw new RangeError(`Count ${count} exceeds the longest array, ${MAX_COUNT}`);
+      }
       for (let i = 0; i < count; i++) {
         digits.push(0);
       }
       return digits;
     }
     while (digits.length < count) {
-      const run = this.bound.fold(radix, count - digits.length);
+      const run = this.bound.fold(states, count - digits.length);
       if (run > 0) {
-        this.divideRun(radix, run, digits);
+        this.divideRun(states, run, digits);
       }
       if (digits.length < count) {
-        digits.push(this.parse(radix));
+        digits.push(this.parseRadix(states));
       }
     }
     return digits;
   }
 
-  /** Peel `run` radix-`radix` digits off the value onto `out`, lowest first. */
-  private divideRun(radix: number, run: number, out: number[]): void {
+  /**
+   * Peel `run` radix-`radix` digits off the value onto `out`, lowest first.
+   * `radix` is at least 2, and the bound has folded the `run` digits.
+   */
+  private divideRun(radix: Radix, run: number, out: number[]): void {
     if (!this.small) {
       const chunk = digitChunk(radix);
       while (run > 0 && !this.small) {
@@ -299,24 +332,25 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
     locate: (residual: number) => readonly [T, number, number],
     position?: { count: number; at: (index: number) => readonly [T, number, number] }
   ): T {
-    const count = position === undefined ? total : position.count;
+    const states = radixOf(total, 'Total');
+    const count = position === undefined ? states : position.count;
     const at = position === undefined ? locate : position.at;
     if (!Number.isInteger(count) || count < 1) {
       throw new TypeError(`Symbol count must be a positive integer, got ${count}`);
     }
-    const members = Math.min(count, total);
+    const members = (count < states ? count : states) as Radix;
     const bound = this.bound;
 
     // Only at a block boundary or past the block's digits does the bound step
     // change state before the residual is known, so only there is a
     // zero-information symbol told apart up front. Elsewhere its own bucket,
     // found from the untouched value, tells it apart.
-    if (bound.exceedsCap(total) || bound.exceedsCapacity(total)) {
+    if (bound.exceedsCap(states) || bound.exceedsCapacity(states)) {
       const only = locate(0);
       if (only[2] === total) {
         return only[0];
       }
-      if (this.stepBound(total, members)) {
+      if (this.stepBound(states, members)) {
         const index = this.divide(members);
         const [symbol, , freq] = at(index);
         // The encoder refuses zero-weight values, so one here was never written.
@@ -326,7 +360,7 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
         // Folded in at its full total, the index leaves the block's digits no
         // room for another symbol, so a read past it fails as truncated input.
         // The tight bound is the index form's either way.
-        bound.update(total, 1, members);
+        bound.update(states, ONE, members);
         return symbol;
       }
     }
@@ -338,7 +372,7 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
       residual = this.num % total;
       quotient = (this.num - residual) / total;
     } else {
-      const bits = log2Exact(total);
+      const bits = log2Exact(states);
       if (bits < 0) {
         const totalBig = BigInt(total);
         quotientBig = this.big / totalBig;
@@ -368,7 +402,8 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
       return symbol;
     }
 
-    bound.update(total, freq, members);
+    // The check above leaves freq an integer in [1, total).
+    bound.update(states, freq as Radix, members);
     if (this.small) {
       // A weighted step never grows the value, so it stays a safe integer.
       this.num = freq * quotient + (residual - cum);
@@ -387,7 +422,7 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
 
   /** Read one unbounded non-negative integer composed by `composeTerm`. */
   parseTerm(): number {
-    const first = this.parse(TERM_BASE + 2);
+    const first = this.parseRadix(TERM_FIRST_RADIX);
 
     if (first !== TERM_BASE + 1) {
       return this.parseRun(first, TERM_INLINE_DIGITS);
@@ -396,15 +431,16 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
     // Escaped: digit count (offset by its known minimum), then the digits,
     // reassembled in BigInt so terms above 2^53 round-trip bit-exact.
     const count =
-      TERM_PAYLOAD_MIN_DIGITS + this.parseRun(this.parse(TERM_BASE + 1), TERM_COUNT_RUN_DIGITS);
+      TERM_PAYLOAD_MIN_DIGITS +
+      this.parseRun(this.parseRadix(TERM_RUN_RADIX), TERM_COUNT_RUN_DIGITS);
     const base = BigInt(TERM_PAYLOAD_BASE);
     let value = 0n;
     let pow = 1n;
     for (let i = 0; i < count - 1; i++) {
-      value += BigInt(this.parse(TERM_PAYLOAD_BASE)) * pow;
+      value += BigInt(this.parseRadix(PAYLOAD_RADIX)) * pow;
       pow *= base;
     }
-    value += BigInt(this.parse(TERM_PAYLOAD_BASE - 1) + 1) * pow;
+    value += BigInt(this.parseRadix(PAYLOAD_TOP_RADIX) + 1) * pow;
 
     // The encoder escapes only above the inline range, and only emits values
     // a double represents exactly; anything else is a corrupted input.
@@ -423,6 +459,7 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
    * already consumed. `maxDigits` is the canonical cap: the encoder never
    * emits longer runs, so exceeding it (or padding with a zero top digit)
    * is corruption, and honoring the cap keeps the arithmetic exact.
+   * `symbol` is a slot's read, in [0, TERM_BASE + 1].
    */
   private parseRun(symbol: number, maxDigits: number): number {
     let integer = 0;
@@ -437,7 +474,7 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
       integer += (symbol - 1) * pow;
       pow *= TERM_BASE;
       last = symbol;
-      symbol = this.parse(TERM_BASE + 1);
+      symbol = this.parseRadix(TERM_RUN_RADIX);
     }
 
     // Symbol 1 is digit zero; as the top digit it means a shorter run encodes

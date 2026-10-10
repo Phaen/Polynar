@@ -4,6 +4,7 @@
 
 import { p, Encoder, CorruptInputError } from '../../index';
 import { trip } from '../support';
+import { decimalPlaces } from '../../nodes/decimal';
 
 describe('Schema decimal', () => {
   it.each([0, 0.07, 0.29, 3.14, 99.99, 100])(
@@ -99,5 +100,36 @@ describe('Schema decimal', () => {
     enc.compose(0, 2);
     enc.composeTerm(2 ** 60);
     expect(() => p.decimal(0.01).decode(enc.output())).toThrow(CorruptInputError);
+  });
+});
+
+describe('decimalPlaces', () => {
+  it.each([
+    [0, 0],
+    [-0, 0],
+    [7, 0],
+    [1e300, 0],
+    [0.1, 1],
+    [-0.5, 1],
+    [0.25, 2],
+    [1e-15, 15],
+    [1.000000000000001, 15],
+    [Math.PI, 15],
+  ])('gives %p %p places', (x, places) => {
+    expect(decimalPlaces(x)).toBe(places);
+  });
+
+  it.each([1e-16, 1 / 3, Infinity, -Infinity, NaN])('has no exact decimal form for %p', (x) => {
+    expect(decimalPlaces(x)).toBeNull();
+  });
+});
+
+describe('Digit reads', () => {
+  it('map a digit only with both bounds and no prior', () => {
+    const bounded = p.decimal(0.5).min(-1).max(1);
+    expect(bounded._fromDigit?.(3)).toBe(0.5);
+    expect(p.decimal(0.5)._fromDigit).toBeUndefined();
+    expect(p.decimal(0.5).max(1)._fromDigit).toBeUndefined();
+    expect(bounded.weights([1, 1, 1, 1, 1])._fromDigit).toBeUndefined();
   });
 });

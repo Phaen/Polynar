@@ -5,6 +5,7 @@
  * resolve to `false`, so `= true` fails to compile and typecheck goes red.
  */
 import { p } from './p';
+import { PVersioned } from './versioned';
 import type { Infer } from './infer';
 import type { CodecOptions } from '../packer';
 
@@ -147,6 +148,14 @@ p.versioned(UserV1, [
   // @ts-expect-error — the migration must produce the new version's type
   (user) => ({ ...user }),
 ]);
+
+// A versioned schema starts from a first version, a node with no migration.
+// @ts-expect-error — no versions
+p.versioned();
+// @ts-expect-error — no versions
+new PVersioned([]);
+// @ts-expect-error — the first version has nothing to migrate from
+new PVersioned([[UserV1, (user: unknown) => user]]);
 
 // Nullable adds null to the node's type; optional and nullable combine.
 const Profile = p.object({ nick: p.nullable(p.string()), bio: p.optional(p.nullable(p.string())) });

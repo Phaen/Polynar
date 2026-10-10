@@ -10,7 +10,10 @@ export const isDate = (o: any): o is Date => o instanceof Date;
  * is its own enumerable keys. A Map, a Set or a class instance keeps state
  * elsewhere, and walking its keys would encode an empty object.
  */
-export const isPlainObject = (o: any): o is Record<string, unknown> => {
+export const isPlainObject = (o: unknown): o is Record<string, unknown> => {
+  if (o === null || typeof o !== 'object') {
+    return false;
+  }
   const proto = Object.getPrototypeOf(o);
   return proto === null || proto === Object.prototype;
 };

@@ -5,13 +5,6 @@ import type { Kind } from './guards';
 import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 
-/** Bounds are integers like the values they admit; NaN and Infinity are not. */
-const checkBound = (bound: number | undefined, which: string): void => {
-  if (bound !== undefined && !Number.isInteger(bound)) {
-    throw new TypeError(`p.int ${which} must be an integer, got ${bound}`);
-  }
-};
-
 /** Integer (strict: non-integers throw). `p.int`. */
 export class PInt extends PNode<number> {
   readonly _kinds: readonly Kind[] = ['number'];
@@ -22,10 +15,9 @@ export class PInt extends PNode<number> {
 
   constructor(min?: number, max?: number, prior?: Prior) {
     super();
-    checkBound(min, 'min');
-    checkBound(max, 'max');
     this._range = new IndexRange('p.int', min, max, prior);
     this._radix = this._range.radix;
+    this._fromDigit = this._range.fromDigit;
   }
 
   min(n: number): PInt {
@@ -67,9 +59,5 @@ export class PInt extends PNode<number> {
 
   _read(dec: Decoder): number {
     return this._range.read(dec);
-  }
-
-  _fromDigit(digit: number): number {
-    return this._range.fromDigit(digit);
   }
 }

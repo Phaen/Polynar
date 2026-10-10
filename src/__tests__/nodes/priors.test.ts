@@ -1,9 +1,20 @@
 /**
  * Priors: `weights` and `cdf` on the nodes that take them, shared rules and
- * how each node maps its values onto the prior.
+ * how each node maps its values onto the prior, then the weights module's
+ * helpers directly.
  */
 
-import { p } from '../../index';
+import { p, Encoder, Decoder, type Cdf } from '../../index';
+import {
+  RangePrior,
+  buildWeights,
+  checkIndex,
+  checkRange,
+  priorKind,
+  readTable,
+  validateCdf,
+  writeTable,
+} from '../../nodes/weights';
 import { trip } from '../support';
 
 describe('Schema priors', () => {
@@ -217,5 +228,243 @@ describe('Schema priors', () => {
         .max(100)
         .cdf((v) => v * 1.5)
     ).toThrow('cdf must return safe integers, got 151.5 at 101');
+  });
+});
+
+describe('buildWeights', () => {
+  const table = buildWeights([1, 2, 5], 3, 'w');
+
+  it('lays out running totals', () => {
+    expect([table.cums, table.freqs, table.total]).toEqual([[0, 1, 3], [1, 2, 5], 8]);
+    expect(table.position.count).toBe(3);
+  });
+
+  it('refuses a state count that is not a positive integer', () => {
+    expect(() => buildWeights([], 0, 'w')).toThrow(
+      new RangeError('w weights need at least one value, got 0')
+    );
+    expect(() => buildWeights([], -1, 'w')).toThrow(RangeError);
+    expect(() => buildWeights([1], 1.5, 'w')).toThrow(
+      new TypeError('w weights need a whole number of values, got 1.5')
+    );
+    expect(() => buildWeights([1], NaN, 'w')).toThrow(TypeError);
+    expect(() => buildWeights([1], Infinity, 'w')).toThrow(TypeError);
+  });
+
+  it('refuses a weight list of the wrong length or with bad weights', () => {
+    expect(() => buildWeights([1, 1], 3, 'w')).toThrow(
+      new TypeError('w weights must list one weight per value: expected 3, got 2')
+    );
+    for (const w of [0, -1, 1.5, NaN, Infinity]) {
+      expect(() => buildWeights([1, w], 2, 'w')).toThrow(
+        new TypeError(`w weights must be positive integers, got ${w}`)
+      );
+    }
+    expect(() => buildWeights([Number.MAX_SAFE_INTEGER, 1], 2, 'w')).toThrow(
+      new RangeError('w weights must sum to a safe integer')
+    );
+  });
+
+  it('locates the bucket holding a residual, clamping one outside [0, total)', () => {
+    expect([0, 1, 2, 3, 7].map((r) => table.locate(r)[0])).toEqual([0, 1, 1, 2, 2]);
+    expect(table.locate(3)).toEqual([2, 3, 5]);
+    expect(table.locate(-1)[0]).toBe(0);
+    expect(table.locate(NaN)[0]).toBe(0);
+    expect(table.locate(8)[0]).toBe(2);
+    expect(table.locate(Infinity)[0]).toBe(2);
+  });
+
+  it('looks up a bucket by index, an index outside the table owning no weight', () => {
+    expect(table.position.at(1)).toEqual([1, 1, 2]);
+    for (const i of [-1, 3, 0.5, NaN]) {
+      expect(table.position.at(i)).toEqual([i, 8, 0]);
+    }
+  });
+});
+
+describe('writeTable and readTable', () => {
+  const table = buildWeights([3, 1], 2, 'w');
+
+  it('round-trip each position', () => {
+    const enc = new Encoder();
+    for (const pos of [0, 1, 1, 0]) {
+      writeTable(enc, table, pos);
+    }
+    const dec = new Decoder(enc.output());
+    expect([0, 1, 2, 3].map(() => readTable(dec, table))).toEqual([0, 1, 1, 0]);
+    dec.finalize();
+  });
+
+  it.each([-1, 2, 0.5, NaN, Infinity])('refuses position %p', (pos) => {
+    expect(() => writeTable(new Encoder(), table, pos)).toThrow(
+      new RangeError(`Position ${pos} is not one of the table's 2 entries`)
+    );
+  });
+});
+
+describe('checkRange', () => {
+  it('passes integer bounds, either optional', () => {
+    for (const [lo, hi] of [
+      [undefined, undefined],
+      [-(2 ** 60), undefined],
+      [undefined, 2 ** 60],
+      [3, 3],
+    ]) {
+      expect(() => checkRange('r', lo, hi)).not.toThrow();
+    }
+  });
+
+  it('refuses non-integer bounds, an empty range and one too wide', () => {
+    expect(() => checkRange('r', 0.5)).toThrow(new TypeError('r min must be an integer, got 0.5'));
+    expect(() => checkRange('r', undefined, -Infinity)).toThrow(
+      new TypeError('r max must be an integer, got -Infinity')
+    );
+    expect(() => checkRange('r', 1, 0, (i) => `#${i}`)).toThrow(
+      new RangeError('r range is empty: min #1 exceeds max #0')
+    );
+    expect(() => checkRange('r', -1, Number.MAX_SAFE_INTEGER - 1)).toThrow(
+      'spans more than 2^53 values'
+    );
+  });
+});
+
+describe('checkIndex', () => {
+  const subject = () => 'Item';
+
+  it('passes an integer within the bounds', () => {
+    expect(() => checkIndex(0, undefined, undefined, subject)).not.toThrow();
+    expect(() => checkIndex(-0, 0, 0, subject)).not.toThrow();
+    expect(() => checkIndex(2 ** 60, 0, undefined, subject)).not.toThrow();
+  });
+
+  it('refuses a non-integer, or an index past either bound', () => {
+    for (const index of [0.5, NaN, Infinity]) {
+      expect(() => checkIndex(index, undefined, undefined, subject)).toThrow(
+        new TypeError('Item is not an integer')
+      );
+    }
+    expect(() => checkIndex(-1, 0, undefined, subject, (i) => `#${i}`)).toThrow(
+      new RangeError('Item is below the minimum #0')
+    );
+    expect(() => checkIndex(2, undefined, 1, subject)).toThrow(
+      new RangeError('Item is above the maximum 1')
+    );
+  });
+});
+
+describe('validateCdf', () => {
+  it('keeps a cdf that starts at 0 and rebases one that does not', () => {
+    const square: Cdf = (v) => v * v;
+    expect(validateCdf(square, 0, 3, 'c')).toEqual({ cdf: square, total: 16 });
+    const { cdf, total } = validateCdf((v) => v + 100, 5, 9, 'c');
+    expect([cdf(5), cdf(10), total]).toEqual([0, 5, 5]);
+  });
+
+  it('refuses a bad range', () => {
+    expect(() => validateCdf((v) => v, 3, 2, 'c')).toThrow(
+      new RangeError('c range is empty: min 3 exceeds max 2')
+    );
+    expect(() => validateCdf((v) => v, 0.5, 2, 'c')).toThrow(
+      new TypeError('c min must be an integer, got 0.5')
+    );
+    expect(() => validateCdf((v) => v, 2 ** 53, 2 ** 53, 'c')).toThrow(
+      new RangeError(
+        `c cdf requires bounds within ±${Number.MAX_SAFE_INTEGER}, got [${2 ** 53}, ${2 ** 53}]`
+      )
+    );
+    expect(() => validateCdf((v) => v, -(2 ** 53), -(2 ** 53), 'c')).toThrow(
+      'requires bounds within'
+    );
+  });
+
+  it('refuses unsafe values at either end and no mass in between', () => {
+    expect(() => validateCdf((v) => (v < 1 ? NaN : v), 0, 1, 'c')).toThrow(
+      new TypeError('c cdf must return safe integers, got NaN at 0')
+    );
+    expect(() => validateCdf((v) => (v > 1 ? 2 ** 53 : v), 0, 1, 'c')).toThrow(
+      new TypeError(`c cdf must return safe integers, got ${2 ** 53} at 2`)
+    );
+    expect(() => validateCdf((v) => -v, 0, 1, 'c')).toThrow(
+      new TypeError('c cdf must put positive weight on the range, got -2')
+    );
+  });
+});
+
+describe('priorKind', () => {
+  it('tells a cdf from weights', () => {
+    expect(priorKind((v) => v)).toBe('cdf');
+    expect(priorKind([1])).toBe('weights');
+  });
+});
+
+describe('RangePrior', () => {
+  /** Writes values through `prior`, then reads as many back. */
+  const roundTrip = (prior: RangePrior, values: number[]): number[] => {
+    const enc = new Encoder();
+    for (const v of values) {
+      prior.write(enc, v, () => `Value ${v}`);
+    }
+    const dec = new Decoder(enc.output());
+    const out = values.map(() => prior.read(dec));
+    dec.finalize();
+    return out;
+  };
+
+  it('round-trips values under weights and under a cdf', () => {
+    const values = [-2, 0, 2, 1, -1, 2];
+    expect(roundTrip(new RangePrior([1, 4, 1, 9, 2], -2, 2, 'r'), values)).toEqual(values);
+    expect(roundTrip(new RangePrior((v) => v * v * v, -2, 2, 'r'), values)).toEqual(values);
+    const single = new RangePrior([7], 5, 5, 'r');
+    expect(single.declared).toEqual([7]);
+    expect(roundTrip(single, [5, 5])).toEqual([5, 5]);
+  });
+
+  it('refuses a bad range with its own message, not as a weight error', () => {
+    expect(() => new RangePrior([1], 3, 2, 'r')).toThrow(
+      new RangeError('r range is empty: min 3 exceeds max 2')
+    );
+    expect(
+      () =>
+        new RangePrior(
+          (v) => v,
+          3,
+          2,
+          'r',
+          (i) => `#${i}`
+        )
+    ).toThrow(new RangeError('r range is empty: min #3 exceeds max #2'));
+    expect(() => new RangePrior([1], NaN, 2, 'r')).toThrow(
+      new TypeError('r min must be an integer, got NaN')
+    );
+    expect(() => new RangePrior([1], 2 ** 53, 2 ** 53, 'r')).toThrow(
+      new RangeError(
+        `r weights requires bounds within ±${Number.MAX_SAFE_INTEGER}, got [${2 ** 53}, ${2 ** 53}]`
+      )
+    );
+    expect(() => new RangePrior([1, 1], 0, 2, 'r')).toThrow('expected 3, got 2');
+  });
+
+  it('refuses a value that is not an integer within the range', () => {
+    const prior = new RangePrior([1, 1, 1], 1, 3, 'r', (i) => `#${i}`);
+    const subject = () => 'Item';
+    expect(() => prior.write(new Encoder(), 1.5, subject)).toThrow(
+      new TypeError('Item is not an integer')
+    );
+    expect(() => prior.write(new Encoder(), 0, subject)).toThrow(
+      new RangeError('Item is below the minimum #1')
+    );
+    expect(() => prior.write(new Encoder(), 4, subject)).toThrow(
+      new RangeError('Item is above the maximum #3')
+    );
+  });
+
+  it('refuses a value of zero weight or where the cdf falls', () => {
+    const steps = new RangePrior((v) => (v < 2 ? 0 : v === 2 ? 5 : 3), 0, 2, 'r');
+    expect(() => steps.write(new Encoder(), 0, () => 'Item')).toThrow(
+      new RangeError('Item has zero weight under the declared cdf')
+    );
+    expect(() => steps.write(new Encoder(), 2, () => 'Item')).toThrow(
+      new TypeError('r cdf must be a non-decreasing integer function, fails at 2')
+    );
   });
 });

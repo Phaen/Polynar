@@ -30,15 +30,16 @@ const WEEK_MS = 604_800_000;
  * A timestamp in an error message: ISO when it is a valid Date, else the
  * number, as for the start of a bucket that straddles the earliest Date.
  */
-const iso = (ts: number): string => {
+export const iso = (ts: number): string => {
   const date = new Date(ts);
   return isNaN(date.getTime()) ? String(ts) : date.toISOString();
 };
 /** The largest timestamp magnitude a Date holds. */
 const MAX_TIMESTAMP = 8.64e15;
 
-const checkInRange = (bound: number | undefined, which: string): void => {
-  if (bound !== undefined && Math.abs(bound) > MAX_TIMESTAMP) {
+/** Refuses a bound outside the Date range; NaN lies outside it too. */
+export const checkInRange = (bound: number | undefined, which: string): void => {
+  if (bound !== undefined && !(Math.abs(bound) <= MAX_TIMESTAMP)) {
     throw new RangeError(`p.date ${which} ${bound} is outside the Date range ±${MAX_TIMESTAMP}`);
   }
 };
@@ -49,15 +50,23 @@ const WEEK_ORIGIN = -259_200_000;
 /**
  * A bucketing of the UTC timeline: `index` maps a timestamp to its bucket,
  * `start` maps a bucket back to the timestamp of its first instant. The bucket
- * holding 1970-01-01 is index 0 for every unit.
+ * holding 1970-01-01 is index 0 for every unit. `index` takes a valid Date
+ * timestamp, as PDate checks before asking; `start` takes any integer index
+ * and gives a timestamp that may lie outside the Date range, NaN for months
+ * and years past it.
  */
-interface Calendar {
+export interface Calendar {
   index(ts: number): number;
   start(index: number): number;
 }
 
-/** The first instant of a UTC month; years 0–99 stay literal instead of 1900–1999. */
-const utcMonthStart = (year: number, month: number): number => {
+/**
+ * The first instant of a UTC month; years 0–99 stay literal instead of
+ * 1900–1999. A month outside 0–11 rolls into a neighbouring year, a
+ * fractional year or month counts its whole part, and a month outside the
+ * Date range is NaN, all as `Date.setUTCFullYear` does.
+ */
+export const utcMonthStart = (year: number, month: number): number => {
   const date = new Date(0);
   date.setUTCFullYear(year, month, 1);
   return date.getTime();
@@ -65,7 +74,10 @@ const utcMonthStart = (year: number, month: number): number => {
 
 // Every valid timestamp and its offset from the week origin stay below 2^53,
 // so each floored division and each in-range bucket start is exact.
-const calendar = (unit: DateUnit, step: number): Calendar => {
+export const calendar = (unit: DateUnit, step: number): Calendar => {
+  if (!Number.isInteger(step) || step < 1) {
+    throw new RangeError(`p.date precision step must be a positive integer, got ${step}`);
+  }
   if (unit === 'week') {
     const size = WEEK_MS * step;
     return {
@@ -153,9 +165,6 @@ export class PDate extends PNode<Date> {
       );
     }
 
-    if (!Number.isInteger(step) || step < 1) {
-      throw new RangeError(`p.date precision step must be a positive integer, got ${step}`);
-    }
     this._unit = unit;
     this._step = step;
     this._calendar = calendar(unit, step);
@@ -168,12 +177,14 @@ export class PDate extends PNode<Date> {
     // which lies within the Date range, so when the first bucket starts
     // within it every bucket does, and reading a digit cannot fail. Only a
     // first bucket straddling the earliest Date starts before it.
+    const fromDigit = this._range.fromDigit;
     if (
       lo !== undefined &&
-      hi !== undefined &&
+      fromDigit !== undefined &&
       !isNaN(new Date(this._calendar.start(lo)).getTime())
     ) {
       this._radix = this._range.radix;
+      this._fromDigit = (digit) => new Date(this._calendar.start(fromDigit(digit)));
     }
   }
 
@@ -236,10 +247,6 @@ export class PDate extends PNode<Date> {
       throw new CorruptInputError('Date is outside the representable time range');
     }
     return date;
-  }
-
-  _fromDigit(digit: number): Date {
-    return new Date(this._calendar.start(this._range.fromDigit(digit)));
   }
 
   private _with(change: {
