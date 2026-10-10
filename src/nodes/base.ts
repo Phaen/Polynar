@@ -60,8 +60,8 @@ export abstract class PNode<TOut> {
   /** Encode to bytes, or to text when `type` is `'text'`. Both sides must agree on the options. */
   encode(value: TOut, options: CodecOptions<'text'> & { type: 'text' }): string;
   encode(value: TOut, options?: CodecOptions<'binary'>): Uint8Array;
-  encode(value: TOut, options?: CodecOptions): Uint8Array | string;
-  encode(value: TOut, options?: CodecOptions): Uint8Array | string {
+  encode(value: TOut, options?: CodecOptions<OutputType>): Uint8Array | string;
+  encode(value: TOut, options?: CodecOptions<OutputType>): Uint8Array | string {
     const enc = new Encoder();
     this._write(enc, value);
     return enc.output(options);

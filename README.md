@@ -353,7 +353,7 @@ A value that can't be encoded throws with its path in front and the limit it bro
 - `TypedArray`, `TypedArrayClass` — what `p.binary` takes and returns.
 - `Charset` — `string | [number, number]`, for output and `.charset()`.
 - `OutputType` — `'binary' | 'text'`.
-- `CodecOptions` — the options of `encode` and `decode`.
+- `CodecOptions` — the options of `encode` and `decode`. Without a type argument it has no `type`, so one options object works for both forms; `CodecOptions<'text'>` and `CodecOptions<'binary'>` include it.
 
 The node classes are exported too (`PNode`, `PInt`, `PString`, `PObject`, …), along with `ProseModels` and `buildProseModel`.
 

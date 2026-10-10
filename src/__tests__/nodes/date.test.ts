@@ -90,25 +90,21 @@ describe('Schema date', () => {
     expect(trip(node, new Date('2026-03-14T12:00:00Z')).getTime()).toBe(midnight.getTime());
     expect(trip(node, midnight).getTime()).toBe(midnight.getTime());
     expect(() => node.encode(new Date('2026-03-13T23:59:59Z'))).toThrow(
-      'Date "2026-03-13T23:59:59.000Z" is below the minimum 2026-03-14T00:00:00.000Z'
+      'Date 2026-03-13T23:59:59.000Z is below the minimum 2026-03-14T00:00:00.000Z'
     );
   });
 
   it('date enforces its bounds and rejects invalid dates', () => {
     const node = p.date().min(new Date('2020-01-01Z')).max(new Date('2021-01-01Z'));
     expect(() => node.encode(new Date('2019-12-31Z'))).toThrow(
-      new RangeError(
-        'Date "2019-12-31T00:00:00.000Z" is below the minimum 2020-01-01T00:00:00.000Z'
-      )
+      new RangeError('Date 2019-12-31T00:00:00.000Z is below the minimum 2020-01-01T00:00:00.000Z')
     );
     expect(() => node.encode(new Date('2021-01-02Z'))).toThrow(
-      new RangeError(
-        'Date "2021-01-02T00:00:00.000Z" is above the maximum 2021-01-01T00:00:00.000Z'
-      )
+      new RangeError('Date 2021-01-02T00:00:00.000Z is above the maximum 2021-01-01T00:00:00.000Z')
     );
     // A bound outside the Date range shows as its timestamp.
     expect(() => p.date().min(9e15).encode(new Date(0))).toThrow(
-      'Date "1970-01-01T00:00:00.000Z" is below the minimum 9000000000000000'
+      'Date 1970-01-01T00:00:00.000Z is below the minimum 9000000000000000'
     );
     expect(() => node.encode(new Date(NaN))).toThrow(
       new TypeError('p.date expected a valid Date, got Invalid Date')

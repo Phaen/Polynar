@@ -6,7 +6,7 @@
  */
 
 import { Encoder, Decoder, CorruptInputError, PNode, p } from '../index';
-import type { CodecOptions } from '../index';
+import type { CodecOptions, OutputType } from '../index';
 import { trip } from './support';
 
 let seed = 1;
@@ -25,7 +25,7 @@ const BUCKETS: readonly (readonly [number, number, number])[] = [
 const locate = (r: number): readonly [number, number, number] => BUCKETS[r < 1 ? 0 : r < 3 ? 1 : 2];
 const position = { count: 3, at: (i: number) => BUCKETS[i] };
 
-type Options = CodecOptions;
+type Options = CodecOptions<OutputType>;
 type Input = Uint8Array | string;
 
 /** What a read sequence returned, or the error it threw. */

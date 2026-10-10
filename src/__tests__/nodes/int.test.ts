@@ -16,6 +16,15 @@ describe('Schema int', () => {
       new TypeError('p.int expected an integer, got "5"')
     );
     expect(() => p.int().encode(5.5)).toThrow(new TypeError('p.int expected an integer, got 5.5'));
+    expect(() => p.int().encode(5n as never)).toThrow(
+      new TypeError('p.int expected an integer, got 5n')
+    );
+    expect(() =>
+      p
+        .int()
+        .min(0)
+        .max(2 ** 53 - 1)
+    ).toThrow(RangeError);
     expect(() => p.int().encode([5] as never)).toThrow(
       new TypeError('p.int expected an integer, got [5]')
     );

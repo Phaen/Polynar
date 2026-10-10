@@ -71,6 +71,9 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
   walk<S>(value: S, from: PNode<S>): T;
   walk(value: unknown, from?: PNode<unknown>): T {
     const start = from === undefined ? 0 : this._nodes.indexOf(from);
+    if (from !== undefined && this._nodes.lastIndexOf(from) !== start) {
+      throw new TypeError('p.versioned walk got a node listed as more than one version');
+    }
     if (start === -1) {
       throw new TypeError('p.versioned walk got a node that is not one of its versions');
     }

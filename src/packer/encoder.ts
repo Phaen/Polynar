@@ -12,7 +12,7 @@
  * plain multiply-add, which is mixed-radix arithmetic.
  */
 
-import type { CodecOptions } from './types';
+import type { CodecOptions, OutputType } from './types';
 import {
   TERM_BASE,
   TERM_ESCAPE_MIN,
@@ -375,8 +375,8 @@ export class Encoder {
   /** The message as bytes, or as text when `type` is `'text'`. */
   output(options: CodecOptions<'text'> & { type: 'text' }): string;
   output(options?: CodecOptions<'binary'>): Uint8Array;
-  output(options?: CodecOptions): Uint8Array | string;
-  output(options: CodecOptions = {}): Uint8Array | string {
+  output(options?: CodecOptions<OutputType>): Uint8Array | string;
+  output(options: CodecOptions<OutputType> = {}): Uint8Array | string {
     const type = options.type ?? 'binary';
     const alphabet = outputAlphabet(type, options.charset);
     const digits = this.toDigits(alphabet.size, validateBlockBits(options.blockBits));

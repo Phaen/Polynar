@@ -45,22 +45,24 @@ export const oneOf = (values: readonly unknown[]): string =>
 
 /**
  * A value as an error message shows it: as JSON, so a string is quoted and
- * `"5"` reads differently from `5`. Numbers, BigInts and invalid dates, which
- * JSON writes as `null` or refuses, and values JSON can't write show as text.
+ * `"5"` reads differently from `5`. Numbers and invalid dates, which JSON
+ * writes as `null`, show as text, a BigInt with its `n`, and anything JSON
+ * can't write as text. Long renderings are cut short.
  */
 export const describe = (value: unknown): string => {
-  if (
-    typeof value === 'number' ||
-    typeof value === 'bigint' ||
-    (value instanceof Date && Number.isNaN(value.getTime()))
-  ) {
-    return String(value);
+  let text: string;
+  if (typeof value === 'number' || (value instanceof Date && Number.isNaN(value.getTime()))) {
+    text = String(value);
+  } else if (typeof value === 'bigint') {
+    text = `${value}n`;
+  } else {
+    try {
+      text = JSON.stringify(value) ?? String(value);
+    } catch {
+      text = String(value);
+    }
   }
-  try {
-    return JSON.stringify(value) ?? String(value);
-  } catch {
-    return String(value);
-  }
+  return text.length > 80 ? `${text.slice(0, 79)}…` : text;
 };
 
 const isPrimitive = (value: unknown): boolean =>

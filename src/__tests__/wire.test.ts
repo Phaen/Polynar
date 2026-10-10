@@ -6,7 +6,7 @@
  */
 
 import { p, CharSets, buildProseModel, PNode } from '../index';
-import type { CodecOptions } from '../index';
+import type { CodecOptions, OutputType } from '../index';
 
 const hex = (s: string): Uint8Array => Uint8Array.from(Buffer.from(s, 'hex'));
 
@@ -34,7 +34,7 @@ type Vector = [
   string,
   PNode<any>,
   unknown,
-  CodecOptions | undefined,
+  CodecOptions<OutputType> | undefined,
   Uint8Array | string | Digest,
   unknown?,
 ];
@@ -349,7 +349,11 @@ const vectors: Vector[] = [
   ],
 ];
 
-const decode = (node: PNode<any>, input: Uint8Array | string, options?: CodecOptions): unknown =>
+const decode = (
+  node: PNode<any>,
+  input: Uint8Array | string,
+  options?: CodecOptions<OutputType>
+): unknown =>
   typeof input === 'string'
     ? node.decode(input, options as CodecOptions<'text'>)
     : node.decode(input, options as CodecOptions<'binary'>);

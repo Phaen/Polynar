@@ -43,6 +43,9 @@ describe('Schema versioned', () => {
     expect(() => All.walk({ name: 'Ada' }, p.object({ name: p.string() }))).toThrow(
       'not one of its versions'
     );
+    // A node listed twice leaves it unclear which version a value is of.
+    const Again = p.versioned(V1, [V2, toV2], [V1, () => ({ name: '' })] as never);
+    expect(() => Again.walk({ name: 'Ada' }, V1 as never)).toThrow('more than one version');
   });
 
   it('data written by an earlier version decodes, migrated', () => {

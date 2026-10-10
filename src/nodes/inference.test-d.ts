@@ -191,3 +191,9 @@ const textOptions: CodecOptions<'text'> = { type: 'text', charset: [0x4e00, 0x9f
 Digit.decode(digitText, textOptions);
 // @ts-expect-error — text options are not for bytes
 Digit.decode(digitBytes, textOptions);
+
+// Options without a type fit encode and decode of either form.
+const shared: CodecOptions = { charset: '0123456789', blockBits: 4096 };
+const _sharedEncode: Uint8Array = Digit.encode(5, shared);
+Digit.decode(digitBytes, shared);
+Digit.decode(digitText, shared);

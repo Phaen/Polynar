@@ -236,7 +236,7 @@ describe('Schema priors', () => {
       .precision('day')
       .cdf((d) => spike(d - 18262));
     expect(() => day.encode(new Date('2020-01-01T12:00:00Z'))).toThrow(
-      'Date "2020-01-01T12:00:00.000Z" has zero weight under the declared cdf'
+      'Date 2020-01-01T12:00:00.000Z has zero weight under the declared cdf'
     );
   });
 

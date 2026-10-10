@@ -103,7 +103,7 @@ export class IndexRange {
       }
       // Index arithmetic (index - lo) is only exact while the span fits in
       // exact integer range; a wider band would round indices silently.
-      if (hi - lo > Number.MAX_SAFE_INTEGER) {
+      if (hi - lo >= Number.MAX_SAFE_INTEGER) {
         throw new RangeError(`${who} range [${show(lo)}, ${show(hi)}] spans more than 2^53 values`);
       }
     }
