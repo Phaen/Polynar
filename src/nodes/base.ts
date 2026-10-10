@@ -31,6 +31,17 @@ export abstract class PNode<TOut> {
   readonly _kinds?: readonly Kind[];
 
   /**
+   * Set when the node writes exactly one `compose(digit, _radix)` and reads
+   * exactly one `parse(_radix)`, `_fromDigit` mapping the digit to its value
+   * without throwing. Containers then read runs of such values with one
+   * `parseMany`.
+   */
+  readonly _radix?: number;
+
+  /** The value a digit read in `_radix` stands for; present whenever `_radix` is. */
+  _fromDigit?(digit: number): TOut;
+
+  /**
    * Whether the node can write `undefined`, which lets an object leave the
    * field's key out. Read off `_kinds`, and true when they are undeclared:
    * a custom node is trusted, matching the types, where a key is optional

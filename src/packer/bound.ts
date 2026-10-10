@@ -306,6 +306,74 @@ export class BlockBound {
     this.U *= totalBig;
   }
 
+  /**
+   * Fold up to `max` symbols of `radix` states and weight one, for as long
+   * as each fits the block's digits, and return how many were folded. The
+   * state afterwards is the one that many `exceedsCap`, `exceedsCapacity`
+   * and `update` steps reach; the first symbol that would cross the cap or
+   * the digit space stays unfolded, for the per-symbol path to judge.
+   */
+  fold(radix: number, max: number): number {
+    let n = 0;
+    if (this.regime !== Regime.Uniform) {
+      while (n < max && !this.exceedsCap(radix) && !this.exceedsCapacity(radix)) {
+        this.update(radix, 1, radix);
+        n++;
+      }
+      return n;
+    }
+    // The digit space never exceeds the cap, so a symbol within it is
+    // within both.
+    for (; n < max; n++) {
+      const q = this.uNum * radix;
+      if (q > MAX_SAFE) {
+        return n + this.foldProduct(radix, max - n);
+      }
+      if (q > this.roomCapacity) {
+        break;
+      }
+      this.record(radix, 1, radix);
+      this.tBig = this.uBig;
+      this.tNum = this.uNum;
+      this.uNum = q;
+    }
+    return n;
+  }
+
+  /**
+   * Uniform regime, once the pending factor is full: fold the most symbols
+   * of `radix`, up to `max`, whose product with the bound stays within the
+   * block's digit space, as one power of the radix.
+   */
+  private foldProduct(radix: number, max: number): number {
+    const product = this.uBig * BigInt(this.uNum);
+    const room = this.capacity / product;
+    const radixBig = BigInt(radix);
+    if (room < radixBig) {
+      return 0;
+    }
+    // The estimate from the bit length is off by at most one either way.
+    let n = Math.max(1, Math.min(max, Math.floor((bitLength(room) - 1) / Math.log2(radix))));
+    let pow = radixBig ** BigInt(n);
+    while (pow > room) {
+      n--;
+      pow /= radixBig;
+    }
+    while (n < max && pow * radixBig <= room) {
+      n++;
+      pow *= radixBig;
+    }
+    for (let i = 0; i < n; i++) {
+      this.record(radix, 1, radix);
+    }
+    this.tBig = product * (pow / radixBig);
+    this.tNum = 1;
+    this.uBig = product * pow;
+    this.uNum = 1;
+    this.commit();
+    return n;
+  }
+
   /** Whether the tight bound of the latest symbol leaves a whole digit of the block unused. */
   tightFitsAnotherDigit(): boolean {
     switch (this.regime) {

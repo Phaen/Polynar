@@ -187,8 +187,8 @@ export class PString extends PNode<string> {
       return value;
     }
 
-    for (let i = 0; i < length; i++) {
-      value += alphabet.charAt(dec.parse(alphabet.size));
+    for (const digit of dec.parseMany(alphabet.size, length)) {
+      value += alphabet.charAt(digit);
     }
     return value;
   }

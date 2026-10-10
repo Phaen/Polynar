@@ -86,6 +86,8 @@ export class IndexRange {
   readonly lo?: number;
   readonly hi?: number;
   readonly prior?: RangePrior;
+  /** The one radix an index packs in: both bounds and no prior. */
+  readonly radix?: number;
   private readonly show: (index: number) => string;
 
   constructor(
@@ -113,6 +115,9 @@ export class IndexRange {
     }
     this.lo = lo;
     this.hi = hi;
+    if (lo !== undefined && hi !== undefined && prior === undefined) {
+      this.radix = hi - lo + 1;
+    }
     this.show = show;
   }
 
@@ -133,6 +138,11 @@ export class IndexRange {
 
   read(dec: Decoder): number {
     return this.prior === undefined ? readIndex(dec, this.lo, this.hi) : this.prior.read(dec);
+  }
+
+  /** The index a digit read in `radix` stands for; `radix` is set only with both bounds. */
+  fromDigit(digit: number): number {
+    return (this.lo as number) + digit;
   }
 }
 

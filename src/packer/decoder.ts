@@ -47,6 +47,9 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
   private readonly chunk: DigitChunk;
   /** Digit index where the current block starts. */
   private blockStart = 0;
+  /** The chunk `parseMany` last peeled digits in, and the radix it is for. */
+  private runRadix = 0;
+  private runChunk: DigitChunk = digitChunk(2);
 
   constructor(
     input: I,
@@ -209,6 +212,78 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
     this.bound.update(radix, 1, radix);
 
     return this.divide(radix);
+  }
+
+  /**
+   * Read `count` values composed in the same fixed radix, exactly as that
+   * many `parse(radix)` calls would. Within a block the digits peel off a
+   * chunk at a time, one division by the chunk's power of the radix; the
+   * digit at a block boundary or at the end of the input goes through
+   * `parse`, which makes the same decisions and throws the same errors.
+   */
+  parseMany(radix: number, count: number): number[] {
+    const digits: number[] = [];
+    if (radix === 1) {
+      for (let i = 0; i < count; i++) {
+        digits.push(0);
+      }
+      return digits;
+    }
+    while (digits.length < count) {
+      const run = this.bound.fold(radix, count - digits.length);
+      if (run > 0) {
+        this.divideRun(radix, run, digits);
+      }
+      if (digits.length < count) {
+        digits.push(this.parse(radix));
+      }
+    }
+    return digits;
+  }
+
+  /** Peel `run` radix-`radix` digits off the value onto `out`, lowest first. */
+  private divideRun(radix: number, run: number, out: number[]): void {
+    if (!this.small) {
+      if (this.runRadix !== radix) {
+        this.runRadix = radix;
+        this.runChunk = digitChunk(radix);
+      }
+      const chunk = this.runChunk;
+      while (run > 0 && !this.small) {
+        const k = Math.min(run, chunk.digits);
+        const whole = k === chunk.digits;
+        let rest: number;
+        let quotient: bigint;
+        const bits = whole ? chunk.bits : log2Exact(radix) * k;
+        if (bits > 0) {
+          rest = Number(BigInt.asUintN(bits, this.big));
+          quotient = this.big >> SHIFTS[bits];
+        } else {
+          const pow = whole ? chunk.big : BigInt(radix ** k);
+          quotient = this.big / pow;
+          rest = Number(this.big - quotient * pow);
+        }
+        for (let i = 0; i < k; i++) {
+          const digit = rest % radix;
+          rest = (rest - digit) / radix;
+          out.push(digit);
+        }
+        if (quotient <= MAX_SAFE_BIG) {
+          this.small = true;
+          this.num = Number(quotient);
+        } else {
+          this.big = quotient;
+        }
+        run -= k;
+      }
+    }
+    let num = this.num;
+    for (; run > 0; run--) {
+      const digit = num % radix;
+      num = (num - digit) / radix;
+      out.push(digit);
+    }
+    this.num = num;
   }
 
   /**

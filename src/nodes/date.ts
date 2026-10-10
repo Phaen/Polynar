@@ -111,6 +111,7 @@ export class PDate extends PNode<Date> {
   private readonly _calendar: Calendar;
   /** Bucket indices on the UTC calendar, the epoch's bucket at 0. */
   private readonly _range: IndexRange;
+  declare readonly _radix?: number;
 
   constructor(
     min?: number | Date,
@@ -148,6 +149,17 @@ export class PDate extends PNode<Date> {
     const lo = this._min === undefined ? undefined : this._calendar.index(this._min);
     const hi = this._max === undefined ? undefined : this._calendar.index(this._max);
     this._range = new IndexRange('p.date', lo, hi, prior, (b) => iso(this._calendar.start(b)));
+    // Bucket starts rise with the index, so when the first and last buckets
+    // start within the Date range every bucket between does, and reading a
+    // digit cannot fail.
+    if (
+      lo !== undefined &&
+      hi !== undefined &&
+      !isNaN(new Date(this._calendar.start(lo)).getTime()) &&
+      !isNaN(new Date(this._calendar.start(hi)).getTime())
+    ) {
+      this._radix = this._range.radix;
+    }
   }
 
   min(n: number | Date): PDate {
@@ -209,6 +221,10 @@ export class PDate extends PNode<Date> {
       throw new CorruptInputError('Date is outside the representable time range');
     }
     return date;
+  }
+
+  _fromDigit(digit: number): Date {
+    return new Date(this._calendar.start(this._range.fromDigit(digit)));
   }
 
   private _with(change: {

@@ -40,6 +40,7 @@ export class PDecimal extends PNode<number> {
   private readonly _scaledStep: number;
   /** Indexed by step multiple: the k-th multiple of the step is index k. */
   private readonly _range: IndexRange;
+  declare readonly _radix?: number;
 
   constructor(step: number, min?: number, max?: number, prior?: Prior) {
     super();
@@ -65,6 +66,7 @@ export class PDecimal extends PNode<number> {
     const kMin = min === undefined ? undefined : this._bound(min, 'min');
     const kMax = max === undefined ? undefined : this._bound(max, 'max');
     this._range = new IndexRange('p.decimal', kMin, kMax, prior, (k) => String(this._valueAt(k)));
+    this._radix = this._range.radix;
   }
 
   min(n: number): PDecimal {
@@ -113,6 +115,14 @@ export class PDecimal extends PNode<number> {
       throw new CorruptInputError('Step multiple is outside the exact range of its step');
     }
     return this._valueAt(k);
+  }
+
+  /**
+   * Both bounds sit within the exact range, so every multiple between them
+   * does too and the read-side range check cannot fail.
+   */
+  _fromDigit(digit: number): number {
+    return this._valueAt(this._range.fromDigit(digit));
   }
 
   /** The step multiple a bound sits on; anything else rejects the schema. */

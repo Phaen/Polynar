@@ -16,6 +16,7 @@ export class PEnum<T> extends PNode<T> {
   private readonly _list: readonly T[];
   /** A prior over the members; undefined means uniform. */
   private readonly _weights?: WeightTable;
+  declare readonly _radix?: number;
 
   constructor(list: readonly T[], weights?: readonly number[]) {
     super();
@@ -38,6 +39,8 @@ export class PEnum<T> extends PNode<T> {
     this._kinds = [...new Set(this._list.map(kindOf))];
     if (weights !== undefined) {
       this._weights = buildWeights(weights, this._list.length, 'p.enum');
+    } else {
+      this._radix = this._list.length;
     }
   }
 
@@ -67,5 +70,9 @@ export class PEnum<T> extends PNode<T> {
       return this._list[dec.parse(this._list.length)];
     }
     return this._list[readTable(dec, this._weights)];
+  }
+
+  _fromDigit(digit: number): T {
+    return this._list[digit];
   }
 }

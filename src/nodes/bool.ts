@@ -9,11 +9,14 @@ export class PBool extends PNode<boolean> {
 
   /** A prior as `[true, false]` weights; undefined means one bit each way. */
   private readonly _weights?: WeightTable;
+  declare readonly _radix?: number;
 
   constructor(weights?: readonly number[]) {
     super();
     if (weights !== undefined) {
       this._weights = buildWeights(weights, 2, 'p.bool');
+    } else {
+      this._radix = 2;
     }
   }
 
@@ -38,5 +41,9 @@ export class PBool extends PNode<boolean> {
       return Boolean(dec.parse(2));
     }
     return readTable(dec, this._weights) === 0;
+  }
+
+  _fromDigit(digit: number): boolean {
+    return digit === 1;
   }
 }

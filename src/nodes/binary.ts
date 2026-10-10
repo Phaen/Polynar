@@ -95,11 +95,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
     // Reading before allocating means a corrupt length prefix runs out of
     // input as corrupt data instead of requesting an absurd buffer.
     const count = this._length.read(dec) * this._size;
-    const bytes: number[] = [];
-    for (let i = 0; i < count; i++) {
-      bytes.push(dec.parse(256));
-    }
-    const raw = Uint8Array.from(bytes);
+    const raw = Uint8Array.from(dec.parseMany(256, count));
     if (!LITTLE_ENDIAN) {
       for (let at = 0; at < raw.length; at += this._size) {
         raw.subarray(at, at + this._size).reverse();

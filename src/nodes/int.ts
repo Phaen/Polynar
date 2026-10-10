@@ -18,12 +18,14 @@ export class PInt extends PNode<number> {
 
   /** The value IS its own index on the lattice. */
   private readonly _range: IndexRange;
+  declare readonly _radix?: number;
 
   constructor(min?: number, max?: number, prior?: Prior) {
     super();
     checkBound(min, 'min');
     checkBound(max, 'max');
     this._range = new IndexRange('p.int', min, max, prior);
+    this._radix = this._range.radix;
   }
 
   min(n: number): PInt {
@@ -67,5 +69,9 @@ export class PInt extends PNode<number> {
 
   _read(dec: Decoder): number {
     return this._range.read(dec);
+  }
+
+  _fromDigit(digit: number): number {
+    return this._range.fromDigit(digit);
   }
 }
