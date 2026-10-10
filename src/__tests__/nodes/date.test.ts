@@ -75,9 +75,9 @@ describe('Schema date', () => {
     expect(() => node.encode(new Date('2021-01-02Z'))).toThrow(
       new RangeError('Date 2021-01-02T00:00:00.000Z is above the maximum 2021-01-01T00:00:00.000Z')
     );
-    // A bound outside the Date range shows as its timestamp.
-    expect(() => p.date().min(9e15).encode(new Date(0))).toThrow(
-      'Date 1970-01-01T00:00:00.000Z is below the minimum 9000000000000000'
+    // A bound whose bucket starts before the earliest Date shows as that start's timestamp.
+    expect(() => p.date().max(-8.64e15).precision('week').encode(new Date(0))).toThrow(
+      'Date 1970-01-01T00:00:00.000Z is above the maximum -8640000086400000'
     );
     expect(() => node.encode(new Date(NaN))).toThrow(
       new TypeError('p.date expected a valid Date, got Invalid Date')
@@ -100,6 +100,15 @@ describe('Schema date', () => {
       new RangeError(
         'p.date range is empty: min 2021-01-01T00:00:00.000Z exceeds max 2020-01-01T00:00:00.000Z'
       )
+    );
+  });
+
+  it('refuses a bound outside the Date range at construction', () => {
+    expect(() => p.date().min(-8.64e15 - 1)).toThrow(
+      new RangeError('p.date min -8640000000000001 is outside the Date range ±8640000000000000')
+    );
+    expect(() => p.date().max(9e15)).toThrow(
+      new RangeError('p.date max 9000000000000000 is outside the Date range ±8640000000000000')
     );
   });
 

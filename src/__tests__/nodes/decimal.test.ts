@@ -15,6 +15,18 @@ describe('Schema decimal', () => {
     }
   );
 
+  it.each([
+    ['unbounded', p.decimal(0.5)],
+    ['min-only', p.decimal(0.5).min(-1)],
+    ['max-only', p.decimal(0.5).max(1)],
+    ['max of -0', p.decimal(0.5).max(-0)],
+    ['bounded', p.decimal(0.5).min(-1).max(1)],
+    ['weighted', p.decimal(0.5).min(-0.5).max(0.5).weights([1, 2, 3])],
+  ])('encodes -0 as plain zero, %s', (_name, node) => {
+    expect(node.encode(-0)).toEqual(node.encode(0));
+    expect(Object.is(node.decode(node.encode(-0)), 0)).toBe(true);
+  });
+
   it('spends only what the step and bounds allow', () => {
     // 0..100 in cents is 10001 states: 2 bytes, where p.float's per-value
     // fraction search, blind to the bounds, spends 4 on 3.14.

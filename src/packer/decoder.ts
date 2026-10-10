@@ -47,9 +47,6 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
   private readonly chunk: DigitChunk;
   /** Digit index where the current block starts. */
   private blockStart = 0;
-  /** The chunk `parseMany` last peeled digits in, and the radix it is for. */
-  private runRadix = 0;
-  private runChunk: DigitChunk = digitChunk(2);
 
   constructor(
     input: I,
@@ -244,17 +241,13 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
   /** Peel `run` radix-`radix` digits off the value onto `out`, lowest first. */
   private divideRun(radix: number, run: number, out: number[]): void {
     if (!this.small) {
-      if (this.runRadix !== radix) {
-        this.runRadix = radix;
-        this.runChunk = digitChunk(radix);
-      }
-      const chunk = this.runChunk;
+      const chunk = digitChunk(radix);
       while (run > 0 && !this.small) {
         const k = Math.min(run, chunk.digits);
         const whole = k === chunk.digits;
         let rest: number;
         let quotient: bigint;
-        const bits = whole ? chunk.bits : log2Exact(radix) * k;
+        const bits = log2Exact(radix) * k;
         if (bits > 0) {
           rest = Number(BigInt.asUintN(bits, this.big));
           quotient = this.big >> SHIFTS[bits];
@@ -449,7 +442,7 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
 
     // Symbol 1 is digit zero; as the top digit it means a shorter run encodes
     // the same value, so the encoder never emits it there.
-    if (count > 0 && last === 1) {
+    if (last === 1) {
       throw new CorruptInputError('Non-canonical zero-padded term run');
     }
 

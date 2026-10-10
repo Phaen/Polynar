@@ -179,7 +179,7 @@ A `Date`, lossless to the millisecond by default. Infers `Date`. An invalid date
 
 | Method                                 | Description                                                                                                                                                                                    |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.min(d: Date \| number)`              | Lower bound, as a `Date` or an integer timestamp; earlier dates throw.                                                                                                                         |
+| `.min(d: Date \| number)`              | Lower bound, as a `Date` or an integer timestamp a `Date` can hold; earlier dates throw.                                                                                                       |
 | `.max(d: Date \| number)`              | Upper bound; later dates throw. With both bounds the date takes a fixed number of bits. The range can't span more than 2^53 buckets, and a min above the max throws.                           |
 | `.precision(unit: DateUnit, step = 1)` | Rounds each date down to the start of its UTC bucket: smaller, but lossy. Weeks start on Monday, months and years follow the calendar, and `step` groups units, so `('month', 3)` is quarters. |
 | `.cdf(fn: (b: number) => number)`      | Prior over the buckets, called with the bucket number, counting from the bucket that holds 1970-01-01 as 0; needs both bounds.                                                                 |

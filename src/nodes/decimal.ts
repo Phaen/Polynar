@@ -151,8 +151,7 @@ export class PDecimal extends PNode<number> {
     if (scaled / this._scale !== value || scaled % this._scaledStep !== 0) {
       throw new RangeError(`${subject(value)} is not a multiple of step ${this._step}`);
     }
-    // `+ 0` normalizes the -0 quotient of a negative zero input.
-    return scaled / this._scaledStep + 0;
+    return scaled / this._scaledStep;
   }
 
   /**

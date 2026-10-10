@@ -595,7 +595,11 @@ describe('Property fuzz', () => {
         const mode = bytes.length === 0 ? 0 : randInt(0, 3);
         let mutated: Uint8Array;
         if (mode === 0) {
-          mutated = Uint8Array.of(...bytes, randInt(0, 255)); // padding
+          // Padding, copied in rather than spread: a long message would
+          // overflow the call stack as arguments.
+          mutated = new Uint8Array(bytes.length + 1);
+          mutated.set(bytes);
+          mutated[bytes.length] = randInt(0, 255);
         } else if (mode === 1) {
           mutated = bytes.subarray(0, randInt(0, bytes.length - 1)); // truncation
         } else {

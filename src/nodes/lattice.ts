@@ -114,7 +114,9 @@ export class IndexRange {
       this.prior = new RangePrior(prior, lo, hi, who);
     }
     this.lo = lo;
-    this.hi = hi;
+    // A max of -0 reads back as max - 0, itself -0; stored as 0, no index
+    // decodes as -0.
+    this.hi = hi === undefined ? undefined : hi + 0;
     if (lo !== undefined && hi !== undefined && prior === undefined) {
       this.radix = hi - lo + 1;
     }
@@ -184,7 +186,7 @@ export function lengthRange(bounds: LengthBounds, who: string, noun: string): In
 
 /** Refuses a second `min` or `max` on one node: a bound is set once. */
 export function checkUnset(current: unknown, who: string, bound: 'min' | 'max'): void {
-  if (current != null) {
+  if (current !== undefined) {
     throw new TypeError(`${who} ${bound} is already set`);
   }
 }

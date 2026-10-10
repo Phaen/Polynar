@@ -33,10 +33,14 @@ const STEP_UP = 2 ** STEP;
 const STEP_DOWN = 2 ** -STEP;
 /** Scale factors 2^(STEP·i) for i in [-3, 3], the exponent gaps worth comparing. */
 const SCALES = [2 ** -768, 2 ** -512, 2 ** -256, 1, 2 ** 256, 2 ** 512, 2 ** 768];
-/** Twice the unit roundoff: one rounding costs at most this, relatively. */
+/** Twice the unit roundoff u = 2^-53, the margin each counted rounding buys. */
 const ULP2 = 2 ** -52;
-/** Error units budgeted per symbol in the float regime. */
-const OPS_PER_SYMBOL = 3;
+/**
+ * Roundings a symbol adds to each float quantity: a candidate v + u·(total−1)
+ * is one product and one sum past v and u, and every new v, u, s and tight
+ * is a candidate or at most two operations on the previous v and u.
+ */
+const OPS_PER_SYMBOL = 2;
 
 const enum Regime {
   Uniform,
@@ -55,7 +59,8 @@ export function setExactOnly(on: boolean): void {
 /**
  * A positive BigInt as a double mantissa in [1, 2^STEP) times 2^exponent,
  * the exponent a multiple of STEP. The top 53 bits convert exactly and the
- * rest truncate, so the mantissa is within one error unit below the value.
+ * rest truncate, so the mantissa is below the value by less than 2^-52 of it,
+ * two roundings' worth.
  */
 function floatOf(x: bigint): [number, number] {
   const bits = bitLength(x);
@@ -65,7 +70,7 @@ function floatOf(x: bigint): [number, number] {
 }
 
 /**
- * Compares a scaled double x·2^E, known to within k error units, with the
+ * Compares a scaled double x·2^E, known to within k roundings, with the
  * constant m·2^e: 1 when it is certainly larger, -1 when it is certainly
  * not, 0 when the margins overlap. The scaled doubles lie in
  * [2^-53, 2^400) and constant mantissas in [1, 2^STEP), so a constant four
@@ -80,12 +85,14 @@ function compareFloat(x: number, E: number, m: number, e: number, k: number): -1
     return -1;
   }
   const y = m * SCALES[3 - d];
-  // The margins cover the k roundings of x, the one rounding of m, and the
-  // two roundings of applying them. n roundings of at most u = ULP2 / 2 each
-  // compound to (1 + u)^n - 1 <= 2nu = n * ULP2 while nu <= 1; past that mu
-  // exceeds 1 and both tests fail, so no number of roundings gives a wrong
-  // answer, only an undecidable 0.
-  const mu = (k + 8) * ULP2;
+  // The margins cover k + 4 roundings: the k of x, two for m (truncated to
+  // 53 bits, within 2u), and one for each side's product with 1 ∓ mu, which
+  // is itself exact as mu is a multiple of 2^-52 below 1. Scaling by a
+  // power of two is exact. n roundings of at most u = ULP2 / 2 each compound
+  // to (1 + u)^n - 1 <= 2nu = n * ULP2 while nu <= 1; past that mu exceeds 1
+  // and both tests fail, so no number of roundings gives a wrong answer,
+  // only an undecidable 0.
+  const mu = (k + 4) * ULP2;
   if (x * (1 - mu) > y * (1 + mu)) {
     return 1;
   }
@@ -188,7 +195,7 @@ export class BlockBound {
   private tBig = 1n;
   private tNum = 1;
 
-  /* Float regime: the rationals as doubles scaled by 2^-E, within ops error units. */
+  /* Float regime: the rationals as doubles scaled by 2^-E, within ops roundings. */
   private v = 1;
   private u = 1;
   private s = 1;
@@ -250,9 +257,14 @@ export class BlockBound {
     return !this.capacityIsCap && this.exceeds(total, false);
   }
 
-  /** Whether even the symbol's index form, over `count` members, needs more state than the digits hold. */
+  /**
+   * Whether even the symbol's index form, over `count` members, needs more
+   * state than the digits hold, given that its bucket form already does
+   * (`exceedsCapacity(total)`). With `count` at `total` the index form is
+   * the bucket form.
+   */
   indexExceedsCapacity(total: number, count: number): boolean {
-    return count >= total ? this.exceedsCapacity(total) : this.exceeds(count, false);
+    return count >= total || this.exceeds(count, false);
   }
 
   /**
@@ -365,7 +377,7 @@ export class BlockBound {
       return 0;
     }
     // The estimate from the bit length is off by at most one either way.
-    let n = Math.max(1, Math.min(max, Math.floor((bitLength(room) - 1) / Math.log2(radix))));
+    let n = Math.min(max, Math.floor((bitLength(room) - 1) / Math.log2(radix)));
     let pow = radixBig ** BigInt(n);
     while (pow > room) {
       n--;
@@ -395,12 +407,13 @@ export class BlockBound {
           this.capacity
         );
       case Regime.Float: {
+        // tight is within ops roundings, and scaling it by the base is one more.
         const cmp = compareFloat(
           this.tight * this.base,
           this.E,
           this.capacityM,
           this.capacityE,
-          this.ops + 2
+          this.ops + 1
         );
         if (cmp !== 0) {
           return cmp < 0;
@@ -419,7 +432,7 @@ export class BlockBound {
       case Regime.Uniform:
         return this.exactDigits(this.uBig * BigInt(this.uNum), 1n);
       case Regime.Float: {
-        const d = this.floatDigits(this.s, this.ops + 2);
+        const d = this.floatDigits(this.s, this.ops);
         if (d >= 0) {
           return d;
         }
@@ -448,6 +461,7 @@ export class BlockBound {
         const c = this.candidate(total);
         const asIndex = this.candidate(count);
         const sizing = this.s < asIndex ? asIndex : this.s;
+        // A candidate is one product and one sum past v and u.
         const asBucket = this.floatDigits(c, this.ops + 2);
         const digits = this.floatDigits(sizing, this.ops + 2);
         if (asBucket >= 0 && digits >= 0) {
@@ -472,6 +486,7 @@ export class BlockBound {
       case Regime.Uniform:
         return this.pending(k) > (toCap ? this.roomCap : this.roomCapacity);
       case Regime.Float: {
+        // A candidate is one product and one sum past v and u.
         const cmp = compareFloat(
           this.candidate(k),
           this.E,
@@ -540,9 +555,9 @@ export class BlockBound {
     this.v = x;
     this.u = x;
     this.s = x;
-    this.tight = x;
     this.E = E;
-    this.ops = 2;
+    // Two for the truncated mantissa (within 2u), one for the product.
+    this.ops = 3;
     this.regime = Regime.Float;
   }
 

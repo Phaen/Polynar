@@ -26,11 +26,23 @@ const FIXED_MS = {
 
 const WEEK_MS = 604_800_000;
 
-/** A timestamp in an error message: ISO when it is a valid Date, else the number. */
+/**
+ * A timestamp in an error message: ISO when it is a valid Date, else the
+ * number, as for the start of a bucket that straddles the earliest Date.
+ */
 const iso = (ts: number): string => {
   const date = new Date(ts);
   return isNaN(date.getTime()) ? String(ts) : date.toISOString();
 };
+/** The largest timestamp magnitude a Date holds. */
+const MAX_TIMESTAMP = 8.64e15;
+
+const checkInRange = (bound: number | undefined, which: string): void => {
+  if (bound !== undefined && Math.abs(bound) > MAX_TIMESTAMP) {
+    throw new RangeError(`p.date ${which} ${bound} is outside the Date range ±${MAX_TIMESTAMP}`);
+  }
+};
+
 /** Monday 1969-12-29 00:00 UTC, the start of the ISO week holding the epoch. */
 const WEEK_ORIGIN = -259_200_000;
 
@@ -121,8 +133,8 @@ export class PDate extends PNode<Date> {
     prior?: Prior
   ) {
     super();
-    this._min = isDate(min) ? min.getTime() : (min ?? undefined);
-    this._max = isDate(max) ? max.getTime() : (max ?? undefined);
+    this._min = isDate(min) ? min.getTime() : min;
+    this._max = isDate(max) ? max.getTime() : max;
 
     if (
       (this._min !== undefined && !Number.isInteger(this._min)) ||
@@ -130,6 +142,9 @@ export class PDate extends PNode<Date> {
     ) {
       throw new TypeError('p.date bounds must be Dates or integer timestamps');
     }
+    // Bounds lie within the Date range, like the dates they admit.
+    checkInRange(this._min, 'min');
+    checkInRange(this._max, 'max');
     // Two bounds in one bucket compare equal there, so an inverted pair is
     // caught on the raw timestamps.
     if (this._min !== undefined && this._max !== undefined && this._min > this._max) {
@@ -149,14 +164,14 @@ export class PDate extends PNode<Date> {
     const lo = this._min === undefined ? undefined : this._calendar.index(this._min);
     const hi = this._max === undefined ? undefined : this._calendar.index(this._max);
     this._range = new IndexRange('p.date', lo, hi, prior, (b) => iso(this._calendar.start(b)));
-    // Bucket starts rise with the index, so when the first and last buckets
-    // start within the Date range every bucket between does, and reading a
-    // digit cannot fail.
+    // Bucket starts rise with the index and none starts after its bound,
+    // which lies within the Date range, so when the first bucket starts
+    // within it every bucket does, and reading a digit cannot fail. Only a
+    // first bucket straddling the earliest Date starts before it.
     if (
       lo !== undefined &&
       hi !== undefined &&
-      !isNaN(new Date(this._calendar.start(lo)).getTime()) &&
-      !isNaN(new Date(this._calendar.start(hi)).getTime())
+      !isNaN(new Date(this._calendar.start(lo)).getTime())
     ) {
       this._radix = this._range.radix;
     }

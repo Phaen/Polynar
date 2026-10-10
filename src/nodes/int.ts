@@ -61,10 +61,7 @@ export class PInt extends PNode<number> {
     if (!Number.isInteger(value)) {
       throw new TypeError(`p.int expected an integer, got ${describe(value)}`);
     }
-    // `+ 0` normalizes -0 to 0 so the sign bit never records a negative zero.
-    const v = value + 0;
-
-    this._range.write(enc, v, () => `Value ${v}`);
+    this._range.write(enc, value, () => `Value ${value}`);
   }
 
   _read(dec: Decoder): number {

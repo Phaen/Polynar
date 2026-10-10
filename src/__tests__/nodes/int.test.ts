@@ -25,8 +25,16 @@ describe('Schema int', () => {
     expect(thunk).toThrow(new TypeError(`p.int ${bound} must be an integer, got ${n}`));
   });
 
-  it('encodes -0 as plain zero', () => {
-    expect(Object.is(trip(p.int(), -0), 0)).toBe(true);
+  it.each([
+    ['unbounded', p.int()],
+    ['min-only', p.int().min(-5)],
+    ['max-only', p.int().max(5)],
+    ['max of -0', p.int().max(-0)],
+    ['bounded', p.int().min(-5).max(5)],
+    ['weighted', p.int().min(-1).max(1).weights([1, 2, 3])],
+  ])('encodes -0 as plain zero, %s', (_name, node) => {
+    expect(node.encode(-0)).toEqual(node.encode(0));
+    expect(Object.is(node.decode(node.encode(-0)), 0)).toBe(true);
   });
 
   it('names the bound a value breaks', () => {

@@ -6,11 +6,11 @@ import type { Charset, OutputType } from './types';
 import { DEFAULT_BLOCK_BITS, DEFAULT_CHARSET } from './constants';
 
 /**
- * The longest run of base-`size` digits whose values fit one safe integer
- * with room to spare: `digits` of them span `num` = size^digits ≤ 2^51
- * states, so a run folds in Number arithmetic and crosses into BigInt once
- * per chunk, not per digit, and a digit splits off by a float division whose
- * rounding a single correction step undoes exactly.
+ * The longest run of base-`size` digits whose values stay below 2^53:
+ * `digits` of them span `num` = size^digits ≤ 2^53 states, so a run folds in
+ * Number arithmetic and crosses into BigInt once per chunk, not per digit.
+ * A digit splits off by a float division: for a < 2^53 the float quotient
+ * fl(a/b) lies in [q, q+1) around the integer quotient q, so its floor is q.
  */
 export interface DigitChunk {
   readonly digits: number;
@@ -23,7 +23,7 @@ export interface DigitChunk {
 export function digitChunk(size: number): DigitChunk {
   let digits = 1;
   let num = size;
-  while (num * size <= 2 ** 51) {
+  while (num * size <= 2 ** 53) {
     num *= size;
     digits++;
   }
@@ -31,7 +31,12 @@ export function digitChunk(size: number): DigitChunk {
   return { digits, num, big: BigInt(num), bits: exponent < 0 ? 0 : exponent * digits };
 }
 
-/** The exponent of a positive integer that is a power of two, else -1. */
+/**
+ * The exponent of a positive integer that is a power of two, else -1. Below
+ * 2^31 a bit test answers, several times faster than a logarithm on the
+ * decoder's per-symbol path; above, the rounded logarithm is checked against
+ * the power it names.
+ */
 export function log2Exact(n: number): number {
   if (n < 2 ** 31) {
     return (n & (n - 1)) === 0 ? 31 - Math.clz32(n) : -1;
@@ -49,7 +54,12 @@ export function bitLength(x: bigint): number {
 /** Shift amounts as BigInts, so a power-of-two digit is a mask and a shift. */
 export const SHIFTS = Array.from({ length: 54 }, (_, i) => BigInt(i));
 
-/** The block sizes a message may choose; the ceiling keeps one block's BigInt arithmetic cheap. */
+/**
+ * The block sizes a message may choose. A block's cap exceeds
+ * 2^blockBits / base, so with bases up to 2^16 the floor keeps it above
+ * 2^112, and any first symbol, with fewer than 2^53 states, fits a fresh
+ * block. The ceiling keeps one block's BigInt arithmetic cheap.
+ */
 const MIN_BLOCK_BITS = 128;
 const MAX_BLOCK_BITS = 65536;
 

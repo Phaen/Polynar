@@ -68,11 +68,6 @@ describe('Schema array of single-digit items', () => {
       p.date().min(-8.64e15).max(-8.6e15).precision('week'),
       undefined,
     ],
-    [
-      'p.date with a last bucket past the Date range',
-      p.date().min(8.6e15).max(9e15).precision('day'),
-      undefined,
-    ],
     ['p.optional', p.optional(p.bool()), undefined],
     ['p.lazy', p.lazy(() => p.bool()), undefined],
   ] as [string, PNode<unknown>, number | undefined][])(

@@ -61,7 +61,12 @@ const SIG_FLAT = 0;
 const SIG_FRACTION = 1;
 const SIG_FRACTION5 = 2;
 const SIG_SELECTOR = 3;
-/** Bound on the five-realm shift; shortest-decimal forms never exceed it. */
+/**
+ * Bound on the five-realm shift the decoder accepts. A normal double's
+ * shortest decimal has at most 17 digits, the last at a place in
+ * [10^-324, 10^308], and digits below 10^17 hold at most 24 factors of
+ * five, so every shift the encoder derives lies in [-324, 332].
+ */
 const FIVE_SHIFT_MAX = 500;
 
 // Zigzag over the NONZERO integers (+1, -1, +2, -2 -> 0, 1, 2, 3): a zero
@@ -104,10 +109,11 @@ interface SignificandForm {
 
 /**
  * Simplest fraction in the significand's rounding interval, scaled into the
- * five realm by `shift` and 2-normalized so p lands in [q, 2q). Returns null
- * when the scaled window straddles a binade edge, where no such p exists.
+ * five realm by `shift` and 2-normalized so p lands in [q, 2q): the window's
+ * top lies in (1, 2], so the simplest value of the open window is 1 or lies
+ * in (1, 2).
  */
-function windowFraction(significand: bigint, shift: number): [bigint, bigint] | null {
+function windowFraction(significand: bigint, shift: number): [bigint, bigint] {
   // At the binade floor the neighbour below is in the previous binade, so
   // the gap on that side is half an ulp.
   let [loN, loD]: [bigint, bigint] =
@@ -142,8 +148,7 @@ function windowFraction(significand: bigint, shift: number): [bigint, bigint] | 
     }
   }
 
-  const [p, q] = simplestInInterval(loN, loD, hiN, hiD);
-  return p < q || p >= 2n * q ? null : [p, q];
+  return simplestInInterval(loN, loD, hiN, hiD);
 }
 
 /**
@@ -157,24 +162,19 @@ function canonicalSignificand(significand: bigint, value: number): SignificandFo
   let best: SignificandForm = { sel: SIG_FLAT, f: 0, p: 0n, q: 0n };
   let bestStates = SIGNIFICAND_ONE;
 
-  const plain = windowFraction(significand, 0);
-  if (plain !== null) {
-    const states = termRunStates(plain[1] - 1n) * plain[1];
-    if (states < bestStates) {
-      best = { sel: SIG_FRACTION, f: 0, p: plain[0], q: plain[1] };
-      bestStates = states;
-    }
+  const [p, q] = windowFraction(significand, 0);
+  const states = termRunStates(q - 1n) * q;
+  if (states < bestStates) {
+    best = { sel: SIG_FRACTION, f: 0, p, q };
+    bestStates = states;
   }
 
   const shift = fiveShiftCandidate(value);
-  if (shift !== 0 && Math.abs(shift) <= FIVE_SHIFT_MAX) {
-    const scaled = windowFraction(significand, shift);
-    if (scaled !== null) {
-      const states =
-        termRunStates(BigInt(zigNonzero(shift))) * termRunStates(scaled[1] - 1n) * scaled[1];
-      if (states < bestStates) {
-        best = { sel: SIG_FRACTION5, f: shift, p: scaled[0], q: scaled[1] };
-      }
+  if (shift !== 0) {
+    const [p5, q5] = windowFraction(significand, shift);
+    const states5 = termRunStates(BigInt(zigNonzero(shift))) * termRunStates(q5 - 1n) * q5;
+    if (states5 < bestStates) {
+      best = { sel: SIG_FRACTION5, f: shift, p: p5, q: q5 };
     }
   }
 
@@ -182,9 +182,10 @@ function canonicalSignificand(significand: bigint, value: number): SignificandFo
 }
 
 /**
- * Round num/den to the significand grid [2^52, 2^53). Ties are impossible:
- * a halfway point carries a denominator of exactly 2^53, and wire fractions
- * keep the two-adic part of their denominator below 2^22.
+ * Round num/den to the nearest point of the significand grid [2^52, 2^53),
+ * a tie going down. A tie never decodes: the halfway point lies on the edge
+ * of both neighbours' open rounding windows, so no encoder form names it,
+ * and the canonical recompute rejects it whichever way it rounds.
  */
 function roundToSignificand(num: bigint, den: bigint): bigint {
   // The bit-length estimate can be off by one, so the division is redone at the corrected
