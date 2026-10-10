@@ -1,8 +1,8 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { isDate, type Kind } from './guards';
 import { PNode } from './base';
-import { writeIndex, readIndex } from './lattice';
-import { RangePrior, priorKind, type Cdf, type Prior } from './weights';
+import { IndexRange, checkUnset } from './lattice';
+import type { Cdf, Prior } from './weights';
 
 export type DateUnit =
   | 'millisecond'
@@ -108,11 +108,8 @@ export class PDate extends PNode<Date> {
   private readonly _unit: DateUnit;
   private readonly _step: number;
   private readonly _calendar: Calendar;
-  private readonly _lo?: number;
-  private readonly _hi?: number;
-
-  /** A prior over the bounded buckets, counted from min's; undefined means uniform. */
-  private readonly _prior?: RangePrior;
+  /** Bucket indices on the UTC calendar, the epoch's bucket at 0. */
+  private readonly _range: IndexRange;
 
   constructor(
     min?: number | Date,
@@ -145,22 +142,24 @@ export class PDate extends PNode<Date> {
     this._unit = unit;
     this._step = step;
     this._calendar = calendar(unit, step);
-    this._lo = this._min === undefined ? undefined : this._calendar.index(this._min);
-    this._hi = this._max === undefined ? undefined : this._calendar.index(this._max);
-
-    if (prior !== undefined) {
-      if (this._lo === undefined || this._hi === undefined) {
-        throw new TypeError(`p.date ${priorKind(prior)} requires both bounds`);
-      }
-      this._prior = new RangePrior(prior, 0, this._hi - this._lo, 'p.date');
-    }
+    // Bounds compare buckets, so every decoded date, min's bucket start
+    // included, encodes again.
+    const lo = this._min === undefined ? undefined : this._calendar.index(this._min);
+    const hi = this._max === undefined ? undefined : this._calendar.index(this._max);
+    this._range = new IndexRange('p.date', lo, hi, prior, {
+      show: (b) => iso(this._calendar.start(b)),
+      below: this._min === undefined ? undefined : `is before the minimum ${iso(this._min)}`,
+      above: this._max === undefined ? undefined : `is after the maximum ${iso(this._max)}`,
+    });
   }
 
   min(n: number | Date): PDate {
+    checkUnset(this._min, 'p.date', 'min');
     return this._with({ min: n });
   }
 
   max(n: number | Date): PDate {
+    checkUnset(this._max, 'p.date', 'max');
     return this._with({ max: n });
   }
 
@@ -172,8 +171,9 @@ export class PDate extends PNode<Date> {
   /**
    * Declare a prior over the bounded range as an integer CDF over bucket
    * indices: `fn(b)` is the cumulative weight of buckets below the b-th,
-   * counted from the min bound's bucket at 0. "Recent is likelier" costs a
-   * skewed fn; a zero-weight bucket cannot encode.
+   * counted on the UTC calendar with the epoch's bucket at 0, as p.int's
+   * cdf gets the value itself. "Recent is likelier" costs a skewed fn; a
+   * zero-weight bucket cannot encode.
    */
   cdf(fn: Cdf): PDate {
     return this._with({ prior: fn });
@@ -200,29 +200,11 @@ export class PDate extends PNode<Date> {
       );
     }
 
-    // Bounds compare buckets, so every decoded date, min's bucket start
-    // included, encodes again.
-    if (this._lo !== undefined && bucket < this._lo) {
-      throw new RangeError(
-        `Date '${value.toISOString()}' is before the minimum ${iso(this._min!)}`
-      );
-    }
-    if (this._hi !== undefined && bucket > this._hi) {
-      throw new RangeError(`Date '${value.toISOString()}' is after the maximum ${iso(this._max!)}`);
-    }
-
-    if (this._prior === undefined) {
-      writeIndex(enc, bucket, this._lo, this._hi, (b) => iso(this._calendar.start(b)));
-      return;
-    }
-    this._prior.write(enc, bucket - this._lo!, () => `Date '${value.toISOString()}'`);
+    this._range.write(enc, bucket, () => `Date '${value.toISOString()}'`);
   }
 
   _read(dec: Decoder): Date {
-    const bucket =
-      this._prior === undefined
-        ? readIndex(dec, this._lo, this._hi)
-        : this._lo! + this._prior.read(dec);
+    const bucket = this._range.read(dec);
     const date = new Date(this._calendar.start(bucket));
     // A bucket starting beyond the ±8.64e15 ms Date range can only come from
     // a corrupted input or from a bucket that straddles the range's edge.
@@ -244,7 +226,7 @@ export class PDate extends PNode<Date> {
       change.max ?? this._max,
       change.unit ?? this._unit,
       change.step ?? this._step,
-      change.prior ?? this._prior?.declared
+      change.prior ?? this._range.prior?.declared
     );
   }
 }

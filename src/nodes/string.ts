@@ -9,7 +9,8 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import type { Charset } from '../packer';
 import { validateCharset, charsetSize } from '../packer/utils';
 import { PNode } from './base';
-import { LengthPrefix, type LengthBounds } from './lattice';
+import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
+import type { Cdf } from './weights';
 import type { Kind } from './guards';
 import { composeCodePoint, parseCodePoint } from './codepoint';
 import {
@@ -25,7 +26,8 @@ import {
 export class PString extends PNode<string> {
   readonly _kinds: readonly Kind[] = ['string'];
 
-  private readonly _length: LengthPrefix;
+  private readonly _bounds: LengthBounds;
+  private readonly _length: IndexRange;
   /** Explicit charset; undefined selects the laddered code-point default. */
   private readonly _charset?: Charset;
   /** Symbol count of a range charset; undefined for string charsets. */
@@ -36,7 +38,8 @@ export class PString extends PNode<string> {
 
   constructor(bounds: LengthBounds = {}, charset?: Charset, prose?: ProseModel) {
     super();
-    this._length = new LengthPrefix(bounds, 'p.string');
+    this._bounds = bounds;
+    this._length = lengthRange(bounds, 'p.string', 'length');
     if (prose !== undefined) {
       this._prose = prose;
       this._table = compileProse(prose);
@@ -56,20 +59,45 @@ export class PString extends PNode<string> {
 
   /** A floor on the length; the prefix then counts up from it. */
   min(n: number): PString {
-    return new PString({ ...this._length.bounds, min: n }, this._charset, this._prose);
+    checkUnset(this._bounds.min, 'p.string', 'min');
+    return new PString({ ...this._bounds, min: n }, this._charset, this._prose);
   }
 
   max(n: number): PString {
-    return new PString({ ...this._length.bounds, max: n }, this._charset, this._prose);
+    checkUnset(this._bounds.max, 'p.string', 'max');
+    return new PString({ ...this._bounds, max: n }, this._charset, this._prose);
   }
 
-  /** Fix the exact length. The prefix then costs zero bits on the wire. */
+  /**
+   * Fix the exact length, the same as `.min(n).max(n)`. The prefix then costs
+   * zero bits on the wire.
+   */
   length(n: number): PString {
-    return new PString({ ...this._length.bounds, length: n }, this._charset, this._prose);
+    checkUnset(this._bounds.min, 'p.string', 'min');
+    checkUnset(this._bounds.max, 'p.string', 'max');
+    return new PString({ ...this._bounds, min: n, max: n }, this._charset, this._prose);
+  }
+
+  /**
+   * Declare a prior over the LENGTH as an integer CDF: `fn(n)` is the
+   * cumulative weight of lengths below `n`. Requires a max; a zero-weight
+   * length cannot encode.
+   */
+  cdf(fn: Cdf): PString {
+    return new PString({ ...this._bounds, prior: fn }, this._charset, this._prose);
+  }
+
+  /**
+   * Declare how likely each length from min (or 0) to max is, lowest first.
+   * Same prior as `.cdf()`, given as the histogram instead of its running
+   * total.
+   */
+  weights(w: readonly number[]): PString {
+    return new PString({ ...this._bounds, prior: w }, this._charset, this._prose);
   }
 
   charset(c: Charset): PString {
-    return new PString(this._length.bounds, c, this._prose);
+    return new PString(this._bounds, c, this._prose);
   }
 
   /**
@@ -80,13 +108,13 @@ export class PString extends PNode<string> {
    * cost. English by default; any other `ProseModel` swaps the matrix.
    */
   prose(model: ProseModel = ProseModels.english): PString {
-    return new PString(this._length.bounds, this._charset, model);
+    return new PString(this._bounds, this._charset, model);
   }
 
   _write(enc: Encoder, value: string): void {
     // The length prefix counts UTF-16 code units (`.length`), not code
     // points, so `.max()` keeps plain JS string semantics.
-    this._length.write(enc, value.length, 'String');
+    this._length.write(enc, value.length, () => `String length ${value.length}`);
 
     if (this._charset === undefined) {
       // Every adjacent lead+trail pair merges into one code point, so the

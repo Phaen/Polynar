@@ -104,27 +104,30 @@ describe('Schema array', () => {
   it('length rejects any other count, in both directions', () => {
     const node = p.array(p.int().min(0).max(9)).length(3);
     expect(node.decode(node.encode([1, 2, 3]))).toEqual([1, 2, 3]);
-    expect(() => node.encode([1, 2])).toThrow('Array length 2 differs from the fixed length 3');
-    expect(() => node.encode([1, 2, 3, 4])).toThrow('differs from the fixed length');
+    expect(() => node.encode([1, 2])).toThrow('Array length 2 is below the minimum 3');
+    expect(() => node.encode([1, 2, 3, 4])).toThrow('Array length 4 is above the maximum 3');
   });
 
   it('length(0) admits only the empty array — and encodes it as nothing at all', () => {
     const node = p.array(p.int()).length(0);
     expect(node.decode(node.encode([]))).toEqual([]);
     expect(node.encode([])).toHaveLength(0);
-    expect(() => node.encode([1])).toThrow('differs from the fixed length');
+    expect(() => node.encode([1])).toThrow('Array length 1 is above the maximum 0');
   });
 
-  it('length refuses to combine with min or max, in either order', () => {
-    expect(() => p.array(p.int()).length(3).min(1)).toThrow(TypeError);
-    expect(() => p.array(p.int()).length(3).max(5)).toThrow(TypeError);
-    expect(() => p.array(p.int()).min(1).length(3)).toThrow(TypeError);
-    expect(() => p.array(p.int()).max(5).length(3)).toThrow(TypeError);
+  it('sets each bound once, with length setting both', () => {
+    expect(() => p.array(p.int()).length(3).min(1)).toThrow(
+      new TypeError('p.array min is already set')
+    );
+    expect(() => p.array(p.int()).length(3).max(5)).toThrow('p.array max is already set');
+    expect(() => p.array(p.int()).min(1).length(3)).toThrow('p.array min is already set');
+    expect(() => p.array(p.int()).max(5).length(3)).toThrow('p.array max is already set');
+    expect(() => p.array(p.int()).max(5).max(6)).toThrow('p.array max is already set');
   });
 
   it('length must be an exact non-negative integer', () => {
-    // No inward rounding: no count satisfies a fractional length, so rounding
-    // would invent a contract that was never declared.
+    // A fractional length rounds inward to an empty range, so no count
+    // satisfies it.
     expect(() => p.array(p.int()).length(2.9)).toThrow(RangeError);
     expect(() => p.array(p.int()).length(-1)).toThrow(RangeError);
     expect(() => p.array(p.int()).length(NaN)).toThrow(RangeError);

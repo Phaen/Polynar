@@ -119,6 +119,20 @@ describe('Schema date', () => {
     );
   });
 
+  it('date rejects a range wider than exact arithmetic at definition', () => {
+    expect(() => p.date().min(new Date(-8.64e15)).max(new Date(8.64e15))).toThrow(
+      new RangeError(
+        'p.date range [-271821-04-20T00:00:00.000Z, +275760-09-13T00:00:00.000Z] is wider than exact integer arithmetic supports'
+      )
+    );
+  });
+
+  it('sets each bound once', () => {
+    const day = new Date('2020-01-01Z');
+    expect(() => p.date().min(day).min(day)).toThrow(new TypeError('p.date min is already set'));
+    expect(() => p.date().max(day).max(day)).toThrow('p.date max is already set');
+  });
+
   it('rejects a step that is not a positive integer', () => {
     expect(() => p.date().precision('day', 0)).toThrow(RangeError);
     expect(() => p.date().precision('day', 1.5)).toThrow(

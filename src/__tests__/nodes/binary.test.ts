@@ -21,7 +21,7 @@ describe('Schema binary', () => {
     expect(hash.encode(value)).toHaveLength(32);
     expect(trip(hash, value)).toEqual(value);
     expect(() => hash.encode(new Uint8Array(31))).toThrow(
-      new RangeError('Binary length 31 differs from the fixed length 32')
+      new RangeError('Binary length 31 is below the minimum 32')
     );
   });
 
@@ -30,8 +30,40 @@ describe('Schema binary', () => {
     expect(trip(node, new Uint8Array([9, 9, 9]))).toEqual(new Uint8Array([9, 9, 9]));
     expect(() => node.encode(new Uint8Array(1))).toThrow('Binary length 1 is below the minimum 2');
     expect(() => node.encode(new Uint8Array(5))).toThrow('Binary length 5 is above the maximum 4');
-    expect(() => p.binary().length(4).max(8)).toThrow('cannot be combined');
     expect(() => p.binary().min(3).max(2)).toThrow('range is empty');
+  });
+
+  it('sets each bound once, with length setting both', () => {
+    expect(() => p.binary().length(4).max(8)).toThrow(new TypeError('p.binary max is already set'));
+    expect(() => p.binary().max(10).length(5)).toThrow('p.binary max is already set');
+    expect(() => p.binary().min(1).min(2)).toThrow('p.binary min is already set');
+    expect(p.binary().length(3).encode(new Uint8Array(3))).toEqual(
+      p.binary().min(3).max(3).encode(new Uint8Array(3))
+    );
+  });
+
+  it('weights the element count like an array count', () => {
+    const node = p.binary().max(8).weights([1, 1, 1, 1, 100, 1, 1, 1, 1]);
+    const four = new Uint8Array([1, 2, 3, 4]);
+    expect(trip(node, four)).toEqual(four);
+    expect(trip(node, new Uint8Array())).toEqual(new Uint8Array());
+    // A likely count spends well under the uniform prefix's log2(9) bits.
+    const bits = (n: typeof node) => p.array(n).length(8).encode(Array(8).fill(four)).length;
+    expect(bits(node)).toBeLessThan(bits(p.binary().max(8)));
+    const cdf = p
+      .binary()
+      .max(8)
+      .cdf((n) => (n > 4 ? 100 + n : n));
+    expect(trip(cdf, four)).toEqual(four);
+    expect(() => p.binary().weights([1])).toThrow(
+      new TypeError('p.binary weights requires a max length')
+    );
+    expect(() =>
+      p
+        .binary()
+        .length(2)
+        .cdf((n) => n)
+    ).toThrow(new TypeError('p.binary cdf is meaningless on a fixed length'));
   });
 
   it('accepts a Uint8Array subclass and decodes a plain one', () => {

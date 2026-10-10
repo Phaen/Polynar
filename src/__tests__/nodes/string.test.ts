@@ -65,12 +65,15 @@ describe('Schema string', () => {
     expect(trip(p.string().min(2), 'abc')).toBe('abc');
     expect(() => p.string().min(3).max(2)).toThrow('p.string range is empty: min 3 exceeds max 2');
     expect(() => p.string().min(-1)).toThrow('p.string min must be a non-negative length, got -1');
-    // A fixed length is both bounds, so it combines with neither.
-    expect(() => p.string().length(5).max(8)).toThrow('cannot be combined');
-    expect(() => p.string().min(2).length(5)).toThrow('cannot be combined');
-    expect(() => p.string().length(2.5)).toThrow('non-negative integer, got 2.5');
+    // A fixed length is both bounds, so neither can be set again.
+    expect(() => p.string().length(5).max(8)).toThrow(new TypeError('p.string max is already set'));
+    expect(() => p.string().min(2).length(5)).toThrow('p.string min is already set');
+    expect(() => p.string().min(8).length(5)).toThrow('p.string min is already set');
+    expect(() => p.string().max(10).length(5)).toThrow('p.string max is already set');
+    expect(() => p.string().min(1).min(2)).toThrow('p.string min is already set');
+    expect(() => p.string().length(2.5)).toThrow('range is empty: min 3 exceeds max 2');
     expect(() => p.string().length(3).encode('ab')).toThrow(
-      'String length 2 differs from the fixed length 3'
+      'String length 2 is below the minimum 3'
     );
     // A fixed length spends nothing on the prefix: eight binary characters
     // fill one byte exactly, where a max of 8 needs a second.
@@ -78,6 +81,32 @@ describe('Schema string', () => {
     expect(bits.length(8).encode('abababab')).toHaveLength(1);
     expect(bits.max(8).encode('abababab')).toHaveLength(2);
     expect(trip(bits.length(8), 'aaaabbbb')).toBe('aaaabbbb');
+  });
+
+  it('weights the length like an array count', () => {
+    const code = p.string().charset('0123456789').min(4).max(8).weights([1, 1, 50, 1, 1]);
+    for (const value of ['1234', '123456', '12345678']) {
+      expect(trip(code, value)).toBe(value);
+    }
+    // Six-digit codes dominate, so they spend well under the uniform log2(5).
+    const codes = Array<string>(16).fill('123456');
+    const list = (n: typeof code) => p.array(n).length(16).encode(codes).length;
+    expect(list(code)).toBeLessThan(list(p.string().charset('0123456789').min(4).max(8)));
+    const cdf = p
+      .string()
+      .max(3)
+      .cdf((n) => (n > 0 ? (n - 1) * (n - 1) : 0));
+    expect(trip(cdf, 'abc')).toBe('abc');
+    expect(() => cdf.encode('')).toThrow(
+      new RangeError('String length 0 has zero weight under the declared cdf')
+    );
+    expect(() => p.string().cdf((n) => n)).toThrow(
+      new TypeError('p.string cdf requires a max length')
+    );
+    expect(() => p.string().length(3).weights([1])).toThrow(
+      new TypeError('p.string weights is meaningless on a fixed length')
+    );
+    expect(() => p.string().max(2).weights([1, 1])).toThrow('one weight per value');
   });
 
   it('prose takes any model, starting outside the alphabet when it has no space', () => {

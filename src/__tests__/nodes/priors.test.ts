@@ -107,9 +107,8 @@ describe('Schema priors', () => {
     expect(() => p.int().min(1).max(5).weights([1, 2, 0, 4, 5])).toThrow(
       'p.int weights must be positive integers, got 0'
     );
-    // A bound change after the fact re-checks the count against the new range.
-    expect(() => stars.max(6)).toThrow('one weight per value');
-    expect(trip(stars.min(1), 4)).toBe(4);
+    // Both bounds are part of the prior's range, so neither can change after it.
+    expect(() => stars.max(6)).toThrow(new TypeError('p.int max is already set'));
   });
 
   it('cdf priors ride decimal grids, date buckets and array counts', () => {
@@ -129,7 +128,7 @@ describe('Schema priors', () => {
       .min(new Date('2026-01-01'))
       .max(new Date('2026-12-31'))
       .precision('day')
-      // Day buckets count from the min bound's day: 0..364.
+      // Day buckets count from the epoch's day: 2026 is days 20454..20818.
       .cdf((day) => day * day + day);
     const date = new Date('2026-07-17');
     expect(trip(when, date).getTime()).toBe(date.getTime());
@@ -175,10 +174,11 @@ describe('Schema priors', () => {
     const dList = (node: typeof dWeights) => p.array(node).length(dValues.length);
     expect(dList(dWeights).encode(dValues)).toEqual(dList(dCdf).encode(dValues));
 
-    // Four day buckets from the min bound's day.
+    // Four day buckets from the min bound's day; the cdf counts days from the epoch.
     const tw = [1, 2, 3, 50];
     const tsums = [...running(tw), 56];
     const start = new Date('2026-01-01');
+    const day0 = start.getTime() / 86_400_000;
     const end = new Date('2026-01-04');
     const tWeights = p.date().min(start).max(end).precision('day').weights(tw);
     const tCdf = p
@@ -186,7 +186,7 @@ describe('Schema priors', () => {
       .min(start)
       .max(end)
       .precision('day')
-      .cdf((b) => tsums[b]);
+      .cdf((b) => tsums[b - day0]);
     const tValues = [end, end, start, new Date('2026-01-02'), end];
     for (const v of tValues) {
       expect(trip(tWeights, v).getTime()).toBe(v.getTime());
@@ -212,10 +212,10 @@ describe('Schema priors', () => {
 
     expect(() => p.decimal(0.5).weights([1])).toThrow('requires both bounds');
     expect(() => p.array(p.bool()).length(3).weights([1])).toThrow('meaningless on a fixed length');
-    // A bound change re-checks the count against the new range.
-    expect(() => dWeights.max(1.5)).toThrow('one weight per value');
+    // A change to the range re-checks the count against it.
     expect(() => tWeights.precision('hour')).toThrow('one weight per value');
-    expect(() => aWeights.min(0)).toThrow('one weight per value');
+    expect(() => p.array(p.bool()).max(4).weights(aw).min(0)).toThrow('one weight per value');
+    expect(() => dWeights.max(1.5)).toThrow('p.decimal max is already set');
   });
 
   it('a weighted prior spends fractional bits on likely values', () => {
@@ -241,10 +241,35 @@ describe('Schema priors', () => {
       .min(new Date('2020-01-01Z'))
       .max(new Date('2020-01-03Z'))
       .precision('day')
-      .cdf(spike);
+      .cdf((d) => spike(d - 18262));
     expect(() => day.encode(new Date('2020-01-01T12:00:00Z'))).toThrow(
       "Date '2020-01-01T12:00:00.000Z' has zero weight under the declared cdf"
     );
+  });
+
+  it('date cdf sees the bucket number from the epoch, as int cdf sees the value', () => {
+    const fn = (b: number) => (b - 20000) * 3 + (b % 2);
+    const start = new Date('2026-01-01');
+    const end = new Date('2026-01-31');
+    const day0 = start.getTime() / 86_400_000;
+    const dates = p.date().min(start).max(end).precision('day').cdf(fn);
+    const days = p
+      .int()
+      .min(day0)
+      .max(day0 + 30)
+      .cdf(fn);
+    for (const offset of [0, 7, 30]) {
+      const date = new Date(start.getTime() + offset * 86_400_000);
+      expect(dates.encode(date)).toEqual(days.encode(day0 + offset));
+    }
+    // A zero-weight day stays the same day whichever min the range starts at.
+    const sixth = new Date('2026-01-06');
+    const gap = (b: number) => (b > day0 + 5 ? b - 1 : b);
+    for (const min of [start, new Date('2026-01-03')]) {
+      const node = p.date().min(min).max(end).precision('day').cdf(gap);
+      expect(() => node.encode(sixth)).toThrow('has zero weight under the declared cdf');
+      expect(trip(node, end).getTime()).toBe(end.getTime());
+    }
   });
 
   it('priors reject malformed weights and cdfs eagerly', () => {

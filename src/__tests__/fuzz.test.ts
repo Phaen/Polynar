@@ -317,7 +317,10 @@ const scalarCase = (): Case => {
           const max = min + randInt(0, 1000) * ms;
           const bounded = base.min(min).max(max);
           const cdf = randCdf();
-          const node = rand() < 0.5 ? bounded : bounded.cdf((b) => cdf(b));
+          // The cdf sees bucket numbers from the epoch; an anchor safely below
+          // min's bucket keeps it increasing across the range.
+          const anchor = Math.floor(min / ms) - 1000;
+          const node = rand() < 0.5 ? bounded : bounded.cdf((b) => cdf(b - anchor));
           return { node, gen: () => floored(node, randInt(min, max)) };
         }
       }

@@ -2,18 +2,10 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { PNode } from './base';
 import { atPath } from './path';
 import type { Kind } from './guards';
-import { writeIndex, readIndex } from './lattice';
-import { RangePrior, priorKind, type Cdf, type Prior } from './weights';
+import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
+import type { Cdf } from './weights';
 
 const MAX_ARRAY_LENGTH = 2 ** 32 - 1;
-
-/** Count constraints for an array node: min/max bounds, or a fixed length. */
-interface ArrayBounds {
-  min?: number;
-  max?: number;
-  length?: number;
-  prior?: Prior;
-}
 
 /**
  * Array of one item type. The count travels through the shared integer
@@ -25,85 +17,36 @@ export class PArray<TItem> extends PNode<TItem[]> {
   readonly _kinds: readonly Kind[] = ['array'];
 
   private readonly _item: PNode<TItem>;
-  private readonly _min?: number;
-  private readonly _max?: number;
-  private readonly _length?: number;
-  /** A prior over the item count; undefined means uniform. */
-  private readonly _prior?: RangePrior;
+  private readonly _bounds: LengthBounds;
+  private readonly _count: IndexRange;
 
-  constructor(item: PNode<TItem>, bounds: ArrayBounds = {}) {
+  constructor(item: PNode<TItem>, bounds: LengthBounds = {}) {
     super();
     this._item = item;
-
-    // A fixed length IS both bounds; combining the two spellings is a
-    // contradiction, so it throws instead of silently merging.
-    if (bounds.length != null && (bounds.min != null || bounds.max != null)) {
-      throw new TypeError('p.array length cannot be combined with min or max');
-    }
-
-    if (bounds.length != null) {
-      // No inward rounding here: no count satisfies a fractional length, so
-      // either rounding direction would invent a contract never declared.
-      if (!Number.isInteger(bounds.length) || bounds.length < 0) {
-        throw new RangeError(
-          `p.array length must be a non-negative integer count, got ${bounds.length}`
-        );
-      }
-      this._length = bounds.length;
-    }
-    // Like p.int bounds, each bound rounds inward (ceil the min, floor the
-    // max) so a fractional bound never admits a count beyond itself.
-    if (bounds.min != null) {
-      this._min = Math.ceil(bounds.min);
-      if (!Number.isInteger(this._min) || this._min < 0) {
-        throw new RangeError(`p.array min must be a non-negative count, got ${bounds.min}`);
-      }
-    }
-    if (bounds.max != null) {
-      this._max = Math.floor(bounds.max);
-      if (!Number.isInteger(this._max) || this._max < 0) {
-        throw new RangeError(`p.array max must be a non-negative count, got ${bounds.max}`);
-      }
-    }
-    if (this._min !== undefined && this._max !== undefined && this._min > this._max) {
-      throw new RangeError(`p.array range is empty: min ${this._min} exceeds max ${this._max}`);
-    }
-
-    const prior = bounds.prior;
-    if (prior !== undefined) {
-      if (this._length !== undefined) {
-        throw new TypeError(`p.array ${priorKind(prior)} is meaningless on a fixed length`);
-      }
-      if (this._max === undefined) {
-        throw new TypeError(`p.array ${priorKind(prior)} requires a max count`);
-      }
-      this._prior = new RangePrior(prior, this._countMin(), this._max, 'p.array');
-    }
+    this._bounds = bounds;
+    this._count = lengthRange(bounds, 'p.array', 'count');
   }
 
   /** Require at least `n` items. A raised floor packs the count denser. */
   min(n: number): PArray<TItem> {
-    return new PArray<TItem>(this._item, {
-      min: n,
-      max: this._max,
-      length: this._length,
-      prior: this._prior?.declared,
-    });
+    checkUnset(this._bounds.min, 'p.array', 'min');
+    return new PArray<TItem>(this._item, { ...this._bounds, min: n });
   }
 
   /** Cap the item count. A capped count packs denser than the uncapped prefix. */
   max(n: number): PArray<TItem> {
-    return new PArray<TItem>(this._item, {
-      min: this._min,
-      max: n,
-      length: this._length,
-      prior: this._prior?.declared,
-    });
+    checkUnset(this._bounds.max, 'p.array', 'max');
+    return new PArray<TItem>(this._item, { ...this._bounds, max: n });
   }
 
-  /** Fix the exact item count. The count then costs zero bits on the wire. */
+  /**
+   * Fix the exact item count, the same as `.min(n).max(n)`. The count then
+   * costs zero bits on the wire.
+   */
   length(n: number): PArray<TItem> {
-    return new PArray<TItem>(this._item, { min: this._min, max: this._max, length: n });
+    checkUnset(this._bounds.min, 'p.array', 'min');
+    checkUnset(this._bounds.max, 'p.array', 'max');
+    return new PArray<TItem>(this._item, { ...this._bounds, min: n, max: n });
   }
 
   /**
@@ -112,12 +55,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
    * count cannot encode.
    */
   cdf(fn: Cdf): PArray<TItem> {
-    return new PArray<TItem>(this._item, {
-      min: this._min,
-      max: this._max,
-      length: this._length,
-      prior: fn,
-    });
+    return new PArray<TItem>(this._item, { ...this._bounds, prior: fn });
   }
 
   /**
@@ -126,32 +64,13 @@ export class PArray<TItem> extends PNode<TItem[]> {
    * total.
    */
   weights(w: readonly number[]): PArray<TItem> {
-    return new PArray<TItem>(this._item, {
-      min: this._min,
-      max: this._max,
-      length: this._length,
-      prior: w,
-    });
+    return new PArray<TItem>(this._item, { ...this._bounds, prior: w });
   }
 
   _write(enc: Encoder, value: TItem[]): void {
     const count = value.length;
 
-    if (this._length !== undefined && count !== this._length) {
-      throw new RangeError(`Array length ${count} differs from the fixed length ${this._length}`);
-    }
-    if (this._min !== undefined && count < this._min) {
-      throw new RangeError(`Array length ${count} is below the minimum ${this._min}`);
-    }
-    if (this._max !== undefined && count > this._max) {
-      throw new RangeError(`Array length ${count} is above the maximum ${this._max}`);
-    }
-
-    if (this._prior === undefined) {
-      writeIndex(enc, count, this._countMin(), this._countMax());
-    } else {
-      this._prior.write(enc, count, () => `Array length ${count}`);
-    }
+    this._count.write(enc, count, () => `Array length ${count}`);
 
     // Indexed iteration, not for-of over holes: a sparse array's holes read as
     // undefined and must fail the item's own validation rather than be skipped,
@@ -167,10 +86,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
   }
 
   _read(dec: Decoder): TItem[] {
-    const count =
-      this._prior === undefined
-        ? readIndex(dec, this._countMin(), this._countMax())
-        : this._prior.read(dec);
+    const count = this._count.read(dec);
     // No array is longer than 2^32 - 1, so a larger count was never written.
     // Items that take no bits never run out of input to say so themselves.
     if (count > MAX_ARRAY_LENGTH) {
@@ -181,14 +97,5 @@ export class PArray<TItem> extends PNode<TItem[]> {
       value.push(this._item._read(dec));
     }
     return value;
-  }
-
-  /** A count is never negative, so the lattice floor defaults to 0. */
-  private _countMin(): number {
-    return this._length ?? this._min ?? 0;
-  }
-
-  private _countMax(): number | undefined {
-    return this._length ?? this._max;
   }
 }

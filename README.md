@@ -78,7 +78,7 @@ assert.deepStrictEqual(User.decode(bytes), user);
 
 ## API
 
-Each `p.*` factory creates a node for one type, and the node's methods narrow which values it allows. Methods return a new node; they never change the one they're called on. A schema that contradicts itself, such as `.min(5).max(2)`, throws as soon as it's defined. A value outside a declared bound, step, length or list throws when it's encoded. Everything else, like a string where a number belongs, is left to TypeScript, and object keys outside the shape are dropped.
+Each `p.*` factory creates a node for one type, and the node's methods narrow which values it allows. Methods return a new node; they never change the one they're called on. A schema that contradicts itself, such as `.min(5).max(2)`, throws as soon as it's defined, and so does setting `.min` or `.max` a second time. A value outside a declared bound, step, length or list throws when it's encoded. Everything else, like a string where a number belongs, is left to TypeScript, and object keys outside the shape are dropped.
 
 - [`p.int`](#pint)
 - [`p.decimal`](#pdecimalstep-number)
@@ -131,13 +131,15 @@ Any finite double, bit-exact, `-0` included. Infers `number`. Short decimals and
 
 Any text, stored with its length; about 7 bits per ASCII character. Infers `string`. Any JS string round-trips bit-exact, lone surrogates included — where UTF-8-based formats substitute U+FFFD, Polynar returns what went in. Lengths count UTF-16 code units, as `.length` does.
 
-| Method                       | Description                                                                                                                                                                                                                |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.min(n: number)`            | Lower bound on the length; shorter strings throw.                                                                                                                                                                          |
-| `.max(n: number)`            | Upper bound on the length; longer strings throw. With both bounds the length takes a fixed number of bits.                                                                                                                 |
-| `.length(n: number)`         | Fixed length; costs zero bits. Can't be combined with `.min` or `.max`.                                                                                                                                                    |
-| `.charset(c: Charset)`       | Limits the alphabet, so each character costs fewer bits: a string of unique characters or a `[min, max]` range of character codes. Other characters throw. Can't be combined with `.prose()`, since both set the alphabet. |
-| `.prose(model?: ProseModel)` | Weighted for natural language, about 4 bits per character; English by default, or a model of your own. Every string still encodes.                                                                                         |
+| Method                            | Description                                                                                                                                                                                                                |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                 | Lower bound on the length; shorter strings throw.                                                                                                                                                                          |
+| `.max(n: number)`                 | Upper bound on the length; longer strings throw. With both bounds the length takes a fixed number of bits.                                                                                                                 |
+| `.length(n: number)`              | Fixed length, the same as `.min(n).max(n)`; costs zero bits.                                                                                                                                                               |
+| `.cdf(fn: (n: number) => number)` | Prior over the length, called with the length; needs `.max` and no `.length`.                                                                                                                                              |
+| `.weights(w: number[])`           | Prior: one weight per length from `min` (or 0) to `max`, lowest first; needs `.max` and no `.length`.                                                                                                                      |
+| `.charset(c: Charset)`            | Limits the alphabet, so each character costs fewer bits: a string of unique characters or a `[min, max]` range of character codes. Other characters throw. Can't be combined with `.prose()`, since both set the alphabet. |
+| `.prose(model?: ProseModel)`      | Weighted for natural language, about 4 bits per character; English by default, or a model of your own. Every string still encodes.                                                                                         |
 
 `.prose()` prices each character by the one before it: common characters drop to 2–5 bits, and `u` after `q` to under one. Characters outside the model, such as other scripts or emoji, cost a little extra.
 
@@ -147,11 +149,13 @@ The built-in model is English (`ProseModels.english`). Any other is a matrix: `{
 
 A typed array: a `Uint8Array` by default, or any typed array class, like `p.binary(Int16Array)`. Infers that class and decodes to a new array of it. Elements are stored as their raw bytes, plus the element count, so floats keep NaN payloads and `-0`.
 
-| Method               | Description                                                                                                     |
-| -------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `.min(n: number)`    | Lower bound on the element count; shorter arrays throw.                                                         |
-| `.max(n: number)`    | Upper bound on the element count; longer arrays throw. With both bounds the count takes a fixed number of bits. |
-| `.length(n: number)` | Fixed element count; costs zero bits. Can't be combined with `.min` or `.max`.                                  |
+| Method                            | Description                                                                                                     |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                 | Lower bound on the element count; shorter arrays throw.                                                         |
+| `.max(n: number)`                 | Upper bound on the element count; longer arrays throw. With both bounds the count takes a fixed number of bits. |
+| `.length(n: number)`              | Fixed element count, the same as `.min(n).max(n)`; costs zero bits.                                             |
+| `.cdf(fn: (n: number) => number)` | Prior over the element count, called with the count; needs `.max` and no `.length`.                             |
+| `.weights(w: number[])`           | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max` and no `.length`.            |
 
 ### `p.bool()`
 
@@ -176,9 +180,9 @@ A `Date`, lossless to the millisecond by default. Infers `Date`. An invalid date
 | Method                                 | Description                                                                                                                                                                                    |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.min(d: Date \| number)`              | Lower bound, as a `Date` or an integer timestamp; earlier dates throw.                                                                                                                         |
-| `.max(d: Date \| number)`              | Upper bound; later dates throw. With both bounds the date takes a fixed number of bits. A min above the max throws.                                                                            |
+| `.max(d: Date \| number)`              | Upper bound; later dates throw. With both bounds the date takes a fixed number of bits. The range can't span more than 2^53 buckets, and a min above the max throws.                           |
 | `.precision(unit: DateUnit, step = 1)` | Rounds each date down to the start of its UTC bucket: smaller, but lossy. Weeks start on Monday, months and years follow the calendar, and `step` groups units, so `('month', 3)` is quarters. |
-| `.cdf(fn: (b: number) => number)`      | Prior over the buckets, called with the bucket number, counting `min`'s bucket as 0; needs both bounds.                                                                                        |
+| `.cdf(fn: (b: number) => number)`      | Prior over the buckets, called with the bucket number, counting from the bucket that holds 1970-01-01 as 0; needs both bounds.                                                                 |
 | `.weights(w: number[])`                | Prior: one weight per bucket from `min` to `max`, earliest first; needs both bounds.                                                                                                           |
 
 `DateUnit` is `'millisecond' | 'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'`. Bounds compare buckets, so a `min` in the middle of a bucket allows that whole bucket, and a date can decode to a time before `min`.
@@ -199,7 +203,7 @@ An array of one item type, stored with its length. Infers an array of the item's
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `.min(n: number)`                 | Lower bound on the item count; shorter arrays throw. A fractional bound rounds up.                           |
 | `.max(n: number)`                 | Upper bound on the item count; longer arrays throw. With both bounds the count takes a fixed number of bits. |
-| `.length(n: number)`              | Fixed item count; costs zero bits. Can't be combined with `.min` or `.max`.                                  |
+| `.length(n: number)`              | Fixed item count, the same as `.min(n).max(n)`; costs zero bits.                                             |
 | `.cdf(fn: (n: number) => number)` | Prior over the item count, called with the count; needs `.max` and no `.length`.                             |
 | `.weights(w: number[])`           | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max` and no `.length`.         |
 
@@ -276,7 +280,7 @@ p.int()
   .cdf((v) => (v * (v + 1)) / 2);
 ```
 
-What `i` is depends on the node: the value itself on `p.int`, the step count (`value / step`) on `p.decimal`, the bucket number on `p.date` (with `min`'s bucket as 0), and the item count on `p.array`. The node calls `fn` at the lower bound, at one past the upper bound to get the total, and around each value it encodes or decodes.
+What `i` is depends on the node: the value itself on `p.int`, the step count (`value / step`) on `p.decimal`, the bucket number on `p.date` (counting from the bucket that holds 1970-01-01 as 0), the length on `p.string` and `p.binary`, and the item count on `p.array`. The node calls `fn` at the lower bound, at one past the upper bound to get the total, and around each value it encodes or decodes.
 
 - `fn` returns safe integers and never goes down. A value whose weight is zero can't be encoded.
 - Only the differences between results matter, so adding a constant changes nothing.

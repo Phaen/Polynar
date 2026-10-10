@@ -1,4 +1,5 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
+import { RangePrior, priorKind, type Prior } from './weights';
 
 /**
  * The shared integer-lattice wire: one index against optional [min, max]
@@ -74,70 +75,118 @@ export function readIndex(dec: Decoder, min?: number, max?: number): number {
   return negative ? -magnitude : magnitude;
 }
 
-export interface LengthBounds {
-  readonly min?: number;
-  readonly max?: number;
-  readonly length?: number;
+/** Wording for an index range's errors; each defaults to a plain-number form. */
+export interface RangeText {
+  /** An index as the value it stands for. */
+  readonly show?: (index: number) => string;
+  /** Follows the subject when an index lies below `lo`, as in `is below the minimum 3`. */
+  readonly below?: string;
+  readonly above?: string;
+  readonly empty?: string;
+  readonly span?: string;
 }
 
 /**
- * The length prefix of a string or byte run: validated bounds, then one
- * lattice index over `[length ?? min ?? 0, length ?? max]`. A fixed length
- * IS both bounds, so it costs zero bits.
+ * One bounded integer index on the lattice wire, optionally under a prior:
+ * the half of PInt, PDecimal, PDate and every length prefix that is not
+ * about mapping a value to its index. The range is validated once here, and
+ * `write`/`read` check the bounds and pack the index, uniformly or weighted.
  */
-export class LengthPrefix {
-  readonly bounds: LengthBounds;
-  private readonly lo: number;
-  private readonly hi?: number;
+export class IndexRange {
+  readonly lo?: number;
+  readonly hi?: number;
+  readonly prior?: RangePrior;
+  private readonly show: (index: number) => string;
+  private readonly below: string;
+  private readonly above: string;
 
-  constructor(bounds: LengthBounds, who: string) {
-    const { length } = bounds;
-    // Combining the two spellings of a fixed length is a contradiction, so
-    // it throws instead of silently merging.
-    if (length != null && (bounds.min != null || bounds.max != null)) {
-      throw new TypeError(`${who} length cannot be combined with min or max`);
+  constructor(who: string, lo?: number, hi?: number, prior?: Prior, text: RangeText = {}) {
+    const show = text.show ?? String;
+    if (lo !== undefined && hi !== undefined) {
+      if (lo > hi) {
+        throw new RangeError(
+          text.empty ?? `${who} range is empty: min ${show(lo)} exceeds max ${show(hi)}`
+        );
+      }
+      // Index arithmetic (index - lo) is only exact while the span fits in
+      // exact integer range; a wider band would round indices silently.
+      if (hi - lo > Number.MAX_SAFE_INTEGER) {
+        throw new RangeError(
+          text.span ??
+            `${who} range [${show(lo)}, ${show(hi)}] is wider than exact integer arithmetic supports`
+        );
+      }
     }
-    // No inward rounding for a fixed length: no length satisfies a
-    // fractional one, so either rounding direction would invent a contract.
-    if (length != null && (!Number.isInteger(length) || length < 0)) {
-      throw new RangeError(`${who} length must be a non-negative integer, got ${length}`);
+    if (prior !== undefined) {
+      if (lo === undefined || hi === undefined) {
+        throw new TypeError(`${who} ${priorKind(prior)} requires both bounds`);
+      }
+      this.prior = new RangePrior(prior, lo, hi, who);
     }
-    // Each bound rounds inward (ceil the min, floor the max) so a fractional
-    // bound never admits a length beyond itself.
-    const min = bounds.min == null ? undefined : Math.ceil(bounds.min);
-    if (min !== undefined && (!Number.isInteger(min) || min < 0)) {
-      throw new RangeError(`${who} min must be a non-negative length, got ${bounds.min}`);
-    }
-    const max = bounds.max == null ? undefined : Math.floor(bounds.max);
-    if (max !== undefined && (!Number.isInteger(max) || max < 0)) {
-      throw new RangeError(`${who} max must be a non-negative length, got ${bounds.max}`);
-    }
-    if (min !== undefined && max !== undefined && min > max) {
-      throw new RangeError(`${who} range is empty: min ${min} exceeds max ${max}`);
-    }
-    this.bounds = { min, max, length: length ?? undefined };
-    this.lo = length ?? min ?? 0;
-    this.hi = length ?? max;
+    this.lo = lo;
+    this.hi = hi;
+    this.show = show;
+    this.below = text.below ?? (lo === undefined ? '' : `is below the minimum ${show(lo)}`);
+    this.above = text.above ?? (hi === undefined ? '' : `is above the maximum ${show(hi)}`);
   }
 
-  /** `what` names the value in an error, as in `String length 5`. */
-  write(enc: Encoder, length: number, what: string): void {
-    const { min, max } = this.bounds;
-    if (this.bounds.length !== undefined && length !== this.bounds.length) {
-      throw new RangeError(
-        `${what} length ${length} differs from the fixed length ${this.bounds.length}`
-      );
+  /** `subject` names the value in an error, as in `Value '3'`. */
+  write(enc: Encoder, index: number, subject: () => string): void {
+    if (this.lo !== undefined && index < this.lo) {
+      throw new RangeError(`${subject()} ${this.below}`);
     }
-    if (min !== undefined && length < min) {
-      throw new RangeError(`${what} length ${length} is below the minimum ${min}`);
+    if (this.hi !== undefined && index > this.hi) {
+      throw new RangeError(`${subject()} ${this.above}`);
     }
-    if (max !== undefined && length > max) {
-      throw new RangeError(`${what} length ${length} is above the maximum ${max}`);
+    if (this.prior === undefined) {
+      writeIndex(enc, index, this.lo, this.hi, this.show);
+    } else {
+      this.prior.write(enc, index, subject);
     }
-    writeIndex(enc, length, this.lo, this.hi);
   }
 
   read(dec: Decoder): number {
-    return readIndex(dec, this.lo, this.hi);
+    return this.prior === undefined ? readIndex(dec, this.lo, this.hi) : this.prior.read(dec);
+  }
+}
+
+/** The declared bounds of a length or count; a fixed length is min === max. */
+export interface LengthBounds {
+  readonly min?: number;
+  readonly max?: number;
+  readonly prior?: Prior;
+}
+
+/**
+ * The range of a string, byte-run or array length: each bound rounds inward
+ * (ceil the min, floor the max) so a fractional bound never admits a length
+ * beyond itself, and the floor defaults to 0. `noun` names the quantity in
+ * an error, as in `p.array max must be a non-negative count`.
+ */
+export function lengthRange(bounds: LengthBounds, who: string, noun: string): IndexRange {
+  const min = bounds.min == null ? undefined : Math.ceil(bounds.min);
+  if (min !== undefined && (!Number.isInteger(min) || min < 0)) {
+    throw new RangeError(`${who} min must be a non-negative ${noun}, got ${bounds.min}`);
+  }
+  const max = bounds.max == null ? undefined : Math.floor(bounds.max);
+  if (max !== undefined && (!Number.isInteger(max) || max < 0)) {
+    throw new RangeError(`${who} max must be a non-negative ${noun}, got ${bounds.max}`);
+  }
+  const { prior } = bounds;
+  if (prior !== undefined) {
+    if (min !== undefined && min === max) {
+      throw new TypeError(`${who} ${priorKind(prior)} is meaningless on a fixed length`);
+    }
+    if (max === undefined) {
+      throw new TypeError(`${who} ${priorKind(prior)} requires a max ${noun}`);
+    }
+  }
+  return new IndexRange(who, min ?? 0, max, prior);
+}
+
+/** Refuses a second `min` or `max` on one node: a bound is set once. */
+export function checkUnset(current: unknown, who: string, bound: 'min' | 'max'): void {
+  if (current != null) {
+    throw new TypeError(`${who} ${bound} is already set`);
   }
 }

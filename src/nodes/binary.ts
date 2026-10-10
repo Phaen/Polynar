@@ -1,7 +1,8 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import { typedArrayKind, type Kind, type TypedArray } from './guards';
-import { LengthPrefix, type LengthBounds } from './lattice';
+import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
+import type { Cdf } from './weights';
 
 /**
  * A typed-array class: its element width and a way to build it on a buffer.
@@ -28,32 +29,59 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
 
   private readonly _type: TypedArrayClass<A>;
   private readonly _size: number;
-  private readonly _length: LengthPrefix;
+  private readonly _bounds: LengthBounds;
+  private readonly _length: IndexRange;
 
   constructor(type: TypedArrayClass<A>, bounds: LengthBounds = {}) {
     super();
     this._type = type;
     this._size = type.BYTES_PER_ELEMENT;
-    this._length = new LengthPrefix(bounds, 'p.binary');
+    this._bounds = bounds;
+    this._length = lengthRange(bounds, 'p.binary', 'length');
     this._kinds = [typedArrayKind(new type(new ArrayBuffer(0)))];
   }
 
   /** A floor on the element count; the prefix then counts up from it. */
   min(n: number): PBinary<A> {
-    return new PBinary(this._type, { ...this._length.bounds, min: n });
+    checkUnset(this._bounds.min, 'p.binary', 'min');
+    return new PBinary(this._type, { ...this._bounds, min: n });
   }
 
   max(n: number): PBinary<A> {
-    return new PBinary(this._type, { ...this._length.bounds, max: n });
+    checkUnset(this._bounds.max, 'p.binary', 'max');
+    return new PBinary(this._type, { ...this._bounds, max: n });
   }
 
-  /** Fix the exact element count. The prefix then costs zero bits on the wire. */
+  /**
+   * Fix the exact element count, the same as `.min(n).max(n)`. The prefix
+   * then costs zero bits on the wire.
+   */
   length(n: number): PBinary<A> {
-    return new PBinary(this._type, { ...this._length.bounds, length: n });
+    checkUnset(this._bounds.min, 'p.binary', 'min');
+    checkUnset(this._bounds.max, 'p.binary', 'max');
+    return new PBinary(this._type, { ...this._bounds, min: n, max: n });
+  }
+
+  /**
+   * Declare a prior over the element COUNT as an integer CDF: `fn(n)` is the
+   * cumulative weight of counts below `n`. Requires a max; a zero-weight
+   * count cannot encode.
+   */
+  cdf(fn: Cdf): PBinary<A> {
+    return new PBinary(this._type, { ...this._bounds, prior: fn });
+  }
+
+  /**
+   * Declare how likely each element count from min (or 0) to max is, lowest
+   * first. Same prior as `.cdf()`, given as the histogram instead of its
+   * running total.
+   */
+  weights(w: readonly number[]): PBinary<A> {
+    return new PBinary(this._type, { ...this._bounds, prior: w });
   }
 
   _write(enc: Encoder, value: A): void {
-    this._length.write(enc, value.length, 'Binary');
+    this._length.write(enc, value.length, () => `Binary length ${value.length}`);
     const raw = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     const size = this._size;
     for (let at = 0; at < raw.length; at += size) {

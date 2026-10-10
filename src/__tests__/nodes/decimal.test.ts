@@ -74,6 +74,21 @@ describe('Schema decimal', () => {
     expect(() => p.decimal(0.01).decode(enc.toUint8Array())).toThrow(CorruptInputError);
   });
 
+  it('a bound finer than the step leaves the value range alone', () => {
+    // 1e-7 rounds inward to the multiple 1, exactly like a min of 1.
+    const fine = p.decimal(1).min(1e-7);
+    expect(fine.encode(1e10)).toEqual(p.decimal(1).min(1).encode(1e10));
+    expect(trip(fine, 1e10)).toBe(1e10);
+    expect(trip(p.decimal(1).min(0.5), 1e15)).toBe(1e15);
+  });
+
+  it('sets each bound once', () => {
+    expect(() => p.decimal(0.5).min(0).min(1)).toThrow(
+      new TypeError('p.decimal min is already set')
+    );
+    expect(() => p.decimal(0.5).max(1).max(2)).toThrow('p.decimal max is already set');
+  });
+
   it('refuses bounds, ranges and values outside exact arithmetic', () => {
     expect(() => p.decimal(0.01).max(1e20)).toThrow(
       'p.decimal max 100000000000000000000 is outside the exact range ±90071992547409.9'

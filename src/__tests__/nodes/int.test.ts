@@ -59,6 +59,11 @@ describe('Schema int', () => {
     expect(() => p.int().min(1).decode(enc.toUint8Array())).toThrow(CorruptInputError);
   });
 
+  it('sets each bound once', () => {
+    expect(() => p.int().min(0).min(1)).toThrow(new TypeError('p.int min is already set'));
+    expect(() => p.int().max(1).max(2)).toThrow('p.int max is already set');
+  });
+
   it('int rejects non-finite bounds', () => {
     expect(() => p.int().min(-Infinity)).toThrow(
       'p.int min must be a finite number, got -Infinity'
