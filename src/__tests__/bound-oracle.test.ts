@@ -9,7 +9,11 @@
  *
  * Random symbol sequences drive both side by side the way the encoder and
  * the decoder drive BlockBound, plus a mode that asks every question in
- * random order, and every answer must agree. The sequences aim at the spots
+ * random order and one that reads runs of uniform symbols through `fold`
+ * the way `parseMany` does, and every answer must agree. A fold must take
+ * exactly as many symbols as the oracle admits one by one, and the state it
+ * leaves answers the questions a following symbol, an indexed tail or the
+ * final digit count asks. The sequences aim at the spots
  * where the float regime's margins are thinnest: bit lengths just past a
  * 256-bit scale step, candidates landing on or one off a power of the base
  * or the cap, totals near 2^53, extreme weights, and long weighted runs
@@ -271,6 +275,51 @@ class Symbols {
     };
   }
 
+  /**
+   * One symbol whose candidate lands on, or one off, the cap, the capacity
+   * or a power of the base, as close as the state allows.
+   */
+  edge(): Sym {
+    const rng = this.rng;
+    const oracle = this.oracle;
+    const d = oracle.digitsForS();
+    const target =
+      rng.pick([oracle.cap, oracle.capacity, oracle.pow(d), oracle.pow(d + 1)]) * oracle.den +
+      BigInt(rng.int(-1, 1));
+    const k = (target - oracle.V) / oracle.U + 1n + BigInt(rng.int(-1, 1));
+    const total = k >= 2n && k <= BigInt(MAX_SAFE) ? Number(k) : this.total();
+    return this.sym(total, rng.chance(0.5));
+  }
+
+  /** One weighted symbol, which takes the bound out of the uniform regime. */
+  weighted(): Sym {
+    return this.sym(this.total(), true);
+  }
+
+  /** The radix of a run of uniform symbols, from every size class `parseMany` reads. */
+  radix(): number {
+    const rng = this.rng;
+    const a = rng.int(1, 52);
+    switch (rng.int(0, 7)) {
+      case 0:
+        return 2;
+      case 1:
+        return rng.int(2, 16);
+      case 2:
+        return Math.max(2, this.oracle.base + rng.int(-1, 1));
+      case 3:
+        return 2 ** a;
+      case 4:
+        return Math.max(2, 2 ** a + rng.pick([-1, 1]));
+      case 5:
+        return MAX_SAFE - rng.int(0, 3);
+      case 6:
+        return rng.pick([256, 1000, 65536, 99991, 2 ** 31, 2 ** 40 + 1]);
+      default:
+        return rng.int(2, 2 ** rng.int(2, 53));
+    }
+  }
+
   /** The largest power of the base that a total can hold, as its exponent. */
   private maxPowerExponent(): number {
     let j = 1;
@@ -336,18 +385,9 @@ class Symbols {
         q.push(this.sym(this.total(), true));
         break;
       }
-      case 4: {
-        // One symbol whose candidate lands on, or one off, the cap, the
-        // capacity or a power of the base, as close as the state allows.
-        const d = oracle.digitsForS();
-        const target =
-          rng.pick([oracle.cap, oracle.capacity, oracle.pow(d), oracle.pow(d + 1)]) * oracle.den +
-          BigInt(rng.int(-1, 1));
-        const k = (target - oracle.V) / oracle.U + 1n + BigInt(rng.int(-1, 1));
-        const total = k >= 2n && k <= BigInt(MAX_SAFE) ? Number(k) : this.total();
-        q.push(this.sym(total, rng.chance(0.5)));
+      case 4:
+        q.push(this.edge());
         break;
-      }
       default: {
         // Extreme weights.
         const n = rng.int(1, 20);
@@ -360,13 +400,15 @@ class Symbols {
   }
 }
 
-type Mode = 'encoder' | 'decoder' | 'random';
+type Mode = 'encoder' | 'decoder' | 'random' | 'fold';
 
 function runCase(iteration: number): void {
   const rng = new Rng((SEED ^ Math.imul(iteration + 1, 0x9e3779b9)) >>> 0);
   const base = rng.pick(BASES);
   const blockBits = rng.pick(BLOCK_BITS);
-  const mode = rng.pick<Mode>(['encoder', 'decoder', 'random']);
+  const mode = rng.pick<Mode>(['encoder', 'decoder', 'random', 'fold']);
+  /** The decoder's drive: partial final blocks, and symbols judged before they are read. */
+  const reads = mode === 'decoder' || mode === 'fold';
   const length = rng.int(1, rng.chance(0.2) ? 2000 : 300);
 
   const bound = new BlockBound(base, blockBits);
@@ -421,10 +463,25 @@ function runCase(iteration: number): void {
     oracle.update(s.total, freq, s.count);
   };
 
+  /** Questions that leave the exact state as it is. */
+  const probe = (): void => {
+    if (rng.chance(0.5)) {
+      ask.digits();
+    }
+    if (rng.chance(0.5)) {
+      ask.tight();
+    }
+    if (rng.chance(0.3)) {
+      const s = symbols.next();
+      ask.decision(s);
+      ask.index(s);
+    }
+  };
+
   let i = 0;
   let block = 0;
   while (i < length) {
-    const full = mode !== 'decoder' || rng.chance(0.4);
+    const full = !reads || rng.chance(0.4);
     const digits = full ? oracle.blockDigits : rng.int(0, oracle.blockDigits);
     if (mode === 'encoder') {
       bound.reset();
@@ -434,9 +491,47 @@ function runCase(iteration: number): void {
     oracle.reset(digits);
     const start = i;
     let ended = false;
+    /** A symbol the fold mode hands to the per-symbol path. */
+    let next: Sym | undefined;
+
+    // Half the fold mode's blocks open weighted, so folds run in the float
+    // and exact regimes too.
+    if (mode === 'fold' && rng.chance(0.5)) {
+      const s = symbols.weighted();
+      where = `block ${block} opening symbol (total ${s.total}, freq ${s.freq}, count ${s.count})`;
+      if (!ask.cap(s) && !ask.capacity(s)) {
+        update(s);
+        i++;
+      }
+    }
 
     while (i < length) {
-      const s = symbols.next();
+      if (mode === 'fold' && next === undefined && rng.chance(0.6)) {
+        // A run of up to `max` symbols of one radix, as parseMany folds it:
+        // the oracle admits them one by one, the bound in one fold.
+        const radix = symbols.radix();
+        const max = rng.pick([1, 2, 3, rng.int(1, 40), rng.int(1, 400), rng.int(1, 5000)]);
+        where = `block ${block} symbol ${i} fold(${radix}, ${max})`;
+        let n = 0;
+        while (n < max && !oracle.exceedsCap(radix) && !oracle.exceedsCapacity(radix)) {
+          oracle.update(radix, 1, radix);
+          n++;
+        }
+        check(`fold(${radix}, ${max})`, bound.fold(radix, max), n);
+        i += n;
+        probe();
+        if (n === max) {
+          // A whole run, often followed by a symbol at the edge of the state.
+          if (rng.chance(0.5)) {
+            next = symbols.edge();
+          }
+          continue;
+        }
+        // The symbol the fold left takes the per-symbol path.
+        next = { total: radix, freq: 1, count: radix };
+      }
+      const s = next ?? symbols.next();
+      next = undefined;
       where = `block ${block} symbol ${i} (total ${s.total}, freq ${s.freq}, count ${s.count})`;
       if (mode === 'encoder') {
         if (ask.cap(s)) {
@@ -446,7 +541,7 @@ function runCase(iteration: number): void {
           ask.decision(s);
         }
         update(s);
-      } else if (mode === 'decoder') {
+      } else if (reads) {
         if (ask.cap(s)) {
           break;
         }
@@ -457,6 +552,9 @@ function runCase(iteration: number): void {
             ended = true;
           }
           break;
+        }
+        if (mode === 'fold' && rng.chance(0.2)) {
+          probe();
         }
         update(s);
       } else {
@@ -482,8 +580,11 @@ function runCase(iteration: number): void {
     where = `end of block ${block} after symbol ${i - 1}`;
     if (mode === 'encoder') {
       ask.digits();
-    } else if (mode === 'decoder') {
+    } else if (reads) {
       ask.tight();
+      if (mode === 'fold') {
+        ask.digits();
+      }
     } else {
       ask.digits();
       ask.tight();
