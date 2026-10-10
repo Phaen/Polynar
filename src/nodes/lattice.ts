@@ -38,6 +38,8 @@ export function writeIndex(
     }
     enc.composeTerm(offset);
   } else {
+    // -0 fails `index < 0` and packs as 0, as it does through the bounded
+    // branches' subtractions, so callers pass it unnormalised.
     enc.compose(index < 0 ? 1 : 0, 2);
     enc.composeTerm(Math.abs(index));
   }

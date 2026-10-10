@@ -81,8 +81,10 @@ const unzigNonzero = (z: number): number => (z % 2 === 0 ? z / 2 + 1 : -(z + 1) 
  * digits x 10^k, whose fives are digits' own times 5^k.
  */
 function fiveShiftCandidate(value: number): number {
-  // A finite positive double prints as digits with an optional fraction and
-  // an optional exponent ("123", "0.001", "1.5e+21", "5e-324").
+  // Only normal values arrive, so the magnitude is a finite positive double,
+  // which prints as digits with an optional fraction and an optional
+  // exponent ("123", "0.001", "1.5e+21", "5e-324"). A zero would leave the
+  // digits "0", which the fives loop below divides forever.
   const [decimal, exponent = '0'] = Math.abs(value).toString().split('e');
   const [whole, fraction = ''] = decimal.split('.');
   let digits = whole + fraction;
@@ -169,6 +171,8 @@ function canonicalSignificand(significand: bigint, value: number): SignificandFo
     bestStates = states;
   }
 
+  // The shift lies within FIVE_SHIFT_MAX (see there), so the decoder
+  // accepts every form chosen here.
   const shift = fiveShiftCandidate(value);
   if (shift !== 0) {
     const [p5, q5] = windowFraction(significand, shift);

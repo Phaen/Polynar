@@ -151,6 +151,7 @@ export class PDecimal extends PNode<number> {
     if (scaled / this._scale !== value || scaled % this._scaledStep !== 0) {
       throw new RangeError(`${subject(value)} is not a multiple of step ${this._step}`);
     }
+    // A -0 value gives a -0 multiple, which packs as 0 on the lattice wire.
     return scaled / this._scaledStep;
   }
 

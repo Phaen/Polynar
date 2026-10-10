@@ -261,7 +261,7 @@ export class BlockBound {
    * Whether even the symbol's index form, over `count` members, needs more
    * state than the digits hold, given that its bucket form already does
    * (`exceedsCapacity(total)`). With `count` at `total` the index form is
-   * the bucket form.
+   * the bucket form, so the answer is true without a check.
    */
   indexExceedsCapacity(total: number, count: number): boolean {
     return count >= total || this.exceeds(count, false);
@@ -390,6 +390,8 @@ export class BlockBound {
     for (let i = 0; i < n; i++) {
       this.record(radix, 1, radix);
     }
+    // room >= radix and max >= 1 leave n >= 1, so pow / radixBig is the
+    // whole power before the last symbol, never a truncated 0.
     this.tBig = product * (pow / radixBig);
     this.tNum = 1;
     this.uBig = product * pow;
@@ -552,6 +554,8 @@ export class BlockBound {
       x *= STEP_DOWN;
       E += STEP;
     }
+    // tight stays unset: update(), the only caller, sets it before anything
+    // reads it.
     this.v = x;
     this.u = x;
     this.s = x;

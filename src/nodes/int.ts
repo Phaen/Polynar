@@ -61,6 +61,7 @@ export class PInt extends PNode<number> {
     if (!Number.isInteger(value)) {
       throw new TypeError(`p.int expected an integer, got ${describe(value)}`);
     }
+    // -0 packs as 0 on the lattice wire.
     this._range.write(enc, value, () => `Value ${value}`);
   }
 
