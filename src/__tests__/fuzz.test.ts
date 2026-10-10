@@ -372,8 +372,22 @@ const scalarCase = (): Case => {
   }
 };
 
+const ANY_TYPED_ARRAYS = [
+  Int8Array,
+  Uint8Array,
+  Uint8ClampedArray,
+  Int16Array,
+  Uint16Array,
+  Int32Array,
+  Uint32Array,
+  Float32Array,
+  Float64Array,
+  BigInt64Array,
+  BigUint64Array,
+] as const;
+
 const anyValue = (depth: number, top = false): unknown => {
-  switch (randInt(0, depth > 0 ? 8 : 6)) {
+  switch (randInt(0, depth > 0 ? 9 : 7)) {
     case 0:
       return null;
     case 1:
@@ -388,11 +402,16 @@ const anyValue = (depth: number, top = false): unknown => {
       return randString(6);
     case 5:
       return new Date(randInt(-8e15, 8e15));
-    case 6:
+    case 6: {
+      // Raw bits: random bytes make every element pattern of the class.
+      const type = pick(ANY_TYPED_ARRAYS);
+      return new type(randBytes(randInt(0, 3) * type.BYTES_PER_ELEMENT).buffer as ArrayBuffer);
+    }
+    case 7:
       // A required object field reads undefined as absent, so the top of a
       // field value must stay defined; anywhere deeper it is a real value.
       return top ? randString(3) : undefined;
-    case 7:
+    case 8:
       return Array.from({ length: randInt(0, 3) }, () => anyValue(depth - 1));
     default: {
       const record: Record<string, unknown> = {};

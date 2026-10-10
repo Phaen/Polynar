@@ -7,6 +7,8 @@
 import { p } from './p';
 import { PVersioned } from './versioned';
 import type { Infer } from './infer';
+import type { AnyValue } from './any';
+import type { TypedArray } from './guards';
 import type { CodecOptions } from '../packer';
 
 type Equals<A, B> =
@@ -114,8 +116,19 @@ const TakesUndefined = p.object({
 });
 const _takesUndefined: Equals<
   Infer<typeof TakesUndefined>,
-  { id: number; tag?: string | number; extra?: unknown; note?: string }
+  { id: number; tag?: string | number; extra?: Exclude<AnyValue, undefined>; note?: string }
 > = true;
+
+// p.any infers the values it encodes, nested in arrays and plain objects.
+type AnyScalar = null | undefined | boolean | number | string | Date | TypedArray;
+const _any: Equals<Infer<ReturnType<typeof p.any>>, AnyValue> = true;
+const _anyScalars: Equals<Extract<AnyValue, AnyScalar>, AnyScalar> = true;
+const _anyArray: Equals<Extract<AnyValue, unknown[]>, AnyValue[]> = true;
+p.any().encode({ at: new Date(), samples: new Int16Array(2), tags: ['a', null] });
+// @ts-expect-error — p.any has no tag for a Map
+p.any().encode(new Map());
+// @ts-expect-error — nor for a bigint
+p.any().encode(1n);
 
 // A binary node decodes to the class it was given.
 const Samples = p.binary(Int16Array);

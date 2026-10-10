@@ -225,7 +225,7 @@ A value or `null`: `p.nullable(p.string())` is `string | null`, written the same
 
 ### `p.union(members: PNode[])`
 
-One of several members: `p.union([p.string(), p.int(), p.array(p.string())])` is `string | number | string[]`. The member is picked by the value's kind: string, number, boolean, null, undefined, date, array, object, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. Members must know their kinds, so `p.lazy` and custom nodes without `_kinds` can't be members. A value whose kind has no member throws. Recording which member was used costs log2(members) bits.
+One of several members: `p.union([p.string(), p.int(), p.array(p.string())])` is `string | number | string[]`. The member is picked by the value's kind: string, number, boolean, null, undefined, date, array, object, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. Members must know their kinds, so `p.lazy` and custom nodes without `_kinds` can't be members. `p.any()` takes nearly every kind, so it overlaps with almost any other member. A value whose kind has no member throws. Recording which member was used costs log2(members) bits.
 
 | Method                  | Description                                  |
 | ----------------------- | -------------------------------------------- |
@@ -266,7 +266,7 @@ Data written by any listed version decodes and is migrated step by step to the n
 
 ### `p.any()`
 
-Self-describing escape hatch: numbers, strings, booleans, dates, null, undefined, arrays and plain objects, with a type tag per value. Infers `unknown`. Everything round-trips bit-exact; a class instance (a `Map`, a `Set`) or a circular structure throws. Costs more than a precise node. No methods.
+Self-describing escape hatch: numbers, strings, booleans, dates, null, undefined, typed arrays, arrays and plain objects, with a type tag per value. Infers `AnyValue`, the type of exactly those values. Everything round-trips bit-exact, and a typed array decodes as the same class. Any other class instance (a `Map`, a `Set`) or a circular structure throws. Costs more than a precise node. No methods.
 
 ### Priors: `.weights()`
 
@@ -346,6 +346,7 @@ A value that can't be encoded throws with its path in front and the limit it bro
 
 - `Infer<typeof Node>` — the decoded type of any node.
 - `InferShape<S>`, `InferTagged<K, M>` — the types `p.object` and `p.tagged` infer, from a shape or a member map.
+- `AnyValue` — the values `p.any` encodes and decodes.
 - `Cdf` — `(v: number) => number`, the function `.cdf()` takes.
 - `DateUnit` — the units `.precision()` takes.
 - `Kind` — the kinds `p.union` tells apart, and the type of `_kinds`.

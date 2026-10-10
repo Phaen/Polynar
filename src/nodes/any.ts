@@ -1,5 +1,12 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
-import { isArray, isDate, isPlainObject, type Kind } from './guards';
+import {
+  isArray,
+  isDate,
+  isPlainObject,
+  typedArrayKind,
+  type Kind,
+  type TypedArray,
+} from './guards';
 import { PNode } from './base';
 import { atPath } from './path';
 import { PInt } from './int';
@@ -7,12 +14,28 @@ import { PFloat } from './float';
 import { PString } from './string';
 import { PBool } from './bool';
 import { PDate } from './date';
+import { PBinary } from './binary';
+
+/**
+ * Every value `p.any` encodes: the JSON-like scalars plus `undefined`, dates
+ * and typed arrays, nested in arrays and plain objects.
+ */
+export type AnyValue =
+  | null
+  | undefined
+  | boolean
+  | number
+  | string
+  | Date
+  | TypedArray
+  | AnyValue[]
+  | { [key: string]: AnyValue };
 
 // Type tags for the self-describing `any` codec: absent values, then scalars,
-// then containers. Integers and floats are distinct so integer values
-// round-trip bit-exact through `composeTerm` instead of drifting through the
-// fraction approximation.
-const TAG_COUNT = 9;
+// then containers, then one tag per typed-array class in TYPED_ARRAYS order.
+// Integers and floats are distinct so integer values round-trip bit-exact
+// through `composeTerm` instead of drifting through the fraction
+// approximation.
 const TAG_UNDEFINED = 0;
 const TAG_NULL = 1;
 const TAG_BOOLEAN = 2;
@@ -22,9 +45,27 @@ const TAG_STRING = 5;
 const TAG_DATE = 6;
 const TAG_ARRAY = 7;
 const TAG_OBJECT = 8;
+const TAG_TYPED = 9;
 
-/** Self-describing escape hatch. Output type `unknown`. `p.any`. */
-export class PAny extends PNode<unknown> {
+/** The typed-array classes `p.any` encodes, each through a default `p.binary` of its class. */
+const TYPED_ARRAYS = [
+  Int8Array,
+  Uint8Array,
+  Uint8ClampedArray,
+  Int16Array,
+  Uint16Array,
+  Int32Array,
+  Uint32Array,
+  Float32Array,
+  Float64Array,
+  BigInt64Array,
+  BigUint64Array,
+] as const;
+
+const TAG_COUNT = TAG_TYPED + TYPED_ARRAYS.length;
+
+/** Self-describing escape hatch. Output type `AnyValue`. `p.any`. */
+export class PAny extends PNode<AnyValue> {
   readonly _kinds: readonly Kind[] = [
     'undefined',
     'null',
@@ -34,9 +75,10 @@ export class PAny extends PNode<unknown> {
     'date',
     'array',
     'object',
+    ...ANY_BINARY_BY_KIND.keys(),
   ];
 
-  _write(enc: Encoder, value: unknown): void {
+  _write(enc: Encoder, value: AnyValue): void {
     this._writeAny(enc, value, new WeakSet());
   }
 
@@ -102,10 +144,17 @@ export class PAny extends PNode<unknown> {
         ANY_BOOL._write(enc, value);
         break;
 
-      case 'object':
+      case 'object': {
+        // A DataView is a view too, but has no tag.
+        const typed = ArrayBuffer.isView(value)
+          ? ANY_BINARY_BY_KIND.get(typedArrayKind(value))
+          : undefined;
         if (isDate(value)) {
           enc.compose(TAG_DATE, TAG_COUNT);
           ANY_DATE._write(enc, value);
+        } else if (typed !== undefined) {
+          enc.compose(typed, TAG_COUNT);
+          ANY_BINARY[typed - TAG_TYPED]._write(enc, value as TypedArray);
         } else {
           if (!isPlainObject(value)) {
             const name = value.constructor?.name ?? 'this type';
@@ -131,14 +180,16 @@ export class PAny extends PNode<unknown> {
           path.delete(value);
         }
         break;
+      }
 
       default:
         throw new TypeError(`p.any cannot encode ${typeof value} values`);
     }
   }
 
-  _read(dec: Decoder): unknown {
-    switch (dec.parse(TAG_COUNT)) {
+  _read(dec: Decoder): AnyValue {
+    const tag = dec.parse(TAG_COUNT);
+    switch (tag) {
       case TAG_UNDEFINED:
         return undefined;
       case TAG_FLOAT: {
@@ -163,16 +214,14 @@ export class PAny extends PNode<unknown> {
         return ANY_INT._read(dec);
       case TAG_ARRAY: {
         const length = dec.parseTerm();
-        const value: unknown[] = [];
+        const value: AnyValue[] = [];
         for (let i = 0; i < length; i++) {
           value.push(this._read(dec));
         }
         return value;
       }
-      default: {
-        // TAG_OBJECT: parse() bounds the tag to its radix, so the last tag is
-        // the only one left.
-        const value: Record<string, unknown> = {};
+      case TAG_OBJECT: {
+        const value: Record<string, AnyValue> = {};
         const count = dec.parseTerm();
         for (let i = 0; i < count; i++) {
           const key = ANY_STRING._read(dec);
@@ -193,6 +242,10 @@ export class PAny extends PNode<unknown> {
         }
         return value;
       }
+      default:
+        // parse() bounds the tag to its radix, so only typed-array tags are
+        // left.
+        return ANY_BINARY[tag - TAG_TYPED]._read(dec);
     }
   }
 }
@@ -204,3 +257,8 @@ const ANY_FLOAT = new PFloat();
 const ANY_STRING = new PString();
 const ANY_BOOL = new PBool();
 const ANY_DATE = new PDate();
+const ANY_BINARY = TYPED_ARRAYS.map((type) => new PBinary<TypedArray>(type));
+/** Each typed-array kind's tag. */
+const ANY_BINARY_BY_KIND = new Map<Kind, number>(
+  ANY_BINARY.map((node, i) => [node._kinds[0], TAG_TYPED + i])
+);

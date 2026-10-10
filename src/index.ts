@@ -32,6 +32,7 @@ export {
 } from './nodes';
 export { ProseModels, buildProseModel } from './nodes';
 export type {
+  AnyValue,
   Infer,
   InferShape,
   InferTagged,

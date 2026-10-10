@@ -4,7 +4,15 @@
  * contract on decode, then the path module's helpers directly.
  */
 
-import { p, CharSets, CorruptInputError, Encoder, PNode, type PObject } from '../../index';
+import {
+  p,
+  CharSets,
+  CorruptInputError,
+  Encoder,
+  PNode,
+  type AnyValue,
+  type PObject,
+} from '../../index';
 import { atPath, describe as show, formatPath, oneOf } from '../../nodes/path';
 
 /** A runtime-built member list, typed as plain strings. */
@@ -31,8 +39,10 @@ describe('Error paths', () => {
       'filters[2].op: Value "c" is not one of "a", "b"'
     );
     expect(() => p.array(p.int().max(1)).encode([0, 5])).toThrow('[1]: ');
-    expect(() => p.any().encode({ a: [1, Symbol('s')] })).toThrow(
-      'a[1]: p.any cannot encode symbol values'
+    const ring: AnyValue[] = [];
+    ring.push(ring);
+    expect(() => p.any().encode({ a: [1, ring] })).toThrow(
+      'a[1][0]: p.any cannot encode a circular structure'
     );
   });
 

@@ -26,6 +26,7 @@ export { PTagged } from './tagged';
 export { PVersioned } from './versioned';
 export type { Step } from './versioned';
 export { PAny } from './any';
+export type { AnyValue } from './any';
 
 export { p } from './p';
 export type { Infer, InferShape, InferTagged } from './infer';

@@ -23,6 +23,30 @@ describe('Schema union', () => {
     );
     expect(() => p.union([p.int(), p.float()])).toThrow('overlap on kind "number"');
     expect(() => p.union([p.any(), p.string()])).toThrow('overlap on kind');
+    expect(() => p.union([p.any(), p.binary(Int16Array)])).toThrow('overlap on kind "Int16Array"');
+  });
+
+  it('takes p.any as its only member', () => {
+    const Loose = p.union([p.any()]);
+    expect(trip(Loose, [1, 'a'])).toEqual([1, 'a']);
+    expect(trip(Loose, Uint8Array.of(9))).toEqual(Uint8Array.of(9));
+  });
+
+  it('rejects a value whose kind no member declares', () => {
+    // The member's type admits numbers, but its kinds claim only strings.
+    class PLabel extends PNode<string | number> {
+      readonly _kinds = ['string'];
+      _write(enc: Encoder, value: string | number): void {
+        p.string()._write(enc, String(value));
+      }
+      _read(dec: Decoder): string {
+        return p.string()._read(dec);
+      }
+    }
+    const Label = p.union([new PLabel()]);
+    expect(() => Label._write(new Encoder(), 1)).toThrow(
+      new TypeError('Kind "number" is not one of "string"')
+    );
   });
 
   it('rejects an empty list and members without declared kinds', () => {
