@@ -5,7 +5,7 @@
  * nothing about types.
  */
 
-import type { ByteRange, Charset } from './types';
+import type { BinaryOptions, TextOptions } from './types';
 import {
   TERM_BASE,
   TERM_COUNT_RUN_DIGITS,
@@ -19,6 +19,7 @@ import {
   Alphabet,
   transportAlphabet,
   validateByteRange,
+  validateBlockBits,
   digitChunk,
   log2Exact,
   SHIFTS,
@@ -47,16 +48,16 @@ export class Decoder {
   /** Digit index where the current block starts. */
   private blockStart = 0;
 
-  constructor(input: Uint8Array, range?: ByteRange);
-  constructor(input: string, charset?: Charset);
-  constructor(input: string | Uint8Array, charset?: Charset) {
+  constructor(input: Uint8Array, options?: BinaryOptions);
+  constructor(input: string, options?: TextOptions);
+  constructor(input: string | Uint8Array, options: BinaryOptions & TextOptions = {}) {
     this.input = input;
     this.alphabet =
       typeof input === 'string'
-        ? transportAlphabet(charset)
-        : new Alphabet(validateByteRange((charset as ByteRange | undefined) ?? [0, 255]));
+        ? transportAlphabet(options.charset)
+        : new Alphabet(validateByteRange(options.range ?? [0, 255]));
     this.size = this.alphabet.size;
-    this.bound = new BlockBound(this.size);
+    this.bound = new BlockBound(this.size, validateBlockBits(options.blockBits));
     this.chunk = digitChunk(this.size);
     this.loadBlock(0);
   }

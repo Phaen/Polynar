@@ -128,11 +128,11 @@ export class PDate extends PNode<Date> {
     ) {
       throw new TypeError('p.date bounds must be Dates or integer timestamps');
     }
-    // Swapping the bounds silently would accept dates before the declared
-    // minimum and reject dates the caller declared valid.
+    // Two bounds in one bucket compare equal there, so an inverted pair is
+    // caught on the raw timestamps.
     if (this._min !== undefined && this._max !== undefined && this._min > this._max) {
       throw new RangeError(
-        `p.date minimum ${iso(this._min)} is after the maximum ${iso(this._max)}`
+        `p.date range is empty: min ${iso(this._min)} exceeds max ${iso(this._max)}`
       );
     }
 
@@ -146,11 +146,7 @@ export class PDate extends PNode<Date> {
     // included, encodes again.
     const lo = this._min === undefined ? undefined : this._calendar.index(this._min);
     const hi = this._max === undefined ? undefined : this._calendar.index(this._max);
-    this._range = new IndexRange('p.date', lo, hi, prior, {
-      show: (b) => iso(this._calendar.start(b)),
-      below: this._min === undefined ? undefined : `is before the minimum ${iso(this._min)}`,
-      above: this._max === undefined ? undefined : `is after the maximum ${iso(this._max)}`,
-    });
+    this._range = new IndexRange('p.date', lo, hi, prior, (b) => iso(this._calendar.start(b)));
   }
 
   min(n: number | Date): PDate {

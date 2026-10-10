@@ -12,14 +12,21 @@
  * plain multiply-add, which is mixed-radix arithmetic.
  */
 
-import type { Charset, ByteRange } from './types';
+import type { BinaryOptions, TextOptions } from './types';
 import {
   TERM_BASE,
   TERM_ESCAPE_MIN,
   TERM_PAYLOAD_BASE,
   TERM_PAYLOAD_MIN_DIGITS,
 } from './constants';
-import { transportAlphabet, validateByteRange, digitChunk, SHIFTS, type DigitChunk } from './utils';
+import {
+  transportAlphabet,
+  validateByteRange,
+  validateBlockBits,
+  digitChunk,
+  SHIFTS,
+  type DigitChunk,
+} from './utils';
 import { BlockBound } from './bound';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
@@ -227,10 +234,11 @@ export class Encoder {
 
   /**
    * Pack the buffer into base-`size` digits, lowest digit first, as a run of
-   * mixed-radix blocks. Within a block, values fold into one big integer — in
-   * reverse, so the decoder can peel them off front-to-back, which it needs
-   * because later radices can depend on earlier decoded values (e.g. an
-   * array's length prefix). A value whose total would push the block's state
+   * mixed-radix blocks of at most `blockBits` bits of state each. Within a
+   * block, values fold into one big integer — in reverse, so the decoder can
+   * peel them off front-to-back, which it needs because later radices can
+   * depend on earlier decoded values (e.g. an array's length prefix). A value
+   * whose total would push the block's state
    * bound past the block cap starts the next block instead. Full blocks span
    * exactly `digits` digits, so the decoder finds the boundaries by position
    * alone; only the final block rounds up to a whole digit, so a message that
@@ -252,8 +260,8 @@ export class Encoder {
    * S both equal the radix product: the plain mixed-radix wire format, byte for byte.
    * `BlockBound` carries these rationals for both sides.
    */
-  private toDigits(size: number): number[] {
-    const bound = new BlockBound(size);
+  private toDigits(size: number, blockBits: number): number[] {
+    const bound = new BlockBound(size, blockBits);
     const chunk = digitChunk(size);
     const digits: number[] = [];
     const totals = this.totals;
@@ -371,19 +379,19 @@ export class Encoder {
     return product === 1 ? big : big * BigInt(product) + BigInt(offset);
   }
 
-  toString(charset?: Charset): string {
-    const alphabet = transportAlphabet(charset);
+  toString(options: TextOptions = {}): string {
+    const alphabet = transportAlphabet(options.charset);
     let str = '';
-    for (const digit of this.toDigits(alphabet.size)) {
+    for (const digit of this.toDigits(alphabet.size, validateBlockBits(options.blockBits))) {
       str += alphabet.charAt(digit);
     }
     return str;
   }
 
-  toUint8Array(charset?: ByteRange): Uint8Array {
-    const [min, max] = validateByteRange(charset || [0, 255]);
+  toUint8Array(options: BinaryOptions = {}): Uint8Array {
+    const [min, max] = validateByteRange(options.range ?? [0, 255]);
 
-    const digits = this.toDigits(max - min + 1);
+    const digits = this.toDigits(max - min + 1, validateBlockBits(options.blockBits));
     const bytes = new Uint8Array(digits.length);
 
     for (let i = 0; i < digits.length; i++) {

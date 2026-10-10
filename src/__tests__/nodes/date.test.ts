@@ -90,7 +90,7 @@ describe('Schema date', () => {
     expect(trip(node, new Date('2026-03-14T12:00:00Z')).getTime()).toBe(midnight.getTime());
     expect(trip(node, midnight).getTime()).toBe(midnight.getTime());
     expect(() => node.encode(new Date('2026-03-13T23:59:59Z'))).toThrow(
-      "Date '2026-03-13T23:59:59.000Z' is before the minimum 2026-03-14T13:00:00.000Z"
+      "Date '2026-03-13T23:59:59.000Z' is below the minimum 2026-03-14T00:00:00.000Z"
     );
   });
 
@@ -98,23 +98,36 @@ describe('Schema date', () => {
     const node = p.date().min(new Date('2020-01-01Z')).max(new Date('2021-01-01Z'));
     expect(() => node.encode(new Date('2019-12-31Z'))).toThrow(
       new RangeError(
-        "Date '2019-12-31T00:00:00.000Z' is before the minimum 2020-01-01T00:00:00.000Z"
+        "Date '2019-12-31T00:00:00.000Z' is below the minimum 2020-01-01T00:00:00.000Z"
       )
     );
     expect(() => node.encode(new Date('2021-01-02Z'))).toThrow(
-      "Date '2021-01-02T00:00:00.000Z' is after the maximum 2021-01-01T00:00:00.000Z"
+      new RangeError(
+        "Date '2021-01-02T00:00:00.000Z' is above the maximum 2021-01-01T00:00:00.000Z"
+      )
     );
     // A bound outside the Date range shows as its timestamp.
     expect(() => p.date().min(9e15).encode(new Date(0))).toThrow(
-      "Date '1970-01-01T00:00:00.000Z' is before the minimum 9000000000000000"
+      "Date '1970-01-01T00:00:00.000Z' is below the minimum 9000000000000000"
     );
     expect(() => node.encode(new Date(NaN))).toThrow(TypeError);
   });
 
-  it('date rejects swapped bounds at construction', () => {
+  it('date rejects swapped bounds at construction, even within one bucket', () => {
+    expect(() =>
+      p
+        .date()
+        .precision('day')
+        .min(new Date('2020-01-01T12:00:00Z'))
+        .max(new Date('2020-01-01T06:00:00Z'))
+    ).toThrow(
+      new RangeError(
+        'p.date range is empty: min 2020-01-01T12:00:00.000Z exceeds max 2020-01-01T06:00:00.000Z'
+      )
+    );
     expect(() => p.date().min(new Date('2021-01-01Z')).max(new Date('2020-01-01Z'))).toThrow(
       new RangeError(
-        'p.date minimum 2021-01-01T00:00:00.000Z is after the maximum 2020-01-01T00:00:00.000Z'
+        'p.date range is empty: min 2021-01-01T00:00:00.000Z exceeds max 2020-01-01T00:00:00.000Z'
       )
     );
   });
@@ -122,7 +135,7 @@ describe('Schema date', () => {
   it('date rejects a range wider than exact arithmetic at definition', () => {
     expect(() => p.date().min(new Date(-8.64e15)).max(new Date(8.64e15))).toThrow(
       new RangeError(
-        'p.date range [-271821-04-20T00:00:00.000Z, +275760-09-13T00:00:00.000Z] is wider than exact integer arithmetic supports'
+        'p.date range [-271821-04-20T00:00:00.000Z, +275760-09-13T00:00:00.000Z] spans more than 2^53 values'
       )
     );
   });

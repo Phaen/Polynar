@@ -21,7 +21,7 @@
  * Every answer is therefore the exact one.
  */
 
-import { BLOCK_BITS } from './constants';
+import { DEFAULT_BLOCK_BITS } from './constants';
 import { bitLength } from './utils';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
@@ -89,7 +89,7 @@ function compareFloat(x: number, E: number, m: number, e: number, k: number): -1
 /**
  * Powers of one digit base, exact and as constant floats, and the block
  * size they set: `blockDigits` is the largest digit count whose state space,
- * `cap` = base^blockDigits, stays within 2^BLOCK_BITS. Encoder and decoder
+ * `cap` = base^blockDigits, stays within 2^blockBits. Encoder and decoder
  * both derive block boundaries from it, so it is found in integer
  * arithmetic, where a float log could round differently across engines.
  */
@@ -101,9 +101,9 @@ class Powers {
   readonly cap: bigint;
   private readonly base: bigint;
 
-  constructor(base: number) {
+  constructor(base: number, blockBits: number) {
     this.base = BigInt(base);
-    const limit = 1n << BigInt(BLOCK_BITS);
+    const limit = 1n << BigInt(blockBits);
     let digits = 1;
     this.ensure(2);
     while (this.big[digits + 1] <= limit) {
@@ -125,13 +125,18 @@ class Powers {
   }
 }
 
+/**
+ * Keyed by base and block size as one number: a base is at most 2^16, the
+ * size of the largest charset, so the block size lands in the bits above.
+ */
 const powersCache = new Map<number, Powers>();
 
-export function powersOf(base: number): Powers {
-  let powers = powersCache.get(base);
+export function powersOf(base: number, blockBits: number = DEFAULT_BLOCK_BITS): Powers {
+  const key = blockBits * 0x20000 + base;
+  let powers = powersCache.get(key);
   if (powers === undefined) {
-    powers = new Powers(base);
-    powersCache.set(base, powers);
+    powers = new Powers(base, blockBits);
+    powersCache.set(key, powers);
   }
   return powers;
 }
@@ -184,8 +189,8 @@ export class BlockBound {
   private tightV = 1n;
   private tightDen = 1n;
 
-  constructor(size: number) {
-    const powers = powersOf(size);
+  constructor(size: number, blockBits: number) {
+    const powers = powersOf(size, blockBits);
     this.base = size;
     this.log2Base = Math.log2(size);
     this.powers = powers;

@@ -23,16 +23,16 @@ console.log('via JSON:', restored);
 
 // Text output picks a charset; both sides must agree on it.
 const Message = p.string().max(32);
-const asUrlSafe = Message.encodeString('hello world', CharSets.urlSafe);
+const asUrlSafe = Message.encodeString('hello world', { charset: CharSets.urlSafe });
 console.log('url-safe string:', asUrlSafe);
-console.log('from url-safe:', Message.decodeString(asUrlSafe, CharSets.urlSafe));
+console.log('from url-safe:', Message.decodeString(asUrlSafe, { charset: CharSets.urlSafe }));
 
 // A [min, max] range restricts which byte values the output may contain.
-const asPrintable = Message.encode('hello world', [32, 126]); // printable ASCII only
+const asPrintable = Message.encode('hello world', { range: [32, 126] }); // printable ASCII only
 console.log(
   'printable bytes:',
   asPrintable.length,
   'raw bytes:',
   Message.encode('hello world').length
 );
-console.log('from printable:', Message.decode(asPrintable, [32, 126]));
+console.log('from printable:', Message.decode(asPrintable, { range: [32, 126] }));

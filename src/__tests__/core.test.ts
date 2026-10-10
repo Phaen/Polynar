@@ -23,7 +23,7 @@ describe('Character sets', () => {
   it.each(Object.entries(CharSets))('round-trips through the %s charset', (_name, charset) => {
     const encoder = new Encoder();
     encoder.compose(123, 1001);
-    const decoder = new Decoder(encoder.toString(charset), charset);
+    const decoder = new Decoder(encoder.toString({ charset }), { charset });
     expect(decoder.parse(1001)).toBe(123);
   });
 
@@ -38,16 +38,18 @@ describe('Character sets', () => {
     const encoder = new Encoder();
     encoder.compose(123, 1001);
     const range: [number, number] = [65, 90];
-    expect(new Decoder(encoder.toString(range), range).parse(1001)).toBe(123);
+    expect(new Decoder(encoder.toString({ charset: range }), { charset: range }).parse(1001)).toBe(
+      123
+    );
   });
 
   it('rejects a reversed range charset, like a reversed byte range', () => {
     const encoder = new Encoder();
     encoder.compose(123, 1001);
-    expect(() => encoder.toString([90, 65])).toThrow(
+    expect(() => encoder.toString({ charset: [90, 65] })).toThrow(
       new RangeError('Invalid character range: [90, 65] holds fewer than 2 codes')
     );
-    expect(() => new Decoder('A', [90, 65])).toThrow(RangeError);
+    expect(() => new Decoder('A', { charset: [90, 65] })).toThrow(RangeError);
   });
 });
 
@@ -231,34 +233,36 @@ describe('Output density', () => {
 
 describe('Charset validation', () => {
   it('rejects a duplicate-character charset', () => {
-    expect(() => new Decoder('test', 'aab')).toThrow(
+    expect(() => new Decoder('test', { charset: 'aab' })).toThrow(
       new TypeError("Invalid character set: 'a' appears more than once")
     );
   });
 
   it('rejects a duplicate-character charset even across a newline', () => {
-    expect(() => new Decoder('test', 'ab\ncd\na')).toThrow('Invalid character set');
+    expect(() => new Decoder('test', { charset: 'ab\ncd\na' })).toThrow('Invalid character set');
   });
 
   it('rejects a charset of fewer than two characters', () => {
     // Base 1 has no digit variation: the encoder's digit loop would push until
     // the array overflows and the decoder would misparse every read.
-    expect(() => new Encoder().toString('a')).toThrow(
+    expect(() => new Encoder().toString({ charset: 'a' })).toThrow(
       'Invalid character set: needs at least 2 characters, got 1'
     );
-    expect(() => new Decoder('aaa', 'a')).toThrow('Invalid character set');
+    expect(() => new Decoder('aaa', { charset: 'a' })).toThrow('Invalid character set');
   });
 
   it('accepts a two-symbol range charset, the floor shared with string charsets', () => {
     const encoder = new Encoder();
     encoder.compose(123, 1001);
     const range: [number, number] = [48, 49];
-    expect(new Decoder(encoder.toString(range), range).parse(1001)).toBe(123);
+    expect(new Decoder(encoder.toString({ charset: range }), { charset: range }).parse(1001)).toBe(
+      123
+    );
   });
 
   it('rejects a single-symbol range charset', () => {
     // Base 1, same as the one-character string charset.
-    expect(() => new Decoder('test', [5, 5])).toThrow(
+    expect(() => new Decoder('test', { charset: [5, 5] })).toThrow(
       'Invalid character range: [5, 5] holds fewer than 2 codes'
     );
   });
@@ -268,15 +272,17 @@ describe('Charset validation', () => {
     // back as different in-range values without any error.
     const encoder = new Encoder();
     encoder.compose(123, 1001);
-    expect(() => encoder.toString([0, 100000])).toThrow(
+    expect(() => encoder.toString({ charset: [0, 100000] })).toThrow(
       'Invalid character range: [0, 100000] must be integer codes within 0–65535'
     );
-    expect(() => encoder.toString([-5, 100])).toThrow('Invalid character range');
-    expect(() => encoder.toString([0.5, 100.5])).toThrow('Invalid character range');
+    expect(() => encoder.toString({ charset: [-5, 100] })).toThrow('Invalid character range');
+    expect(() => encoder.toString({ charset: [0.5, 100.5] })).toThrow('Invalid character range');
   });
 
   it('throws when a character is absent from the charset', () => {
-    expect(() => new Decoder('!', CharSets.digit)).toThrow(/not found in character set/);
+    expect(() => new Decoder('!', { charset: CharSets.digit })).toThrow(
+      /not found in character set/
+    );
   });
 
   it('reads ASCII digits that sit past index 32767 of a long charset', () => {
@@ -286,7 +292,7 @@ describe('Charset validation', () => {
     const enc = new Encoder();
     enc.compose(65535, 65536);
     enc.compose(65, 65536);
-    const dec = new Decoder(enc.toString(charset), charset);
+    const dec = new Decoder(enc.toString({ charset }), { charset });
     expect([dec.parse(65536), dec.parse(65536)]).toEqual([65535, 65]);
     dec.finalize();
   });
@@ -298,14 +304,14 @@ describe('Charset validation', () => {
       const charset = String.fromCharCode(0x100 + i, 0x1000 + i, 0x2000 + i);
       const encoder = new Encoder();
       encoder.compose(i % 7, 7);
-      expect(new Decoder(encoder.toString(charset), charset).parse(7)).toBe(i % 7);
+      expect(new Decoder(encoder.toString({ charset }), { charset }).parse(7)).toBe(i % 7);
     }
-    expect(() => new Decoder('aa', 'aa')).toThrow('Invalid character set');
+    expect(() => new Decoder('aa', { charset: 'aa' })).toThrow('Invalid character set');
   });
 
   it('throws when a character falls just past a range charset', () => {
     // '[' (code 91) is one beyond the maximum of the [65, 90] range.
-    expect(() => new Decoder('Z[', [65, 90]).parse(1001)).toThrow(
+    expect(() => new Decoder('Z[', { charset: [65, 90] }).parse(1001)).toThrow(
       'Character at 1 does not fit the character range'
     );
   });
@@ -408,9 +414,9 @@ describe('Block packing', () => {
       encoder.compose(i & 1, 2);
     }
     encoder.compose(2, 3);
-    const bytes = encoder.toUint8Array([0, 1]);
+    const bytes = encoder.toUint8Array({ range: [0, 1] });
     expect(bytes.length).toBe(2048 + 2);
-    const decoder = new Decoder(bytes.subarray(0, 2047), [0, 1]);
+    const decoder = new Decoder(bytes.subarray(0, 2047), { range: [0, 1] });
     for (let i = 0; i < 2047; i++) {
       decoder.parse(2);
     }
@@ -530,5 +536,63 @@ describe('Public entrypoint', () => {
     expect(root.Decoder).toBe(Decoder);
     expect(root.p).toBe(p);
     expect(root.p.int().min(0).max(1).decode(root.p.int().min(0).max(1).encode(1))).toBe(1);
+  });
+});
+
+describe('Block size', () => {
+  const Reading = p.object({
+    level: p
+      .int()
+      .min(0)
+      .max(999)
+      .cdf((v) => v * v + v),
+    kind: p.enum(['a', 'b', 'c']).weights([8, 1, 1]),
+    on: p.bool(),
+  });
+  const Log = p.array(Reading);
+  const log = Array.from({ length: 6000 }, (_, i) => ({
+    level: (i * 37) % 1000,
+    kind: (['a', 'a', 'b', 'a', 'c'] as const)[i % 5],
+    on: i % 3 === 0,
+  }));
+
+  it.each([128, 2048, 65536])('round-trips a multi-block message at %i bits', (blockBits) => {
+    const bytes = Log.encode(log, { blockBits });
+    expect(bytes.length).toBeGreaterThan(powersOf(256, blockBits).blockDigits);
+    expect(Log.decode(bytes, { blockBits })).toEqual(log);
+
+    const options = { charset: CharSets.urlSafe, blockBits };
+    const text = Log.encodeString(log, options);
+    expect(text.length).toBeGreaterThan(powersOf(66, blockBits).blockDigits);
+    expect(Log.decodeString(text, options)).toEqual(log);
+  });
+
+  it('defaults to 2048 bits', () => {
+    expect(Log.encode(log)).toEqual(Log.encode(log, { blockBits: 2048 }));
+    expect(Log.encodeString(log)).toBe(Log.encodeString(log, { blockBits: 2048 }));
+  });
+
+  it('takes the byte range and the block size together', () => {
+    const options = { range: [32, 126] as [number, number], blockBits: 128 };
+    const bytes = Log.encode(log.slice(0, 50), options);
+    expect(bytes.every((b) => b >= 32 && b <= 126)).toBe(true);
+    expect(Log.decode(bytes, options)).toEqual(log.slice(0, 50));
+  });
+
+  it('rejects a block size that is not an integer in [128, 65536]', () => {
+    const enc = new Encoder();
+    enc.compose(1, 2);
+    expect(() => enc.toUint8Array({ blockBits: 100.5 })).toThrow(
+      new TypeError('Block size must be an integer number of bits, got 100.5')
+    );
+    expect(() => enc.toString({ blockBits: NaN })).toThrow(TypeError);
+    expect(() => enc.toString({ blockBits: 127 })).toThrow(
+      new RangeError('Block size 127 bits is outside [128, 65536]')
+    );
+    expect(() => enc.toUint8Array({ blockBits: 65537 })).toThrow(RangeError);
+    expect(() => new Decoder('A', { blockBits: 32 })).toThrow(RangeError);
+    expect(() => new Decoder(Uint8Array.of(1), { blockBits: 1e6 })).toThrow(RangeError);
+    expect(() => p.bool().encode(true, { blockBits: 0 })).toThrow(RangeError);
+    expect(() => p.bool().decodeString('A', { blockBits: 128.5 })).toThrow(TypeError);
   });
 });

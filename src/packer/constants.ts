@@ -56,12 +56,11 @@ export const TERM_PAYLOAD_MIN_DIGITS = (() => {
 export const TERM_COUNT_RUN_DIGITS = 6;
 
 /**
- * State-space cap per packed block, in bits. Values fold into one
- * arbitrary-precision integer only until the block's radix product would
- * exceed this, then the block flushes and a fresh one starts. The cap bounds
- * every BigInt operation, keeping encode/decode linear in message size (one
- * uncapped integer would make them quadratic), at a worst-case cost of one
- * unfilled digit per block boundary. Must comfortably exceed 2^53, the
- * largest single radix `compose` accepts.
+ * State-space cap per packed block, in bits, unless a message sets its own.
+ * Values fold into one arbitrary-precision integer only until the block's
+ * radix product would exceed this, then the block flushes and a fresh one
+ * starts. The cap bounds every BigInt operation, keeping encode/decode
+ * linear in message size (one uncapped integer would make them quadratic),
+ * at a worst-case cost of one unfilled digit per block boundary.
  */
-export const BLOCK_BITS = 2048;
+export const DEFAULT_BLOCK_BITS = 2048;

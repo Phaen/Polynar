@@ -55,12 +55,12 @@ describe('Binary output', () => {
       const enc = new Encoder();
       node._write(enc, 'test');
       const range: [number, number] = [32, 126];
-      const bytes = enc.toUint8Array(range);
+      const bytes = enc.toUint8Array({ range });
       for (const b of bytes) {
         expect(b).toBeGreaterThanOrEqual(32);
         expect(b).toBeLessThanOrEqual(126);
       }
-      expect(node._read(new Decoder(bytes, range))).toBe('test');
+      expect(node._read(new Decoder(bytes, { range }))).toBe('test');
     });
 
     it('is deterministic across encoders', () => {
@@ -82,18 +82,18 @@ describe('Binary output', () => {
     it('rejects an out-of-bounds encoder range', () => {
       const enc = new Encoder();
       enc.compose(42, 101);
-      expect(() => enc.toUint8Array([-1, 255])).toThrow(RangeError);
-      expect(() => enc.toUint8Array([0, 256])).toThrow(RangeError);
-      expect(() => enc.toUint8Array([100, 50])).toThrow(RangeError);
-      expect(() => enc.toUint8Array([0.5, 10])).toThrow(RangeError);
+      expect(() => enc.toUint8Array({ range: [-1, 255] })).toThrow(RangeError);
+      expect(() => enc.toUint8Array({ range: [0, 256] })).toThrow(RangeError);
+      expect(() => enc.toUint8Array({ range: [100, 50] })).toThrow(RangeError);
+      expect(() => enc.toUint8Array({ range: [0.5, 10] })).toThrow(RangeError);
     });
 
     it('rejects an out-of-bounds decoder range', () => {
       const bytes = new Uint8Array([100, 150, 200]);
-      expect(() => new Decoder(bytes, [-1, 255])).toThrow(RangeError);
-      expect(() => new Decoder(bytes, [0, 256])).toThrow(RangeError);
-      expect(() => new Decoder(bytes, [200, 100])).toThrow(RangeError);
-      expect(() => new Decoder(bytes, [0.5, 10])).toThrow(RangeError);
+      expect(() => new Decoder(bytes, { range: [-1, 255] })).toThrow(RangeError);
+      expect(() => new Decoder(bytes, { range: [0, 256] })).toThrow(RangeError);
+      expect(() => new Decoder(bytes, { range: [200, 100] })).toThrow(RangeError);
+      expect(() => new Decoder(bytes, { range: [0.5, 10] })).toThrow(RangeError);
     });
 
     it('throws when reading past the end of the byte buffer', () => {
@@ -104,7 +104,7 @@ describe('Binary output', () => {
     });
 
     it('throws when a byte falls outside the binary range', () => {
-      expect(() => new Decoder(new Uint8Array([10, 200]), [0, 100])).toThrow(
+      expect(() => new Decoder(new Uint8Array([10, 200]), { range: [0, 100] })).toThrow(
         'Byte at 1 does not fit binary range'
       );
     });

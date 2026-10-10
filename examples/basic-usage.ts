@@ -35,7 +35,13 @@ console.log('float is bit-exact:', temperature.decode(temperature.encode(21.57))
 
 // A known step is worth declaring: a price in cents costs 2 bytes, not 8.
 const price = p.decimal(0.01).min(0).max(100);
-console.log('price round-trip:', price.decode(price.encode(19.99)), 'in', price.encode(19.99).length, 'bytes');
+console.log(
+  'price round-trip:',
+  price.decode(price.encode(19.99)),
+  'in',
+  price.encode(19.99).length,
+  'bytes'
+);
 
 const when = p.date();
 const now = new Date();

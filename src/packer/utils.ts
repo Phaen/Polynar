@@ -3,7 +3,7 @@
  */
 
 import type { ByteRange, Charset } from './types';
-import { DEFAULT_CHARSET } from './constants';
+import { DEFAULT_BLOCK_BITS, DEFAULT_CHARSET } from './constants';
 
 /**
  * The longest run of base-`size` digits whose values fit one safe integer
@@ -57,6 +57,23 @@ export function validateByteRange([min, max]: ByteRange): ByteRange {
     );
   }
   return [min, max];
+}
+
+/** The block sizes a message may choose; the ceiling keeps one block's BigInt arithmetic cheap. */
+const MIN_BLOCK_BITS = 128;
+const MAX_BLOCK_BITS = 65536;
+
+/** A message's block size in bits: an integer within the allowed span. */
+export function validateBlockBits(bits: number = DEFAULT_BLOCK_BITS): number {
+  if (!Number.isInteger(bits)) {
+    throw new TypeError(`Block size must be an integer number of bits, got ${bits}`);
+  }
+  if (bits < MIN_BLOCK_BITS || bits > MAX_BLOCK_BITS) {
+    throw new RangeError(
+      `Block size ${bits} bits is outside [${MIN_BLOCK_BITS}, ${MAX_BLOCK_BITS}]`
+    );
+  }
+  return bits;
 }
 
 /**

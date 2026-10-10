@@ -4,6 +4,13 @@ import type { Kind } from './guards';
 import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 
+/** Bounds are integers like the values they admit; NaN and Infinity are not. */
+const checkBound = (bound: number | undefined, which: string): void => {
+  if (bound !== undefined && !Number.isInteger(bound)) {
+    throw new TypeError(`p.int ${which} must be an integer, got ${bound}`);
+  }
+};
+
 /** Integer (strict: non-integers throw). `p.int`. */
 export class PInt extends PNode<number> {
   readonly _kinds: readonly Kind[] = ['number'];
@@ -13,23 +20,9 @@ export class PInt extends PNode<number> {
 
   constructor(min?: number, max?: number, prior?: Prior) {
     super();
-    // Each bound rounds inward (ceil the min, floor the max) so a fractional
-    // bound never widens the declared range: .min(10.9) admits 11 and up.
-    const lo = min == null ? undefined : Math.ceil(min);
-    const hi = max == null ? undefined : Math.floor(max);
-    if (lo !== undefined && !Number.isFinite(lo)) {
-      throw new TypeError(`p.int min must be a finite number, got ${lo}`);
-    }
-    if (hi !== undefined && !Number.isFinite(hi)) {
-      throw new TypeError(`p.int max must be a finite number, got ${hi}`);
-    }
-    // After inward rounding a fractional band can invert (.min(2.1).max(2.9))
-    // when it contains no integer. It is rejected because swapping the
-    // bounds would give a WIDER range that admits values below the declared
-    // minimum.
-    this._range = new IndexRange('p.int', lo, hi, prior, {
-      empty: `p.int range is empty: no integer lies within the requested bounds (rounded to [${lo}, ${hi}])`,
-    });
+    checkBound(min, 'min');
+    checkBound(max, 'max');
+    this._range = new IndexRange('p.int', min, max, prior);
   }
 
   min(n: number): PInt {

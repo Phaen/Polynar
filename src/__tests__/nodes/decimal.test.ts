@@ -36,20 +36,36 @@ describe('Schema decimal', () => {
     expect(() => p.decimal(0.1).encode(0.35)).toThrow('not a multiple of step');
   });
 
-  it('decimal enforces bounds and rounds off-grid bounds inward', () => {
+  it('decimal enforces bounds', () => {
     expect(() => p.decimal(0.01).min(0).max(100).encode(100.01)).toThrow(
       new RangeError("Value '100.01' is above the maximum 100")
     );
-    // Bounds of [0.3, 2.2] on a 0.5 step admit only 0.5..2.0; the bounds
-    // themselves are off-grid and must not become encodable.
-    const node = p.decimal(0.5).min(0.3).max(2.2);
+    const node = p.decimal(0.5).min(0.5).max(2);
     expect(trip(node, 0.5)).toBe(0.5);
     expect(trip(node, 2)).toBe(2);
-    expect(() => node.encode(0.3)).toThrow('not a multiple of step');
-    expect(() => node.encode(2.2)).toThrow('not a multiple of step');
-    // The limit given is the bound as rounded onto the grid.
-    expect(() => node.encode(0)).toThrow("Value '0' is below the minimum 0.5");
-    expect(() => node.encode(2.5)).toThrow("Value '2.5' is above the maximum 2");
+    expect(() => node.encode(0)).toThrow(new RangeError("Value '0' is below the minimum 0.5"));
+    expect(() => node.encode(2.5)).toThrow(new RangeError("Value '2.5' is above the maximum 2"));
+  });
+
+  it('decimal bounds sit on the step like values', () => {
+    expect(() => p.decimal(0.5).min(0.3)).toThrow(
+      new RangeError('p.decimal min 0.3 is not a multiple of step 0.5')
+    );
+    expect(() => p.decimal(0.5).max(2.2)).toThrow(
+      new RangeError('p.decimal max 2.2 is not a multiple of step 0.5')
+    );
+    // A bound finer than the step is off it too.
+    expect(() => p.decimal(1).min(1e-7)).toThrow(
+      new RangeError('p.decimal min 1e-7 is not a multiple of step 1')
+    );
+    expect(() => p.decimal(0.1).max(1 / 3)).toThrow(RangeError);
+    expect(() => p.decimal(0.1).min(NaN)).toThrow(
+      new TypeError('p.decimal min must be a finite number, got NaN')
+    );
+    expect(() => p.decimal(0.1).max(Infinity)).toThrow(
+      new TypeError('p.decimal max must be a finite number, got Infinity')
+    );
+    expect(trip(p.decimal(0.1).min(-0.3).max(0.3), -0.3)).toBe(-0.3);
   });
 
   it('decimal rejects invalid steps and empty ranges at construction', () => {
@@ -60,8 +76,9 @@ describe('Schema decimal', () => {
     expect(() => p.decimal(Infinity)).toThrow(TypeError);
     // 1/3 has no finite decimal form, so no value could ever sit on its grid.
     expect(() => p.decimal(1 / 3)).toThrow(TypeError);
-    // No multiple of 0.5 lies in [0.6, 0.9].
-    expect(() => p.decimal(0.5).min(0.6).max(0.9)).toThrow(RangeError);
+    expect(() => p.decimal(0.5).min(1).max(0.5)).toThrow(
+      new RangeError('p.decimal range is empty: min 1 exceeds max 0.5')
+    );
   });
 
   it('rejects a step multiple that cannot reconstruct exactly', () => {
@@ -72,14 +89,6 @@ describe('Schema decimal', () => {
     enc.compose(0, 2);
     enc.composeTerm(2 ** 60);
     expect(() => p.decimal(0.01).decode(enc.toUint8Array())).toThrow(CorruptInputError);
-  });
-
-  it('a bound finer than the step leaves the value range alone', () => {
-    // 1e-7 rounds inward to the multiple 1, exactly like a min of 1.
-    const fine = p.decimal(1).min(1e-7);
-    expect(fine.encode(1e10)).toEqual(p.decimal(1).min(1).encode(1e10));
-    expect(trip(fine, 1e10)).toBe(1e10);
-    expect(trip(p.decimal(1).min(0.5), 1e15)).toBe(1e15);
   });
 
   it('sets each bound once', () => {
@@ -94,7 +103,11 @@ describe('Schema decimal', () => {
       'p.decimal max 100000000000000000000 is outside the exact range ±90071992547409.9'
     );
     expect(() => p.decimal(0.01).min(-1e20)).toThrow('p.decimal min -100000000000000000000');
-    expect(() => p.decimal(1).min(-9e15).max(9e15)).toThrow('more steps than exact arithmetic');
+    expect(() => p.decimal(1).min(-9e15).max(9e15)).toThrow(
+      new RangeError(
+        'p.decimal range [-9000000000000000, 9000000000000000] spans more than 2^53 values'
+      )
+    );
     expect(() => p.decimal(1).encode(1e20)).toThrow(
       "Value '100000000000000000000' is outside the exact range ±9007199254740991"
     );

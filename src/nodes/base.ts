@@ -15,7 +15,7 @@
  * a valid `p.union` member too.
  */
 import { Encoder, Decoder, CorruptInputError } from '../packer';
-import type { Charset, ByteRange } from '../packer';
+import type { BinaryOptions, TextOptions } from '../packer';
 import type { Kind } from './guards';
 import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
 
@@ -46,15 +46,15 @@ export abstract class PNode<TOut> {
   abstract _read(dec: Decoder): TOut;
 
   /** Encode to bytes. A `[min, max]` range restricts which byte values appear. */
-  encode(value: TOut, range?: ByteRange): Uint8Array {
+  encode(value: TOut, options?: BinaryOptions): Uint8Array {
     const enc = new Encoder();
     this._write(enc, value);
-    return enc.toUint8Array(range);
+    return enc.toUint8Array(options);
   }
 
-  /** Decode bytes produced by `encode` with the same range. */
-  decode(bytes: Uint8Array, range?: ByteRange): TOut {
-    const dec = new Decoder(bytes, range);
+  /** Decode bytes produced by `encode` with the same options. */
+  decode(bytes: Uint8Array, options?: BinaryOptions): TOut {
+    const dec = new Decoder(bytes, options);
     const value = this._read(dec);
     // The schema is the whole message, so the input must be exactly consumed:
     // leftover digits and trailing padding throw.
@@ -62,16 +62,16 @@ export abstract class PNode<TOut> {
     return value;
   }
 
-  /** Encode to text instead of bytes. Both sides must agree on the charset. */
-  encodeString(value: TOut, charset?: Charset): string {
+  /** Encode to text instead of bytes. Both sides must agree on the options. */
+  encodeString(value: TOut, options?: TextOptions): string {
     const enc = new Encoder();
     this._write(enc, value);
-    return enc.toString(charset);
+    return enc.toString(options);
   }
 
-  /** Decode text produced by `encodeString` with the same charset. */
-  decodeString(str: string, charset?: Charset): TOut {
-    const dec = new Decoder(str, charset);
+  /** Decode text produced by `encodeString` with the same options. */
+  decodeString(str: string, options?: TextOptions): TOut {
+    const dec = new Decoder(str, options);
     const value = this._read(dec);
     // Same exhaustion check as `decode`: the text is the whole message.
     dec.finalize();

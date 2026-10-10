@@ -35,7 +35,7 @@ Seven payload shapes, mean sizes in bytes over 250 seeded random payloads each (
 
 JSON and MessagePack also encode the key name; Protobuf and Polynar read from a schema instead, and are both told the same decimal steps and bounds. The difference is that Protobuf rounds every field up to whole bytes and tags it, while Polynar spends fractional bits with no implicit tags.
 
-The url-safe column is `encodeString(value, CharSets.urlSafe)` — text you can drop straight into a URL, cookie or query parameter, and it still beats the other formats' _binary_ output.
+The url-safe column is `encodeString(value, { charset: CharSets.urlSafe })` — text you can drop straight into a URL, cookie or query parameter, and it still beats the other formats' _binary_ output.
 
 ## Install
 
@@ -69,8 +69,8 @@ type User = Infer<typeof User>;
 
 const user: User = { name: 'Ada', age: 36, active: true, role: 'admin' };
 
-const text = User.encodeString(user, CharSets.urlSafe); // 'ChxRoLA'
-assert.deepStrictEqual(User.decodeString(text, CharSets.urlSafe), user);
+const text = User.encodeString(user, { charset: CharSets.urlSafe }); // 'ChxRoLA'
+assert.deepStrictEqual(User.decodeString(text, { charset: CharSets.urlSafe }), user);
 
 const bytes = User.encode(user); // Uint8Array [176, 253, 162, 98, 3]
 assert.deepStrictEqual(User.decode(bytes), user);
@@ -105,23 +105,23 @@ Each `p.*` factory creates a node for one type, and the node's methods narrow wh
 
 An integer. Infers `number`. Non-integers, NaN and Infinity throw; `-0` is stored as `0`. Huge values are fine as long as the arithmetic stays exact: `p.int().min(0).encode(2 ** 60)` round-trips, while `p.int().min(1).encode(2 ** 53 + 6)` throws because `2 ** 53 + 5` isn't a double.
 
-| Method                            | Description                                                                                                                                                                 |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.min(n: number)`                 | Lower bound; smaller values throw. A fractional bound rounds up, so `.min(10.9)` allows 11 and up.                                                                          |
-| `.max(n: number)`                 | Upper bound; larger values throw. With both bounds the value takes exactly log2(max − min + 1) bits. The range can't span more than 2^53 values, and an empty range throws. |
-| `.cdf(fn: (v: number) => number)` | Prior over the values from `min` to `max`, called with the value itself; needs both bounds.                                                                                 |
-| `.weights(w: number[])`           | Prior: one weight per value from `min` to `max`, lowest first; needs both bounds.                                                                                           |
+| Method                            | Description                                                                                                                                                                             |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                 | Lower bound, an integer; smaller values throw.                                                                                                                                          |
+| `.max(n: number)`                 | Upper bound, an integer; larger values throw. With both bounds the value takes exactly log2(max − min + 1) bits. The range can't span more than 2^53 values, and an empty range throws. |
+| `.cdf(fn: (v: number) => number)` | Prior over the values from `min` to `max`, called with the value itself; needs both bounds.                                                                                             |
+| `.weights(w: number[])`           | Prior: one weight per value from `min` to `max`, lowest first; needs both bounds.                                                                                                       |
 
 ### `p.decimal(step: number)`
 
-A number on a fixed decimal step, like `p.decimal(0.01)` for cents. Infers `number`. The step and both bounds must be exact decimals of at most 15 places (`1 / 3` throws). Values must already sit on the step, so round first: `0.1 + 0.2` throws on step 0.1. Values are stored exactly, except that `-0` becomes `0`. NaN and Infinity throw, and so do values too large to store exactly.
+A number on a fixed decimal step, like `p.decimal(0.01)` for cents. Infers `number`. The step must be an exact decimal of at most 15 places (`1 / 3` throws), and both bounds must sit on the step. Values must already sit on the step, so round first: `0.1 + 0.2` throws on step 0.1. Values are stored exactly, except that `-0` becomes `0`. NaN and Infinity throw, and so do values too large to store exactly.
 
-| Method                            | Description                                                                                                                                                                                                                                                |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.min(n: number)`                 | Lower bound; smaller values throw. An off-step bound rounds up to the next step.                                                                                                                                                                           |
-| `.max(n: number)`                 | Upper bound; larger values throw. An off-step bound rounds down. With both bounds the value takes a fixed number of bits: `p.decimal(0.01).min(0).max(100)` fits a price in 2 bytes. The range can't span more than 2^53 steps, and an empty range throws. |
-| `.cdf(fn: (k: number) => number)` | Prior over the grid, called with `k` for the k-th multiple of the step (`value / step`); needs both bounds.                                                                                                                                                |
-| `.weights(w: number[])`           | Prior: one weight per grid point from `min` to `max`, lowest first; needs both bounds.                                                                                                                                                                     |
+| Method                            | Description                                                                                                                                                                                                                 |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                 | Lower bound; smaller values throw.                                                                                                                                                                                          |
+| `.max(n: number)`                 | Upper bound; larger values throw. With both bounds the value takes a fixed number of bits: `p.decimal(0.01).min(0).max(100)` fits a price in 2 bytes. The range can't span more than 2^53 steps, and an empty range throws. |
+| `.cdf(fn: (k: number) => number)` | Prior over the grid, called with `k` for the k-th multiple of the step (`value / step`); needs both bounds.                                                                                                                 |
+| `.weights(w: number[])`           | Prior: one weight per grid point from `min` to `max`, lowest first; needs both bounds.                                                                                                                                      |
 
 ### `p.float()`
 
@@ -201,7 +201,7 @@ An array of one item type, stored with its length. Infers an array of the item's
 
 | Method                            | Description                                                                                                  |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `.min(n: number)`                 | Lower bound on the item count; shorter arrays throw. A fractional bound rounds up.                           |
+| `.min(n: number)`                 | Lower bound on the item count; shorter arrays throw.                                                         |
 | `.max(n: number)`                 | Upper bound on the item count; longer arrays throw. With both bounds the count takes a fixed number of bits. |
 | `.length(n: number)`              | Fixed item count, the same as `.min(n).max(n)`; costs zero bits.                                             |
 | `.cdf(fn: (n: number) => number)` | Prior over the item count, called with the count; needs `.max`.                                              |
@@ -291,23 +291,25 @@ What `i` is depends on the node: the value itself on `p.int`, the step count (`v
 
 Every node has these four methods, where `T` is the type it infers.
 
-| Method                                           | Description                                                                                                                                       |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.encode(value: T, range?: ByteRange)`           | Encodes to a `Uint8Array`. With a range, every byte stays within `[min, max]` (inside 0–255, min below max); without one, bytes use all of 0–255. |
-| `.decode(bytes: Uint8Array, range?: ByteRange)`  | Decodes bytes made by `encode` with the same range.                                                                                               |
-| `.encodeString(value: T, charset?: Charset)`     | Encodes to text in the charset; Base64 when omitted.                                                                                              |
-| `.decodeString(text: string, charset?: Charset)` | Decodes text made by `encodeString` with the same charset.                                                                                        |
+| Method                                                                             | Description                                                                                                                                       |
+| ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.encode(value: T, options?: { range?: ByteRange; blockBits?: number })`           | Encodes to a `Uint8Array`. With a range, every byte stays within `[min, max]` (inside 0–255, min below max); without one, bytes use all of 0–255. |
+| `.decode(bytes: Uint8Array, options?: { range?: ByteRange; blockBits?: number })`  | Decodes bytes made by `encode` with the same options.                                                                                             |
+| `.encodeString(value: T, options?: { charset?: Charset; blockBits?: number })`     | Encodes to text in the charset; Base64 when omitted.                                                                                              |
+| `.decodeString(text: string, options?: { charset?: Charset; blockBits?: number })` | Decodes text made by `encodeString` with the same options.                                                                                        |
 
 ```typescript
 const bytes = User.encode(user); // Uint8Array
 User.decode(bytes);
 
-const link = User.encodeString(user, CharSets.urlSafe); // text, here safe to put in a URL
-User.decodeString(link, CharSets.urlSafe);
+const link = User.encodeString(user, { charset: CharSets.urlSafe }); // text, here safe to put in a URL
+User.decodeString(link, { charset: CharSets.urlSafe });
 
-const ascii = User.encode(user, [32, 126]); // bytes kept to printable ASCII
-User.decode(ascii, [32, 126]);
+const ascii = User.encode(user, { range: [32, 126] }); // bytes kept to printable ASCII
+User.decode(ascii, { range: [32, 126] });
 ```
+
+`blockBits` is the size of the blocks a message is packed in, from 128 to 65536 bits and 2048 by default. Bigger blocks waste slightly less space, and smaller ones are faster.
 
 The charset defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. A charset can also be any string of at least two different characters (an emoji counts as two), or a `[min, max]` range of character codes; `p.string().charset()` takes the same, and also a single character.
 
@@ -341,6 +343,7 @@ A value that can't be encoded throws with its path in front and the limit it bro
 - `TypedArray`, `TypedArrayClass` — what `p.binary` takes and returns.
 - `Charset` — `string | [number, number]`, for text output and `.charset()`.
 - `ByteRange` — `[number, number]`, for byte output.
+- `BinaryOptions`, `TextOptions` — the options of byte and text output.
 
 The node classes are exported too (`PNode`, `PInt`, `PString`, `PObject`, …), along with `ProseModels` and `buildProseModel`.
 
@@ -373,10 +376,10 @@ const Theme = p.object({ name: p.string().max(20), accent: new PColor() });
 | `enc.compose(integer: number, radix: number)`                                                                                                                                                            | One digit in a fixed radix: `integer` in `[0, radix)`, `radix` a positive safe integer; anything else throws.                                                                                                                                                      |
 | `enc.composeTerm(integer: number)`                                                                                                                                                                       | Any non-negative integer, no bound needed.                                                                                                                                                                                                                         |
 | `enc.composeWeighted(cum: number, freq: number, total: number, position?: { index: number; count: number })`                                                                                             | Writes a weighted value: the range `[cum, cum + freq)` out of `total`. Costs log2(total / freq) bits. `position` gives the value's `index` among the node's `count` values; with it, the last value in a message costs no more than picking one of `count` values. |
-| `enc.toString(charset?: Charset)`                                                                                                                                                                        | The message as text; Base64 when omitted.                                                                                                                                                                                                                          |
-| `enc.toUint8Array(range?: ByteRange)`                                                                                                                                                                    | The message as bytes within `[min, max]`; the whole byte when omitted.                                                                                                                                                                                             |
-| `new Decoder(input: string, charset?: Charset)`                                                                                                                                                          | Reads text made with the same charset; Base64 when omitted.                                                                                                                                                                                                        |
-| `new Decoder(input: Uint8Array, range?: ByteRange)`                                                                                                                                                      | Reads bytes made with the same `[min, max]` byte range; the whole byte when omitted.                                                                                                                                                                               |
+| `enc.toString(options?: TextOptions)`                                                                                                                                                                    | The message as text, with the same options as `encodeString`.                                                                                                                                                                                                      |
+| `enc.toUint8Array(options?: BinaryOptions)`                                                                                                                                                              | The message as bytes, with the same options as `encode`.                                                                                                                                                                                                           |
+| `new Decoder(input: string, options?: TextOptions)`                                                                                                                                                      | Reads text made with the same options.                                                                                                                                                                                                                             |
+| `new Decoder(input: Uint8Array, options?: BinaryOptions)`                                                                                                                                                | Reads bytes made with the same options.                                                                                                                                                                                                                            |
 | `dec.parse(radix: number)`                                                                                                                                                                               | Reads what `compose` wrote.                                                                                                                                                                                                                                        |
 | `dec.parseTerm()`                                                                                                                                                                                        | Reads what `composeTerm` wrote.                                                                                                                                                                                                                                    |
 | `dec.parseWeighted<T>(total: number, locate: (residual: number) => [symbol: T, cum: number, freq: number], position?: { count: number; at: (index: number) => [symbol: T, cum: number, freq: number] })` | Reads what `composeWeighted` wrote. `locate` gets a number below `total` and returns the symbol whose range holds it, with that range's `cum` and `freq`; `position.at` returns the same for the value at an index. Pass `position` when the writer passed one.    |
@@ -393,10 +396,13 @@ const View = p.object({
   tags: p.array(p.string().max(20)).max(5),
 });
 
-const hash = View.encodeString({ page: 3, sort: 'name', tags: ['ts'] }, CharSets.urlSafe);
+const hash = View.encodeString(
+  { page: 3, sort: 'name', tags: ['ts'] },
+  { charset: CharSets.urlSafe }
+);
 location.hash = hash;
 
-const view = View.decodeString(location.hash.slice(1), CharSets.urlSafe);
+const view = View.decodeString(location.hash.slice(1), { charset: CharSets.urlSafe });
 ```
 
 ### Common values

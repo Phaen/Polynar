@@ -75,46 +75,34 @@ export function readIndex(dec: Decoder, min?: number, max?: number): number {
   return negative ? -magnitude : magnitude;
 }
 
-/** Wording for an index range's errors; each defaults to a plain-number form. */
-export interface RangeText {
-  /** An index as the value it stands for. */
-  readonly show?: (index: number) => string;
-  /** Follows the subject when an index lies below `lo`, as in `is below the minimum 3`. */
-  readonly below?: string;
-  readonly above?: string;
-  readonly empty?: string;
-  readonly span?: string;
-}
-
 /**
  * One bounded integer index on the lattice wire, optionally under a prior:
  * the half of PInt, PDecimal, PDate and every length prefix that is not
  * about mapping a value to its index. The range is validated once here, and
  * `write`/`read` check the bounds and pack the index, uniformly or weighted.
+ * `show` spells an index as the value it stands for in an error.
  */
 export class IndexRange {
   readonly lo?: number;
   readonly hi?: number;
   readonly prior?: RangePrior;
   private readonly show: (index: number) => string;
-  private readonly below: string;
-  private readonly above: string;
 
-  constructor(who: string, lo?: number, hi?: number, prior?: Prior, text: RangeText = {}) {
-    const show = text.show ?? String;
+  constructor(
+    who: string,
+    lo?: number,
+    hi?: number,
+    prior?: Prior,
+    show: (index: number) => string = String
+  ) {
     if (lo !== undefined && hi !== undefined) {
       if (lo > hi) {
-        throw new RangeError(
-          text.empty ?? `${who} range is empty: min ${show(lo)} exceeds max ${show(hi)}`
-        );
+        throw new RangeError(`${who} range is empty: min ${show(lo)} exceeds max ${show(hi)}`);
       }
       // Index arithmetic (index - lo) is only exact while the span fits in
       // exact integer range; a wider band would round indices silently.
       if (hi - lo > Number.MAX_SAFE_INTEGER) {
-        throw new RangeError(
-          text.span ??
-            `${who} range [${show(lo)}, ${show(hi)}] is wider than exact integer arithmetic supports`
-        );
+        throw new RangeError(`${who} range [${show(lo)}, ${show(hi)}] spans more than 2^53 values`);
       }
     }
     if (prior !== undefined) {
@@ -126,17 +114,15 @@ export class IndexRange {
     this.lo = lo;
     this.hi = hi;
     this.show = show;
-    this.below = text.below ?? (lo === undefined ? '' : `is below the minimum ${show(lo)}`);
-    this.above = text.above ?? (hi === undefined ? '' : `is above the maximum ${show(hi)}`);
   }
 
   /** `subject` names the value in an error, as in `Value '3'`. */
   write(enc: Encoder, index: number, subject: () => string): void {
     if (this.lo !== undefined && index < this.lo) {
-      throw new RangeError(`${subject()} ${this.below}`);
+      throw new RangeError(`${subject()} is below the minimum ${this.show(this.lo)}`);
     }
     if (this.hi !== undefined && index > this.hi) {
-      throw new RangeError(`${subject()} ${this.above}`);
+      throw new RangeError(`${subject()} is above the maximum ${this.show(this.hi)}`);
     }
     if (this.prior === undefined) {
       writeIndex(enc, index, this.lo, this.hi, this.show);
@@ -157,21 +143,28 @@ export interface LengthBounds {
   readonly prior?: Prior;
 }
 
+/** A length or count bound: a non-negative integer, checked at definition. */
+const lengthBound = (n: number | undefined, who: string, which: string): number | undefined => {
+  if (n === undefined) {
+    return undefined;
+  }
+  if (!Number.isInteger(n)) {
+    throw new TypeError(`${who} ${which} must be a non-negative integer, got ${n}`);
+  }
+  if (n < 0) {
+    throw new RangeError(`${who} ${which} must be a non-negative integer, got ${n}`);
+  }
+  return n;
+};
+
 /**
- * The range of a string, byte-run or array length: each bound rounds inward
- * (ceil the min, floor the max) so a fractional bound never admits a length
- * beyond itself, and the floor defaults to 0. `noun` names the quantity in
- * an error, as in `p.array max must be a non-negative count`.
+ * The range of a string, byte-run or array length, its floor defaulting to
+ * 0. `noun` names the quantity in an error, as in `p.array weights requires
+ * a max count`.
  */
 export function lengthRange(bounds: LengthBounds, who: string, noun: string): IndexRange {
-  const min = bounds.min == null ? undefined : Math.ceil(bounds.min);
-  if (min !== undefined && (!Number.isInteger(min) || min < 0)) {
-    throw new RangeError(`${who} min must be a non-negative ${noun}, got ${bounds.min}`);
-  }
-  const max = bounds.max == null ? undefined : Math.floor(bounds.max);
-  if (max !== undefined && (!Number.isInteger(max) || max < 0)) {
-    throw new RangeError(`${who} max must be a non-negative ${noun}, got ${bounds.max}`);
-  }
+  const min = lengthBound(bounds.min, who, 'min');
+  const max = lengthBound(bounds.max, who, 'max');
   const { prior } = bounds;
   if (prior !== undefined && max === undefined) {
     throw new TypeError(`${who} ${priorKind(prior)} requires a max ${noun}`);

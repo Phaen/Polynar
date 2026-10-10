@@ -521,10 +521,10 @@ describe('Property fuzz', () => {
       const { node, gen } = randomCase(2);
       const charset = pick(transports);
       const value = gen();
-      const str = node.encodeString(value as never, charset);
-      const decoded = node.decodeString(str, charset);
+      const str = node.encodeString(value as never, { charset });
+      const decoded = node.decodeString(str, { charset });
       expect(decoded).toEqual(value);
-      expect(node.encodeString(decoded as never, charset)).toBe(str);
+      expect(node.encodeString(decoded as never, { charset })).toBe(str);
 
       // One character substituted (or appended, when the text is empty) from
       // the same transport alphabet: decode must reject it or own it.
@@ -539,12 +539,12 @@ describe('Property fuzz', () => {
       }
       let corrupt: unknown;
       try {
-        corrupt = node.decodeString(mutated, charset);
+        corrupt = node.decodeString(mutated, { charset });
       } catch (e) {
         expect(e).toBeInstanceOf(Error);
         continue;
       }
-      expect(node.encodeString(corrupt as never, charset)).toBe(mutated);
+      expect(node.encodeString(corrupt as never, { charset })).toBe(mutated);
     }
   });
 });

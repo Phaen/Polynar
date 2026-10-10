@@ -43,7 +43,7 @@ describe('Schema validation', () => {
         .max(2 ** 53)
     ).toThrow(
       new RangeError(
-        'p.int range [-9007199254740992, 9007199254740992] is wider than exact integer arithmetic supports'
+        'p.int range [-9007199254740992, 9007199254740992] spans more than 2^53 values'
       )
     );
     expect(() =>
@@ -116,7 +116,7 @@ describe('Schema corruption rejection', () => {
     expect(() => node.decode(corrupted)).toThrow(CorruptInputError);
     expect(() => node.decode(padded)).toThrow(CorruptInputError);
     expect(() => node.decode(new Uint8Array(0))).toThrow(CorruptInputError);
-    expect(() => node.decodeString('!', CharSets.digit)).toThrow(CorruptInputError);
+    expect(() => node.decodeString('!', { charset: CharSets.digit })).toThrow(CorruptInputError);
     try {
       node.decode(padded);
     } catch (e) {
@@ -173,14 +173,14 @@ describe('String output (encodeString / decodeString)', () => {
   });
 
   it('round-trips through a chosen charset', () => {
-    const urlSafe = Player.encodeString(value, CharSets.urlSafe);
-    expect(Player.decodeString(urlSafe, CharSets.urlSafe)).toEqual(value);
-    const hex = Player.encodeString(value, CharSets.hex);
-    expect(Player.decodeString(hex, CharSets.hex)).toEqual(value);
+    const urlSafe = Player.encodeString(value, { charset: CharSets.urlSafe });
+    expect(Player.decodeString(urlSafe, { charset: CharSets.urlSafe })).toEqual(value);
+    const hex = Player.encodeString(value, { charset: CharSets.hex });
+    expect(Player.decodeString(hex, { charset: CharSets.hex })).toEqual(value);
   });
 
   it('emits only characters from the chosen charset', () => {
-    const str = p.string().encodeString('any text at all — 👋', CharSets.digit);
+    const str = p.string().encodeString('any text at all — 👋', { charset: CharSets.digit });
     expect(str).toMatch(/^[0-9]+$/);
   });
 
@@ -201,31 +201,33 @@ describe('Byte output (encode / decode with a range)', () => {
   const value = { name: 'Ada', level: 42 };
 
   it('round-trips through a restricted range', () => {
-    const bytes = Player.encode(value, [32, 126]);
-    expect(Player.decode(bytes, [32, 126])).toEqual(value);
+    const bytes = Player.encode(value, { range: [32, 126] });
+    expect(Player.decode(bytes, { range: [32, 126] })).toEqual(value);
   });
 
   it('emits only bytes from the range', () => {
-    const bytes = Player.encode(value, [32, 126]);
+    const bytes = Player.encode(value, { range: [32, 126] });
     expect(bytes.every((b) => b >= 32 && b <= 126)).toBe(true);
   });
 
   it('spends no fewer bytes than the full range does', () => {
     const long = { name: 'a'.repeat(20), level: 42 };
-    expect(Player.encode(long, [32, 126]).length).toBeGreaterThan(Player.encode(long).length);
-    expect(Player.encode(value, [32, 126]).length).toBeGreaterThanOrEqual(
+    expect(Player.encode(long, { range: [32, 126] }).length).toBeGreaterThan(
+      Player.encode(long).length
+    );
+    expect(Player.encode(value, { range: [32, 126] }).length).toBeGreaterThanOrEqual(
       Player.encode(value).length
     );
   });
 
   it('rejects a range the encoder would not have produced', () => {
-    const bytes = Player.encode(value, [32, 126]);
+    const bytes = Player.encode(value, { range: [32, 126] });
     expect(() => Player.decode(bytes)).toThrow(CorruptInputError);
   });
 
   it('validates the range itself', () => {
-    expect(() => Player.encode(value, [200, 10])).toThrow(RangeError);
-    expect(() => Player.encode(value, [0, 300])).toThrow(RangeError);
+    expect(() => Player.encode(value, { range: [200, 10] })).toThrow(RangeError);
+    expect(() => Player.encode(value, { range: [0, 300] })).toThrow(RangeError);
   });
 });
 

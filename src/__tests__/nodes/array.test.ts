@@ -69,14 +69,15 @@ describe('Schema array', () => {
     expect(capped.encode([1, 2, 3]).length).toBeLessThanOrEqual(uncapped.encode([1, 2, 3]).length);
   });
 
-  it('rounds a fractional max inward and rejects invalid caps', () => {
-    const node = p.array(p.int().min(0).max(9)).max(2.9); // -> cap of 2
-    expect(node.decode(node.encode([1, 2]))).toEqual([1, 2]);
-    expect(() => node.encode([1, 2, 3])).toThrow('Array length 3 is above the maximum 2');
-    expect(() => p.array(p.int()).max(-1)).toThrow(
-      new RangeError('p.array max must be a non-negative count, got -1')
+  it('rejects caps that are not non-negative integers', () => {
+    expect(() => p.array(p.int()).max(2.9)).toThrow(
+      new TypeError('p.array max must be a non-negative integer, got 2.9')
     );
-    expect(() => p.array(p.int()).max(NaN)).toThrow(RangeError);
+    expect(() => p.array(p.int()).max(-1)).toThrow(
+      new RangeError('p.array max must be a non-negative integer, got -1')
+    );
+    expect(() => p.array(p.int()).max(NaN)).toThrow(TypeError);
+    expect(() => p.array(p.int()).max(Infinity)).toThrow(TypeError);
   });
 
   it('min bounds the count from below and combines with max', () => {
@@ -89,7 +90,7 @@ describe('Schema array', () => {
       new RangeError('p.array range is empty: min 5 exceeds max 2')
     );
     expect(() => p.array(p.int()).min(-1)).toThrow(
-      new RangeError('p.array min must be a non-negative count, got -1')
+      new RangeError('p.array min must be a non-negative integer, got -1')
     );
   });
 
@@ -126,11 +127,11 @@ describe('Schema array', () => {
   });
 
   it('length must be an exact non-negative integer', () => {
-    // A fractional length rounds inward to an empty range, so no count
-    // satisfies it.
-    expect(() => p.array(p.int()).length(2.9)).toThrow(RangeError);
+    expect(() => p.array(p.int()).length(2.9)).toThrow(
+      new TypeError('p.array min must be a non-negative integer, got 2.9')
+    );
     expect(() => p.array(p.int()).length(-1)).toThrow(RangeError);
-    expect(() => p.array(p.int()).length(NaN)).toThrow(RangeError);
+    expect(() => p.array(p.int()).length(NaN)).toThrow(TypeError);
   });
 
   it('carries undefined items through an optional item type', () => {

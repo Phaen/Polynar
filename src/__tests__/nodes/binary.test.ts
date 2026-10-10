@@ -30,7 +30,15 @@ describe('Schema binary', () => {
     expect(trip(node, new Uint8Array([9, 9, 9]))).toEqual(new Uint8Array([9, 9, 9]));
     expect(() => node.encode(new Uint8Array(1))).toThrow('Binary length 1 is below the minimum 2');
     expect(() => node.encode(new Uint8Array(5))).toThrow('Binary length 5 is above the maximum 4');
-    expect(() => p.binary().min(3).max(2)).toThrow('range is empty');
+    expect(() => p.binary().min(3).max(2)).toThrow(
+      new RangeError('p.binary range is empty: min 3 exceeds max 2')
+    );
+    expect(() => p.binary().min(1.5)).toThrow(
+      new TypeError('p.binary min must be a non-negative integer, got 1.5')
+    );
+    expect(() => p.binary().max(-2)).toThrow(
+      new RangeError('p.binary max must be a non-negative integer, got -2')
+    );
   });
 
   it('sets each bound once, with length setting both', () => {

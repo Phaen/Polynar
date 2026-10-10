@@ -17,15 +17,13 @@ describe('Schema int', () => {
     expect(() => p.int().min(0).max(100).encode(-3.7)).toThrow(TypeError);
   });
 
-  it('int rounds fractional bounds inward', () => {
-    // ceil the min, floor the max: [0.5, 10.5] admits [1, 10]
-    expect(trip(p.int().min(0.5).max(10.5), 10)).toBe(10);
-    expect(trip(p.int().min(-5.9).max(5.9), -5)).toBe(-5);
-    expect(() => p.int().min(0.5).encode(0)).toThrow(RangeError);
+  it('int rejects non-integer bounds at definition', () => {
+    expect(() => p.int().min(0.5)).toThrow(new TypeError('p.int min must be an integer, got 0.5'));
+    expect(() => p.int().max(9.2)).toThrow(new TypeError('p.int max must be an integer, got 9.2'));
   });
 
-  it('int bounds round inward so the declared range is never widened', () => {
-    const node = p.int().min(2.7).max(9.2); // -> [3, 9]
+  it('int names the bound a value breaks', () => {
+    const node = p.int().min(3).max(9);
     expect(trip(node, 3)).toBe(3);
     expect(trip(node, 9)).toBe(9);
     expect(() => node.encode(2)).toThrow(new RangeError("Value '2' is below the minimum 3"));
@@ -46,9 +44,11 @@ describe('Schema int', () => {
     expect(() => p.int().min(0).max(120).encode(150)).toThrow();
   });
 
-  it('throws at construction when an int range is empty after inward rounding', () => {
+  it('throws at construction when an int range is empty', () => {
     // Config errors surface where the schema is DEFINED, not on first use.
-    expect(() => p.int().min(2.1).max(2.9)).toThrow(RangeError);
+    expect(() => p.int().min(3).max(2)).toThrow(
+      new RangeError('p.int range is empty: min 3 exceeds max 2')
+    );
   });
 
   it('rejects a term offset that cannot reconstruct exactly', () => {
@@ -66,9 +66,9 @@ describe('Schema int', () => {
 
   it('int rejects non-finite bounds', () => {
     expect(() => p.int().min(-Infinity)).toThrow(
-      'p.int min must be a finite number, got -Infinity'
+      new TypeError('p.int min must be an integer, got -Infinity')
     );
-    expect(() => p.int().max(NaN)).toThrow('p.int max must be a finite number, got NaN');
+    expect(() => p.int().max(NaN)).toThrow(new TypeError('p.int max must be an integer, got NaN'));
   });
 
   it('a lone bound refuses offsets that lose precision past 2^53', () => {

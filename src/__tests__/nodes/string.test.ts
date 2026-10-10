@@ -69,14 +69,18 @@ describe('Schema string', () => {
     expect(() => ranged.encode('a'.repeat(13))).toThrow('String length 13 is above the maximum 12');
     expect(trip(p.string().min(2), 'abc')).toBe('abc');
     expect(() => p.string().min(3).max(2)).toThrow('p.string range is empty: min 3 exceeds max 2');
-    expect(() => p.string().min(-1)).toThrow('p.string min must be a non-negative length, got -1');
+    expect(() => p.string().min(-1)).toThrow(
+      new RangeError('p.string min must be a non-negative integer, got -1')
+    );
     // A fixed length is both bounds, so neither can be set again.
     expect(() => p.string().length(5).max(8)).toThrow(new TypeError('p.string max is already set'));
     expect(() => p.string().min(2).length(5)).toThrow('p.string min is already set');
     expect(() => p.string().min(8).length(5)).toThrow('p.string min is already set');
     expect(() => p.string().max(10).length(5)).toThrow('p.string max is already set');
     expect(() => p.string().min(1).min(2)).toThrow('p.string min is already set');
-    expect(() => p.string().length(2.5)).toThrow('range is empty: min 3 exceeds max 2');
+    expect(() => p.string().length(2.5)).toThrow(
+      new TypeError('p.string min must be a non-negative integer, got 2.5')
+    );
     expect(() => p.string().length(3).encode('ab')).toThrow(
       'String length 2 is below the minimum 3'
     );
@@ -227,7 +231,8 @@ describe('Schema string', () => {
   });
 
   it('rejects bad configuration and non-compliant values', () => {
-    expect(() => p.string().max(-1)).toThrow('max must be a non-negative length, got -1');
+    expect(() => p.string().max(-1)).toThrow('p.string max must be a non-negative integer, got -1');
+    expect(() => p.string().max(1.5)).toThrow(TypeError);
     expect(() => p.string().prose().charset('ab')).toThrow('cannot combine prose with a charset');
     expect(() => p.string().charset([97, 98]).encode('abc')).toThrow(
       new RangeError("Character 'c' (code 99) at 2 is outside the range 97–98")

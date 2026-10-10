@@ -25,7 +25,7 @@ function encode(halves: number, bits: number, tail?: (enc: Encoder) => void): Ui
     enc.compose(i & 1, 2);
   }
   tail?.(enc);
-  return enc.toUint8Array(BITS);
+  return enc.toUint8Array({ range: BITS });
 }
 
 function decode(
@@ -34,7 +34,7 @@ function decode(
   bits: number,
   tail?: (dec: Decoder) => void
 ): void {
-  const dec = new Decoder(bytes, BITS);
+  const dec = new Decoder(bytes, { range: BITS });
   for (let i = 0; i < halves; i++) {
     expect(dec.parseWeighted(4, half)).toBe(0);
   }
