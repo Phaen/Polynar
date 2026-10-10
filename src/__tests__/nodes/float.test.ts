@@ -52,7 +52,7 @@ describe('Schema float', () => {
     const enc = new Encoder();
     enc.compose(0, 2);
     enc.composeTerm(2047);
-    expect(() => p.float().decode(enc.toUint8Array())).toThrow(CorruptInputError);
+    expect(() => p.float().decode(enc.output())).toThrow(CorruptInputError);
   });
 
   it('rejects float significand spellings that are not the canonical one', () => {
@@ -63,7 +63,7 @@ describe('Schema float', () => {
     reducible.compose(1, 3); // fraction selector
     reducible.composeTerm(3); // denominator 4
     reducible.compose(2, 4); // numerator 6
-    expect(() => p.float().decode(reducible.toUint8Array())).toThrow('not the canonical form');
+    expect(() => p.float().decode(reducible.output())).toThrow('not the canonical form');
 
     // A flat mantissa spelling of 1.5, whose canonical form is 3/2.
     const flat = new Encoder();
@@ -71,7 +71,7 @@ describe('Schema float', () => {
     flat.composeTerm(0);
     flat.compose(0, 3); // flat selector
     flat.compose(2 ** 51, 2 ** 52);
-    expect(() => p.float().decode(flat.toUint8Array())).toThrow('not the canonical form');
+    expect(() => p.float().decode(flat.output())).toThrow('not the canonical form');
 
     // A denominator whose term already outweighs the flat mantissa could
     // never have won the cost rule.
@@ -80,7 +80,7 @@ describe('Schema float', () => {
     dear.composeTerm(0);
     dear.compose(1, 3);
     dear.composeTerm(3 ** 20);
-    expect(() => p.float().decode(dear.toUint8Array())).toThrow('dearer than the flat mantissa');
+    expect(() => p.float().decode(dear.output())).toThrow('dearer than the flat mantissa');
 
     // A five-realm spelling of a value whose canonical home is the plain
     // fraction branch: 6/5 times 5^1 names 1.5, but 1.5's canonical form
@@ -92,7 +92,7 @@ describe('Schema float', () => {
     shifted.composeTerm(0); // shift +1
     shifted.composeTerm(4); // denominator 5
     shifted.compose(1, 5); // numerator 6
-    expect(() => p.float().decode(shifted.toUint8Array())).toThrow('not the canonical form');
+    expect(() => p.float().decode(shifted.output())).toThrow('not the canonical form');
 
     // A shift past the range any shortest-decimal form can produce.
     const wild = new Encoder();
@@ -100,6 +100,6 @@ describe('Schema float', () => {
     wild.composeTerm(0);
     wild.compose(2, 3);
     wild.composeTerm(2 * 501);
-    expect(() => p.float().decode(wild.toUint8Array())).toThrow('outside the canonical range');
+    expect(() => p.float().decode(wild.output())).toThrow('outside the canonical range');
   });
 });

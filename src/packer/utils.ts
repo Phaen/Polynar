@@ -2,7 +2,7 @@
  * Utility functions for packer
  */
 
-import type { ByteRange, Charset } from './types';
+import type { Charset, OutputType } from './types';
 import { DEFAULT_BLOCK_BITS, DEFAULT_CHARSET } from './constants';
 
 /**
@@ -49,16 +49,6 @@ export function bitLength(x: bigint): number {
 /** Shift amounts as BigInts, so a power-of-two digit is a mask and a shift. */
 export const SHIFTS = Array.from({ length: 54 }, (_, i) => BigInt(i));
 
-/** A `[min, max]` byte range: integer endpoints within 0–255, min below max. */
-export function validateByteRange([min, max]: ByteRange): ByteRange {
-  if (!Number.isInteger(min) || !Number.isInteger(max) || min < 0 || max > 255 || min >= max) {
-    throw new RangeError(
-      `Binary range [${min}, ${max}] must be integers within 0–255 with min below max`
-    );
-  }
-  return [min, max];
-}
-
 /** The block sizes a message may choose; the ceiling keeps one block's BigInt arithmetic cheap. */
 const MIN_BLOCK_BITS = 128;
 const MAX_BLOCK_BITS = 65536;
@@ -76,45 +66,60 @@ export function validateBlockBits(bits: number = DEFAULT_BLOCK_BITS): number {
   return bits;
 }
 
+/** The highest code a string charset may reach and still find its digits in a dense table. */
+const DENSE_TOP = 4096;
+
 /**
- * The digits of a validated charset, each spelled by one UTF-16 code unit. A
- * string charset finds a code unit's digit in a table indexed by code unit, a
- * range by its offset from the first code. `minSize` is the fewest symbols
+ * The digits of a validated charset, each spelled by one code: a UTF-16 code
+ * unit in text, a byte value in binary. A string charset finds a code's digit
+ * in a table indexed by code when its codes are small and in a map otherwise,
+ * a range by its offset from the first code. `minSize` is the fewest symbols
  * the charset must hold.
  */
 export class Alphabet {
   /** The charset; a range is a fresh copy, never the caller's array. */
   readonly charset: Charset;
   readonly size: number;
-  /** Digit by code unit for a string charset, -1 where it has no such character. */
+  /** The highest code the charset spells. */
+  readonly top: number;
+  /** Digit by code for a string charset with small codes, -1 where it has no such character. */
   private readonly table?: Int32Array;
+  /** Digit by code for a string charset with large codes. */
+  private readonly map?: Map<number, number>;
   /** The first code of a range charset. */
   private readonly min: number;
 
-  constructor(charset: Charset = DEFAULT_CHARSET, minSize = 2) {
+  constructor(charset: Charset, minSize = 2) {
     if (typeof charset === 'string') {
       if (charset.length < minSize) {
         throw new TypeError(
           `Invalid character set: needs at least ${minSize} character${minSize === 1 ? '' : 's'}, got ${charset.length}`
         );
       }
+      const digits = new Map<number, number>();
       let top = 0;
       for (let i = 0; i < charset.length; i++) {
-        top = Math.max(top, charset.charCodeAt(i));
-      }
-      const table = new Int32Array(top + 1).fill(-1);
-      for (let i = 0; i < charset.length; i++) {
         const code = charset.charCodeAt(i);
-        if (table[code] !== -1) {
+        if (digits.has(code)) {
           throw new TypeError(
             `Invalid character set: '${charset.charAt(i)}' appears more than once`
           );
         }
-        table[code] = i;
+        digits.set(code, i);
+        top = Math.max(top, code);
+      }
+      if (top <= DENSE_TOP) {
+        const table = new Int32Array(top + 1).fill(-1);
+        for (const [code, digit] of digits) {
+          table[code] = digit;
+        }
+        this.table = table;
+      } else {
+        this.map = digits;
       }
       this.charset = charset;
       this.size = charset.length;
-      this.table = table;
+      this.top = top;
       this.min = 0;
       return;
     }
@@ -128,24 +133,37 @@ export class Alphabet {
         `Invalid character range: [${min}, ${max}] must be integer codes within 0–65535`
       );
     }
-    if (max - min + 1 < minSize) {
+    const size = max - min + 1;
+    if (size < minSize) {
       throw new RangeError(
-        `Invalid character range: [${min}, ${max}] holds fewer than ${minSize} code${minSize === 1 ? '' : 's'}`
+        size < 1
+          ? `Invalid character range: [${min}, ${max}] is empty`
+          : `Invalid character range: [${min}, ${max}] holds only one code`
       );
     }
     this.charset = [min, max];
-    this.size = max - min + 1;
+    this.size = size;
+    this.top = max;
     this.min = min;
   }
 
-  /** The digit a code unit spells, or -1 when the charset has no such character. */
+  /** The digit a code spells, or -1 when the charset has no such symbol. */
   digitOf(code: number): number {
     const table = this.table;
     if (table !== undefined) {
       return code < table.length ? table[code] : -1;
     }
+    const map = this.map;
+    if (map !== undefined) {
+      return map.get(code) ?? -1;
+    }
     const digit = code - this.min;
     return digit >= 0 && digit < this.size ? digit : -1;
+  }
+
+  /** The code spelling a digit below `size`. */
+  codeAt(digit: number): number {
+    return typeof this.charset === 'string' ? this.charset.charCodeAt(digit) : this.min + digit;
   }
 
   /** The character spelling a digit below `size`. */
@@ -156,17 +174,13 @@ export class Alphabet {
   }
 }
 
+/** Every byte value: binary output's symbols unless a message sets its own. */
+const BYTES = new Alphabet([0, 255]);
+
 /** Alphabets of the string charsets seen most recently, since building one walks every character. */
 const alphabets = new Map<string, Alphabet>();
 
-/**
- * The alphabet of a transport charset, which needs at least two symbols: a
- * base-1 digit carries nothing, so the digit loops would never end.
- */
-export function transportAlphabet(charset: Charset = DEFAULT_CHARSET): Alphabet {
-  if (typeof charset !== 'string') {
-    return new Alphabet(charset);
-  }
+function stringAlphabet(charset: string): Alphabet {
   let alphabet = alphabets.get(charset);
   if (alphabet === undefined) {
     alphabet = new Alphabet(charset);
@@ -174,6 +188,27 @@ export function transportAlphabet(charset: Charset = DEFAULT_CHARSET): Alphabet 
       alphabets.clear();
     }
     alphabets.set(charset, alphabet);
+  }
+  return alphabet;
+}
+
+/**
+ * The alphabet a message of the given type is spelled in, which needs at
+ * least two symbols: a base-1 digit carries nothing, so the digit loops would
+ * never end. Binary output writes each symbol's code as a byte, so every code
+ * must fit one.
+ */
+export function outputAlphabet(type: OutputType, charset?: Charset): Alphabet {
+  if (charset === undefined) {
+    return type === 'binary' ? BYTES : stringAlphabet(DEFAULT_CHARSET);
+  }
+  const alphabet = typeof charset === 'string' ? stringAlphabet(charset) : new Alphabet(charset);
+  if (type === 'binary' && alphabet.top > 255) {
+    throw new RangeError(
+      typeof charset === 'string'
+        ? `Character '${String.fromCharCode(alphabet.top)}' (code ${alphabet.top}) is not a byte, so binary output cannot use it`
+        : `Code ${alphabet.top} is not a byte, so binary output cannot use the range [${charset[0]}, ${charset[1]}]`
+    );
   }
   return alphabet;
 }

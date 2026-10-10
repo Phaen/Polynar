@@ -56,7 +56,7 @@ describe('Schema int', () => {
     // it; accepting it would decode a value that re-encodes differently.
     const enc = new Encoder();
     enc.composeTerm(2 ** 53);
-    expect(() => p.int().min(1).decode(enc.toUint8Array())).toThrow(CorruptInputError);
+    expect(() => p.int().min(1).decode(enc.output())).toThrow(CorruptInputError);
   });
 
   it('sets each bound once', () => {

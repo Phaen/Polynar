@@ -116,7 +116,7 @@ describe('Schema corruption rejection', () => {
     expect(() => node.decode(corrupted)).toThrow(CorruptInputError);
     expect(() => node.decode(padded)).toThrow(CorruptInputError);
     expect(() => node.decode(new Uint8Array(0))).toThrow(CorruptInputError);
-    expect(() => node.decodeString('!', { charset: CharSets.digit })).toThrow(CorruptInputError);
+    expect(() => node.decode('!', { charset: CharSets.digit })).toThrow(CorruptInputError);
     try {
       node.decode(padded);
     } catch (e) {
@@ -134,7 +134,7 @@ describe('Schema corruption rejection', () => {
       const enc = new Encoder();
       enc.compose(1, 2);
       enc.composeTerm(0);
-      return enc.toUint8Array();
+      return enc.output();
     };
     expect(() => p.int().decode(signedZero())).toThrow('Non-canonical negative zero');
     expect(() => p.decimal(0.01).decode(signedZero())).toThrow('Non-canonical negative zero');
@@ -148,7 +148,7 @@ describe('Schema corruption rejection', () => {
     const tagged = new Encoder();
     tagged.compose(4, 9); // TAG_FLOAT
     p.float()._write(tagged, 42);
-    expect(() => p.any().decode(tagged.toUint8Array())).toThrow(
+    expect(() => p.any().decode(tagged.output())).toThrow(
       'Non-canonical float tag on an integer value'
     );
     // A present optional whose inner `any` reads its undefined tag: undefined
@@ -156,11 +156,11 @@ describe('Schema corruption rejection', () => {
     const present = new Encoder();
     present.compose(1, 2);
     present.compose(0, 9); // TAG_UNDEFINED
-    expect(() => p.optional(p.any()).decode(present.toUint8Array())).toThrow(CorruptInputError);
+    expect(() => p.optional(p.any()).decode(present.output())).toThrow(CorruptInputError);
   });
 });
 
-describe('String output (encodeString / decodeString)', () => {
+describe('Text output', () => {
   const Player = p.object({
     name: p.string().max(20),
     level: p.int().min(1).max(99),
@@ -169,29 +169,31 @@ describe('String output (encodeString / decodeString)', () => {
   const value = { name: 'Ada', level: 42, tags: ['a', 'c'] as ('a' | 'b' | 'c')[] };
 
   it('round-trips through the default Base64 charset', () => {
-    expect(Player.decodeString(Player.encodeString(value))).toEqual(value);
+    expect(Player.decode(Player.encode(value, { type: 'text' }))).toEqual(value);
   });
 
   it('round-trips through a chosen charset', () => {
-    const urlSafe = Player.encodeString(value, { charset: CharSets.urlSafe });
-    expect(Player.decodeString(urlSafe, { charset: CharSets.urlSafe })).toEqual(value);
-    const hex = Player.encodeString(value, { charset: CharSets.hex });
-    expect(Player.decodeString(hex, { charset: CharSets.hex })).toEqual(value);
+    const urlSafe = Player.encode(value, { type: 'text', charset: CharSets.urlSafe });
+    expect(Player.decode(urlSafe, { charset: CharSets.urlSafe })).toEqual(value);
+    const hex = Player.encode(value, { type: 'text', charset: CharSets.hex });
+    expect(Player.decode(hex, { charset: CharSets.hex })).toEqual(value);
   });
 
   it('emits only characters from the chosen charset', () => {
-    const str = p.string().encodeString('any text at all — 👋', { charset: CharSets.digit });
+    const str = p
+      .string()
+      .encode('any text at all — 👋', { type: 'text', charset: CharSets.digit });
     expect(str).toMatch(/^[0-9]+$/);
   });
 
   it('rejects trailing padding like the byte form does', () => {
-    const str = p.int().min(0).max(100).encodeString(42);
+    const str = p.int().min(0).max(100).encode(42, { type: 'text' });
     expect(() =>
       p
         .int()
         .min(0)
         .max(100)
-        .decodeString(str + 'AA')
+        .decode(str + 'AA')
     ).toThrow('Input is longer than its contents');
   });
 });
@@ -201,33 +203,33 @@ describe('Byte output (encode / decode with a range)', () => {
   const value = { name: 'Ada', level: 42 };
 
   it('round-trips through a restricted range', () => {
-    const bytes = Player.encode(value, { range: [32, 126] });
-    expect(Player.decode(bytes, { range: [32, 126] })).toEqual(value);
+    const bytes = Player.encode(value, { charset: [32, 126] });
+    expect(Player.decode(bytes, { charset: [32, 126] })).toEqual(value);
   });
 
   it('emits only bytes from the range', () => {
-    const bytes = Player.encode(value, { range: [32, 126] });
+    const bytes = Player.encode(value, { charset: [32, 126] });
     expect(bytes.every((b) => b >= 32 && b <= 126)).toBe(true);
   });
 
   it('spends no fewer bytes than the full range does', () => {
     const long = { name: 'a'.repeat(20), level: 42 };
-    expect(Player.encode(long, { range: [32, 126] }).length).toBeGreaterThan(
+    expect(Player.encode(long, { charset: [32, 126] }).length).toBeGreaterThan(
       Player.encode(long).length
     );
-    expect(Player.encode(value, { range: [32, 126] }).length).toBeGreaterThanOrEqual(
+    expect(Player.encode(value, { charset: [32, 126] }).length).toBeGreaterThanOrEqual(
       Player.encode(value).length
     );
   });
 
   it('rejects a range the encoder would not have produced', () => {
-    const bytes = Player.encode(value, { range: [32, 126] });
+    const bytes = Player.encode(value, { charset: [32, 126] });
     expect(() => Player.decode(bytes)).toThrow(CorruptInputError);
   });
 
   it('validates the range itself', () => {
-    expect(() => Player.encode(value, { range: [200, 10] })).toThrow(RangeError);
-    expect(() => Player.encode(value, { range: [0, 300] })).toThrow(RangeError);
+    expect(() => Player.encode(value, { charset: [200, 10] })).toThrow(RangeError);
+    expect(() => Player.encode(value, { charset: [0, 300] })).toThrow(RangeError);
   });
 });
 

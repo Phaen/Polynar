@@ -68,7 +68,7 @@ describe('Weighted packer primitive', () => {
         }
       }
 
-      const bytes = enc.toUint8Array();
+      const bytes = enc.output();
       const dec = new Decoder(bytes);
       for (const [kind, expected] of script) {
         if (kind === 'w') {
@@ -95,9 +95,9 @@ describe('Weighted packer primitive', () => {
         weighted.composeWeighted(value, 1, radix);
         values.push([value, radix]);
       }
-      expect(weighted.toUint8Array()).toEqual(uniform.toUint8Array());
+      expect(weighted.output()).toEqual(uniform.output());
 
-      const dec = new Decoder(uniform.toUint8Array());
+      const dec = new Decoder(uniform.output());
       for (const [value, radix] of values) {
         expect(dec.parseWeighted(radix, (r) => [r, r, 1])).toBe(value);
       }
@@ -114,8 +114,8 @@ describe('Weighted packer primitive', () => {
       heavy.composeWeighted(0, 15, 16);
       flat.compose(0, 16);
     }
-    expect(heavy.toUint8Array().length).toBeLessThan(20);
-    expect(flat.toUint8Array().length).toBeGreaterThan(490);
+    expect(heavy.output().length).toBeLessThan(20);
+    expect(flat.output().length).toBeGreaterThan(490);
   });
 
   it('survives block boundaries under long weighted runs', () => {
@@ -129,7 +129,7 @@ describe('Weighted packer primitive', () => {
       enc.composeWeighted(dist.cums[symbol], dist.freqs[symbol], dist.total);
       symbols.push(symbol);
     }
-    const bytes = enc.toUint8Array();
+    const bytes = enc.output();
     const dec = new Decoder(bytes);
     for (const symbol of symbols) {
       expect(dec.parseWeighted(dist.total, locateIn(dist))).toBe(symbol);
@@ -145,7 +145,7 @@ describe('Weighted packer primitive', () => {
       for (const s of symbols) {
         enc.composeWeighted(dist.cums[s], dist.freqs[s], dist.total);
       }
-      const bytes = enc.toUint8Array();
+      const bytes = enc.output();
 
       const decodeAll = (input: Uint8Array): number[] => {
         const dec = new Decoder(input);
@@ -170,7 +170,7 @@ describe('Weighted packer primitive', () => {
         for (const s of decoded) {
           re.composeWeighted(dist.cums[s], dist.freqs[s], dist.total);
         }
-        expect(re.toUint8Array()).toEqual(mutated);
+        expect(re.output()).toEqual(mutated);
       }
 
       if (bytes.length > 0) {
@@ -191,7 +191,7 @@ describe('Weighted packer primitive', () => {
       for (let i = 0; i < n; i++) {
         enc.composeWeighted(1, 99, 100, { index: 1, count: 2 });
       }
-      return enc.toString({ charset: '01' }).length;
+      return enc.output({ type: 'text', charset: '01' }).length;
     };
     const share = (n: number): number => n * Math.log2(100 / 99);
     for (const n of [2, 10, 100, 1000]) {
@@ -202,11 +202,11 @@ describe('Weighted packer primitive', () => {
 
   it('rejects a likely run padded to the digits its per-symbol slack would need', () => {
     const node = p.array(p.bool().weights([99, 1])).length(100);
-    const text = node.encodeString(Array(100).fill(true), { charset: '01' });
+    const text = node.encode(Array(100).fill(true), { type: 'text', charset: '01' });
     expect(text).toHaveLength(9);
-    expect(node.decodeString(text, { charset: '01' })).toEqual(Array(100).fill(true));
+    expect(node.decode(text, { charset: '01' })).toEqual(Array(100).fill(true));
     for (const padding of ['0', '000000']) {
-      expect(() => node.decodeString(text + padding, { charset: '01' })).toThrow(CorruptInputError);
+      expect(() => node.decode(text + padding, { charset: '01' })).toThrow(CorruptInputError);
     }
   });
 
@@ -244,7 +244,7 @@ describe('Indexed last symbol', () => {
         const enc = new Encoder();
         enc.compose(5, 7);
         enc.composeWeighted(dist.cums[s], dist.freqs[s], dist.total, { index: s, count: 4 });
-        const bytes = enc.toUint8Array();
+        const bytes = enc.output();
         expect(bytes.length).toBe(1);
         const dec = new Decoder(bytes);
         expect(dec.parse(7)).toBe(5);
@@ -263,7 +263,9 @@ describe('Indexed last symbol', () => {
     plain.composeWeighted(dist.cums[2], dist.freqs[2], dist.total);
     const indexed = new Encoder();
     indexed.composeWeighted(dist.cums[2], dist.freqs[2], dist.total, { index: 2, count: 4 });
-    expect(indexed.toString({ charset: [0, 65535] })).toBe(plain.toString({ charset: [0, 65535] }));
+    expect(indexed.output({ type: 'text', charset: [0, 65535] })).toBe(
+      plain.output({ type: 'text', charset: [0, 65535] })
+    );
   });
 
   it('is unchanged when the member count reaches the total', () => {
@@ -279,7 +281,7 @@ describe('Indexed last symbol', () => {
           count: dist.total + run,
         });
       }
-      expect(counted.toUint8Array()).toEqual(plain.toUint8Array());
+      expect(counted.output()).toEqual(plain.output());
     }
   });
 
@@ -290,7 +292,7 @@ describe('Indexed last symbol', () => {
       enc.compose(i % 3, 3);
     }
     enc.composeWeighted(dist.cums[3], dist.freqs[3], dist.total, { index: 3, count: 4 });
-    const bytes = enc.toUint8Array();
+    const bytes = enc.output();
     expect(bytes.length).toBe(5);
 
     const readAll = (input: Uint8Array, extra = false) => {
@@ -328,21 +330,23 @@ describe('Indexed last symbol', () => {
 
   it('keeps the index form when a constant field ends the message', () => {
     const shape = { a: p.int().min(0).max(1000), flag: p.bool().weights([99, 1]) };
-    const bits = p.object(shape).encodeString({ a: 500, flag: true }, { charset: '01' }).length;
+    const bits = p
+      .object(shape)
+      .encode({ a: 500, flag: true }, { type: 'text', charset: '01' }).length;
     const node = p.object({ ...shape, c: p.enum(['v1']) });
     const value = { a: 500, flag: true, c: 'v1' as const };
-    const text = node.encodeString(value, { charset: '01' });
+    const text = node.encode(value, { type: 'text', charset: '01' });
     expect(text.length).toBe(bits);
-    expect(node.decodeString(text, { charset: '01' })).toEqual(value);
+    expect(node.decode(text, { charset: '01' })).toEqual(value);
   });
 
   it('records nothing for a weighted value that holds every state', () => {
     const shape = { a: p.bool().weights([99, 1]) };
-    const bits = p.object(shape).encodeString({ a: true }, { charset: '01' }).length;
+    const bits = p.object(shape).encode({ a: true }, { type: 'text', charset: '01' }).length;
     const node = p.object({ ...shape, b: p.int().min(5).max(5).weights([1]) });
-    const text = node.encodeString({ a: true, b: 5 }, { charset: '01' });
+    const text = node.encode({ a: true, b: 5 }, { type: 'text', charset: '01' });
     expect(text.length).toBe(bits);
-    expect(node.decodeString(text, { charset: '01' })).toEqual({ a: true, b: 5 });
+    expect(node.decode(text, { charset: '01' })).toEqual({ a: true, b: 5 });
   });
 
   it('rejects an index that points at a value with no weight', () => {

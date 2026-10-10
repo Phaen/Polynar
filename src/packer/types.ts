@@ -3,29 +3,22 @@
  */
 
 /**
- * A digit alphabet for text output: either an explicit string of unique
- * characters, or an inclusive `[min, max]` range of UTF-16 code units.
+ * The symbols a message is spelled in: either an explicit string of unique
+ * characters, or an inclusive `[min, max]` range of codes. Text output uses
+ * the characters themselves; binary output uses their codes as byte values,
+ * so every code must be a byte.
  */
 export type Charset = string | [number, number];
 
-/**
- * An inclusive `[min, max]` range of byte values for binary output. Defaults
- * to the whole byte when omitted.
- */
-export type ByteRange = [number, number];
+/** The form of a message: a `Uint8Array` or a string. */
+export type OutputType = 'binary' | 'text';
 
-/** How `toUint8Array`, `encode` and the byte `Decoder` lay out bytes. */
-export interface BinaryOptions {
-  /** The byte values the output may use; the whole byte when omitted. */
-  range?: ByteRange;
-  /** Block size in bits, 2048 when omitted; both sides must agree on it. */
-  blockBits?: number;
-}
-
-/** How `toString`, `encodeString` and the text `Decoder` lay out text. */
-export interface TextOptions {
-  /** The digit alphabet; Base64 when omitted. */
+/** How a message is laid out; encoder and decoder must agree on it. */
+export interface CodecOptions<T extends OutputType = OutputType> {
+  /** The output form, binary when omitted. Decoding reads it off the input, so there it only guides the types. */
+  type?: T;
+  /** The symbols of the output: bytes 0–255 for binary and Base64 for text when omitted. */
   charset?: Charset;
-  /** Block size in bits, 2048 when omitted; both sides must agree on it. */
+  /** Block size in bits, 2048 when omitted. */
   blockBits?: number;
 }

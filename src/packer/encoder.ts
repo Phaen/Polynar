@@ -1,8 +1,8 @@
 /**
  * The write-side packer primitive. Values are pushed as (integer, radix)
  * pairs via `compose`/`composeTerm`, or as weighted symbols via
- * `composeWeighted`; `toString`/`toUint8Array` fold them into mixed-radix
- * blocks and emit digits. Schema nodes drive this — it knows nothing about
+ * `composeWeighted`; `output` folds them into mixed-radix blocks and emits
+ * digits. Schema nodes drive this — it knows nothing about
  * types.
  *
  * The fold is a big-integer rANS: a weighted symbol owning `freq` of `total`
@@ -12,21 +12,14 @@
  * plain multiply-add, which is mixed-radix arithmetic.
  */
 
-import type { BinaryOptions, TextOptions } from './types';
+import type { CodecOptions } from './types';
 import {
   TERM_BASE,
   TERM_ESCAPE_MIN,
   TERM_PAYLOAD_BASE,
   TERM_PAYLOAD_MIN_DIGITS,
 } from './constants';
-import {
-  transportAlphabet,
-  validateByteRange,
-  validateBlockBits,
-  digitChunk,
-  SHIFTS,
-  type DigitChunk,
-} from './utils';
+import { outputAlphabet, validateBlockBits, digitChunk, SHIFTS, type DigitChunk } from './utils';
 import { BlockBound } from './bound';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
@@ -379,25 +372,27 @@ export class Encoder {
     return product === 1 ? big : big * BigInt(product) + BigInt(offset);
   }
 
-  toString(options: TextOptions = {}): string {
-    const alphabet = transportAlphabet(options.charset);
-    let str = '';
-    for (const digit of this.toDigits(alphabet.size, validateBlockBits(options.blockBits))) {
-      str += alphabet.charAt(digit);
+  /** The message as bytes, or as text when `type` is `'text'`. */
+  output(options: CodecOptions<'text'> & { type: 'text' }): string;
+  output(options?: CodecOptions<'binary'>): Uint8Array;
+  output(options?: CodecOptions): Uint8Array | string;
+  output(options: CodecOptions = {}): Uint8Array | string {
+    const type = options.type ?? 'binary';
+    const alphabet = outputAlphabet(type, options.charset);
+    const digits = this.toDigits(alphabet.size, validateBlockBits(options.blockBits));
+
+    if (type === 'text') {
+      let str = '';
+      for (const digit of digits) {
+        str += alphabet.charAt(digit);
+      }
+      return str;
     }
-    return str;
-  }
 
-  toUint8Array(options: BinaryOptions = {}): Uint8Array {
-    const [min, max] = validateByteRange(options.range ?? [0, 255]);
-
-    const digits = this.toDigits(max - min + 1, validateBlockBits(options.blockBits));
     const bytes = new Uint8Array(digits.length);
-
     for (let i = 0; i < digits.length; i++) {
-      bytes[i] = digits[i] + min;
+      bytes[i] = alphabet.codeAt(digits[i]);
     }
-
     return bytes;
   }
 }

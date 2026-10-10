@@ -15,7 +15,7 @@
  * a valid `p.union` member too.
  */
 import { Encoder, Decoder, CorruptInputError } from '../packer';
-import type { BinaryOptions, TextOptions } from '../packer';
+import type { CodecOptions } from '../packer';
 import type { Kind } from './guards';
 import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
 
@@ -45,35 +45,27 @@ export abstract class PNode<TOut> {
   /** Read one value back, in the exact order `_write` produced it. */
   abstract _read(dec: Decoder): TOut;
 
-  /** Encode to bytes. A `[min, max]` range restricts which byte values appear. */
-  encode(value: TOut, options?: BinaryOptions): Uint8Array {
+  /** Encode to bytes, or to text when `type` is `'text'`. Both sides must agree on the options. */
+  encode(value: TOut, options: CodecOptions<'text'> & { type: 'text' }): string;
+  encode(value: TOut, options?: CodecOptions<'binary'>): Uint8Array;
+  encode(value: TOut, options?: CodecOptions): Uint8Array | string;
+  encode(value: TOut, options?: CodecOptions): Uint8Array | string {
     const enc = new Encoder();
     this._write(enc, value);
-    return enc.toUint8Array(options);
+    return enc.output(options);
   }
 
-  /** Decode bytes produced by `encode` with the same options. */
-  decode(bytes: Uint8Array, options?: BinaryOptions): TOut {
-    const dec = new Decoder(bytes, options);
+  /** Decode bytes or text produced by `encode` with the same options. */
+  decode(input: Uint8Array, options?: CodecOptions<'binary'>): TOut;
+  decode(input: string, options?: CodecOptions<'text'>): TOut;
+  decode(input: Uint8Array | string, options?: CodecOptions): TOut {
+    const dec =
+      typeof input === 'string'
+        ? new Decoder(input, options as CodecOptions<'text'>)
+        : new Decoder(input, options as CodecOptions<'binary'>);
     const value = this._read(dec);
     // The schema is the whole message, so the input must be exactly consumed:
     // leftover digits and trailing padding throw.
-    dec.finalize();
-    return value;
-  }
-
-  /** Encode to text instead of bytes. Both sides must agree on the options. */
-  encodeString(value: TOut, options?: TextOptions): string {
-    const enc = new Encoder();
-    this._write(enc, value);
-    return enc.toString(options);
-  }
-
-  /** Decode text produced by `encodeString` with the same options. */
-  decodeString(str: string, options?: TextOptions): TOut {
-    const dec = new Decoder(str, options);
-    const value = this._read(dec);
-    // Same exhaustion check as `decode`: the text is the whole message.
     dec.finalize();
     return value;
   }

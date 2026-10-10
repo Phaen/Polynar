@@ -270,7 +270,7 @@ function measure({ label, node, proto, gen, samples = SAMPLES }: Row) {
       proto: Message.encode(
         Message.fromObject((protoValue ?? value) as Record<string, unknown>)
       ).finish(),
-      urlSafe: Buffer.from(node.encodeString(value, { charset: CharSets.urlSafe })),
+      urlSafe: Buffer.from(node.encode(value, { type: 'text', charset: CharSets.urlSafe })),
       binary: node.encode(value),
     };
     for (const key of Object.keys(sums) as (keyof typeof sums)[]) {

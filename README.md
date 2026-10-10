@@ -35,7 +35,7 @@ Seven payload shapes, mean sizes in bytes over 250 seeded random payloads each (
 
 JSON and MessagePack also encode the key name; Protobuf and Polynar read from a schema instead, and are both told the same decimal steps and bounds. The difference is that Protobuf rounds every field up to whole bytes and tags it, while Polynar spends fractional bits with no implicit tags.
 
-The url-safe column is `encodeString(value, { charset: CharSets.urlSafe })` — text you can drop straight into a URL, cookie or query parameter, and it still beats the other formats' _binary_ output.
+The url-safe column is `encode(value, { type: 'text', charset: CharSets.urlSafe })` — text you can drop straight into a URL, cookie or query parameter, and it still beats the other formats' _binary_ output.
 
 ## Install
 
@@ -69,8 +69,8 @@ type User = Infer<typeof User>;
 
 const user: User = { name: 'Ada', age: 36, active: true, role: 'admin' };
 
-const text = User.encodeString(user, { charset: CharSets.urlSafe }); // 'ChxRoLA'
-assert.deepStrictEqual(User.decodeString(text, { charset: CharSets.urlSafe }), user);
+const text = User.encode(user, { type: 'text', charset: CharSets.urlSafe }); // 'ChxRoLA'
+assert.deepStrictEqual(User.decode(text, { charset: CharSets.urlSafe }), user);
 
 const bytes = User.encode(user); // Uint8Array [176, 253, 162, 98, 3]
 assert.deepStrictEqual(User.decode(bytes), user);
@@ -131,15 +131,15 @@ Any finite double, bit-exact, `-0` included. Infers `number`. Short decimals and
 
 Any text, stored with its length; about 7 bits per ASCII character. Infers `string`. Any JS string round-trips bit-exact, lone surrogates included — where UTF-8-based formats substitute U+FFFD, Polynar returns what went in. Lengths count UTF-16 code units, as `.length` does.
 
-| Method                            | Description                                                                                                                                                                                                                |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.min(n: number)`                 | Lower bound on the length; shorter strings throw.                                                                                                                                                                          |
-| `.max(n: number)`                 | Upper bound on the length; longer strings throw. With both bounds the length takes a fixed number of bits.                                                                                                                 |
-| `.length(n: number)`              | Fixed length, the same as `.min(n).max(n)`; costs zero bits.                                                                                                                                                               |
-| `.cdf(fn: (n: number) => number)` | Prior over the length, called with the length; needs `.max`.                                                                                                                                                               |
-| `.weights(w: number[])`           | Prior: one weight per length from `min` (or 0) to `max`, lowest first; needs `.max`.                                                                                                                                       |
-| `.charset(c: Charset)`            | Limits the alphabet, so each character costs fewer bits: a string of unique characters or a `[min, max]` range of character codes. Other characters throw. Can't be combined with `.prose()`, since both set the alphabet. |
-| `.prose(model?: ProseModel)`      | Weighted for natural language, about 4 bits per character; English by default, or a model of your own. Every string still encodes.                                                                                         |
+| Method                            | Description                                                                                                                                                                                                                                                                |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                 | Lower bound on the length; shorter strings throw.                                                                                                                                                                                                                          |
+| `.max(n: number)`                 | Upper bound on the length; longer strings throw. With both bounds the length takes a fixed number of bits.                                                                                                                                                                 |
+| `.length(n: number)`              | Fixed length, the same as `.min(n).max(n)`; costs zero bits.                                                                                                                                                                                                               |
+| `.cdf(fn: (n: number) => number)` | Prior over the length, called with the length; needs `.max`.                                                                                                                                                                                                               |
+| `.weights(w: number[])`           | Prior: one weight per length from `min` (or 0) to `max`, lowest first; needs `.max`.                                                                                                                                                                                       |
+| `.charset(c: Charset)`            | Limits the alphabet, so each character costs fewer bits: a string of unique characters or a `[min, max]` range of character codes, down to a single character or a one-code range. Other characters throw. Can't be combined with `.prose()`, since both set the alphabet. |
+| `.prose(model?: ProseModel)`      | Weighted for natural language, about 4 bits per character; English by default, or a model of your own. Every string still encodes.                                                                                                                                         |
 
 `.prose()` prices each character by the one before it: common characters drop to 2–5 bits, and `u` after `q` to under one. Characters outside the model, such as other scripts or emoji, cost a little extra.
 
@@ -289,29 +289,33 @@ What `i` is depends on the node: the value itself on `p.int`, the step count (`v
 
 ## Encoding and decoding
 
-Every node has these four methods, where `T` is the type it infers.
+Every node has these two methods, where `T` is the type it infers.
 
-| Method                                                                             | Description                                                                                                                                       |
-| ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.encode(value: T, options?: { range?: ByteRange; blockBits?: number })`           | Encodes to a `Uint8Array`. With a range, every byte stays within `[min, max]` (inside 0–255, min below max); without one, bytes use all of 0–255. |
-| `.decode(bytes: Uint8Array, options?: { range?: ByteRange; blockBits?: number })`  | Decodes bytes made by `encode` with the same options.                                                                                             |
-| `.encodeString(value: T, options?: { charset?: Charset; blockBits?: number })`     | Encodes to text in the charset; Base64 when omitted.                                                                                              |
-| `.decodeString(text: string, options?: { charset?: Charset; blockBits?: number })` | Decodes text made by `encodeString` with the same options.                                                                                        |
+| Method                                                                                                                 | Description                                                        |
+| ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `.encode(value: T, options?: { type?: 'binary' \| 'text'; charset?: Charset; blockBits?: number })`                    | Encodes to a `Uint8Array`, or to a string when `type` is `'text'`. |
+| `.decode(input: Uint8Array \| string, options?: { type?: 'binary' \| 'text'; charset?: Charset; blockBits?: number })` | Decodes bytes or text made by `encode` with the same options.      |
 
 ```typescript
 const bytes = User.encode(user); // Uint8Array
 User.decode(bytes);
 
-const link = User.encodeString(user, { charset: CharSets.urlSafe }); // text, here safe to put in a URL
-User.decodeString(link, { charset: CharSets.urlSafe });
-
-const ascii = User.encode(user, { range: [32, 126] }); // bytes kept to printable ASCII
-User.decode(ascii, { range: [32, 126] });
+const link = User.encode(user, { type: 'text', charset: CharSets.urlSafe }); // text, here safe to put in a URL
+User.decode(link, { charset: CharSets.urlSafe });
 ```
+
+`decode` can tell bytes from text by the input itself, so `type` is optional there and only checked by TypeScript.
 
 `blockBits` is the size of the blocks a message is packed in, from 128 to 65536 bits and 2048 by default. Bigger blocks waste slightly less space, and smaller ones are faster.
 
-The charset defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. A charset can also be any string of at least two different characters (an emoji counts as two), or a `[min, max]` range of character codes; `p.string().charset()` takes the same, and also a single character.
+A charset is the set of symbols a message is written in, and it works for both text and binary output. It is a string of at least two different characters (an emoji counts as two), or a `[min, max]` range of character codes. Text defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. Binary output defaults to every byte value and writes each symbol as its character code, so its charset can only hold codes from 0 to 255. That keeps bytes inside a smaller set, such as printable ASCII:
+
+```typescript
+const ascii = User.encode(user, { charset: CharSets.printable }); // every byte is printable ASCII
+User.decode(ascii, { charset: CharSets.printable });
+```
+
+`p.string().charset()` takes the same charsets, and also a single character.
 
 | Name                    | Characters                      |
 | ----------------------- | ------------------------------- |
@@ -341,9 +345,9 @@ A value that can't be encoded throws with its path in front and the limit it bro
 - `Kind` — the kinds `p.union` tells apart, and the type of `_kinds`.
 - `ProseModel`, `ProseModelOptions` — a prose matrix and the options of `buildProseModel`.
 - `TypedArray`, `TypedArrayClass` — what `p.binary` takes and returns.
-- `Charset` — `string | [number, number]`, for text output and `.charset()`.
-- `ByteRange` — `[number, number]`, for byte output.
-- `BinaryOptions`, `TextOptions` — the options of byte and text output.
+- `Charset` — `string | [number, number]`, for output and `.charset()`.
+- `OutputType` — `'binary' | 'text'`.
+- `CodecOptions` — the options of `encode` and `decode`.
 
 The node classes are exported too (`PNode`, `PInt`, `PString`, `PObject`, …), along with `ProseModels` and `buildProseModel`.
 
@@ -376,14 +380,12 @@ const Theme = p.object({ name: p.string().max(20), accent: new PColor() });
 | `enc.compose(integer: number, radix: number)`                                                                                                                                                            | One digit in a fixed radix: `integer` in `[0, radix)`, `radix` a positive safe integer; anything else throws.                                                                                                                                                      |
 | `enc.composeTerm(integer: number)`                                                                                                                                                                       | Any non-negative integer, no bound needed.                                                                                                                                                                                                                         |
 | `enc.composeWeighted(cum: number, freq: number, total: number, position?: { index: number; count: number })`                                                                                             | Writes a weighted value: the range `[cum, cum + freq)` out of `total`. Costs log2(total / freq) bits. `position` gives the value's `index` among the node's `count` values; with it, the last value in a message costs no more than picking one of `count` values. |
-| `enc.toString(options?: TextOptions)`                                                                                                                                                                    | The message as text, with the same options as `encodeString`.                                                                                                                                                                                                      |
-| `enc.toUint8Array(options?: BinaryOptions)`                                                                                                                                                              | The message as bytes, with the same options as `encode`.                                                                                                                                                                                                           |
-| `new Decoder(input: string, options?: TextOptions)`                                                                                                                                                      | Reads text made with the same options.                                                                                                                                                                                                                             |
-| `new Decoder(input: Uint8Array, options?: BinaryOptions)`                                                                                                                                                | Reads bytes made with the same options.                                                                                                                                                                                                                            |
+| `enc.output(options?: CodecOptions)`                                                                                                                                                                     | The message as bytes, or as text when `type` is `'text'`, with the same options as `encode`.                                                                                                                                                                       |
+| `new Decoder(input: Uint8Array \| string, options?: CodecOptions)`                                                                                                                                       | Reads bytes or text made with the same options.                                                                                                                                                                                                                    |
 | `dec.parse(radix: number)`                                                                                                                                                                               | Reads what `compose` wrote.                                                                                                                                                                                                                                        |
 | `dec.parseTerm()`                                                                                                                                                                                        | Reads what `composeTerm` wrote.                                                                                                                                                                                                                                    |
 | `dec.parseWeighted<T>(total: number, locate: (residual: number) => [symbol: T, cum: number, freq: number], position?: { count: number; at: (index: number) => [symbol: T, cum: number, freq: number] })` | Reads what `composeWeighted` wrote. `locate` gets a number below `total` and returns the symbol whose range holds it, with that range's `cum` and `freq`; `position.at` returns the same for the value at an index. Pass `position` when the writer passed one.    |
-| `dec.finalize()`                                                                                                                                                                                         | Throws `CorruptInputError` unless the input was consumed exactly; `decode` and `decodeString` call it for you.                                                                                                                                                     |
+| `dec.finalize()`                                                                                                                                                                                         | Throws `CorruptInputError` unless the input was consumed exactly; `decode` calls it for you.                                                                                                                                                                       |
 
 ## Examples
 
@@ -396,13 +398,13 @@ const View = p.object({
   tags: p.array(p.string().max(20)).max(5),
 });
 
-const hash = View.encodeString(
+const hash = View.encode(
   { page: 3, sort: 'name', tags: ['ts'] },
-  { charset: CharSets.urlSafe }
+  { type: 'text', charset: CharSets.urlSafe }
 );
 location.hash = hash;
 
-const view = View.decodeString(location.hash.slice(1), { charset: CharSets.urlSafe });
+const view = View.decode(location.hash.slice(1), { charset: CharSets.urlSafe });
 ```
 
 ### Common values

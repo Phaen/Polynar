@@ -1,7 +1,7 @@
 /**
- * Output forms: every node speaks Uint8Array (`encode`/`decode`) and text in a
- * charset of your choice (`encodeString`/`decodeString`). Both byte forms take
- * an optional range when the output has to stay inside one.
+ * Output forms: every node encodes to a Uint8Array, or to text with
+ * `type: 'text'`, and `decode` reads either. Both forms take a charset when the
+ * output has to stay inside a set of symbols.
  * Run with: npx tsx examples/binary-encoding.ts
  */
 import { p, CharSets } from 'polynar';
@@ -23,16 +23,16 @@ console.log('via JSON:', restored);
 
 // Text output picks a charset; both sides must agree on it.
 const Message = p.string().max(32);
-const asUrlSafe = Message.encodeString('hello world', { charset: CharSets.urlSafe });
+const asUrlSafe = Message.encode('hello world', { type: 'text', charset: CharSets.urlSafe });
 console.log('url-safe string:', asUrlSafe);
-console.log('from url-safe:', Message.decodeString(asUrlSafe, { charset: CharSets.urlSafe }));
+console.log('from url-safe:', Message.decode(asUrlSafe, { charset: CharSets.urlSafe }));
 
-// A [min, max] range restricts which byte values the output may contain.
-const asPrintable = Message.encode('hello world', { range: [32, 126] }); // printable ASCII only
+// A charset restricts which byte values the output may contain.
+const asPrintable = Message.encode('hello world', { charset: [32, 126] }); // printable ASCII only
 console.log(
   'printable bytes:',
   asPrintable.length,
   'raw bytes:',
   Message.encode('hello world').length
 );
-console.log('from printable:', Message.decode(asPrintable, { range: [32, 126] }));
+console.log('from printable:', Message.decode(asPrintable, { charset: [32, 126] }));

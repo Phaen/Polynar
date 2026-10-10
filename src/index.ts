@@ -45,4 +45,4 @@ export type {
 } from './nodes';
 
 export { Encoder, Decoder, CorruptInputError, UnknownVersionError, CharSets } from './packer';
-export type { Charset, ByteRange, BinaryOptions, TextOptions } from './packer';
+export type { Charset, CodecOptions, OutputType } from './packer';

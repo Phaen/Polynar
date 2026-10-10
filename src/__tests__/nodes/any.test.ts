@@ -102,6 +102,6 @@ describe('Schema any', () => {
     p.any()._write(enc, 1);
     p.string()._write(enc, 'a');
     p.any()._write(enc, 2);
-    expect(() => p.any().decode(enc.toUint8Array())).toThrow('Duplicate key in record');
+    expect(() => p.any().decode(enc.output())).toThrow('Duplicate key in record');
   });
 });

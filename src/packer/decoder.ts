@@ -5,7 +5,7 @@
  * nothing about types.
  */
 
-import type { BinaryOptions, TextOptions } from './types';
+import type { CodecOptions } from './types';
 import {
   TERM_BASE,
   TERM_COUNT_RUN_DIGITS,
@@ -16,10 +16,9 @@ import {
 } from './constants';
 import { CorruptInputError } from './errors';
 import {
-  Alphabet,
-  transportAlphabet,
-  validateByteRange,
+  outputAlphabet,
   validateBlockBits,
+  type Alphabet,
   digitChunk,
   log2Exact,
   SHIFTS,
@@ -48,14 +47,12 @@ export class Decoder {
   /** Digit index where the current block starts. */
   private blockStart = 0;
 
-  constructor(input: Uint8Array, options?: BinaryOptions);
-  constructor(input: string, options?: TextOptions);
-  constructor(input: string | Uint8Array, options: BinaryOptions & TextOptions = {}) {
+  constructor(input: Uint8Array, options?: CodecOptions<'binary'>);
+  constructor(input: string, options?: CodecOptions<'text'>);
+  constructor(input: Uint8Array | string, options: CodecOptions = {}) {
     this.input = input;
-    this.alphabet =
-      typeof input === 'string'
-        ? transportAlphabet(options.charset)
-        : new Alphabet(validateByteRange(options.range ?? [0, 255]));
+    // The input's own form decides; `type` only pairs the options with it for TypeScript.
+    this.alphabet = outputAlphabet(typeof input === 'string' ? 'text' : 'binary', options.charset);
     this.size = this.alphabet.size;
     this.bound = new BlockBound(this.size, validateBlockBits(options.blockBits));
     this.chunk = digitChunk(this.size);
@@ -65,20 +62,11 @@ export class Decoder {
   /** Digit value of the input at position `i`, validated against the charset. */
   private digitAt(i: number): number {
     const input = this.input;
-    if (typeof input !== 'string') {
-      const digit = this.alphabet.digitOf(input[i]);
-      if (digit === -1) {
-        throw new CorruptInputError('Byte at ' + i + ' does not fit binary range');
-      }
-      return digit;
-    }
-
-    const digit = this.alphabet.digitOf(input.charCodeAt(i));
+    const text = typeof input === 'string';
+    const digit = this.alphabet.digitOf(text ? input.charCodeAt(i) : input[i]);
     if (digit === -1) {
       throw new CorruptInputError(
-        typeof this.alphabet.charset === 'string'
-          ? 'Character at ' + i + ' not found in character set'
-          : 'Character at ' + i + ' does not fit the character range'
+        (text ? 'Character' : 'Byte') + ' at ' + i + ' is not in the charset'
       );
     }
     return digit;

@@ -149,3 +149,24 @@ const _either: Equals<Infer<typeof Either>, string | null | undefined> = true;
 // On its own an optional node is the value or undefined.
 const Lone = p.optional(p.int());
 const _lone: Equals<Infer<typeof Lone>, number | undefined> = true;
+
+// Encoding returns bytes unless the type asks for text.
+const Digit = p.int().min(0).max(9);
+const digitBytes = Digit.encode(3);
+const _encodedBytes: Equals<typeof digitBytes, Uint8Array> = true;
+const digitByteCharset = Digit.encode(3, { type: 'binary', charset: '01' });
+const _byteCharset: Equals<typeof digitByteCharset, Uint8Array> = true;
+const digitText = Digit.encode(3, { type: 'text', charset: [0x4e00, 0x9fff] });
+const _text: Equals<typeof digitText, string> = true;
+const anyType = 'text' as 'binary' | 'text';
+const digitEither = Digit.encode(3, { type: anyType });
+const _eitherOut: Equals<typeof digitEither, Uint8Array | string> = true;
+
+// Decoding takes either form; a `type` must match the input's form.
+const _fromBytes: Equals<ReturnType<typeof Digit.decode>, number> = true;
+Digit.decode(digitBytes, { type: 'binary' });
+Digit.decode(digitText, { type: 'text', charset: [0x4e00, 0x9fff] });
+// @ts-expect-error — bytes are not text
+Digit.decode(digitBytes, { type: 'text' });
+// @ts-expect-error — text is not bytes
+Digit.decode(digitText, { type: 'binary' });

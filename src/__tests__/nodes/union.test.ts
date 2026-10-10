@@ -123,6 +123,6 @@ describe('Schema union', () => {
     const enc = new Encoder();
     enc.compose(0, 2);
     p.any()._write(enc, null);
-    expect(() => loose.decode(enc.toUint8Array())).toThrow(CorruptInputError);
+    expect(() => loose.decode(enc.output())).toThrow(CorruptInputError);
   });
 });

@@ -189,9 +189,7 @@ describe('Schema string', () => {
       enc.compose(TEXT_DIRECT_MAX + 2, TEXT_FIRST_RADIX);
       enc.compose(code - 0x800, 0xffff - 0x800 + 1);
     }
-    expect(() => p.string().decode(enc.toUint8Array())).toThrow(
-      'Non-canonical split surrogate pair'
-    );
+    expect(() => p.string().decode(enc.output())).toThrow('Non-canonical split surrogate pair');
   });
 
   it('string keeps a lead surrogate that a slice cut from its trail', () => {
@@ -214,7 +212,7 @@ describe('Schema string', () => {
     enc.composeTerm(1);
     enc.composeWeighted(row.cums[table.escape], row.freqs[table.escape], row.total);
     enc.compose('e'.charCodeAt(0), TEXT_FIRST_RADIX);
-    expect(() => p.string().prose().decode(enc.toUint8Array())).toThrow(
+    expect(() => p.string().prose().decode(enc.output())).toThrow(
       'Non-canonical escape of a modeled character'
     );
   });
@@ -225,9 +223,7 @@ describe('Schema string', () => {
     enc.composeTerm(1);
     enc.compose(TEXT_DIRECT_MAX + 3, TEXT_FIRST_RADIX);
     enc.compose(0x1f44b - 0x10000, 0x10ffff - 0x10000 + 1);
-    expect(() => p.string().decode(enc.toUint8Array())).toThrow(
-      'Code points overrun the length prefix'
-    );
+    expect(() => p.string().decode(enc.output())).toThrow('Code points overrun the length prefix');
   });
 
   it('rejects bad configuration and non-compliant values', () => {

@@ -88,7 +88,7 @@ describe('Schema decimal', () => {
     const enc = new Encoder();
     enc.compose(0, 2);
     enc.composeTerm(2 ** 60);
-    expect(() => p.decimal(0.01).decode(enc.toUint8Array())).toThrow(CorruptInputError);
+    expect(() => p.decimal(0.01).decode(enc.output())).toThrow(CorruptInputError);
   });
 
   it('sets each bound once', () => {
