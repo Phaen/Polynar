@@ -28,16 +28,17 @@
   "scripts": {
     "build": "tsup",
     "clean": "rm -rf dist",
-    "lint": "eslint 'src/**/*.ts'",
-    "lint:fix": "eslint 'src/**/*.ts' --fix",
-    "format": "prettier --write 'src/**/*.ts'",
-    "format:check": "prettier --check 'src/**/*.ts'",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.examples.json",
+    "lint": "eslint '{src,scripts}/**/*.ts'",
+    "lint:fix": "eslint '{src,scripts}/**/*.ts' --fix",
+    "format": "prettier --write '{src,scripts}/**/*.ts'",
+    "format:check": "prettier --check '{src,scripts}/**/*.ts'",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.examples.json && tsc -p tsconfig.scripts.json",
     "check:exports": "publint --strict && attw --pack .",
     "prepublishOnly": "npm run build",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage"
+    "test:coverage": "jest --coverage",
+    "fuzz:diff": "tsx scripts/diff-fuzz.ts"
   },
   "keywords": [
     "encoding",
@@ -65,6 +66,7 @@
     "@types/node": "^20.11.19",
     "@typescript-eslint/eslint-plugin": "^8.46.2",
     "@typescript-eslint/parser": "^8.46.2",
+    "esbuild": "^0.27.7",
     "eslint": "^9.38.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.4",
@@ -74,6 +76,7 @@
     "publint": "^0.3.21",
     "ts-jest": "^29.1.2",
     "tsup": "^8.5.1",
+    "tsx": "^4.23.15",
     "typescript": "^5.3.3"
   },
   "engines": {

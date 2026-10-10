@@ -11,7 +11,7 @@ module.exports = [
     ignores: ['dist/**', 'coverage/**', 'node_modules/**'],
   },
   {
-    files: ['src/**/*.ts'],
+    files: ['src/**/*.ts', 'scripts/**/*.ts'],
     languageOptions: {
       parser: tsParser,
       ecmaVersion: 2020,
