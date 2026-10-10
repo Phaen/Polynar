@@ -32,6 +32,9 @@ jobs:
     - name: Lint
       run: npm run lint
 
+    - name: Check formatting
+      run: npm run format:check
+
     - name: Build project
       run: npm run build
 
@@ -39,18 +42,15 @@ jobs:
       run: npm run check:exports
       if: matrix.node-version == '20.x'
 
-    - name: Run tests
-      run: npm test
-
-    - name: Run coverage
+    - name: Run tests with coverage (fails below 100%)
       run: npm run test:coverage
-      if: matrix.node-version == '20.x'
 
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v5
       if: matrix.node-version == '20.x'
       with:
-        fail_ci_if_error: false
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: coverage/lcov.info
 
   wire:
     runs-on: ubuntu-latest

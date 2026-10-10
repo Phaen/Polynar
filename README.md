@@ -2,6 +2,7 @@
 
 [![npm version](https://badge.fury.io/js/polynar.svg)](https://www.npmjs.com/package/polynar)
 [![Build Status](https://github.com/Phaen/Polynar/workflows/Tests/badge.svg)](https://github.com/Phaen/Polynar/actions)
+[![Coverage](https://codecov.io/gh/Phaen/Polynar/graph/badge.svg)](https://codecov.io/gh/Phaen/Polynar)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 
