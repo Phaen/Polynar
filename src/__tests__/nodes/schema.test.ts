@@ -290,7 +290,7 @@ describe('Schema internals', () => {
     expect(() => p.tagged('type', members).encode({ type: 'x' })).toThrow(RangeError);
     expect(() => p.string().charset('ab').encode('abc')).toThrow(RangeError);
     expect(() => p.string().charset([97, 98]).encode('abc')).toThrow(RangeError);
-    expect(() => p.string().charset('a')).toThrow(TypeError);
-    expect(() => p.string().charset([97, 97])).toThrow(RangeError);
+    expect(() => p.string().charset('')).toThrow(TypeError);
+    expect(() => p.string().charset([98, 97])).toThrow(RangeError);
   });
 });

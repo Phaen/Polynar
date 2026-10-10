@@ -1,4 +1,4 @@
-import { Encoder, Decoder, CorruptInputError } from '../packer';
+import { Encoder, Decoder, CorruptInputError, bitLength } from '../packer';
 import { TERM_BASE } from '../packer/constants';
 import { PNode } from './base';
 import type { Kind } from './guards';
@@ -67,8 +67,6 @@ const FIVE_SHIFT_MAX = 500;
 // shift is the plain-fraction selector state, so it has no code here.
 const zigNonzero = (f: number): number => (f > 0 ? 2 * (f - 1) : -2 * f - 1);
 const unzigNonzero = (z: number): number => (z % 2 === 0 ? z / 2 + 1 : -(z + 1) / 2);
-
-const bitLength = (x: bigint): number => x.toString(2).length;
 
 /**
  * The five-realm shift suggested by a value's shortest round-trip decimal

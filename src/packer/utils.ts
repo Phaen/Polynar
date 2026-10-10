@@ -3,36 +3,7 @@
  */
 
 import type { ByteRange, Charset } from './types';
-import { BLOCK_BITS, DEFAULT_CHARSET } from './constants';
-
-/**
- * The largest digit count (and its state space, size^digits) a block of
- * base-`size` digits can span within 2^BLOCK_BITS. Encoder and decoder both
- * derive block boundaries from this, so it is computed in integer arithmetic —
- * a float log could round differently across engines and desync the two.
- */
-const blockCapacityCache = new Map<number, { digits: number; cap: bigint }>();
-
-export function blockCapacity(size: number): { digits: number; cap: bigint } {
-  let entry = blockCapacityCache.get(size);
-
-  if (entry == null) {
-    const base = BigInt(size);
-    const limit = 1n << BigInt(BLOCK_BITS);
-    let digits = 1;
-    let cap = base;
-
-    while (cap * base <= limit) {
-      cap *= base;
-      digits++;
-    }
-
-    entry = { digits, cap };
-    blockCapacityCache.set(size, entry);
-  }
-
-  return entry;
-}
+import { DEFAULT_CHARSET } from './constants';
 
 /**
  * The longest run of base-`size` digits whose values fit one safe integer
@@ -49,24 +20,15 @@ export interface DigitChunk {
   readonly bits: number;
 }
 
-const digitChunkCache = new Map<number, DigitChunk>();
-
 export function digitChunk(size: number): DigitChunk {
-  let entry = digitChunkCache.get(size);
-
-  if (entry == null) {
-    let digits = 1;
-    let num = size;
-    while (num * size <= 2 ** 51) {
-      num *= size;
-      digits++;
-    }
-    const exponent = log2Exact(size);
-    entry = { digits, num, big: BigInt(num), bits: exponent < 0 ? 0 : exponent * digits };
-    digitChunkCache.set(size, entry);
+  let digits = 1;
+  let num = size;
+  while (num * size <= 2 ** 51) {
+    num *= size;
+    digits++;
   }
-
-  return entry;
+  const exponent = log2Exact(size);
+  return { digits, num, big: BigInt(num), bits: exponent < 0 ? 0 : exponent * digits };
 }
 
 /** The exponent of a positive integer that is a power of two, else -1. */
@@ -78,38 +40,15 @@ export function log2Exact(n: number): number {
   return 2 ** exponent === n ? exponent : -1;
 }
 
+/** Bit length of a positive BigInt. */
+export function bitLength(x: bigint): number {
+  const hex = x.toString(16);
+  return (hex.length - 1) * 4 + (32 - Math.clz32(parseInt(hex[0], 16)));
+}
+
 /** Shift amounts as BigInts, so a power-of-two digit is a mask and a shift. */
 export const SHIFTS = Array.from({ length: 54 }, (_, i) => BigInt(i));
 
-/**
- * Digit value by ASCII code unit for a string charset, -1 where the charset
- * has no such character; code units beyond ASCII fall back to `indexOf`.
- */
-const charsetLookupCache = new Map<string, Int32Array>();
-
-export function charsetLookup(charset: string): Int32Array {
-  let table = charsetLookupCache.get(charset);
-
-  if (table == null) {
-    table = new Int32Array(128).fill(-1);
-    for (let i = 0; i < charset.length; i++) {
-      const code = charset.charCodeAt(i);
-      if (code < 128) {
-        table[code] = i;
-      }
-    }
-    if (charsetLookupCache.size >= 256) {
-      charsetLookupCache.clear();
-    }
-    charsetLookupCache.set(charset, table);
-  }
-
-  return table;
-}
-
-/**
- * Validate character set
- */
 /** A `[min, max]` byte range: integer endpoints within 0–255, min below max. */
 export function validateByteRange([min, max]: ByteRange): ByteRange {
   if (!Number.isInteger(min) || !Number.isInteger(max) || min < 0 || max > 255 || min >= max) {
@@ -120,40 +59,50 @@ export function validateByteRange([min, max]: ByteRange): ByteRange {
   return [min, max];
 }
 
-/** String charsets that passed validation, since the duplicate scan is quadratic. */
-const validCharsets = new Set<string>();
+/**
+ * The digits of a validated charset, each spelled by one UTF-16 code unit. A
+ * string charset finds a code unit's digit in a table indexed by code unit, a
+ * range by its offset from the first code. `minSize` is the fewest symbols
+ * the charset must hold.
+ */
+export class Alphabet {
+  /** The charset; a range is a fresh copy, never the caller's array. */
+  readonly charset: Charset;
+  readonly size: number;
+  /** Digit by code unit for a string charset, -1 where it has no such character. */
+  private readonly table?: Int32Array;
+  /** The first code of a range charset. */
+  private readonly min: number;
 
-export function validateCharset(charset?: Charset): Charset {
-  if (charset == null) {
-    return DEFAULT_CHARSET;
-  } else if (typeof charset === 'string') {
-    if (validCharsets.has(charset)) {
-      return charset;
-    }
-    // A 1-character charset is base 1, whose digit loop never terminates. The
-    // `s` flag makes `.` match line terminators, so a duplicate on either side
-    // of a newline is still caught.
-    if (charset.length < 2) {
-      throw new TypeError(
-        `Invalid character set: needs at least 2 characters, got ${charset.length}`
-      );
-    }
-    const repeat = /(.).*\1/s.exec(charset);
-    if (repeat) {
-      throw new TypeError(`Invalid character set: '${repeat[1]}' appears more than once`);
-    }
-    if (validCharsets.size >= 256) {
-      validCharsets.clear();
-    }
-    validCharsets.add(charset);
-    return charset;
-  } else {
-    // A fresh array is built so the caller's is never mutated.
-    let [min, max] = charset;
-    if (min > max) {
-      [min, max] = [max, min];
+  constructor(charset: Charset = DEFAULT_CHARSET, minSize = 2) {
+    if (typeof charset === 'string') {
+      if (charset.length < minSize) {
+        throw new TypeError(
+          `Invalid character set: needs at least ${minSize} character${minSize === 1 ? '' : 's'}, got ${charset.length}`
+        );
+      }
+      let top = 0;
+      for (let i = 0; i < charset.length; i++) {
+        top = Math.max(top, charset.charCodeAt(i));
+      }
+      const table = new Int32Array(top + 1).fill(-1);
+      for (let i = 0; i < charset.length; i++) {
+        const code = charset.charCodeAt(i);
+        if (table[code] !== -1) {
+          throw new TypeError(
+            `Invalid character set: '${charset.charAt(i)}' appears more than once`
+          );
+        }
+        table[code] = i;
+      }
+      this.charset = charset;
+      this.size = charset.length;
+      this.table = table;
+      this.min = 0;
+      return;
     }
 
+    const [min, max] = charset;
     // String.fromCharCode truncates its argument modulo 2^16, so a range
     // outside the UTF-16 code-unit space (or a fractional endpoint) would
     // round-trip through different characters and corrupt silently.
@@ -162,18 +111,52 @@ export function validateCharset(charset?: Charset): Charset {
         `Invalid character range: [${min}, ${max}] must be integer codes within 0–65535`
       );
     }
-
-    // Two symbols (base 2) is the floor, same as string charsets and binary
-    // mode; a single symbol would be base 1, which carries no digit variation.
-    if (max - min < 1) {
-      throw new RangeError(`Invalid character range: [${min}, ${max}] holds fewer than 2 codes`);
+    if (max - min + 1 < minSize) {
+      throw new RangeError(
+        `Invalid character range: [${min}, ${max}] holds fewer than ${minSize} code${minSize === 1 ? '' : 's'}`
+      );
     }
+    this.charset = [min, max];
+    this.size = max - min + 1;
+    this.min = min;
+  }
 
-    return [min, max];
+  /** The digit a code unit spells, or -1 when the charset has no such character. */
+  digitOf(code: number): number {
+    const table = this.table;
+    if (table !== undefined) {
+      return code < table.length ? table[code] : -1;
+    }
+    const digit = code - this.min;
+    return digit >= 0 && digit < this.size ? digit : -1;
+  }
+
+  /** The character spelling a digit below `size`. */
+  charAt(digit: number): string {
+    return typeof this.charset === 'string'
+      ? this.charset.charAt(digit)
+      : String.fromCharCode(this.min + digit);
   }
 }
 
-/** The number of digit symbols a validated charset holds. */
-export function charsetSize(charset: Charset): number {
-  return typeof charset === 'string' ? charset.length : charset[1] - charset[0] + 1;
+/** Alphabets of the string charsets seen most recently, since building one walks every character. */
+const alphabets = new Map<string, Alphabet>();
+
+/**
+ * The alphabet of a transport charset, which needs at least two symbols: a
+ * base-1 digit carries nothing, so the digit loops would never end.
+ */
+export function transportAlphabet(charset: Charset = DEFAULT_CHARSET): Alphabet {
+  if (typeof charset !== 'string') {
+    return new Alphabet(charset);
+  }
+  let alphabet = alphabets.get(charset);
+  if (alphabet === undefined) {
+    alphabet = new Alphabet(charset);
+    if (alphabets.size >= 256) {
+      alphabets.clear();
+    }
+    alphabets.set(charset, alphabet);
+  }
+  return alphabet;
 }

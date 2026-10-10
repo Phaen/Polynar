@@ -21,7 +21,8 @@
  * Every answer is therefore the exact one.
  */
 
-import { blockCapacity } from './utils';
+import { BLOCK_BITS } from './constants';
+import { bitLength } from './utils';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const MAX_SAFE_BIG = BigInt(MAX_SAFE);
@@ -43,12 +44,6 @@ const enum Regime {
   Uniform,
   Float,
   Exact,
-}
-
-/** Bit length of a positive BigInt. */
-function bitLength(x: bigint): number {
-  const hex = x.toString(16);
-  return (hex.length - 1) * 4 + (32 - Math.clz32(parseInt(hex[0], 16)));
 }
 
 /**
@@ -91,15 +86,32 @@ function compareFloat(x: number, E: number, m: number, e: number, k: number): -1
   return 0;
 }
 
-/** Powers of one digit base, exact and as constant floats. */
+/**
+ * Powers of one digit base, exact and as constant floats, and the block
+ * size they set: `blockDigits` is the largest digit count whose state space,
+ * `cap` = base^blockDigits, stays within 2^BLOCK_BITS. Encoder and decoder
+ * both derive block boundaries from it, so it is found in integer
+ * arithmetic, where a float log could round differently across engines.
+ */
 class Powers {
   readonly big: bigint[] = [1n];
   readonly m: number[] = [1];
   readonly e: number[] = [0];
+  readonly blockDigits: number;
+  readonly cap: bigint;
   private readonly base: bigint;
 
   constructor(base: number) {
     this.base = BigInt(base);
+    const limit = 1n << BigInt(BLOCK_BITS);
+    let digits = 1;
+    this.ensure(2);
+    while (this.big[digits + 1] <= limit) {
+      digits++;
+      this.ensure(digits + 1);
+    }
+    this.blockDigits = digits;
+    this.cap = this.big[digits];
   }
 
   ensure(d: number): void {
@@ -173,19 +185,18 @@ export class BlockBound {
   private tightDen = 1n;
 
   constructor(size: number) {
-    const block = blockCapacity(size);
+    const powers = powersOf(size);
     this.base = size;
     this.log2Base = Math.log2(size);
-    this.powers = powersOf(size);
-    this.powers.ensure(block.digits + 1);
-    this.blockDigits = block.digits;
-    this.cap = block.cap;
-    this.capacity = block.cap;
-    this.capacityM = this.powers.m[block.digits];
-    this.capacityE = this.powers.e[block.digits];
+    this.powers = powers;
+    this.blockDigits = powers.blockDigits;
+    this.cap = powers.cap;
+    this.capacity = powers.cap;
+    this.capacityM = powers.m[powers.blockDigits];
+    this.capacityE = powers.e[powers.blockDigits];
     this.capacityIsCap = true;
-    this.capDen = block.cap;
-    this.capacityDen = block.cap;
+    this.capDen = powers.cap;
+    this.capacityDen = powers.cap;
   }
 
   /** Start a fresh block whose digit space is `digits` base-`size` digits. */

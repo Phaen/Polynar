@@ -18,6 +18,11 @@ describe('Schema string', () => {
     expect(trip(p.string().charset('0123456789'), '12345')).toBe('12345');
   });
 
+  it('string takes a one-character charset, whose characters cost nothing', () => {
+    expect(trip(p.string().charset('x').length(5), 'xxxxx')).toBe('xxxxx');
+    expect(p.string().charset([120, 120]).length(5).encode('xxxxx')).toHaveLength(0);
+  });
+
   it('string rejects a value outside its charset', () => {
     expect(() => p.string().charset('0123456789').encode('12a')).toThrow(
       new RangeError("Character 'a' at 2 is not in the character set")

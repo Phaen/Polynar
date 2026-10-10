@@ -19,14 +19,7 @@ import {
   TERM_PAYLOAD_BASE,
   TERM_PAYLOAD_MIN_DIGITS,
 } from './constants';
-import {
-  validateCharset,
-  validateByteRange,
-  charsetSize,
-  digitChunk,
-  SHIFTS,
-  type DigitChunk,
-} from './utils';
+import { transportAlphabet, validateByteRange, digitChunk, SHIFTS, type DigitChunk } from './utils';
 import { BlockBound } from './bound';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
@@ -80,10 +73,14 @@ export class Encoder {
   private cums: number[] = [];
   private freqs: number[] = [];
   private totals: number[] = [];
-  /** Position of each symbol among its node's `counts` symbols, in bucket order. */
-  private indices: number[] = [];
-  /** Symbol count per slot: a uniform slot's radix, or a weighted node's member count. */
-  private counts: number[] = [];
+  /**
+   * The last recorded symbol's position among its node's `lastCount`
+   * symbols, in bucket order; only the message's last symbol is ever
+   * written as this index.
+   */
+  private lastIndex = 0;
+  /** The last recorded symbol's count: a uniform slot's radix, or a weighted node's member count. */
+  private lastCount = 1;
 
   /** Push one value in a fixed radix: `integer` must lie in `[0, radix)`. */
   compose(integer: number, radix: number): void {
@@ -110,8 +107,8 @@ export class Encoder {
     this.cums.push(integer);
     this.freqs.push(1);
     this.totals.push(radix);
-    this.indices.push(integer);
-    this.counts.push(radix);
+    this.lastIndex = integer;
+    this.lastCount = radix;
   }
 
   /**
@@ -120,18 +117,18 @@ export class Encoder {
    * recovers the symbol from which bucket the residual lands in, so both
    * sides must derive identical integer tables.
    *
-   * `index` and `count` place the symbol among the node's members in bucket
-   * order. They let the message's last symbol be written as a plain index:
-   * a weighted bucket borrows its fractional bits from the symbols after it,
-   * and the last one has none to borrow, so as a bucket it would cost
-   * log2(total) bits. Without them the symbol is always written as a bucket.
+   * `position` places the symbol at `index` among the node's `count`
+   * members in bucket order. It lets the message's last symbol be written as
+   * a plain index: a weighted bucket borrows its fractional bits from the
+   * symbols after it, and the last one has none to borrow, so as a bucket it
+   * would cost log2(total) bits. Without it the symbol is always written as
+   * a bucket.
    */
   composeWeighted(
     cum: number,
     freq: number,
     total: number,
-    index: number = cum,
-    count: number = total
+    position?: { index: number; count: number }
   ): void {
     if (!Number.isInteger(total) || !Number.isInteger(freq) || !Number.isInteger(cum)) {
       throw new TypeError(`Bucket must be integers, got cum ${cum}, freq ${freq}, total ${total}`);
@@ -145,22 +142,32 @@ export class Encoder {
     if (cum < 0 || cum + freq > total) {
       throw new RangeError(`Bucket [${cum}, ${cum + freq}) is outside [0, ${total})`);
     }
-    if (!Number.isInteger(index) || !Number.isInteger(count) || count < 1) {
-      throw new TypeError(`Symbol position must be integers, got index ${index}, count ${count}`);
+    let index = 0;
+    let members = total;
+    if (position !== undefined) {
+      const count = position.count;
+      index = position.index;
+      if (!Number.isInteger(index) || !Number.isInteger(count) || count < 1) {
+        throw new TypeError(`Symbol position must be integers, got index ${index}, count ${count}`);
+      }
+      // A node with at least as many members as states gains nothing from an
+      // index, so its symbols stay buckets and the index goes unused; the
+      // decoder clamps identically.
+      members = Math.min(count, total);
+      if (members < total && (index < 0 || index >= members)) {
+        throw new RangeError(`Index ${index} is outside [0, ${members})`);
+      }
     }
-    // A node with at least as many members as states gains nothing from an
-    // index, so its symbols stay buckets and the index goes unused; the
-    // decoder clamps identically.
-    const members = Math.min(count, total);
-    if (members < total && (index < 0 || index >= members)) {
-      throw new RangeError(`Index ${index} is outside [0, ${members})`);
+    // A bucket holding every state carries nothing, like a radix-1 digit.
+    if (freq === total) {
+      return;
     }
 
     this.cums.push(cum);
     this.freqs.push(freq);
     this.totals.push(total);
-    this.indices.push(members < total ? index : 0);
-    this.counts.push(members);
+    this.lastIndex = members < total ? index : 0;
+    this.lastCount = members;
   }
 
   /** Push one unbounded non-negative integer. */
@@ -269,12 +276,18 @@ export class Encoder {
         if (bound.exceedsCap(total)) {
           break;
         }
-        if (end === n - 1 && this.counts[end] < total) {
-          const decision = bound.indexDecision(total, this.counts[end]);
-          indexed = decision.indexed;
-          count = decision.digits;
+        // Only the last symbol's member count matters on this side: for any
+        // other symbol it feeds just the decoder's tight bound.
+        let members = total;
+        if (end === n - 1) {
+          members = this.lastCount;
+          if (members < total) {
+            const decision = bound.indexDecision(total, members);
+            indexed = decision.indexed;
+            count = decision.digits;
+          }
         }
-        bound.update(total, this.freqs[end], this.counts[end]);
+        bound.update(total, this.freqs[end], members);
         end++;
       }
 
@@ -309,8 +322,8 @@ export class Encoder {
     let offset = 0;
     let i = end - 1;
     if (indexed) {
-      product = this.counts[i];
-      offset = this.indices[i];
+      product = this.lastCount;
+      offset = this.lastIndex;
       i--;
     }
     for (; i >= start; i--) {
@@ -359,20 +372,11 @@ export class Encoder {
   }
 
   toString(charset?: Charset): string {
-    const validatedCharset = validateCharset(charset);
-
-    const size = charsetSize(validatedCharset);
-
+    const alphabet = transportAlphabet(charset);
     let str = '';
-
-    for (const digit of this.toDigits(size)) {
-      if (typeof validatedCharset === 'string') {
-        str += validatedCharset.charAt(digit);
-      } else {
-        str += String.fromCharCode(digit + validatedCharset[0]);
-      }
+    for (const digit of this.toDigits(alphabet.size)) {
+      str += alphabet.charAt(digit);
     }
-
     return str;
   }
 

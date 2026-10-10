@@ -16,8 +16,8 @@ export interface WeightTable {
   readonly total: number;
   /** Bucket lookup for `parseWeighted`: the index owning the residual. */
   readonly locate: (residual: number) => Bucket;
-  /** Direct lookup for `parseWeighted`: the bucket of the i-th index. */
-  readonly atIndex: (i: number) => Bucket;
+  /** Member count and direct lookup for `parseWeighted`: the bucket of the i-th index. */
+  readonly position: { readonly count: number; readonly at: (i: number) => Bucket };
 }
 
 export function buildWeights(weights: readonly number[], states: number, who: string): WeightTable {
@@ -49,18 +49,21 @@ export function buildWeights(weights: readonly number[], states: number, who: st
     }
     return [lo, cums[lo], freqs[lo]];
   };
-  const atIndex = (i: number): Bucket => [i, cums[i], freqs[i]];
-  return { cums, freqs, total, locate, atIndex };
+  const at = (i: number): Bucket => [i, cums[i], freqs[i]];
+  return { cums, freqs, total, locate, position: { count: cums.length, at } };
 }
 
 /** Write the `pos`-th entry of a weight table as one weighted symbol. */
 export function writeTable(enc: Encoder, table: WeightTable, pos: number): void {
-  enc.composeWeighted(table.cums[pos], table.freqs[pos], table.total, pos, table.cums.length);
+  enc.composeWeighted(table.cums[pos], table.freqs[pos], table.total, {
+    index: pos,
+    count: table.cums.length,
+  });
 }
 
 /** Read one weighted symbol written by `writeTable`: the entry's position. */
 export function readTable(dec: Decoder, table: WeightTable): number {
-  return dec.parseWeighted(table.total, table.locate, table.cums.length, table.atIndex);
+  return dec.parseWeighted(table.total, table.locate, table.position);
 }
 
 /**
@@ -181,7 +184,7 @@ export class RangePrior {
   private readonly hi: number;
   private readonly who: string;
   private readonly locate: (residual: number) => Bucket;
-  private readonly atIndex: (i: number) => Bucket;
+  private readonly position: { readonly count: number; readonly at: (i: number) => Bucket };
 
   constructor(declared: Prior, lo: number, hi: number, who: string) {
     const { cdf, total } = resolvePrior(declared, lo, hi, who);
@@ -192,16 +195,19 @@ export class RangePrior {
     this.hi = hi;
     this.who = who;
     this.locate = locateCdf(cdf, lo, hi);
-    this.atIndex = atIndexCdf(cdf, lo);
+    this.position = { count: hi - lo + 1, at: atIndexCdf(cdf, lo) };
   }
 
   /** `subject` names the value in an error, as in `Value '3'`. */
   write(enc: Encoder, v: number, subject: () => string): void {
     const [cum, freq] = cdfBucket(this.cdf, v, this.who, subject);
-    enc.composeWeighted(cum, freq, this.total, v - this.lo, this.hi - this.lo + 1);
+    enc.composeWeighted(cum, freq, this.total, {
+      index: v - this.lo,
+      count: this.hi - this.lo + 1,
+    });
   }
 
   read(dec: Decoder): number {
-    return dec.parseWeighted(this.total, this.locate, this.hi - this.lo + 1, this.atIndex);
+    return dec.parseWeighted(this.total, this.locate, this.position);
   }
 }

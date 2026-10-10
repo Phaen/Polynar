@@ -96,11 +96,6 @@ describe('Binary output', () => {
       expect(() => new Decoder(bytes, [0.5, 10])).toThrow(RangeError);
     });
 
-    it('rejects a string charset on binary input', () => {
-      const bytes = p.int().min(0).max(100).encode(42);
-      expect(() => new Decoder(bytes, 'abc')).toThrow(TypeError);
-    });
-
     it('throws when reading past the end of the byte buffer', () => {
       const node = p.int().min(0).max(100);
       const decoder = new Decoder(node.encode(42));
@@ -109,8 +104,9 @@ describe('Binary output', () => {
     });
 
     it('throws when a byte falls outside the binary range', () => {
-      const decoder = new Decoder(new Uint8Array([10, 200]), [0, 100]);
-      expect(() => decoder.parse(1001)).toThrow('does not fit binary range');
+      expect(() => new Decoder(new Uint8Array([10, 200]), [0, 100])).toThrow(
+        'Byte at 1 does not fit binary range'
+      );
     });
   });
 });

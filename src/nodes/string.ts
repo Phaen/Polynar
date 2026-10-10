@@ -5,9 +5,8 @@
  * for the order-1 frequency model; an explicit charset trades generality for
  * density over a known alphabet. `p.string`.
  */
-import { Encoder, Decoder, CorruptInputError } from '../packer';
+import { Encoder, Decoder, CorruptInputError, Alphabet } from '../packer';
 import type { Charset } from '../packer';
-import { validateCharset, charsetSize } from '../packer/utils';
 import { PNode } from './base';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
@@ -29,9 +28,7 @@ export class PString extends PNode<string> {
   private readonly _bounds: LengthBounds;
   private readonly _length: IndexRange;
   /** Explicit charset; undefined selects the laddered code-point default. */
-  private readonly _charset?: Charset;
-  /** Symbol count of a range charset; undefined for string charsets. */
-  private readonly _size?: number;
+  private readonly _alphabet?: Alphabet;
   /** Prose model replacing the flat ladder, as given and compiled. */
   private readonly _prose?: ProseModel;
   private readonly _table?: ProseTable;
@@ -48,24 +45,22 @@ export class PString extends PNode<string> {
       if (prose !== undefined) {
         throw new TypeError('p.string cannot combine prose with a charset');
       }
-      // validateCharset returns a normalized copy, so later caller mutation of
-      // a range array can't change the node.
-      this._charset = validateCharset(charset);
-      if (typeof this._charset !== 'string') {
-        this._size = charsetSize(this._charset);
-      }
+      // The alphabet keeps its own copy of a range, so later caller mutation
+      // of the array can't change the node. One character is a legal
+      // alphabet: each character then costs nothing.
+      this._alphabet = new Alphabet(charset, 1);
     }
   }
 
   /** A floor on the length; the prefix then counts up from it. */
   min(n: number): PString {
     checkUnset(this._bounds.min, 'p.string', 'min');
-    return new PString({ ...this._bounds, min: n }, this._charset, this._prose);
+    return new PString({ ...this._bounds, min: n }, this._alphabet?.charset, this._prose);
   }
 
   max(n: number): PString {
     checkUnset(this._bounds.max, 'p.string', 'max');
-    return new PString({ ...this._bounds, max: n }, this._charset, this._prose);
+    return new PString({ ...this._bounds, max: n }, this._alphabet?.charset, this._prose);
   }
 
   /**
@@ -75,7 +70,7 @@ export class PString extends PNode<string> {
   length(n: number): PString {
     checkUnset(this._bounds.min, 'p.string', 'min');
     checkUnset(this._bounds.max, 'p.string', 'max');
-    return new PString({ ...this._bounds, min: n, max: n }, this._charset, this._prose);
+    return new PString({ ...this._bounds, min: n, max: n }, this._alphabet?.charset, this._prose);
   }
 
   /**
@@ -84,7 +79,7 @@ export class PString extends PNode<string> {
    * length cannot encode.
    */
   cdf(fn: Cdf): PString {
-    return new PString({ ...this._bounds, prior: fn }, this._charset, this._prose);
+    return new PString({ ...this._bounds, prior: fn }, this._alphabet?.charset, this._prose);
   }
 
   /**
@@ -93,7 +88,7 @@ export class PString extends PNode<string> {
    * total.
    */
   weights(w: readonly number[]): PString {
-    return new PString({ ...this._bounds, prior: w }, this._charset, this._prose);
+    return new PString({ ...this._bounds, prior: w }, this._alphabet?.charset, this._prose);
   }
 
   charset(c: Charset): PString {
@@ -108,7 +103,7 @@ export class PString extends PNode<string> {
    * cost. English by default; any other `ProseModel` swaps the matrix.
    */
   prose(model: ProseModel = ProseModels.english): PString {
-    return new PString(this._bounds, this._charset, model);
+    return new PString(this._bounds, this._alphabet?.charset, model);
   }
 
   _write(enc: Encoder, value: string): void {
@@ -116,7 +111,8 @@ export class PString extends PNode<string> {
     // points, so `.max()` keeps plain JS string semantics.
     this._length.write(enc, value.length, () => `String length ${value.length}`);
 
-    if (this._charset === undefined) {
+    const alphabet = this._alphabet;
+    if (alphabet === undefined) {
       // Every adjacent lead+trail pair merges into one code point, so the
       // split spelling the decoder rejects as non-canonical is unreachable
       // here; lone surrogates fall through as their own code points. The
@@ -143,23 +139,17 @@ export class PString extends PNode<string> {
     }
 
     for (let i = 0; i < value.length; i++) {
-      if (typeof this._charset === 'string') {
-        const pos = this._charset.indexOf(value.charAt(i));
-        if (pos === -1) {
-          throw new RangeError(
-            `Character '${value.charAt(i)}' at ${i} is not in the character set`
-          );
-        }
-        enc.compose(pos, this._charset.length);
-      } else {
-        const code = value.charCodeAt(i);
-        if (code < this._charset[0] || code > this._charset[1]) {
-          throw new RangeError(
-            `Character '${value.charAt(i)}' (code ${code}) at ${i} is outside the range ${this._charset[0]}–${this._charset[1]}`
-          );
-        }
-        enc.compose(code - this._charset[0], this._size!);
+      const code = value.charCodeAt(i);
+      const digit = alphabet.digitOf(code);
+      if (digit === -1) {
+        const charset = alphabet.charset;
+        throw new RangeError(
+          typeof charset === 'string'
+            ? `Character '${value.charAt(i)}' at ${i} is not in the character set`
+            : `Character '${value.charAt(i)}' (code ${code}) at ${i} is outside the range ${charset[0]}–${charset[1]}`
+        );
       }
+      enc.compose(digit, alphabet.size);
     }
   }
 
@@ -167,7 +157,8 @@ export class PString extends PNode<string> {
     const length = this._length.read(dec);
     let value = '';
 
-    if (this._charset === undefined) {
+    const alphabet = this._alphabet;
+    if (alphabet === undefined) {
       let units = 0;
       let lead = false;
       const table = this._table;
@@ -196,11 +187,7 @@ export class PString extends PNode<string> {
     }
 
     for (let i = 0; i < length; i++) {
-      if (typeof this._charset === 'string') {
-        value += this._charset.charAt(dec.parse(this._charset.length));
-      } else {
-        value += String.fromCharCode(dec.parse(this._size!) + this._charset[0]);
-      }
+      value += alphabet.charAt(dec.parse(alphabet.size));
     }
     return value;
   }

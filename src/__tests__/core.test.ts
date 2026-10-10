@@ -7,7 +7,7 @@
 
 import { Encoder, Decoder, CharSets, CorruptInputError, p, PNode } from '../index';
 import * as root from '../index';
-import { blockCapacity } from '../packer/utils';
+import { powersOf } from '../packer/bound';
 
 /** Push `values` as base-1001 slots — the compact stand-in for real payloads. */
 const composeAll = (encoder: Encoder, values: number[]): void => {
@@ -41,12 +41,13 @@ describe('Character sets', () => {
     expect(new Decoder(encoder.toString(range), range).parse(1001)).toBe(123);
   });
 
-  it('accepts a reversed range charset without mutating the caller array', () => {
+  it('rejects a reversed range charset, like a reversed byte range', () => {
     const encoder = new Encoder();
     encoder.compose(123, 1001);
-    const reversed: [number, number] = [90, 65];
-    expect(new Decoder(encoder.toString(reversed), reversed).parse(1001)).toBe(123);
-    expect(reversed).toEqual([90, 65]);
+    expect(() => encoder.toString([90, 65])).toThrow(
+      new RangeError('Invalid character range: [90, 65] holds fewer than 2 codes')
+    );
+    expect(() => new Decoder('A', [90, 65])).toThrow(RangeError);
   });
 });
 
@@ -275,8 +276,7 @@ describe('Charset validation', () => {
   });
 
   it('throws when a character is absent from the charset', () => {
-    const decoder = new Decoder('!', CharSets.digit);
-    expect(() => decoder.parse(2)).toThrow(/not found in character set/);
+    expect(() => new Decoder('!', CharSets.digit)).toThrow(/not found in character set/);
   });
 
   it('reads ASCII digits that sit past index 32767 of a long charset', () => {
@@ -366,7 +366,7 @@ describe('Block packing', () => {
     // The first block's highest digit is bumped to the charset maximum: the block
     // value then exceeds its radix product, and the boundary check rejects the
     // remainder the encoder guarantees is never there.
-    const top = blockCapacity(64).digits - 1;
+    const top = powersOf(64).blockDigits - 1;
     const decoder = new Decoder(str.slice(0, top) + '/' + str.slice(top + 1));
     expect(() => parseAll(decoder, 3000)).toThrow('Oversaturated input');
   });
@@ -395,8 +395,26 @@ describe('Block packing', () => {
       encoder,
       Array.from({ length: 3000 }, (_, i) => (i * 7919) % 1001)
     );
-    const decoder = new Decoder(encoder.toString().slice(0, blockCapacity(64).digits));
+    const decoder = new Decoder(encoder.toString().slice(0, powersOf(64).blockDigits));
     expect(() => parseAll(decoder, 3000)).toThrow('Unexpected end of input while parsing');
+  });
+
+  it('throws when a full block is cut to the digits its own values need', () => {
+    // 2047 bits leave the 2048-bit block one digit of slack, so a trit opens
+    // the next block; cut to 2047 digits, the bits still read and the trit
+    // finds no next block.
+    const encoder = new Encoder();
+    for (let i = 0; i < 2047; i++) {
+      encoder.compose(i & 1, 2);
+    }
+    encoder.compose(2, 3);
+    const bytes = encoder.toUint8Array([0, 1]);
+    expect(bytes.length).toBe(2048 + 2);
+    const decoder = new Decoder(bytes.subarray(0, 2047), [0, 1]);
+    for (let i = 0; i < 2047; i++) {
+      decoder.parse(2);
+    }
+    expect(() => decoder.parse(3)).toThrow('Unexpected end of input while parsing');
   });
 });
 

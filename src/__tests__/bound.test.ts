@@ -19,7 +19,7 @@ const half = (r: number): readonly [number, number, number] => (r < 2 ? [0, 0, 2
 function encode(halves: number, bits: number, tail?: (enc: Encoder) => void): Uint8Array {
   const enc = new Encoder();
   for (let i = 0; i < halves; i++) {
-    enc.composeWeighted(0, 2, 4, 0, 4);
+    enc.composeWeighted(0, 2, 4);
   }
   for (let i = 0; i < bits; i++) {
     enc.compose(i & 1, 2);
@@ -36,7 +36,7 @@ function decode(
 ): void {
   const dec = new Decoder(bytes, BITS);
   for (let i = 0; i < halves; i++) {
-    expect(dec.parseWeighted(4, half, 4)).toBe(0);
+    expect(dec.parseWeighted(4, half)).toBe(0);
   }
   for (let i = 0; i < bits; i++) {
     expect(dec.parse(2)).toBe(i & 1);
@@ -97,9 +97,9 @@ describe('Block bound exact fallback', () => {
   it('writes a last symbol as its index when only its bucket form straddles a power of two', () => {
     // The last symbol's bucket candidate is 2^63 + 1 and its index candidate
     // 2^62 + 1: the index form saves a digit.
-    const tailWrite = (enc: Encoder): void => enc.composeWeighted(0, 2, 4, 0, 2);
+    const tailWrite = (enc: Encoder): void => enc.composeWeighted(0, 2, 4, { index: 0, count: 2 });
     const tailRead = (dec: Decoder): void => {
-      expect(dec.parseWeighted(4, half, 2, (i) => [i, i * 2, 2])).toBe(0);
+      expect(dec.parseWeighted(4, half, { count: 2, at: (i) => [i, i * 2, 2] })).toBe(0);
     };
     const bytes = encode(1, 60, tailWrite);
     expect(bytes.length).toBe(63);
@@ -111,19 +111,21 @@ describe('Block bound exact fallback', () => {
     // After 60 halves a last symbol with 15 members out of 31 states has the
     // index candidate 2^64 - 1 against 64 digits of space.
     const bucket = (r: number): readonly [number, number, number] => [r, r, 1];
-    const bytes = encode(60, 0, (enc) => enc.composeWeighted(3, 1, 31, 3, 15));
+    const bytes = encode(60, 0, (enc) => enc.composeWeighted(3, 1, 31, { index: 3, count: 15 }));
     expect(bytes.length).toBe(64);
-    decode(bytes, 60, 0, (dec) => expect(dec.parseWeighted(31, bucket, 15, bucket)).toBe(3));
+    decode(bytes, 60, 0, (dec) =>
+      expect(dec.parseWeighted(31, bucket, { count: 15, at: bucket })).toBe(3)
+    );
   });
 
   it('carries a uniform run past 2^256 into its first weighted symbol', () => {
     // 256 bits leave the bound at 2^256 when the half arrives; its candidate
     // is then exactly 2^258, the digit bound of the final block.
-    const bytes = encode(0, 256, (enc) => enc.composeWeighted(0, 2, 4, 0, 4));
+    const bytes = encode(0, 256, (enc) => enc.composeWeighted(0, 2, 4));
     expect(bytes.length).toBe(258);
-    decode(bytes, 0, 256, (dec) => expect(dec.parseWeighted(4, half, 4)).toBe(0));
+    decode(bytes, 0, 256, (dec) => expect(dec.parseWeighted(4, half)).toBe(0));
     expect(() =>
-      decode(bytes.subarray(0, 257), 0, 256, (dec) => dec.parseWeighted(4, half, 4))
+      decode(bytes.subarray(0, 257), 0, 256, (dec) => dec.parseWeighted(4, half))
     ).toThrow(CorruptInputError);
   });
 });

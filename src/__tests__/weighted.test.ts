@@ -189,7 +189,7 @@ describe('Weighted packer primitive', () => {
     const bits = (n: number): number => {
       const enc = new Encoder();
       for (let i = 0; i < n; i++) {
-        enc.composeWeighted(1, 99, 100, 1, 2);
+        enc.composeWeighted(1, 99, 100, { index: 1, count: 2 });
       }
       return enc.toString('01').length;
     };
@@ -243,12 +243,14 @@ describe('Indexed last symbol', () => {
       for (let s = 0; s < 4; s++) {
         const enc = new Encoder();
         enc.compose(5, 7);
-        enc.composeWeighted(dist.cums[s], dist.freqs[s], dist.total, s, 4);
+        enc.composeWeighted(dist.cums[s], dist.freqs[s], dist.total, { index: s, count: 4 });
         const bytes = enc.toUint8Array();
         expect(bytes.length).toBe(1);
         const dec = new Decoder(bytes);
         expect(dec.parse(7)).toBe(5);
-        expect(dec.parseWeighted(dist.total, locateIn(dist), 4, atIndexIn(dist))).toBe(s);
+        expect(
+          dec.parseWeighted(dist.total, locateIn(dist), { count: 4, at: atIndexIn(dist) })
+        ).toBe(s);
         dec.finalize();
       }
     }
@@ -260,7 +262,7 @@ describe('Indexed last symbol', () => {
     const plain = new Encoder();
     plain.composeWeighted(dist.cums[2], dist.freqs[2], dist.total);
     const indexed = new Encoder();
-    indexed.composeWeighted(dist.cums[2], dist.freqs[2], dist.total, 2, 4);
+    indexed.composeWeighted(dist.cums[2], dist.freqs[2], dist.total, { index: 2, count: 4 });
     expect(indexed.toString([0, 65535])).toBe(plain.toString([0, 65535]));
   });
 
@@ -272,7 +274,10 @@ describe('Indexed last symbol', () => {
       for (let i = 0; i < randInt(1, 30); i++) {
         const s = randInt(0, dist.cums.length - 1);
         plain.composeWeighted(dist.cums[s], dist.freqs[s], dist.total);
-        counted.composeWeighted(dist.cums[s], dist.freqs[s], dist.total, s, dist.total + run);
+        counted.composeWeighted(dist.cums[s], dist.freqs[s], dist.total, {
+          index: s,
+          count: dist.total + run,
+        });
       }
       expect(counted.toUint8Array()).toEqual(plain.toUint8Array());
     }
@@ -284,7 +289,7 @@ describe('Indexed last symbol', () => {
     for (let i = 0; i < 20; i++) {
       enc.compose(i % 3, 3);
     }
-    enc.composeWeighted(dist.cums[3], dist.freqs[3], dist.total, 3, 4);
+    enc.composeWeighted(dist.cums[3], dist.freqs[3], dist.total, { index: 3, count: 4 });
     const bytes = enc.toUint8Array();
     expect(bytes.length).toBe(5);
 
@@ -293,7 +298,7 @@ describe('Indexed last symbol', () => {
       for (let i = 0; i < 20; i++) {
         dec.parse(3);
       }
-      dec.parseWeighted(dist.total, locateIn(dist), 4, atIndexIn(dist));
+      dec.parseWeighted(dist.total, locateIn(dist), { count: 4, at: atIndexIn(dist) });
       if (extra) {
         dec.parse(2);
       }
@@ -329,6 +334,15 @@ describe('Indexed last symbol', () => {
     const text = node.encodeString(value, '01');
     expect(text.length).toBe(bits);
     expect(node.decodeString(text, '01')).toEqual(value);
+  });
+
+  it('records nothing for a weighted value that holds every state', () => {
+    const shape = { a: p.bool().weights([99, 1]) };
+    const bits = p.object(shape).encodeString({ a: true }, '01').length;
+    const node = p.object({ ...shape, b: p.int().min(5).max(5).weights([1]) });
+    const text = node.encodeString({ a: true, b: 5 }, '01');
+    expect(text.length).toBe(bits);
+    expect(node.decodeString(text, '01')).toEqual({ a: true, b: 5 });
   });
 
   it('rejects an index that points at a value with no weight', () => {
