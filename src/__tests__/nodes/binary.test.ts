@@ -79,7 +79,7 @@ describe('Schema binary', () => {
     const node = p.union([p.binary(), p.object({ a: p.int() }), p.null()]);
     expect(trip(node, new Uint8Array([7]))).toEqual(new Uint8Array([7]));
     expect(trip(node, { a: 1 })).toEqual({ a: 1 });
-    expect(() => p.union([p.binary(), p.binary().max(4)])).toThrow("overlap on kind 'Uint8Array'");
+    expect(() => p.union([p.binary(), p.binary().max(4)])).toThrow('overlap on kind "Uint8Array"');
   });
 
   it('a corrupted length runs out of input instead of allocating it', () => {
@@ -128,7 +128,7 @@ describe('Schema binary', () => {
     expect(trip(node, Int16Array.of(-7))).toEqual(Int16Array.of(-7));
     expect(trip(node, new Samples([3]))).toEqual(Int16Array.of(3));
     expect(() => p.union([p.binary(Int16Array), p.binary(Samples)])).toThrow(
-      "overlap on kind 'Int16Array'"
+      'overlap on kind "Int16Array"'
     );
   });
 });

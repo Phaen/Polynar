@@ -244,7 +244,7 @@ describe('Output density', () => {
 describe('Charset validation', () => {
   it('rejects a duplicate-character charset', () => {
     expect(() => new Decoder('test', { charset: 'aab' })).toThrow(
-      new TypeError("Invalid character set: 'a' appears more than once")
+      new TypeError('Invalid character set: "a" appears more than once')
     );
   });
 

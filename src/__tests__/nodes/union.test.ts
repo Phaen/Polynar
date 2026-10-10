@@ -29,24 +29,24 @@ describe('Schema union', () => {
     const Node = p.union([p.enum(['a', 'b']), p.int()]);
     expect(trip(Node, 'a')).toBe('a');
     expect(trip(Node, 3)).toBe(3);
-    expect(() => p.union([p.enum(['a', 1]), p.int()])).toThrow("overlap on kind 'number'");
+    expect(() => p.union([p.enum(['a', 1]), p.int()])).toThrow('overlap on kind "number"');
   });
 
   it('union rejects a value whose kind has no member', () => {
     const Node = p.union([p.string(), p.int()]);
     expect(() => Node.encode(true as never)).toThrow(
-      new TypeError("Kind 'boolean' is not one of 'string', 'number'")
+      new TypeError('Kind "boolean" is not one of "string", "number"')
     );
   });
 
   it('union rejects members that claim the same kind', () => {
     expect(() => p.union([p.array(p.int()), p.array(p.string())])).toThrow(
-      "overlap on kind 'array'"
+      'overlap on kind "array"'
     );
     expect(() => p.union([p.object({ a: p.int() }), p.object({ b: p.int() })])).toThrow(
-      "overlap on kind 'object'"
+      'overlap on kind "object"'
     );
-    expect(() => p.union([p.int(), p.float()])).toThrow("overlap on kind 'number'");
+    expect(() => p.union([p.int(), p.float()])).toThrow('overlap on kind "number"');
     expect(() => p.union([p.any(), p.string()])).toThrow('overlap on kind');
   });
 
@@ -89,7 +89,7 @@ describe('Schema union', () => {
     expect(trip(Maybe, 7)).toBe(7);
     // p.any already claims undefined, so a second optional member overlaps.
     expect(() => p.union([p.optional(p.int()), p.optional(p.any())])).toThrow(
-      "overlap on kind 'undefined'"
+      'overlap on kind "undefined"'
     );
   });
 

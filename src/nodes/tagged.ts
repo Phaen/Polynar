@@ -3,7 +3,7 @@ import { PNode } from './base';
 import type { Kind } from './guards';
 import type { InferTagged } from './infer';
 import type { PObject } from './object';
-import { atPath, oneOf, valueSubject } from './path';
+import { atPath, oneOf, describe } from './path';
 import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
 
 /**
@@ -39,12 +39,12 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
       // order the members were written in.
       if (/^(0|[1-9]\d{0,9})$/.test(tag) && Number(tag) < 2 ** 32 - 1) {
         throw new TypeError(
-          `p.tagged tag '${tag}' is a number, which JS reorders; use a tag that starts with a letter`
+          `p.tagged tag ${describe(tag)} is a number, which JS reorders; use a tag that starts with a letter`
         );
       }
       if (this._members[tag]._has(key)) {
         throw new TypeError(
-          `p.tagged member '${tag}' cannot have a '${key}' field; the tag carries it`
+          `p.tagged member ${describe(tag)} cannot have a ${describe(key)} field; the tag carries it`
         );
       }
       this._index.set(tag, i);
@@ -67,7 +67,7 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
     const tag = (value as Record<string, unknown>)[this._key];
     const pos = this._index.get(tag as string);
     if (pos === undefined) {
-      throw atPath(new RangeError(`${valueSubject(tag)} is not ${oneOf(this._tags)}`), this._key);
+      throw atPath(new RangeError(`Value ${describe(tag)} is not ${oneOf(this._tags)}`), this._key);
     }
     if (this._weights === undefined) {
       enc.compose(pos, this._tags.length);

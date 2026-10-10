@@ -25,7 +25,7 @@ describe('Schema string', () => {
 
   it('string rejects a value outside its charset', () => {
     expect(() => p.string().charset('0123456789').encode('12a')).toThrow(
-      new RangeError("Character 'a' at 2 is not in the character set")
+      new RangeError('Character "a" at 2 is not in the character set')
     );
   });
 
@@ -231,7 +231,7 @@ describe('Schema string', () => {
     expect(() => p.string().max(1.5)).toThrow(TypeError);
     expect(() => p.string().prose().charset('ab')).toThrow('cannot combine prose with a charset');
     expect(() => p.string().charset([97, 98]).encode('abc')).toThrow(
-      new RangeError("Character 'c' (code 99) at 2 is outside the range 97–98")
+      new RangeError('Character "c" (code 99) at 2 is outside the range 97–98')
     );
   });
 });

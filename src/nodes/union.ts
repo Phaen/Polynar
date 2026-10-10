@@ -1,7 +1,7 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import { kindOf, type Kind } from './guards';
-import { oneOf } from './path';
+import { describe, oneOf } from './path';
 import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
 
 /**
@@ -34,7 +34,7 @@ export class PUnion<T> extends PNode<T> {
       for (const kind of member._kinds) {
         if (this._byKind.has(kind)) {
           throw new TypeError(
-            `p.union members overlap on kind '${kind}'; only one member per kind`
+            `p.union members overlap on kind ${describe(kind)}; only one member per kind`
           );
         }
         this._byKind.set(kind, i);
@@ -59,7 +59,7 @@ export class PUnion<T> extends PNode<T> {
     const kind = kindOf(value);
     const pos = this._byKind.get(kind);
     if (pos === undefined) {
-      throw new TypeError(`Kind '${kind}' is not ${oneOf(this._kinds)}`);
+      throw new TypeError(`Kind ${describe(kind)} is not ${oneOf(this._kinds)}`);
     }
     if (this._weights === undefined) {
       enc.compose(pos, this._members.length);

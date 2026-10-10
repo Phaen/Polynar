@@ -8,6 +8,7 @@
 import { Encoder, Decoder, CorruptInputError, Alphabet } from '../packer';
 import type { Charset } from '../packer';
 import { PNode } from './base';
+import { describe } from './path';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
 import type { Kind } from './guards';
@@ -145,8 +146,8 @@ export class PString extends PNode<string> {
         const charset = alphabet.charset;
         throw new RangeError(
           typeof charset === 'string'
-            ? `Character '${value.charAt(i)}' at ${i} is not in the character set`
-            : `Character '${value.charAt(i)}' (code ${code}) at ${i} is outside the range ${charset[0]}–${charset[1]}`
+            ? `Character ${describe(value.charAt(i))} at ${i} is not in the character set`
+            : `Character ${describe(value.charAt(i))} (code ${code}) at ${i} is outside the range ${charset[0]}–${charset[1]}`
         );
       }
       enc.compose(digit, alphabet.size);

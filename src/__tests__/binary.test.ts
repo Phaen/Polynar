@@ -128,7 +128,7 @@ describe('Binary output', () => {
 
     it('rejects a charset symbol that is not a byte', () => {
       expect(() => p.bool().encode(true, { charset: 'aĀ' })).toThrow(
-        new RangeError("Character 'Ā' (code 256) is not a byte, so binary output cannot use it")
+        new RangeError('Character "Ā" (code 256) is not a byte, so binary output cannot use it')
       );
       expect(() => p.bool().decode(Uint8Array.of(97), { charset: 'a一' })).toThrow(RangeError);
       expect(() => p.bool().encode(true, { charset: [200, 300] })).toThrow(

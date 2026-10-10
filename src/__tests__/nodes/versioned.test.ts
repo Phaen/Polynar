@@ -131,7 +131,7 @@ describe('Schema versioned', () => {
     const Nullable = p.union([Current, p.null()]);
     expect(trip(Nullable, null)).toBeNull();
     expect(trip(Nullable, ada)).toEqual(ada);
-    expect(() => p.union([Current, p.object({})])).toThrow("overlap on kind 'object'");
+    expect(() => p.union([Current, p.object({})])).toThrow('overlap on kind "object"');
   });
 
   it('has no kinds when its newest version has none', () => {

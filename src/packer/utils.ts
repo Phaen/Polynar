@@ -108,7 +108,7 @@ export class Alphabet {
         }
         if (digits.has(code)) {
           throw new TypeError(
-            `Invalid character set: '${charset.charAt(i)}' appears more than once`
+            `Invalid character set: ${JSON.stringify(charset.charAt(i))} appears more than once`
           );
         }
         digits.set(code, i);
@@ -217,7 +217,7 @@ export function outputAlphabet(type: OutputType, charset?: Charset): Alphabet {
   if (type === 'binary' && alphabet.top > 255) {
     throw new RangeError(
       typeof charset === 'string'
-        ? `Character '${String.fromCharCode(alphabet.top)}' (code ${alphabet.top}) is not a byte, so binary output cannot use it`
+        ? `Character ${JSON.stringify(String.fromCharCode(alphabet.top))} (code ${alphabet.top}) is not a byte, so binary output cannot use it`
         : `Code ${alphabet.top} is not a byte, so binary output cannot use the range [${charset[0]}, ${charset[1]}]`
     );
   }

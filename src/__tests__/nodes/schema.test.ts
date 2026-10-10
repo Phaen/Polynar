@@ -253,7 +253,7 @@ describe('Schema internals', () => {
     const Search = p.object({ filters: p.array(p.object({ op: p.enum(['eq', 'lt']) })) });
     const ops = [{ op: 'eq' }, { op: 'eq' }, { op: 'gt' }] as { op: 'eq' }[];
     expect(() => Search.encode({ filters: ops })).toThrow(
-      "filters[2].op: Value 'gt' is not one of 'eq', 'lt'"
+      'filters[2].op: Value "gt" is not one of "eq", "lt"'
     );
 
     const Account = p.object({ user: p.object({ name: p.string() }) });

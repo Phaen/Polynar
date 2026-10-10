@@ -44,35 +44,23 @@ export const oneOf = (values: readonly unknown[]): string =>
     : `one of the ${values.length} listed values`;
 
 /**
- * A value as an error message shows it: a string quoted, so `'5'` and `5`
- * read differently, other primitives as written, and an object by its kind.
+ * A value as an error message shows it: as JSON, so a string is quoted and
+ * `"5"` reads differently from `5`. Numbers, BigInts and invalid dates, which
+ * JSON writes as `null` or refuses, and values JSON can't write show as text.
  */
 export const describe = (value: unknown): string => {
-  if (typeof value === 'string') {
-    return `'${value}'`;
-  }
-  if (typeof value === 'bigint') {
-    return `${value}n`;
-  }
-  if (isPrimitive(value)) {
+  if (
+    typeof value === 'number' ||
+    typeof value === 'bigint' ||
+    (value instanceof Date && Number.isNaN(value.getTime()))
+  ) {
     return String(value);
   }
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? 'an invalid Date' : 'a Date';
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
   }
-  if (Array.isArray(value)) {
-    return 'an array';
-  }
-  return typeof value === 'function' ? 'a function' : 'an object';
-};
-
-/**
- * A value as the subject of an error: `Value 'c'` for a primitive, or what it
- * is for anything else, as in `An array`.
- */
-export const valueSubject = (value: unknown): string => {
-  const text = describe(value);
-  return isPrimitive(value) ? `Value ${text}` : text[0].toUpperCase() + text.slice(1);
 };
 
 const isPrimitive = (value: unknown): boolean =>

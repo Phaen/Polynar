@@ -1,7 +1,7 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import { kindOf, type Kind } from './guards';
-import { oneOf, valueSubject } from './path';
+import { oneOf, describe } from './path';
 import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
 
 /**
@@ -53,7 +53,7 @@ export class PEnum<T> extends PNode<T> {
   _write(enc: Encoder, value: T): void {
     const pos = this._list.indexOf(value);
     if (pos === -1) {
-      throw new RangeError(`${valueSubject(value)} is not ${oneOf(this._list)}`);
+      throw new RangeError(`Value ${describe(value)} is not ${oneOf(this._list)}`);
     }
     if (this._weights === undefined) {
       enc.compose(pos, this._list.length);

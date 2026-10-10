@@ -47,7 +47,7 @@ describe('Schema tagged union', () => {
 
   it('rejects numeric tags, which JS would reorder', () => {
     expect(() => p.tagged('t', { a: p.object({}), '2': p.object({}) })).toThrow(
-      "p.tagged tag '2' is a number"
+      'p.tagged tag "2" is a number'
     );
     expect(() => p.tagged('t', { v01: p.object({}), '01': p.object({}) })).not.toThrow();
   });
@@ -83,7 +83,7 @@ describe('Schema tagged union', () => {
     };
     const Dynamic = p.tagged('type', members);
     expect(() => Dynamic.encode({ type: 'c', x: 1 })).toThrow(
-      new RangeError("type: Value 'c' is not one of 'a', 'b'")
+      new RangeError('type: Value "c" is not one of "a", "b"')
     );
   });
 
@@ -107,14 +107,14 @@ describe('Schema tagged union', () => {
         a: p.object({ x: p.int() }),
         b: p.object({ type: p.string(), x: p.int() }),
       })
-    ).toThrow("p.tagged member 'b' cannot have a 'type' field; the tag carries it");
+    ).toThrow('p.tagged member "b" cannot have a "type" field; the tag carries it');
   });
 
   it('is of kind object and composes like one', () => {
     const Nullable = p.union([Op, p.null()]);
     expect(trip(Nullable, null)).toBeNull();
     expect(trip(Nullable, { type: 'cursor', pos: 4 })).toEqual({ type: 'cursor', pos: 4 });
-    expect(() => p.union([Op, p.object({})])).toThrow("overlap on kind 'object'");
+    expect(() => p.union([Op, p.object({})])).toThrow('overlap on kind "object"');
 
     const ops: Op[] = [
       { type: 'delete', pos: 0, len: 7 },

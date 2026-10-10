@@ -193,11 +193,11 @@ export class PDate extends PNode<Date> {
     // so the decoder could never rebuild them.
     if (isNaN(new Date(this._calendar.start(bucket)).getTime())) {
       throw new RangeError(
-        `Date '${value.toISOString()}' falls in a bucket that starts before the earliest Date`
+        `Date ${describe(value)} falls in a bucket that starts before the earliest Date`
       );
     }
 
-    this._range.write(enc, bucket, () => `Date '${value.toISOString()}'`);
+    this._range.write(enc, bucket, () => `Date ${describe(value)}`);
   }
 
   _read(dec: Decoder): Date {

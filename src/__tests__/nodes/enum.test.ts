@@ -16,12 +16,12 @@ describe('Schema enum', () => {
 
   it('enum rejects a value not in its list', () => {
     expect(() => p.enum(['a', 'b']).encode('c' as never)).toThrow(
-      new RangeError("Value 'c' is not one of 'a', 'b'")
+      new RangeError('Value "c" is not one of "a", "b"')
     );
     const many = p.enum(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']);
-    expect(() => many.encode('z' as never)).toThrow("Value 'z' is not one of the 9 listed values");
+    expect(() => many.encode('z' as never)).toThrow('Value "z" is not one of the 9 listed values');
     expect(() => p.enum([1, 5]).encode('5' as never)).toThrow(
-      new RangeError("Value '5' is not one of 1, 5")
+      new RangeError('Value "5" is not one of 1, 5')
     );
   });
 

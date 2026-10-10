@@ -13,11 +13,11 @@ describe('Schema int', () => {
 
   it('shows a wrongly typed value by its type', () => {
     expect(() => p.int().encode('5' as never)).toThrow(
-      new TypeError("p.int expected an integer, got '5'")
+      new TypeError('p.int expected an integer, got "5"')
     );
     expect(() => p.int().encode(5.5)).toThrow(new TypeError('p.int expected an integer, got 5.5'));
     expect(() => p.int().encode([5] as never)).toThrow(
-      new TypeError('p.int expected an integer, got an array')
+      new TypeError('p.int expected an integer, got [5]')
     );
   });
 
