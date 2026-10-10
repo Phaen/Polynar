@@ -34,6 +34,14 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
       throw new TypeError('p.tagged requires at least one member');
     }
     this._tags.forEach((tag, i) => {
+      // JS lists keys like '2' before all others, in numeric order, so the
+      // member order (and with it the weights and the wire) would not be the
+      // order the members were written in.
+      if (/^(0|[1-9]\d{0,9})$/.test(tag) && Number(tag) < 2 ** 32 - 1) {
+        throw new TypeError(
+          `p.tagged tag '${tag}' is a number, which JS reorders; use a tag that starts with a letter`
+        );
+      }
       if (this._members[tag]._has(key)) {
         throw new TypeError(
           `p.tagged member '${tag}' cannot have a '${key}' field; the tag carries it`

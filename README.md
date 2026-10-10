@@ -242,7 +242,7 @@ p.tagged('type', {
 }); // { type: 'move'; x: number; y: number } | { type: 'chat'; text: string }
 ```
 
-The tag costs log2(members) bits and is never written as text. The order of the members is part of the encoding, so reordering them breaks old data unless the schema is wrapped in `p.versioned`. The tag key belongs to the tagged union, so a member shape that also declares it throws, and so does a value whose tag isn't listed. A tagged union counts as an object, so it can sit next to other kinds in `p.union`.
+The tag costs log2(members) bits and is never written as text. The order of the members is part of the encoding, so reordering them breaks old data unless the schema is wrapped in `p.versioned`. The tag key belongs to the tagged union, so a member shape that also declares it throws, and so does a value whose tag isn't listed. Tags can't be numbers like `'2'`, because JS would list them before the others. A tagged union counts as an object, so it can sit next to other kinds in `p.union`.
 
 | Method                  | Description                                 |
 | ----------------------- | ------------------------------------------- |

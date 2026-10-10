@@ -45,6 +45,13 @@ describe('Schema tagged union', () => {
     expect(tagged.length - bare.length).toBe(32);
   });
 
+  it('rejects numeric tags, which JS would reorder', () => {
+    expect(() => p.tagged('t', { a: p.object({}), '2': p.object({}) })).toThrow(
+      "p.tagged tag '2' is a number"
+    );
+    expect(() => p.tagged('t', { v01: p.object({}), '01': p.object({}) })).not.toThrow();
+  });
+
   it('a single member costs no tag bits', () => {
     const One = p.tagged('type', { only: p.object({ pos: p.int().min(0).max(1000) }) });
     const Bare = p.object({ pos: p.int().min(0).max(1000) });
