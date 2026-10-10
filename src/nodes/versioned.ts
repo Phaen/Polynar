@@ -27,7 +27,7 @@ type Migrate = (prev: unknown) => unknown;
  * Old data therefore re-encodes as the newest version: the one place where
  * decode then encode does not reproduce the bytes.
  */
-export class PVersioned<T> extends PNode<T> {
+export class PVersioned<T, TFirst = T> extends PNode<T> {
   readonly _kinds?: readonly Kind[];
   private readonly _nodes: readonly PNode<any>[];
   /** `_migrations[i]` turns a value of version i into one of version i + 1. */
@@ -59,7 +59,25 @@ export class PVersioned<T> extends PNode<T> {
         `Data was written by version ${index + 1}; this schema knows ${this._nodes.length}`
       );
     }
-    let value: unknown = this._nodes[index]._read(dec);
+    return this._upgrade(this._nodes[index]._read(dec), index);
+  }
+
+  /**
+   * Runs a value through the migrations to the newest version, the same way
+   * `decode` upgrades old data. The value is of the first version, or of the
+   * version whose node is passed as `from`.
+   */
+  walk(value: TFirst): T;
+  walk<S>(value: S, from: PNode<S>): T;
+  walk(value: unknown, from?: PNode<unknown>): T {
+    const start = from === undefined ? 0 : this._nodes.indexOf(from);
+    if (start === -1) {
+      throw new TypeError('p.versioned walk got a node that is not one of its versions');
+    }
+    return this._upgrade(value, start);
+  }
+
+  private _upgrade(value: unknown, index: number): T {
     for (let i = index; i < this._migrations.length; i++) {
       value = this._migrations[i](value);
     }

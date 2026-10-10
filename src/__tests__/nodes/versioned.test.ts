@@ -31,6 +31,20 @@ describe('Schema versioned', () => {
     expect(One.encode({ name: 'Ada' })).toEqual(Spelled(V1, 0, { name: 'Ada' }));
   });
 
+  it('walk runs a value through the migrations, as decode does', () => {
+    const All = p.versioned(V1, [V2, toV2], [V3, (user: V2) => ({ ...user, active: true })]);
+    expect(All.walk({ name: 'Ada' })).toEqual({ name: 'Ada', age: 0, active: true });
+    expect(All.walk({ name: 'Ada', age: 36 }, V2)).toEqual({ name: 'Ada', age: 36, active: true });
+    expect(All.walk({ name: 'Ada', age: 36, active: false }, V3)).toEqual({
+      name: 'Ada',
+      age: 36,
+      active: false,
+    });
+    expect(() => All.walk({ name: 'Ada' }, p.object({ name: p.string() }))).toThrow(
+      'not one of its versions'
+    );
+  });
+
   it('data written by an earlier version decodes, migrated', () => {
     const old = p.versioned(V1).encode({ name: 'Ada' });
     expect(Current.decode(old)).toEqual({ name: 'Ada', age: 0 });

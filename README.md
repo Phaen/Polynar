@@ -256,7 +256,13 @@ A node looked up on first use, so a schema can contain itself or refer to one de
 
 A schema that can change after data has been written. The first argument is the first version. Each later argument is either a plain node, when old values still fit it (a wider bound, an added optional field), or `[node, migrate]`, where `migrate` turns a value of the previous version into one of the new. Infers the newest version's type; up to eight versions are typed. Earlier versions stay in the list: replacing one instead of adding after it makes data written with it undecodable.
 
-Data written by any listed version decodes and is migrated step by step to the newest. The encoder always writes the newest, so decoding old data and encoding it again gives new bytes. Data from a version the schema doesn't list throws `UnknownVersionError`. The version number costs a couple of bits. The wrapper has to be there before the first data is written: data written without it carries no version, and nothing can tell its versions apart later. No methods.
+Data written by any listed version decodes and is migrated step by step to the newest. The encoder always writes the newest, so decoding old data and encoding it again gives new bytes. Data from a version the schema doesn't list throws `UnknownVersionError`. The version number costs a couple of bits. The wrapper has to be there before the first data is written: data written without it carries no version, and nothing can tell its versions apart later.
+
+| Method                       | Description                                                                                                                            |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `.walk(value, from?: PNode)` | Runs a value through the migrations to the newest version, as decoding old data does. The value is of the first version, or of `from`. |
+
+`walk` is there for testing migrations: `User.walk({ name: 'Ada' })` gives what data written by the first version decodes to.
 
 ### `p.any()`
 

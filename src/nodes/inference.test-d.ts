@@ -129,6 +129,15 @@ const _widened: Equals<Infer<typeof Widened>, number> = true;
 const Relaxed = p.versioned(UserV1, p.object({ name: p.string(), age: p.optional(p.int()) }));
 const _relaxed: Equals<Infer<typeof Relaxed>, { name: string; age?: number }> = true;
 
+// walk takes a first-version value, or one of the version whose node is passed.
+const _walked: Equals<ReturnType<typeof Users.walk>, { name: string; age: number }> = true;
+Users.walk({ name: 'Ada' });
+Users.walk({ name: 'Ada', age: 36 }, UserV2);
+// @ts-expect-error — a first-version value has no age
+Users.walk({ name: 'Ada', age: 36 });
+// @ts-expect-error — the value must match the node it starts from
+Users.walk({ name: 'Ada' }, UserV2);
+
 // @ts-expect-error — a required field added without a migration
 p.versioned(UserV1, UserV2);
 

@@ -38,21 +38,25 @@ import type { Step } from './versioned';
  * number, and has to be there before the first data is written.
  */
 function versioned<T1>(v1: PNode<T1>): PVersioned<T1>;
-function versioned<T1, T2>(v1: PNode<T1>, v2: Step<T1, T2>): PVersioned<T2>;
-function versioned<T1, T2, T3>(v1: PNode<T1>, v2: Step<T1, T2>, v3: Step<T2, T3>): PVersioned<T3>;
+function versioned<T1, T2>(v1: PNode<T1>, v2: Step<T1, T2>): PVersioned<T2, T1>;
+function versioned<T1, T2, T3>(
+  v1: PNode<T1>,
+  v2: Step<T1, T2>,
+  v3: Step<T2, T3>
+): PVersioned<T3, T1>;
 function versioned<T1, T2, T3, T4>(
   v1: PNode<T1>,
   v2: Step<T1, T2>,
   v3: Step<T2, T3>,
   v4: Step<T3, T4>
-): PVersioned<T4>;
+): PVersioned<T4, T1>;
 function versioned<T1, T2, T3, T4, T5>(
   v1: PNode<T1>,
   v2: Step<T1, T2>,
   v3: Step<T2, T3>,
   v4: Step<T3, T4>,
   v5: Step<T4, T5>
-): PVersioned<T5>;
+): PVersioned<T5, T1>;
 function versioned<T1, T2, T3, T4, T5, T6>(
   v1: PNode<T1>,
   v2: Step<T1, T2>,
@@ -60,7 +64,7 @@ function versioned<T1, T2, T3, T4, T5, T6>(
   v4: Step<T3, T4>,
   v5: Step<T4, T5>,
   v6: Step<T5, T6>
-): PVersioned<T6>;
+): PVersioned<T6, T1>;
 function versioned<T1, T2, T3, T4, T5, T6, T7>(
   v1: PNode<T1>,
   v2: Step<T1, T2>,
@@ -69,7 +73,7 @@ function versioned<T1, T2, T3, T4, T5, T6, T7>(
   v5: Step<T4, T5>,
   v6: Step<T5, T6>,
   v7: Step<T6, T7>
-): PVersioned<T7>;
+): PVersioned<T7, T1>;
 function versioned<T1, T2, T3, T4, T5, T6, T7, T8>(
   v1: PNode<T1>,
   v2: Step<T1, T2>,
@@ -79,7 +83,7 @@ function versioned<T1, T2, T3, T4, T5, T6, T7, T8>(
   v6: Step<T5, T6>,
   v7: Step<T6, T7>,
   v8: Step<T7, T8>
-): PVersioned<T8>;
+): PVersioned<T8, T1>;
 function versioned(
   ...versions: readonly (PNode<any> | readonly [PNode<any>, (prev: any) => any])[]
 ): PVersioned<any> {
