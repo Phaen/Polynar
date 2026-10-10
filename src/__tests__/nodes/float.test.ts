@@ -34,6 +34,16 @@ describe('Schema float', () => {
     expect(p.float().encode(value)).toHaveLength(bytes);
   });
 
+  it('round-trips a value whose shifted window ends exactly on 2', () => {
+    // Significand (5^23 - 1) / 2 under five-realm shift 23: the window's top,
+    // 5^23 · 2^-53, scales by 5^-23 to a power of two and normalizes to
+    // exactly 2, so the simplest-fraction search meets an integer endpoint.
+    const value = 23841857910156250;
+    const bytes = p.float().encode(value);
+    expect(bytes).toHaveLength(9);
+    expect(p.float().decode(bytes)).toBe(value);
+  });
+
   it.each([Infinity, -Infinity, NaN])('rejects %p', (value) => {
     expect(() => p.float().encode(value)).toThrow(TypeError);
   });

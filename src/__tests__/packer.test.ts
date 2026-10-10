@@ -699,6 +699,31 @@ describe('composeWeighted / parseWeighted with an indexed last symbol', () => {
     }
   });
 
+  it('rejects an invalid symbol position at the source', () => {
+    const error = (name: string, message: string) => expect.objectContaining({ name, message });
+    const enc = new Encoder();
+    expect(() => enc.composeWeighted(0, 2, 8, { index: 0.5, count: 4 })).toThrow(
+      error('TypeError', 'Symbol position must be integers, got index 0.5, count 4')
+    );
+    expect(() => enc.composeWeighted(0, 2, 8, { index: 0, count: 0 })).toThrow(
+      error('TypeError', 'Symbol position must be integers, got index 0, count 0')
+    );
+    expect(() => enc.composeWeighted(0, 2, 8, { index: 4, count: 4 })).toThrow(
+      error('RangeError', 'Index 4 is outside [0, 4)')
+    );
+    expect(() => enc.composeWeighted(0, 2, 8, { index: -1, count: 4 })).toThrow(
+      error('RangeError', 'Index -1 is outside [0, 4)')
+    );
+
+    const dist = four(1);
+    const dec = new Decoder(new Encoder().output());
+    for (const count of [0, 1.5]) {
+      expect(() =>
+        dec.parseWeighted(dist.total, locateIn(dist), { count, at: atIndexIn(dist) })
+      ).toThrow(error('TypeError', `Symbol count must be a positive integer, got ${count}`));
+    }
+  });
+
   it('keeps the bucket form when the digits hold it anyway', () => {
     // Base 55296: both forms fit one digit, so the bytes equal the plain call.
     const dist = four(1000);

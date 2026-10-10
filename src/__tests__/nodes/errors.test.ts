@@ -53,6 +53,23 @@ describe('Error paths', () => {
     expect((caught as Error).stack).toMatch(/^RangeError: a: Value 5 is above the maximum 3/);
   });
 
+  it('shows a value JSON cannot write as plain text', () => {
+    const notListed = (text: string) =>
+      expect.objectContaining({
+        name: 'RangeError',
+        message: `Value ${text} is not one of the 1 listed values`,
+      });
+    expect(() => p.enum([{ id: 1n }]).encode({ id: 1n })).toThrow(notListed('[object Object]'));
+    expect(() => p.enum([Math.max]).encode(Math.min)).toThrow(notListed(String(Math.min)));
+  });
+
+  it('cuts a long value short', () => {
+    const members: string[] = ['a'];
+    expect(() => p.enum(members).encode('x'.repeat(200))).toThrow(
+      `Value "${'x'.repeat(78)}… is not one of "a"`
+    );
+  });
+
   it('passes anything thrown that is not an Error through untouched', () => {
     class PThrows extends PNode<number> {
       _write(): void {

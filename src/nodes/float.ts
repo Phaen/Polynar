@@ -81,12 +81,12 @@ const unzigNonzero = (z: number): number => (z % 2 === 0 ? z / 2 + 1 : -(z + 1) 
  * digits x 10^k, whose fives are digits' own times 5^k.
  */
 function fiveShiftCandidate(value: number): number {
-  const match = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/.exec(Math.abs(value).toString());
-  if (match === null) {
-    return 0;
-  }
-  let digits = match[1] + (match[2] ?? '');
-  let shift = (match[3] ? Number(match[3]) : 0) - (match[2]?.length ?? 0);
+  // A finite positive double prints as digits with an optional fraction and
+  // an optional exponent ("123", "0.001", "1.5e+21", "5e-324").
+  const [decimal, exponent = '0'] = Math.abs(value).toString().split('e');
+  const [whole, fraction = ''] = decimal.split('.');
+  let digits = whole + fraction;
+  let shift = Number(exponent) - fraction.length;
   while (digits.length > 1 && digits.endsWith('0')) {
     digits = digits.slice(0, -1);
     shift++;
@@ -188,9 +188,12 @@ function canonicalSignificand(significand: bigint, value: number): SignificandFo
  * and the canonical recompute rejects it whichever way it rounds.
  */
 function roundToSignificand(num: bigint, den: bigint): bigint {
-  // The bit-length estimate can be off by one, so the division is redone at the corrected
-  // scale; halving a rounded result would round twice.
-  for (let shift = 52 + bitLength(den) - bitLength(num); ; ) {
+  // The bit-length estimate scales num/den into (2^51, 2^53), so a result
+  // below the grid is redone one bit up; doubling a rounded result would
+  // round twice. Rounding never carries up to 2^53: that takes a name within
+  // 2^-54 below a power of two, and no p·5^f/q with q under the flat-mantissa
+  // budget and |f| at most FIVE_SHIFT_MAX comes closer than 2^-39.
+  for (let shift = 52 + bitLength(den) - bitLength(num); ; shift++) {
     let n = num;
     let d = den;
     if (shift > 0) {
@@ -202,11 +205,7 @@ function roundToSignificand(num: bigint, den: bigint): bigint {
     if (2n * (n % d) > d) {
       m += 1n;
     }
-    if (m >= 2n * SIGNIFICAND_ONE) {
-      shift--;
-    } else if (m < SIGNIFICAND_ONE) {
-      shift++;
-    } else {
+    if (m >= SIGNIFICAND_ONE) {
       return m;
     }
   }
