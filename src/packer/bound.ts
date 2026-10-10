@@ -37,8 +37,6 @@ const SCALES = [2 ** -768, 2 ** -512, 2 ** -256, 1, 2 ** 256, 2 ** 512, 2 ** 768
 const ULP2 = 2 ** -52;
 /** Error units budgeted per symbol in the float regime. */
 const OPS_PER_SYMBOL = 3;
-/** Past this many error units the margins would stop being tiny. */
-const MAX_OPS = 2 ** 44;
 
 const enum Regime {
   Uniform,
@@ -77,16 +75,16 @@ function floatOf(x: bigint): [number, number] {
  * value.
  */
 function compareFloat(x: number, E: number, m: number, e: number, k: number): -1 | 0 | 1 {
-  if (k > MAX_OPS) {
-    return 0;
-  }
   const d = (E - e) / STEP;
   if (d <= -4) {
     return -1;
   }
   const y = m * SCALES[3 - d];
   // The margins cover the k roundings of x, the one rounding of m, and the
-  // two roundings of applying them.
+  // two roundings of applying them. n roundings of at most u = ULP2 / 2 each
+  // compound to (1 + u)^n - 1 <= 2nu = n * ULP2 while nu <= 1; past that mu
+  // exceeds 1 and both tests fail, so no number of roundings gives a wrong
+  // answer, only an undecidable 0.
   const mu = (k + 8) * ULP2;
   if (x * (1 - mu) > y * (1 + mu)) {
     return 1;
