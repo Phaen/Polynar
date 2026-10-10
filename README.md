@@ -17,7 +17,7 @@ The waste shows up when your data doesn't fit a power of two. Say a field is mal
 
 That idea is where the name comes from. Binary counts in base 2 and ternary in base 3; a polynary number mixes many bases inside one number, a different base for every piece of data, each sized to exactly that piece. A boolean rides in a base-2 slot, a three-way enum in a base-3 slot, a 0-to-99 integer in a base-100 slot, and nothing rounds up to a whole byte or character. Your data fits perfectly, without waste.
 
-Under the hood, the message packs into arbitrary-precision integers in blocks of about two kilobits, so encoding stays fast and the output lands within a hair of the information-theoretic minimum. You give the constraints, Polynar does the arithmetic.
+Under the hood, the message packs into arbitrary-precision integers in blocks of 2048 bits by default, so encoding stays fast and the output lands within a hair of the information-theoretic minimum. You give the constraints, Polynar does the arithmetic.
 
 ## Size in practice
 
@@ -291,7 +291,7 @@ What `i` is depends on the node: the value itself on `p.int`, the step count (`v
 - `fn` returns safe integers and never goes down. A value whose weight is zero can't be encoded.
 - Only the differences between results matter, so adding a constant changes nothing.
 - Encoder and decoder must get identical numbers from it, so stick to BigInt or plain `+ - * /`; `Math.exp` and friends round differently per engine.
-- Keep the total small. On top of what the weights predict, every two kilobits of message can take up to log2(total) + 1 extra bits.
+- Keep the total small. On top of what the weights predict, every block of the message (2048 bits by default) can take up to log2(total) + 1 extra bits.
 
 ## Encoding and decoding
 
@@ -312,9 +312,9 @@ User.decode(link, { charset: CharSets.urlSafe });
 
 `decode` can tell bytes from text by the input itself, so `type` is optional there and only checked by TypeScript.
 
-`blockBits` is the size of the blocks a message is packed in, from 128 to 65536 bits and 2048 by default. Bigger blocks waste slightly less space, and smaller ones are faster.
+`blockBits` is the size of the blocks a message is packed in, from 128 to 65536 bits and 2048 by default. Bigger blocks save a little space, and smaller ones are faster.
 
-A charset is the set of symbols a message is written in, and it works for both text and binary output. It is a string of at least two different characters (an emoji counts as two), or a `[min, max]` range of character codes. Text defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. Binary output defaults to every byte value and writes each symbol as its character code, so its charset can only hold codes from 0 to 255. That keeps bytes inside a smaller set, such as printable ASCII:
+A charset is the set of symbols a message is written in, and it works for both text and binary output. It is a string of at least two different characters, or a `[min, max]` range of character codes. Charsets hold characters from the Basic Multilingual Plane only, so no emoji. Text defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. Binary output defaults to every byte value and writes each symbol as its character code, so its charset can only hold codes from 0 to 255. That keeps bytes inside a smaller set, such as printable ASCII:
 
 ```typescript
 const ascii = User.encode(user, { charset: CharSets.printable }); // every byte is printable ASCII
@@ -333,7 +333,7 @@ User.decode(ascii, { charset: CharSets.printable });
 | `CharSets.alphanumeric` | letters and digits              |
 | `CharSets.printable`    | printable ASCII                 |
 | `CharSets.htmlSafe`     | printable ASCII without `"&'<>` |
-| `CharSets.Base64`       | standard Base64                 |
+| `CharSets.base64`       | standard Base64                 |
 | `CharSets.urlSafe`      | letters, digits and `-._~`      |
 
 ## Errors
@@ -359,7 +359,7 @@ The node classes are exported too (`PNode`, `PInt`, `PString`, `PObject`, …), 
 
 ## Custom nodes
 
-Subclass `PNode` and implement two methods: `_write` writes one value's digits, and `_read` reads them back in the same order. The node then works inside `p.object`, `p.array` and `p.optional` like any built-in. To use it in `p.union`, also set `_kinds` to the kinds its values have, like `readonly _kinds = ['object'] as const`. A node that can return `undefined` overrides `_takesUndefined()` to return `true`, so an object field using it can be left out. See [`examples/custom-node.ts`](examples/custom-node.ts) for a runnable version.
+Subclass `PNode` and implement two methods: `_write` writes one value's digits, and `_read` reads them back in the same order. The node then works inside `p.object`, `p.array` and `p.optional` like any built-in. To use it in `p.union`, also set `_kinds` to the kinds its values have, like `readonly _kinds = ['object'] as const`. A node that can return `undefined` needs nothing extra for an object field using it to be left out, but one that declares `_kinds` lists `'undefined'` among them. See [`examples/custom-node.ts`](examples/custom-node.ts) for a runnable version.
 
 ```typescript
 import { p, PNode, Encoder, Decoder } from 'polynar';
@@ -484,6 +484,7 @@ p.binary(Float64Array).max(100); // doubles as their raw bits, NaN payloads and 
 ```typescript
 import { p, buildProseModel } from 'polynar';
 
+const sample = 'The quick brown fox jumps over the lazy dog. The dog sleeps on.';
 const model = buildProseModel(sample); // built from sample text in your language; plain JSON you can store
 const Comment = p.string().max(500).prose(model);
 ```

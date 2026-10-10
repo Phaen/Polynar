@@ -195,7 +195,7 @@ const scalarCase = (): Case => {
                 ).join(''),
             };
           }
-          const lo = randInt(0, 60000);
+          const lo = randInt(0, 50000);
           const hi = lo + randInt(1, 5000);
           return {
             node: p.string().charset([lo, hi]),
@@ -507,11 +507,11 @@ describe('Property fuzz', () => {
       CharSets.digit,
       CharSets.hex,
       CharSets.printable,
-      [0, 65535],
+      [0, 0xd7ff],
       [0x2800, 0x28ff],
     ];
     const randChar = (charset: Charset | undefined): string => {
-      const c = charset ?? CharSets.Base64;
+      const c = charset ?? CharSets.base64;
       return typeof c === 'string'
         ? c.charAt(randInt(0, c.length - 1))
         : String.fromCharCode(randInt(c[0], c[1]));

@@ -6,6 +6,7 @@
  */
 import { p } from './p';
 import type { Infer } from './infer';
+import type { CodecOptions } from '../packer';
 
 type Equals<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -179,3 +180,14 @@ Digit.decode(digitText, { type: 'text', charset: [0x4e00, 0x9fff] });
 Digit.decode(digitBytes, { type: 'text' });
 // @ts-expect-error — text is not bytes
 Digit.decode(digitText, { type: 'binary' });
+
+// An input that may be either form takes options of either type.
+const digitInput = digitEither as Uint8Array | string;
+const _fromEither: Equals<ReturnType<typeof Digit.decode<typeof digitInput>>, number> = true;
+Digit.decode(digitInput);
+Digit.decode(digitInput, { type: anyType });
+Digit.decode(digitInput, { type: 'text' });
+const textOptions: CodecOptions<'text'> = { type: 'text', charset: [0x4e00, 0x9fff] };
+Digit.decode(digitText, textOptions);
+// @ts-expect-error — text options are not for bytes
+Digit.decode(digitBytes, textOptions);

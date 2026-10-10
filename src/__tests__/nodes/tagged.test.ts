@@ -89,7 +89,7 @@ describe('Schema tagged union', () => {
 
   it('a field error inside a member names the field, with no extra segment', () => {
     expect(() => Two.encode({ type: 'delete', pos: 1, len: 0 })).toThrow(
-      "len: Value '0' is below the minimum 1"
+      'len: Value 0 is below the minimum 1'
     );
     const ops: Two[] = [
       { type: 'delete', pos: 1, len: 1 },
@@ -97,7 +97,7 @@ describe('Schema tagged union', () => {
       { type: 'delete', pos: 1, len: 1 },
       { type: 'delete', pos: 1, len: 0 },
     ];
-    expect(() => p.array(Two).encode(ops)).toThrow("[3].len: Value '0' is below the minimum 1");
+    expect(() => p.array(Two).encode(ops)).toThrow('[3].len: Value 0 is below the minimum 1');
   });
 
   it('rejects an empty member map and a member that declares the tag key', () => {

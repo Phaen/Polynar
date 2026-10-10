@@ -230,7 +230,7 @@ describe('Output density', () => {
     expect(encoder.output().length).toBe(0);
     encoder.compose(123, 1001);
     expect(encoder.output({ type: 'text' })).toBe('7B');
-    expect(encoder.output({ type: 'text', charset: CharSets.Base64 })).toBe('7B');
+    expect(encoder.output({ type: 'text', charset: CharSets.base64 })).toBe('7B');
     expect(new Decoder('7B').parse(1001)).toBe(123);
   });
 
@@ -298,15 +298,30 @@ describe('Charset validation', () => {
   });
 
   it('reads ASCII digits that sit past index 32767 of a long charset', () => {
-    const charset = Array.from({ length: 65536 }, (_, i) => String.fromCharCode(65535 - i)).join(
-      ''
+    const codes = Array.from({ length: 65536 }, (_, i) => 65535 - i).filter(
+      (code) => code < 0xd800 || code > 0xdfff
     );
+    const charset = String.fromCharCode(...codes);
+    const size = charset.length;
     const enc = new Encoder();
-    enc.compose(65535, 65536);
-    enc.compose(65, 65536);
+    enc.compose(size - 1, size);
+    enc.compose(65, size);
     const dec = new Decoder(enc.output({ type: 'text', charset }), { charset });
-    expect([dec.parse(65536), dec.parse(65536)]).toEqual([65535, 65]);
+    expect([dec.parse(size), dec.parse(size)]).toEqual([size - 1, 65]);
     dec.finalize();
+  });
+
+  it('rejects a charset holding half of a surrogate pair', () => {
+    expect(() => p.bool().encode(true, { type: 'text', charset: 'ab😀' })).toThrow(
+      new RangeError('Invalid character set: code 55357 at 2 is half of a surrogate pair')
+    );
+    expect(() => p.bool().encode(true, { type: 'text', charset: [0xd000, 0xd900] })).toThrow(
+      new RangeError(
+        'Invalid character range: [53248, 55552] includes codes 55296–57343, the halves of surrogate pairs'
+      )
+    );
+    expect(() => p.string().charset([0xdc00, 0xdfff])).toThrow(RangeError);
+    expect(() => p.string().charset('x\udfff')).toThrow(RangeError);
   });
 
   it('rejects a character absent from a charset of high code units', () => {

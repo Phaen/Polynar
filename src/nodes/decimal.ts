@@ -1,10 +1,11 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { PNode } from './base';
+import { describe } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 
-const valueSubject = (value: number): string => `Value '${value}'`;
+const valueSubject = (value: number): string => `Value ${value}`;
 
 // Smallest number of decimal places at which x is represented exactly, or
 // null when there is none within double precision (e.g. 1/3, Math.PI).
@@ -97,7 +98,7 @@ export class PDecimal extends PNode<number> {
 
   _write(enc: Encoder, value: number): void {
     if (!Number.isFinite(value)) {
-      throw new TypeError(`p.decimal expected a finite number, got ${String(value)}`);
+      throw new TypeError(`p.decimal expected a finite number, got ${describe(value)}`);
     }
     const k = this._multiple(value, valueSubject);
 
@@ -124,7 +125,7 @@ export class PDecimal extends PNode<number> {
 
   /**
    * The k for which `value` is the k-th step multiple. `subject` names the
-   * value in an error, as in `Value '0.15'`.
+   * value in an error, as in `Value 0.15`.
    */
   private _multiple(value: number, subject: (value: number) => string): number {
     const scaled = Math.round(value * this._scale);

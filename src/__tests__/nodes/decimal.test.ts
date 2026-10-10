@@ -38,13 +38,13 @@ describe('Schema decimal', () => {
 
   it('decimal enforces bounds', () => {
     expect(() => p.decimal(0.01).min(0).max(100).encode(100.01)).toThrow(
-      new RangeError("Value '100.01' is above the maximum 100")
+      new RangeError('Value 100.01 is above the maximum 100')
     );
     const node = p.decimal(0.5).min(0.5).max(2);
     expect(trip(node, 0.5)).toBe(0.5);
     expect(trip(node, 2)).toBe(2);
-    expect(() => node.encode(0)).toThrow(new RangeError("Value '0' is below the minimum 0.5"));
-    expect(() => node.encode(2.5)).toThrow(new RangeError("Value '2.5' is above the maximum 2"));
+    expect(() => node.encode(0)).toThrow(new RangeError('Value 0 is below the minimum 0.5'));
+    expect(() => node.encode(2.5)).toThrow(new RangeError('Value 2.5 is above the maximum 2'));
   });
 
   it('decimal bounds sit on the step like values', () => {
@@ -109,14 +109,14 @@ describe('Schema decimal', () => {
       )
     );
     expect(() => p.decimal(1).encode(1e20)).toThrow(
-      "Value '100000000000000000000' is outside the exact range ±9007199254740991"
+      'Value 100000000000000000000 is outside the exact range ±9007199254740991'
     );
     expect(() =>
       p
         .decimal(1)
         .min(-9e15)
         .encode(9e15 + 1)
-    ).toThrow("Value '9000000000000001' is too far from its bound -9000000000000000");
+    ).toThrow('Value 9000000000000001 is too far from its bound -9000000000000000');
     expect(() => p.decimal(1).encode(NaN)).toThrow('p.decimal expected a finite number');
   });
 });

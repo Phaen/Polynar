@@ -110,7 +110,9 @@ describe('Schema date', () => {
     expect(() => p.date().min(9e15).encode(new Date(0))).toThrow(
       "Date '1970-01-01T00:00:00.000Z' is below the minimum 9000000000000000"
     );
-    expect(() => node.encode(new Date(NaN))).toThrow(TypeError);
+    expect(() => node.encode(new Date(NaN))).toThrow(
+      new TypeError('p.date expected a valid Date, got an invalid Date')
+    );
   });
 
   it('date rejects swapped bounds at construction, even within one bucket', () => {
@@ -156,7 +158,7 @@ describe('Schema date', () => {
   it('date offsets past 2^53 refuse to encode instead of shifting a millisecond', () => {
     const extreme = p.date().min(new Date(-8.6e15));
     expect(() => extreme.encode(new Date(8.6e15 + 1))).toThrow(
-      "Value '+274493-02-24T00:53:20.001Z' is too far from its bound -270554-11-06T23:06:40.000Z to encode exactly"
+      'Value +274493-02-24T00:53:20.001Z is too far from its bound -270554-11-06T23:06:40.000Z to encode exactly'
     );
     // The same spread is fine at a coarser precision, in any refinement order.
     const daily = p.date().precision('day').min(new Date(-8.64e15)).max(new Date(8.64e15));

@@ -11,6 +11,16 @@ describe('Schema int', () => {
     expect(trip(p.int(), -12345)).toBe(-12345);
   });
 
+  it('shows a wrongly typed value by its type', () => {
+    expect(() => p.int().encode('5' as never)).toThrow(
+      new TypeError("p.int expected an integer, got '5'")
+    );
+    expect(() => p.int().encode(5.5)).toThrow(new TypeError('p.int expected an integer, got 5.5'));
+    expect(() => p.int().encode([5] as never)).toThrow(
+      new TypeError('p.int expected an integer, got an array')
+    );
+  });
+
   it('int rejects non-integer values instead of truncating', () => {
     // Strict like every other node: truncation would silently lose data.
     expect(() => p.int().encode(3.7)).toThrow(TypeError);
@@ -26,8 +36,8 @@ describe('Schema int', () => {
     const node = p.int().min(3).max(9);
     expect(trip(node, 3)).toBe(3);
     expect(trip(node, 9)).toBe(9);
-    expect(() => node.encode(2)).toThrow(new RangeError("Value '2' is below the minimum 3"));
-    expect(() => node.encode(10)).toThrow(new RangeError("Value '10' is above the maximum 9"));
+    expect(() => node.encode(2)).toThrow(new RangeError('Value 2 is below the minimum 3'));
+    expect(() => node.encode(10)).toThrow(new RangeError('Value 10 is above the maximum 9'));
   });
 
   it('int round-trips unbounded values above 2^53 bit-exact', () => {
@@ -78,7 +88,7 @@ describe('Schema int', () => {
         .int()
         .min(1)
         .encode(2 ** 53 + 6)
-    ).toThrow(`Value '${2 ** 53 + 6}' is too far from its bound 1`);
+    ).toThrow(`Value ${2 ** 53 + 6} is too far from its bound 1`);
     // The decode side catches the same drift on a term from foreign bytes.
     const bytes = p
       .int()

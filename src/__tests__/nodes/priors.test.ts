@@ -52,7 +52,7 @@ describe('Schema priors', () => {
     const node = p.int().min(0).max(9).cdf(spike);
     expect(trip(node, 5)).toBe(5);
     expect(() => node.encode(3)).toThrow(
-      new RangeError("Value '3' has zero weight under the declared cdf")
+      new RangeError('Value 3 has zero weight under the declared cdf')
     );
     expect(() => p.int().cdf((v) => v)).toThrow('requires both bounds');
     // Only relative masses matter: an offset cdf rebases instead of failing.
@@ -227,7 +227,7 @@ describe('Schema priors', () => {
       new RangeError('Array length 0 has zero weight under the declared cdf')
     );
     expect(() => p.decimal(0.5).min(0).max(1).cdf(spike).encode(0)).toThrow(
-      "Value '0' has zero weight under the declared cdf"
+      'Value 0 has zero weight under the declared cdf'
     );
     const day = p
       .date()

@@ -5,7 +5,7 @@
  * nothing about types.
  */
 
-import type { CodecOptions } from './types';
+import type { CodecOptions, OutputType } from './types';
 import {
   TERM_BASE,
   TERM_COUNT_RUN_DIGITS,
@@ -30,7 +30,8 @@ const TERM_ESCAPE_MIN_BIG = BigInt(TERM_ESCAPE_MIN);
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const MAX_SAFE_BIG = BigInt(MAX_SAFE);
 
-export class Decoder {
+/** `I` is the input's type, which pairs it with the matching options. */
+export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
   private readonly input: string | Uint8Array;
   private readonly alphabet: Alphabet;
   private readonly size: number;
@@ -47,9 +48,12 @@ export class Decoder {
   /** Digit index where the current block starts. */
   private blockStart = 0;
 
-  constructor(input: Uint8Array, options?: CodecOptions<'binary'>);
-  constructor(input: string, options?: CodecOptions<'text'>);
-  constructor(input: Uint8Array | string, options: CodecOptions = {}) {
+  constructor(
+    input: I,
+    options: CodecOptions<
+      I extends string ? 'text' : I extends Uint8Array ? 'binary' : OutputType
+    > = {}
+  ) {
     this.input = input;
     // The input's own form decides; `type` only pairs the options with it for TypeScript.
     this.alphabet = outputAlphabet(typeof input === 'string' ? 'text' : 'binary', options.charset);

@@ -128,16 +128,24 @@ class Powers {
 /**
  * Keyed by base and block size as one number: a base is at most 2^16, the
  * size of the largest charset, so the block size lands in the bits above.
+ * Holds the most recently used tables, evicting the least recently used one
+ * when full.
  */
 const powersCache = new Map<number, Powers>();
+const POWERS_CACHE_SIZE = 16;
 
 export function powersOf(base: number, blockBits: number = DEFAULT_BLOCK_BITS): Powers {
   const key = blockBits * 0x20000 + base;
   let powers = powersCache.get(key);
   if (powers === undefined) {
     powers = new Powers(base, blockBits);
-    powersCache.set(key, powers);
+    if (powersCache.size >= POWERS_CACHE_SIZE) {
+      powersCache.delete(powersCache.keys().next().value as number);
+    }
+  } else {
+    powersCache.delete(key);
   }
+  powersCache.set(key, powers);
   return powers;
 }
 

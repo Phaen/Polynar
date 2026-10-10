@@ -257,14 +257,14 @@ describe('Indexed last symbol', () => {
   });
 
   it('keeps the bucket form when the digits hold it anyway', () => {
-    // Base 65536: both forms fit one digit, so the bytes equal the plain call.
+    // Base 55296: both forms fit one digit, so the bytes equal the plain call.
     const dist = four(1000);
     const plain = new Encoder();
     plain.composeWeighted(dist.cums[2], dist.freqs[2], dist.total);
     const indexed = new Encoder();
     indexed.composeWeighted(dist.cums[2], dist.freqs[2], dist.total, { index: 2, count: 4 });
-    expect(indexed.output({ type: 'text', charset: [0, 65535] })).toBe(
-      plain.output({ type: 'text', charset: [0, 65535] })
+    expect(indexed.output({ type: 'text', charset: [0, 0xd7ff] })).toBe(
+      plain.output({ type: 'text', charset: [0, 0xd7ff] })
     );
   });
 

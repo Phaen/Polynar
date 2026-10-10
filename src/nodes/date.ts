@@ -1,6 +1,7 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { isDate, type Kind } from './guards';
 import { PNode } from './base';
+import { describe } from './path';
 import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 
@@ -185,7 +186,7 @@ export class PDate extends PNode<Date> {
 
   _write(enc: Encoder, value: Date): void {
     if (isNaN(value.getTime())) {
-      throw new TypeError(`p.date expected a valid Date, got ${String(value)}`);
+      throw new TypeError(`p.date expected a valid Date, got ${describe(value)}`);
     }
     const bucket = this._calendar.index(value.getTime());
     // The earliest Dates sit in a bucket that starts before the Date range,

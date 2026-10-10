@@ -15,7 +15,7 @@
  * a valid `p.union` member too.
  */
 import { Encoder, Decoder, CorruptInputError } from '../packer';
-import type { CodecOptions } from '../packer';
+import type { CodecOptions, OutputType } from '../packer';
 import type { Kind } from './guards';
 import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
 
@@ -32,11 +32,12 @@ export abstract class PNode<TOut> {
 
   /**
    * Whether the node can write `undefined`, which lets an object leave the
-   * field's key out. Read off `_kinds`; a custom node that returns
-   * `undefined` overrides it.
+   * field's key out. Read off `_kinds`, and true when they are undeclared:
+   * a custom node is trusted, matching the types, where a key is optional
+   * whenever its value type includes `undefined`.
    */
   _takesUndefined(): boolean {
-    return this._kinds?.includes('undefined') ?? false;
+    return this._kinds === undefined ? true : this._kinds.includes('undefined');
   }
 
   /** Validate one value and write its digits. The whole codec for this type. */
@@ -56,13 +57,11 @@ export abstract class PNode<TOut> {
   }
 
   /** Decode bytes or text produced by `encode` with the same options. */
-  decode(input: Uint8Array, options?: CodecOptions<'binary'>): TOut;
-  decode(input: string, options?: CodecOptions<'text'>): TOut;
-  decode(input: Uint8Array | string, options?: CodecOptions): TOut {
-    const dec =
-      typeof input === 'string'
-        ? new Decoder(input, options as CodecOptions<'text'>)
-        : new Decoder(input, options as CodecOptions<'binary'>);
+  decode<I extends Uint8Array | string>(
+    input: I,
+    options?: CodecOptions<I extends string ? 'text' : I extends Uint8Array ? 'binary' : OutputType>
+  ): TOut {
+    const dec = new Decoder(input, options);
     const value = this._read(dec);
     // The schema is the whole message, so the input must be exactly consumed:
     // leftover digits and trailing padding throw.

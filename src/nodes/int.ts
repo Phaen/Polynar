@@ -1,5 +1,6 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
+import { describe } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
@@ -56,12 +57,12 @@ export class PInt extends PNode<number> {
     // Strict, like every other node: a fractional value is off the integer
     // lattice and throws — truncating it away would silently lose data.
     if (!Number.isInteger(value)) {
-      throw new TypeError(`p.int expected an integer, got ${String(value)}`);
+      throw new TypeError(`p.int expected an integer, got ${describe(value)}`);
     }
     // `+ 0` normalizes -0 to 0 so the sign bit never records a negative zero.
     const v = value + 0;
 
-    this._range.write(enc, v, () => `Value '${v}'`);
+    this._range.write(enc, v, () => `Value ${v}`);
   }
 
   _read(dec: Decoder): number {

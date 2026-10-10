@@ -3,7 +3,7 @@ import { PNode } from './base';
 import type { Kind } from './guards';
 import type { InferTagged } from './infer';
 import type { PObject } from './object';
-import { atPath, oneOf } from './path';
+import { atPath, oneOf, valueSubject } from './path';
 import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
 
 /**
@@ -67,7 +67,7 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
     const tag = (value as Record<string, unknown>)[this._key];
     const pos = this._index.get(tag as string);
     if (pos === undefined) {
-      throw atPath(new RangeError(`Value '${String(tag)}' is not ${oneOf(this._tags)}`), this._key);
+      throw atPath(new RangeError(`${valueSubject(tag)} is not ${oneOf(this._tags)}`), this._key);
     }
     if (this._weights === undefined) {
       enc.compose(pos, this._tags.length);

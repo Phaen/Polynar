@@ -25,7 +25,7 @@ export function writeIndex(
     // reconstruct exactly is refused; the check IS the decode expression.
     if (min + offset !== index) {
       throw new RangeError(
-        `Value '${show(index)}' is too far from its bound ${show(min)} to encode exactly`
+        `Value ${show(index)} is too far from its bound ${show(min)} to encode exactly`
       );
     }
     enc.composeTerm(offset);
@@ -33,7 +33,7 @@ export function writeIndex(
     const offset = max - index;
     if (max - offset !== index) {
       throw new RangeError(
-        `Value '${show(index)}' is too far from its bound ${show(max)} to encode exactly`
+        `Value ${show(index)} is too far from its bound ${show(max)} to encode exactly`
       );
     }
     enc.composeTerm(offset);
@@ -116,7 +116,7 @@ export class IndexRange {
     this.show = show;
   }
 
-  /** `subject` names the value in an error, as in `Value '3'`. */
+  /** `subject` names the value in an error, as in `Value 3`. */
   write(enc: Encoder, index: number, subject: () => string): void {
     if (this.lo !== undefined && index < this.lo) {
       throw new RangeError(`${subject()} is below the minimum ${this.show(this.lo)}`);

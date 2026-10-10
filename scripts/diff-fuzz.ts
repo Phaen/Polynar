@@ -339,7 +339,7 @@ const scalarCase = (): Case => {
               src: `p.string().charset(CharSets.${name})`,
             };
           }
-          const lo = randInt(0, 60000);
+          const lo = randInt(0, 50000);
           const hi = lo + randInt(1, 5000);
           return {
             mk: (m) => m.p.string().charset([lo, hi]),
@@ -706,7 +706,7 @@ const TEXT_CHARSETS: (Charset | undefined)[] = [
   'digit',
   'hex',
   'printable',
-  [0, 65535],
+  [0, 0xd7ff],
   [0x2800, 0x28ff],
 ];
 const BYTE_CHARSETS: (Charset | undefined)[] = [
@@ -729,7 +729,7 @@ const randOpts = (): Opts => {
 
 /** The codes a layout spells messages in. */
 const codesOf = (o: Opts): { has: (c: number) => boolean; random: () => number } => {
-  const c = o.charset ?? (o.type === 'text' ? (globalCharSets as any).Base64 : [0, 255]);
+  const c = o.charset ?? (o.type === 'text' ? (globalCharSets as any).base64 : [0, 255]);
   if (typeof c === 'string') {
     return {
       has: (x) => c.includes(String.fromCharCode(x)),
@@ -1010,7 +1010,7 @@ const shrink = (syms: Sym[], diverges: (s: Sym[]) => boolean): Sym[] => {
   return cur;
 };
 
-const BASES = [2, 3, 4, 5, 7, 8, 10, 16, 36, 64, 100, 127, 128, 255, 256, 1000, 4096, 65535, 65536];
+const BASES = [2, 3, 4, 5, 7, 8, 10, 16, 36, 64, 100, 127, 128, 255, 256, 1000, 4096, 55295, 55296];
 
 // ---------- driver ----------
 

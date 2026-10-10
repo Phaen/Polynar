@@ -35,13 +35,45 @@ export function atPath(error: unknown, segment: string | number): unknown {
 }
 
 /**
- * The allowed values in an error message: each one quoted while they are few
- * primitives, else their count, since an object prints as `[object Object]`.
+ * The allowed values in an error message: each one described while they are
+ * few primitives, else their count, since an object prints as `[object Object]`.
  */
 export const oneOf = (values: readonly unknown[]): string =>
   values.length <= 8 && values.every(isPrimitive)
-    ? `one of ${values.map((value) => `'${String(value)}'`).join(', ')}`
+    ? `one of ${values.map(describe).join(', ')}`
     : `one of the ${values.length} listed values`;
+
+/**
+ * A value as an error message shows it: a string quoted, so `'5'` and `5`
+ * read differently, other primitives as written, and an object by its kind.
+ */
+export const describe = (value: unknown): string => {
+  if (typeof value === 'string') {
+    return `'${value}'`;
+  }
+  if (typeof value === 'bigint') {
+    return `${value}n`;
+  }
+  if (isPrimitive(value)) {
+    return String(value);
+  }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? 'an invalid Date' : 'a Date';
+  }
+  if (Array.isArray(value)) {
+    return 'an array';
+  }
+  return typeof value === 'function' ? 'a function' : 'an object';
+};
+
+/**
+ * A value as the subject of an error: `Value 'c'` for a primitive, or what it
+ * is for anything else, as in `An array`.
+ */
+export const valueSubject = (value: unknown): string => {
+  const text = describe(value);
+  return isPrimitive(value) ? `Value ${text}` : text[0].toUpperCase() + text.slice(1);
+};
 
 const isPrimitive = (value: unknown): boolean =>
   value === null || (typeof value !== 'object' && typeof value !== 'function');

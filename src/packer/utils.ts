@@ -74,7 +74,8 @@ const DENSE_TOP = 4096;
  * unit in text, a byte value in binary. A string charset finds a code's digit
  * in a table indexed by code when its codes are small and in a map otherwise,
  * a range by its offset from the first code. `minSize` is the fewest symbols
- * the charset must hold.
+ * the charset must hold. Halves of surrogate pairs are not symbols, so a
+ * charset holds characters of the Basic Multilingual Plane only.
  */
 export class Alphabet {
   /** The charset; a range is a fresh copy, never the caller's array. */
@@ -100,6 +101,11 @@ export class Alphabet {
       let top = 0;
       for (let i = 0; i < charset.length; i++) {
         const code = charset.charCodeAt(i);
+        if (code >= 0xd800 && code <= 0xdfff) {
+          throw new RangeError(
+            `Invalid character set: code ${code} at ${i} is half of a surrogate pair`
+          );
+        }
         if (digits.has(code)) {
           throw new TypeError(
             `Invalid character set: '${charset.charAt(i)}' appears more than once`
@@ -131,6 +137,11 @@ export class Alphabet {
     if (!Number.isInteger(min) || !Number.isInteger(max) || min < 0 || max > 65535) {
       throw new RangeError(
         `Invalid character range: [${min}, ${max}] must be integer codes within 0–65535`
+      );
+    }
+    if (min <= 0xdfff && max >= 0xd800) {
+      throw new RangeError(
+        `Invalid character range: [${min}, ${max}] includes codes 55296–57343, the halves of surrogate pairs`
       );
     }
     const size = max - min + 1;

@@ -124,7 +124,7 @@ function resolvePrior(
 
 /**
  * The bucket of one value under a CDF, validated for the encode side.
- * `subject` names the value in an error, as in `Value '3'`.
+ * `subject` names the value in an error, as in `Value 3`.
  */
 function cdfBucket(
   cdf: Cdf,
@@ -198,7 +198,7 @@ export class RangePrior {
     this.position = { count: hi - lo + 1, at: atIndexCdf(cdf, lo) };
   }
 
-  /** `subject` names the value in an error, as in `Value '3'`. */
+  /** `subject` names the value in an error, as in `Value 3`. */
   write(enc: Encoder, v: number, subject: () => string): void {
     const [cum, freq] = cdfBucket(this.cdf, v, this.who, subject);
     enc.composeWeighted(cum, freq, this.total, {

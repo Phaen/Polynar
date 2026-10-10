@@ -20,6 +20,9 @@ describe('Schema enum', () => {
     );
     const many = p.enum(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']);
     expect(() => many.encode('z' as never)).toThrow("Value 'z' is not one of the 9 listed values");
+    expect(() => p.enum([1, 5]).encode('5' as never)).toThrow(
+      new RangeError("Value '5' is not one of 1, 5")
+    );
   });
 
   it('enum accepts any primitive literals', () => {

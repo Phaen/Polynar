@@ -19,7 +19,7 @@ describe('Schema validation', () => {
         .max(1)
         .encode(-(2 ** 53))
     ).toThrow(
-      new RangeError("Value '-9007199254740992' is too far from its bound 1 to encode exactly")
+      new RangeError('Value -9007199254740992 is too far from its bound 1 to encode exactly')
     );
     // The largest exactly indexable offset still round-trips.
     expect(
@@ -269,7 +269,7 @@ describe('Schema internals', () => {
       caught = error;
     }
     expect(caught).toBeInstanceOf(RangeError);
-    expect((caught as Error).stack).toMatch(/^RangeError: a: Value '5' is above the maximum 3/);
+    expect((caught as Error).stack).toMatch(/^RangeError: a: Value 5 is above the maximum 3/);
 
     expect(() => p.array(p.int().max(1)).encode([0, 5])).toThrow('[1]: ');
     expect(() => p.any().encode({ a: [1, Symbol('s')] })).toThrow(

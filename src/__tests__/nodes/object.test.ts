@@ -109,7 +109,7 @@ describe('Schema object', () => {
     expect(trip(Schema, { a: null, b: 2 })).toEqual({ a: null, b: 2 });
   });
 
-  it('takes a missing key on a custom node that declares it takes undefined', () => {
+  it('takes a missing key on a custom node that returns undefined', () => {
     class PMaybeWord extends PNode<string | undefined> {
       _write(enc: Encoder, value: string | undefined): void {
         enc.compose(value === undefined ? 0 : 1, 2);
@@ -118,16 +118,37 @@ describe('Schema object', () => {
         return dec.parse(2) === 1 ? 'word' : undefined;
       }
     }
-    class PMaybeWordTakingUndefined extends PMaybeWord {
-      _takesUndefined(): boolean {
-        return true;
-      }
-    }
-    const Schema = p.object({ w: new PMaybeWordTakingUndefined() });
+    const Schema = p.object({ w: new PMaybeWord() });
     expect(Object.keys(trip(Schema, { w: undefined }))).toEqual([]);
     expect(Object.keys(trip(Schema, {}))).toEqual([]);
     expect(trip(Schema, { w: 'word' })).toEqual({ w: 'word' });
-    expect(() => p.object({ w: new PMaybeWord() }).encode({})).toThrow(
+
+    class PMaybeWordWithKinds extends PMaybeWord {
+      readonly _kinds = ['string', 'undefined'] as const;
+    }
+    expect(Object.keys(trip(p.object({ w: new PMaybeWordWithKinds() }), {}))).toEqual([]);
+  });
+
+  it('leaves undefined to a custom node that does not declare its kinds', () => {
+    class PWord extends PNode<string> {
+      _write(enc: Encoder, value: string): void {
+        if (typeof value !== 'string') {
+          throw new TypeError(`PWord got ${typeof value}`);
+        }
+        enc.compose(0, 2);
+      }
+      _read(): string {
+        return 'word';
+      }
+    }
+    expect(() => p.object({ w: new PWord() }).encode({} as { w: string })).toThrow(
+      new TypeError('w: PWord got undefined')
+    );
+
+    class PWordWithKinds extends PWord {
+      readonly _kinds = ['string'] as const;
+    }
+    expect(() => p.object({ w: new PWordWithKinds() }).encode({} as { w: string })).toThrow(
       new TypeError('w: Required field is missing')
     );
   });
