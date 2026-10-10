@@ -54,8 +54,8 @@ const enum Regime {
 function floatOf(x: bigint): [number, number] {
   const bits = bitLength(x);
   const e = Math.floor((bits - 1) / STEP) * STEP;
-  const extra = Math.max(0, bits - e - 53);
-  return [Number(x >> BigInt(e + extra)) * 2 ** extra, e];
+  const drop = Math.max(0, bits - 53);
+  return [Number(x >> BigInt(drop)) * 2 ** (drop - e), e];
 }
 
 /**

@@ -10,7 +10,7 @@
  * candidate 2^(n+j) - 1: one above and one below a power of two.
  */
 
-import { Encoder, Decoder, CorruptInputError } from '../index';
+import { Encoder, Decoder, CorruptInputError, p } from '../index';
 
 const BITS: [number, number] = [0, 1];
 
@@ -127,5 +127,16 @@ describe('Block bound exact fallback', () => {
     expect(() =>
       decode(bytes.subarray(0, 257), 0, 256, (dec) => dec.parseWeighted(4, half))
     ).toThrow(CorruptInputError);
+  });
+});
+
+describe('Float bound precision', () => {
+  it('keeps full precision for bounds a few bits past a scale step', () => {
+    // The block's bound sits a few bits past a 256-bit scale step, where a
+    // coarse float of it made the encoder emit a digit the decoder rejected.
+    const Msg = p.object({ flag: p.bool().weights([1, 3]), data: p.binary().length(32) });
+    const value = { flag: false, data: new Uint8Array(32) };
+    const text = Msg.encode(value, { type: 'text', charset: '012' });
+    expect(Msg.decode(text, { charset: '012' })).toEqual(value);
   });
 });
