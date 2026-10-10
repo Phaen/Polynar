@@ -97,4 +97,31 @@ describe('Schema binary', () => {
       .encode(2 ** 40);
     expect(() => p.binary().decode(claim)).toThrow(CorruptInputError);
   });
+
+  it('writes the same bytes on a machine that stores the high byte first', async () => {
+    // The library is loaded a second time with Uint16Array reporting the
+    // high byte first, so that copy takes the big-endian path. An element of
+    // 0x1234 sits in such a machine's memory as the bytes 12 34.
+    const real = Uint16Array;
+    let bigEndian!: typeof import('../../index');
+    await jest.isolateModulesAsync(async () => {
+      globalThis.Uint16Array = class extends real {
+        static of(...items: number[]): Uint16Array<ArrayBuffer> {
+          return new real(items.map((n) => ((n & 0xff) << 8) | (n >> 8)));
+        }
+      } as typeof Uint16Array;
+      try {
+        bigEndian = await import('../../index');
+      } finally {
+        globalThis.Uint16Array = real;
+      }
+    });
+    const node = bigEndian.p.binary(Uint16Array);
+    const inMemory = new Uint16Array(Uint8Array.of(0x12, 0x34, 0xab, 0xcd).buffer);
+    const bytes = node.encode(inMemory);
+    expect(bytes).toEqual(p.binary(Uint16Array).encode(Uint16Array.of(0x1234, 0xabcd)));
+    expect(new Uint8Array(node.decode(bytes).buffer)).toEqual(
+      Uint8Array.of(0x12, 0x34, 0xab, 0xcd)
+    );
+  });
 });
