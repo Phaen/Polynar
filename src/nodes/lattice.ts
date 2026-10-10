@@ -6,8 +6,8 @@ import { RangePrior, priorKind, type Prior } from './weights';
  * bounds. Both bounds -> one slot of exact radix; one bound -> a term counting
  * away from it (downward from a max, so the term stays non-negative);
  * unbounded -> sign before magnitude, the order every signed value on the
- * wire reads. PInt, PDecimal and PDate all pack through here, so their
- * layouts can never drift apart.
+ * wire reads. Every bounded integer (int, decimal, date, and lengths and
+ * counts) packs through here, so their layouts can never drift apart.
  */
 export function writeIndex(
   enc: Encoder,
@@ -173,13 +173,8 @@ export function lengthRange(bounds: LengthBounds, who: string, noun: string): In
     throw new RangeError(`${who} max must be a non-negative ${noun}, got ${bounds.max}`);
   }
   const { prior } = bounds;
-  if (prior !== undefined) {
-    if (min !== undefined && min === max) {
-      throw new TypeError(`${who} ${priorKind(prior)} is meaningless on a fixed length`);
-    }
-    if (max === undefined) {
-      throw new TypeError(`${who} ${priorKind(prior)} requires a max ${noun}`);
-    }
+  if (prior !== undefined && max === undefined) {
+    throw new TypeError(`${who} ${priorKind(prior)} requires a max ${noun}`);
   }
   return new IndexRange(who, min ?? 0, max, prior);
 }

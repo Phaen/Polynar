@@ -103,8 +103,9 @@ describe('Schema string', () => {
     expect(() => p.string().cdf((n) => n)).toThrow(
       new TypeError('p.string cdf requires a max length')
     );
-    expect(() => p.string().length(3).weights([1])).toThrow(
-      new TypeError('p.string weights is meaningless on a fixed length')
+    // A fixed length is one value, so its prior costs nothing either way.
+    expect(p.string().length(3).weights([1]).encode('abc')).toEqual(
+      p.string().length(3).encode('abc')
     );
     expect(() => p.string().max(2).weights([1, 1])).toThrow('one weight per value');
   });

@@ -1,7 +1,7 @@
 /**
  * Schema nodes, one per file. `base` holds the PNode contract every node
- * implements; `lattice` is the shared integer wire for int, decimal and
- * date.
+ * implements; `lattice` is the shared integer wire for int, decimal,
+ * date, and lengths and counts.
  */
 export { PNode, POptional } from './base';
 export { PInt } from './int';

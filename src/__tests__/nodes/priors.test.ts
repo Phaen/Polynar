@@ -146,12 +146,6 @@ describe('Schema priors', () => {
 
     expect(() => p.decimal(0.5).cdf((v) => v)).toThrow('requires both bounds');
     expect(() => p.array(p.bool()).cdf((n) => n)).toThrow('requires a max');
-    expect(() =>
-      p
-        .array(p.bool())
-        .length(3)
-        .cdf((n) => n)
-    ).toThrow('meaningless on a fixed length');
   });
 
   it('decimal, date and array weights encode like the equivalent cdf', () => {
@@ -211,7 +205,6 @@ describe('Schema priors', () => {
     expect(aList(aWeights).encode(aValues)).toEqual(aList(aCdf).encode(aValues));
 
     expect(() => p.decimal(0.5).weights([1])).toThrow('requires both bounds');
-    expect(() => p.array(p.bool()).length(3).weights([1])).toThrow('meaningless on a fixed length');
     // A change to the range re-checks the count against it.
     expect(() => tWeights.precision('hour')).toThrow('one weight per value');
     expect(() => p.array(p.bool()).max(4).weights(aw).min(0)).toThrow('one weight per value');

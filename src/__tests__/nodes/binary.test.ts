@@ -58,12 +58,6 @@ describe('Schema binary', () => {
     expect(() => p.binary().weights([1])).toThrow(
       new TypeError('p.binary weights requires a max length')
     );
-    expect(() =>
-      p
-        .binary()
-        .length(2)
-        .cdf((n) => n)
-    ).toThrow(new TypeError('p.binary cdf is meaningless on a fixed length'));
   });
 
   it('accepts a Uint8Array subclass and decodes a plain one', () => {

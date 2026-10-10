@@ -136,8 +136,8 @@ Any text, stored with its length; about 7 bits per ASCII character. Infers `stri
 | `.min(n: number)`                 | Lower bound on the length; shorter strings throw.                                                                                                                                                                          |
 | `.max(n: number)`                 | Upper bound on the length; longer strings throw. With both bounds the length takes a fixed number of bits.                                                                                                                 |
 | `.length(n: number)`              | Fixed length, the same as `.min(n).max(n)`; costs zero bits.                                                                                                                                                               |
-| `.cdf(fn: (n: number) => number)` | Prior over the length, called with the length; needs `.max` and no `.length`.                                                                                                                                              |
-| `.weights(w: number[])`           | Prior: one weight per length from `min` (or 0) to `max`, lowest first; needs `.max` and no `.length`.                                                                                                                      |
+| `.cdf(fn: (n: number) => number)` | Prior over the length, called with the length; needs `.max`.                                                                                                                                                               |
+| `.weights(w: number[])`           | Prior: one weight per length from `min` (or 0) to `max`, lowest first; needs `.max`.                                                                                                                                       |
 | `.charset(c: Charset)`            | Limits the alphabet, so each character costs fewer bits: a string of unique characters or a `[min, max]` range of character codes. Other characters throw. Can't be combined with `.prose()`, since both set the alphabet. |
 | `.prose(model?: ProseModel)`      | Weighted for natural language, about 4 bits per character; English by default, or a model of your own. Every string still encodes.                                                                                         |
 
@@ -154,8 +154,8 @@ A typed array: a `Uint8Array` by default, or any typed array class, like `p.bina
 | `.min(n: number)`                 | Lower bound on the element count; shorter arrays throw.                                                         |
 | `.max(n: number)`                 | Upper bound on the element count; longer arrays throw. With both bounds the count takes a fixed number of bits. |
 | `.length(n: number)`              | Fixed element count, the same as `.min(n).max(n)`; costs zero bits.                                             |
-| `.cdf(fn: (n: number) => number)` | Prior over the element count, called with the count; needs `.max` and no `.length`.                             |
-| `.weights(w: number[])`           | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max` and no `.length`.            |
+| `.cdf(fn: (n: number) => number)` | Prior over the element count, called with the count; needs `.max`.                                              |
+| `.weights(w: number[])`           | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                             |
 
 ### `p.bool()`
 
@@ -204,8 +204,8 @@ An array of one item type, stored with its length. Infers an array of the item's
 | `.min(n: number)`                 | Lower bound on the item count; shorter arrays throw. A fractional bound rounds up.                           |
 | `.max(n: number)`                 | Upper bound on the item count; longer arrays throw. With both bounds the count takes a fixed number of bits. |
 | `.length(n: number)`              | Fixed item count, the same as `.min(n).max(n)`; costs zero bits.                                             |
-| `.cdf(fn: (n: number) => number)` | Prior over the item count, called with the count; needs `.max` and no `.length`.                             |
-| `.weights(w: number[])`           | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max` and no `.length`.         |
+| `.cdf(fn: (n: number) => number)` | Prior over the item count, called with the count; needs `.max`.                                              |
+| `.weights(w: number[])`           | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                          |
 
 ### `p.optional(node: PNode)`
 
