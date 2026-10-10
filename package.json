@@ -38,7 +38,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "fuzz:diff": "tsx scripts/diff-fuzz.ts"
+    "fuzz:diff": "tsx scripts/diff-fuzz.ts",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run build && npm run check:exports && npm run test:coverage"
   },
   "keywords": [
     "encoding",

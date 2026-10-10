@@ -106,6 +106,9 @@ describe('Schema versioned', () => {
     expect(() => Old.decode(bytes)).toThrow(UnknownVersionError);
     expect(() => Old.decode(bytes)).toThrow(CorruptInputError);
     expect(() => Old.decode(bytes)).toThrow('Data was written by version 2; this schema knows 1');
+    expect(() => Old.decode(bytes)).toThrow(
+      expect.objectContaining({ name: 'UnknownVersionError' })
+    );
   });
 
   it('always writes the newest version', () => {

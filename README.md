@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 
-Polynar encodes typed data into compact bytes or strings and reads it back. You describe the shape once with a small Zod-style schema, and every value spends only the bits its constraints allow: an integer you promise stays between 0 and 100 costs well under a byte, and a field that is one of three names costs a fraction of one. Custom types are one subclass away.
+Polynar encodes typed data into compact bytes or strings and reads it back. You describe the shape once with a small Zod-style schema, and every value spends only the bits its constraints allow. The schema is the wire format: no field names, tags or type markers are written, so the encoder and decoder share the same schema and options. An integer you promise stays between 0 and 100 costs well under a byte, and a field that is one of three names costs a fraction of one. Custom types are one subclass away.
 
 One caveat up front: this is not encryption. Anyone with the bytes can recover the data by analysis, with or without the schema. If you need secrecy, encrypt the output.
 
@@ -79,7 +79,7 @@ assert.deepStrictEqual(User.decode(bytes), user);
 
 ## API
 
-Each `p.*` factory creates a node for one type, and the node's methods narrow which values it allows. Methods return a new node; they never change the one they're called on. A schema that contradicts itself, such as `.min(5).max(2)`, throws as soon as it's defined, and so does setting `.min` or `.max` a second time. A value outside a declared bound, step, length or list throws when it's encoded. Everything else, like a string where a number belongs, is left to TypeScript, and object keys outside the shape are dropped.
+Each `p.*` factory creates a node for one type, and the node's methods narrow which values it allows. Every method changes the encoding, usually making it denser, rather than only checking values. Methods return a new node; they never change the one they're called on. A schema that contradicts itself, such as `.min(5).max(2)`, throws as soon as it's defined, and so does setting `.min` or `.max` a second time. A value outside a declared bound, step, length or list throws when it's encoded, and is never rounded to fit. Values the TypeScript types rule out, like a string where a number belongs, aren't checked at runtime. The exceptions are mistakes that would otherwise encode wrong without an error, such as a missing required field or a `Map` given to `p.any()`. Object keys outside the shape are dropped.
 
 - [`p.int`](#pint)
 - [`p.decimal`](#pdecimalstep-number)
@@ -313,6 +313,8 @@ User.decode(link, { charset: CharSets.urlSafe });
 
 `decode` can tell bytes from text by the input itself, so `type` is optional there and only checked by TypeScript.
 
+Each value has one encoding, so decoding a message and encoding the result gives back the same bytes, except when `p.versioned` upgrades old data.
+
 `blockBits` is the size of the blocks a message is packed in, from 128 to 65536 bits and 2048 by default. Bigger blocks save a little space, and smaller ones are faster.
 
 A charset is the set of symbols a message is written in, and it works for both text and binary output. It is a string of at least two different characters, or a `[min, max]` range of character codes. Charsets hold characters from the Basic Multilingual Plane only, so no emoji. Text defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. Binary output defaults to every byte value and writes each symbol as its character code, so its charset can only hold codes from 0 to 255. That keeps bytes inside a smaller set, such as printable ASCII:
@@ -339,7 +341,7 @@ User.decode(ascii, { charset: CharSets.printable });
 
 ## Errors
 
-Input that doesn't decode — truncated, padded, or with characters outside the charset — throws a `CorruptInputError`. Where `instanceof` can't be trusted, such as with two copies of the package in one process, check `err.name === 'CorruptInputError'`. Its subclass `UnknownVersionError` is thrown when `p.versioned` gets data from a version it doesn't list; its `name` is still `'CorruptInputError'`.
+Input that doesn't decode — truncated, padded, or with characters outside the charset — throws a `CorruptInputError`. There is no checksum, so damaged input that still decodes gives whatever value those bytes encode. Its subclass `UnknownVersionError` is thrown when `p.versioned` gets data from a version it doesn't list.
 
 A value that can't be encoded throws with its path in front and the limit it broke, like `filters[2].op: Value "gt" is not one of "eq", "lt"` or `tags: Array length 5 is above the maximum 3`. A value outside what the schema allows — a bound, step, length, list, tag or charset — throws a `RangeError`. A value the schema has no place for at all throws a `TypeError`: a non-integer, a non-finite number, an invalid date, a missing required field, a kind no union member takes, or a type `p.any` can't encode. An invalid schema throws a `TypeError` or `RangeError` as soon as it's defined.
 
@@ -494,13 +496,25 @@ const Comment = p.string().max(500).prose(model);
 
 Both sides need the same model, like any other part of the schema.
 
-## Development
+## Contributing
 
 ```bash
 npm install
-npm run build
-npm test
+npm run check
+npm run fuzz:diff -- HEAD
 ```
+
+`npm run check` runs everything CI runs: type checks, lint, formatting, the build, the package exports and the tests with coverage. CI does this on Node 18, 20 and 22.
+
+Coverage has to stay at 100%, and the build fails if it drops. So for every branch you add, add a test with a valid input that reaches it. If you find yourself writing a branch for a case no input can reach, leave it out and put a comment where your code relies on that case never happening. Don't use a non-null assertion (`!`) to get around a branch.
+
+Write each function so it works for every value its parameter types allow. Handle the value, narrow the type to what the function really accepts, or reject the value with a clear error. Test functions at module level on their own, including the edges of their types, and test private methods through their class.
+
+Each node has its own test file, and shared code is tested in the file named after it. A new node lives in `src/nodes/`, gets its factory in `p.ts`, its export in `src/index.ts`, a section in the API part of this README, and a case in `src/__tests__/random-schemas.ts`, which both fuzz suites draw from.
+
+`fuzz.test.ts` checks round trips and corrupt input over random schemas. Before you change the encoder or decoder, run `npm run fuzz:diff -- HEAD`: it compares the wire format of your working tree with the last commit, and without a ref it compares with the latest release. CI runs that comparison against the latest release on every pull request and only warns, because some changes to the wire format are deliberate.
+
+Error messages should name the value and the limit it broke, like `Value 5 is above the maximum 3`.
 
 ## License
 
