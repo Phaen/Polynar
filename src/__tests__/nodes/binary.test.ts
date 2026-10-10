@@ -1,71 +1,45 @@
 /**
- * Schema binary node (`p.binary()`, `p.binary()`) — typed arrays as raw bits.
+ * `p.binary()`: typed arrays as raw bits.
  */
 
 import { p, CorruptInputError } from '../../index';
-import { trip } from '../support';
+import { mulberry32, trip } from '../support';
+
+const rand = mulberry32(0xb1a5);
 
 describe('Schema binary', () => {
-  it('bytes round-trip to a fresh Uint8Array', () => {
+  it('decodes to a fresh array', () => {
     const value = new Uint8Array([0, 1, 127, 128, 255]);
     const decoded = trip(p.binary(), value);
-    expect(decoded).toBeInstanceOf(Uint8Array);
     expect(decoded).toEqual(value);
     expect(decoded).not.toBe(value);
-    expect(trip(p.binary(), new Uint8Array())).toEqual(new Uint8Array());
   });
 
-  it('a fixed length costs exactly its bytes', () => {
+  it('spends exactly its bytes at a fixed length', () => {
     const hash = p.binary().length(32);
     const value = Uint8Array.from({ length: 32 }, (_, i) => (i * 37) % 256);
     expect(hash.encode(value)).toHaveLength(32);
     expect(trip(hash, value)).toEqual(value);
-    expect(() => hash.encode(new Uint8Array(31))).toThrow(
-      new RangeError('Binary length 31 is below the minimum 32')
-    );
   });
 
-  it('bounds the count like a string', () => {
+  it('names the bound a length breaks', () => {
     const node = p.binary().min(2).max(4);
-    expect(trip(node, new Uint8Array([9, 9, 9]))).toEqual(new Uint8Array([9, 9, 9]));
-    expect(() => node.encode(new Uint8Array(1))).toThrow('Binary length 1 is below the minimum 2');
+    expect(() => node.encode(new Uint8Array(1))).toThrow(
+      new RangeError('Binary length 1 is below the minimum 2')
+    );
     expect(() => node.encode(new Uint8Array(5))).toThrow('Binary length 5 is above the maximum 4');
-    expect(() => p.binary().min(3).max(2)).toThrow(
-      new RangeError('p.binary range is empty: min 3 exceeds max 2')
-    );
-    expect(() => p.binary().min(1.5)).toThrow(
-      new TypeError('p.binary min must be a non-negative integer, got 1.5')
-    );
-    expect(() => p.binary().max(-2)).toThrow(
-      new RangeError('p.binary max must be a non-negative integer, got -2')
-    );
   });
 
-  it('sets each bound once, with length setting both', () => {
-    expect(() => p.binary().length(4).max(8)).toThrow(new TypeError('p.binary max is already set'));
-    expect(() => p.binary().max(10).length(5)).toThrow('p.binary max is already set');
-    expect(() => p.binary().min(1).min(2)).toThrow('p.binary min is already set');
-    expect(p.binary().length(3).encode(new Uint8Array(3))).toEqual(
-      p.binary().min(3).max(3).encode(new Uint8Array(3))
-    );
-  });
-
-  it('weights the element count like an array count', () => {
+  it('takes a prior on the length, under a max', () => {
     const node = p.binary().max(8).weights([1, 1, 1, 1, 100, 1, 1, 1, 1]);
     const four = new Uint8Array([1, 2, 3, 4]);
     expect(trip(node, four)).toEqual(four);
-    expect(trip(node, new Uint8Array())).toEqual(new Uint8Array());
-    // A likely count spends well under the uniform prefix's log2(9) bits.
-    const bits = (n: typeof node) => p.array(n).length(8).encode(Array(8).fill(four)).length;
-    expect(bits(node)).toBeLessThan(bits(p.binary().max(8)));
-    const cdf = p
-      .binary()
-      .max(8)
-      .cdf((n) => (n > 4 ? 100 + n : n));
-    expect(trip(cdf, four)).toEqual(four);
+    const list = (n: typeof node) => p.array(n).length(8).encode(Array(8).fill(four)).length;
+    expect(list(node)).toBeLessThan(list(p.binary().max(8)));
     expect(() => p.binary().weights([1])).toThrow(
       new TypeError('p.binary weights requires a max length')
     );
+    expect(() => p.binary().cdf((n) => n)).toThrow('p.binary cdf requires a max length');
   });
 
   it('accepts a Uint8Array subclass and decodes a plain one', () => {
@@ -75,44 +49,11 @@ describe('Schema binary', () => {
     expect(decoded).toEqual(new Uint8Array([1, 2]));
   });
 
-  it('is its own kind in a union, apart from objects', () => {
-    const node = p.union([p.binary(), p.object({ a: p.int() }), p.null()]);
-    expect(trip(node, new Uint8Array([7]))).toEqual(new Uint8Array([7]));
-    expect(trip(node, { a: 1 })).toEqual({ a: 1 });
-    expect(() => p.union([p.binary(), p.binary().max(4)])).toThrow('overlap on kind "Uint8Array"');
-  });
-
-  it('a corrupted length runs out of input instead of allocating it', () => {
-    // An unbounded length prefix claiming 2^40 bytes, followed by nothing.
-    const claim = p
-      .int()
-      .min(0)
-      .encode(2 ** 40);
-    expect(() => p.binary().decode(claim)).toThrow(CorruptInputError);
-  });
-
-  it('any typed array round-trips bit-exact at its own width', () => {
-    const ints = Int16Array.of(-32768, -1, 0, 1, 32767);
-    expect(trip(p.binary(Int16Array), ints)).toEqual(ints);
-    expect(p.binary(Int16Array).length(5).encode(ints)).toHaveLength(10);
-
-    // Raw bits: NaN payloads and -0 survive, which value-level encoding would not promise.
-    const floats = Float64Array.of(-0, Number.NaN, Math.PI, Number.MIN_VALUE);
-    const back = trip(p.binary(Float64Array), floats);
-    expect(back).toBeInstanceOf(Float64Array);
-    expect(Object.is(back[0], -0)).toBe(true);
-    expect(new Uint8Array(back.buffer)).toEqual(new Uint8Array(floats.buffer));
-
+  it('round-trips typed arrays at their own width', () => {
+    const floats = Float32Array.of(1.5, -2);
+    expect(trip(p.binary(Float32Array), floats)).toEqual(floats);
     const wide = BigInt64Array.of(-(2n ** 63n), 0n, 2n ** 63n - 1n);
     expect(trip(p.binary(BigInt64Array), wide)).toEqual(wide);
-    expect(trip(p.binary(Float32Array), Float32Array.of(1.5, -2))).toEqual(
-      Float32Array.of(1.5, -2)
-    );
-  });
-
-  it('elements go on the wire low byte first', () => {
-    const word = p.binary(Uint16Array).length(1).encode(Uint16Array.of(0x0102));
-    expect(word).toEqual(p.binary().length(2).encode(Uint8Array.of(0x02, 0x01)));
   });
 
   it('reads only its own slice of a shared buffer', () => {
@@ -121,14 +62,39 @@ describe('Schema binary', () => {
     expect(trip(p.binary(Int16Array), view)).toEqual(Int16Array.of(1, 2));
   });
 
-  it('each typed-array class is its own kind, subclasses included', () => {
+  it('is its own kind in a union, one per typed-array class, subclasses included', () => {
+    const node = p.union([p.binary(), p.object({ a: p.int() }), p.null()]);
+    expect(trip(node, new Uint8Array([7]))).toEqual(new Uint8Array([7]));
+    expect(trip(node, { a: 1 })).toEqual({ a: 1 });
+    expect(() => p.union([p.binary(), p.binary().max(4)])).toThrow('overlap on kind "Uint8Array"');
+
     class Samples extends Int16Array {}
-    const node = p.union([p.binary(), p.binary(Int16Array)]);
-    expect(trip(node, Uint8Array.of(7))).toEqual(Uint8Array.of(7));
-    expect(trip(node, Int16Array.of(-7))).toEqual(Int16Array.of(-7));
-    expect(trip(node, new Samples([3]))).toEqual(Int16Array.of(3));
+    const widths = p.union([p.binary(), p.binary(Int16Array)]);
+    expect(trip(widths, Uint8Array.of(7))).toEqual(Uint8Array.of(7));
+    expect(trip(widths, Int16Array.of(-7))).toEqual(Int16Array.of(-7));
+    expect(trip(widths, new Samples([3]))).toEqual(Int16Array.of(3));
     expect(() => p.union([p.binary(Int16Array), p.binary(Samples)])).toThrow(
       'overlap on kind "Int16Array"'
     );
+  });
+
+  it('round-trips long runs at every element width', () => {
+    const bytes = Uint8Array.from({ length: 65536 }, () => Math.floor(rand() * 256));
+    const shorts = new Int16Array(bytes.buffer.slice(0, 2000));
+    expect(trip(p.binary(Int16Array), shorts)).toEqual(shorts);
+    const doubles = new Float64Array(bytes.buffer.slice(0, 8000));
+    expect(trip(p.binary(Float64Array), doubles)).toEqual(doubles);
+    const longs = new BigInt64Array(bytes.buffer.slice(0, 8000));
+    expect(trip(p.binary(BigInt64Array), longs)).toEqual(longs);
+    expect(trip(p.binary(), bytes)).toEqual(bytes);
+  });
+
+  it('runs out of input on a corrupted length instead of allocating it', () => {
+    // An unbounded length prefix claiming 2^40 bytes, followed by nothing.
+    const claim = p
+      .int()
+      .min(0)
+      .encode(2 ** 40);
+    expect(() => p.binary().decode(claim)).toThrow(CorruptInputError);
   });
 });

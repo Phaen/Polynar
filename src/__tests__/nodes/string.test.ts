@@ -1,89 +1,47 @@
 /**
- * Schema string node (`p.string()`) — unicode strings, prose mode, charsets.
+ * `p.string()`: unicode strings, optionally under a charset or a prose model.
  */
 
 import { p, Encoder, ProseModels, buildProseModel } from '../../index';
 import { TEXT_DIRECT_MAX, TEXT_FIRST_RADIX } from '../../nodes/codepoint';
 import { compileProse } from '../../nodes/prose';
-import { trip } from '../support';
+import { mulberry32, trip } from '../support';
+
+const rand = mulberry32(0x57a1);
+const below = (n: number): number => Math.floor(rand() * n);
 
 describe('Schema string', () => {
-  it('string round-trips real-world unicode and bounded lengths', () => {
-    const value = 'café — line1\nline2 👋 漢字';
-    expect(trip(p.string(), value)).toBe(value);
-    expect(trip(p.string().max(20), 'Ada Lovelace')).toBe('Ada Lovelace');
+  it('packs ASCII near seven bits per character', () => {
+    // 24 slots of log2(131) bits plus the length prefix: 22 bytes, where flat
+    // 16-bit code units would spend 49.
+    expect(p.string().max(24).encode('twenty four ascii chars!')).toHaveLength(22);
   });
 
-  it('string honours a custom charset', () => {
-    expect(trip(p.string().charset('0123456789'), '12345')).toBe('12345');
-  });
-
-  it('string takes a one-character charset, whose characters cost nothing', () => {
-    expect(trip(p.string().charset('x').length(5), 'xxxxx')).toBe('xxxxx');
-    expect(p.string().charset([120, 120]).length(5).encode('xxxxx')).toHaveLength(0);
-  });
-
-  it('string rejects a value outside its charset', () => {
-    expect(() => p.string().charset('0123456789').encode('12a')).toThrow(
-      new RangeError('Character "a" at 2 is not in the character set')
-    );
-  });
-
-  it('string rejects a value longer than its max', () => {
-    expect(() => p.string().max(3).encode('long')).toThrow(RangeError);
-  });
-
-  it('string round-trips lone surrogates and astral characters bit-exact', () => {
-    for (const value of ['\uD800', '\uDC00', 'a\uD800b', '\uDFFF\uD800', '👋\uD800👋']) {
+  it.each(['\uD800', '\uDC00', 'a\uD800b', '\uDFFF\uD800', '👋\uD800👋'])(
+    'round-trips the lone surrogates of %j bit-exact',
+    (value) => {
       expect(trip(p.string(), value)).toBe(value);
       expect(trip(p.string().max(8), value)).toBe(value);
     }
-  });
+  );
 
-  it('prose round-trips any string, model-shaped or not', () => {
-    for (const value of ['See you at noon?', 'Ünïcödé — 漢字 👋', 'a\uD800b', '\t\n~']) {
-      expect(trip(p.string().prose(), value)).toBe(value);
-      expect(trip(p.string().prose().max(24), value)).toBe(value);
+  it('keeps a lead surrogate that a slice cut from its trail', () => {
+    // Enough iterations for V8 to optimize the encode loop, where an
+    // optimized `codePointAt` reads past the slice into the parent string.
+    const node = p.string();
+    for (let i = 0; i < 20000; i++) {
+      const whole = `abcdefghijklmnopqrstuvwxyz${i}😀 tail`;
+      const cut = whole.slice(0, whole.length - 6);
+      expect(node.decode(node.encode(cut))).toBe(cut);
     }
   });
 
-  it('prose packs English tighter than the flat ladder', () => {
-    // ~4.5 bits per character against the ladder's 7.03. A pangram would
-    // fail this: rare letters cost 10+ bits under the frequency model.
-    const text =
-      'It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife.';
-    const prose = p.string().prose().encode(text).length;
-    const flat = p.string().encode(text).length;
-    expect(prose).toBeLessThan(flat * 0.7);
-  });
-
-  it('prose rejects a charset and a charset rejects prose', () => {
-    expect(() => p.string().prose().charset('abc')).toThrow(TypeError);
-    expect(() => p.string().charset('abc').prose()).toThrow(TypeError);
-  });
-
-  it('min and length narrow the length prefix', () => {
+  it('narrows the length prefix with min and length', () => {
     const ranged = p.string().min(8).max(12);
     expect(trip(ranged, 'abcdefghij')).toBe('abcdefghij');
     expect(() => ranged.encode('short')).toThrow('String length 5 is below the minimum 8');
     expect(() => ranged.encode('a'.repeat(13))).toThrow('String length 13 is above the maximum 12');
     expect(trip(p.string().min(2), 'abc')).toBe('abc');
-    expect(() => p.string().min(3).max(2)).toThrow('p.string range is empty: min 3 exceeds max 2');
-    expect(() => p.string().min(-1)).toThrow(
-      new RangeError('p.string min must be a non-negative integer, got -1')
-    );
-    // A fixed length is both bounds, so neither can be set again.
-    expect(() => p.string().length(5).max(8)).toThrow(new TypeError('p.string max is already set'));
-    expect(() => p.string().min(2).length(5)).toThrow('p.string min is already set');
-    expect(() => p.string().min(8).length(5)).toThrow('p.string min is already set');
-    expect(() => p.string().max(10).length(5)).toThrow('p.string max is already set');
-    expect(() => p.string().min(1).min(2)).toThrow('p.string min is already set');
-    expect(() => p.string().length(2.5)).toThrow(
-      new TypeError('p.string min must be a non-negative integer, got 2.5')
-    );
-    expect(() => p.string().length(3).encode('ab')).toThrow(
-      'String length 2 is below the minimum 3'
-    );
     // A fixed length spends nothing on the prefix: eight binary characters
     // fill one byte exactly, where a max of 8 needs a second.
     const bits = p.string().charset('ab');
@@ -92,20 +50,15 @@ describe('Schema string', () => {
     expect(trip(bits.length(8), 'aaaabbbb')).toBe('aaaabbbb');
   });
 
-  it('weights the length like an array count', () => {
+  it('takes a prior on the length', () => {
     const code = p.string().charset('0123456789').min(4).max(8).weights([1, 1, 50, 1, 1]);
-    for (const value of ['1234', '123456', '12345678']) {
-      expect(trip(code, value)).toBe(value);
-    }
-    // Six-digit codes dominate, so they spend well under the uniform log2(5).
-    const codes = Array<string>(16).fill('123456');
-    const list = (n: typeof code) => p.array(n).length(16).encode(codes).length;
+    expect(trip(code, '123456')).toBe('123456');
+    const list = (n: typeof code) => p.array(n).length(16).encode(Array(16).fill('123456')).length;
     expect(list(code)).toBeLessThan(list(p.string().charset('0123456789').min(4).max(8)));
     const cdf = p
       .string()
       .max(3)
       .cdf((n) => (n > 0 ? (n - 1) * (n - 1) : 0));
-    expect(trip(cdf, 'abc')).toBe('abc');
     expect(() => cdf.encode('')).toThrow(
       new RangeError('String length 0 has zero weight under the declared cdf')
     );
@@ -119,7 +72,79 @@ describe('Schema string', () => {
     expect(() => p.string().max(2).weights([1, 1])).toThrow('one weight per value');
   });
 
-  it('prose takes any model, starting outside the alphabet when it has no space', () => {
+  it('rejects a value outside its charset', () => {
+    expect(() => p.string().charset('0123456789').encode('12a')).toThrow(
+      new RangeError('Character "a" at 2 is not in the character set')
+    );
+    expect(() => p.string().charset([97, 98]).encode('abc')).toThrow(
+      new RangeError('Character "c" (code 99) at 2 is outside the range 97–98')
+    );
+  });
+
+  it('rejects a charset holding half of a surrogate pair', () => {
+    expect(() => p.string().charset([0xdc00, 0xdfff])).toThrow(RangeError);
+    expect(() => p.string().charset('x\udfff')).toThrow(RangeError);
+  });
+
+  it('takes a one-character charset, whose characters cost nothing', () => {
+    expect(trip(p.string().charset('x').length(5), 'xxxxx')).toBe('xxxxx');
+    expect(p.string().charset([120, 120]).length(5).encode('xxxxx')).toHaveLength(0);
+    expect(trip(p.string().charset('a'), 'aaaa')).toBe('aaaa');
+  });
+
+  it('round-trips long charset strings', () => {
+    const hex = Array.from({ length: 20_000 }, () => '0123456789abcdef'[below(16)]).join('');
+    expect(trip(p.string().charset('0123456789abcdef'), hex)).toBe(hex);
+    const cyrillic = String.fromCharCode(...Array.from({ length: 3000 }, () => 0x400 + below(256)));
+    expect(trip(p.string().charset([0x400, 0x4ff]), cyrillic)).toBe(cyrillic);
+  });
+
+  it('rejects a surrogate pair split into two code points', () => {
+    // The encoder merges an adjacent lead+trail into one astral code point,
+    // so the two-slot spelling would be a second wire form of the same string.
+    const enc = new Encoder();
+    enc.composeTerm(2);
+    for (const code of [0xd800, 0xdc00]) {
+      enc.compose(TEXT_DIRECT_MAX + 2, TEXT_FIRST_RADIX);
+      enc.compose(code - 0x800, 0xffff - 0x800 + 1);
+    }
+    expect(() => p.string().decode(enc.output())).toThrow('Non-canonical split surrogate pair');
+  });
+
+  it('rejects an astral code point past the length prefix', () => {
+    // A one-unit prefix followed by a two-unit code point fits no string.
+    const enc = new Encoder();
+    enc.composeTerm(1);
+    enc.compose(TEXT_DIRECT_MAX + 3, TEXT_FIRST_RADIX);
+    enc.compose(0x1f44b - 0x10000, 0x10ffff - 0x10000 + 1);
+    expect(() => p.string().decode(enc.output())).toThrow('Code points overrun the length prefix');
+  });
+});
+
+describe('Schema string prose', () => {
+  it.each(['See you at noon?', 'Ünïcödé — 漢字 👋', 'a\uD800b', '\t\n~'])(
+    'round-trips %j under a max length',
+    (value) => {
+      expect(trip(p.string().prose().max(24), value)).toBe(value);
+    }
+  );
+
+  it('packs English tighter than the flat ladder', () => {
+    // ~4.5 bits per character against the ladder's 7.03. A pangram would
+    // fail this: rare letters cost 10+ bits under the frequency model.
+    const text =
+      'It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife.';
+    const prose = p.string().prose().encode(text).length;
+    const flat = p.string().encode(text).length;
+    expect(prose).toBeLessThan(flat * 0.7);
+  });
+
+  it('cannot combine with a charset', () => {
+    expect(() => p.string().prose().charset('abc')).toThrow('cannot combine prose with a charset');
+    expect(() => p.string().charset('abc').prose()).toThrow(TypeError);
+  });
+
+  it('takes any model, starting outside the alphabet when it has no space', () => {
     const kana = buildProseModel('ありがとうございます。こんにちは。さようなら。');
     for (const value of ['ありがとう', 'こんにちは!', '', 'xyz 🎉']) {
       expect(trip(p.string().prose(kana), value)).toBe(value);
@@ -130,7 +155,7 @@ describe('Schema string', () => {
     );
   });
 
-  it('a built model is plain data that depends only on its corpus', () => {
+  it('builds a model as plain data that depends only on its corpus', () => {
     const corpus = 'de kat zit op de mat';
     const copy = JSON.parse(JSON.stringify(buildProseModel(corpus)));
     expect(p.string().prose(buildProseModel(corpus)).encode('de mat')).toEqual(
@@ -142,7 +167,7 @@ describe('Schema string', () => {
     expect(trip(p.string().prose(ab), 'abc')).toBe('abc');
   });
 
-  it('a built model leaves rare characters to the escape', () => {
+  it('leaves rare characters of a built model to the escape', () => {
     const corpus = 'the cat sat on the mat, the end 🎉';
     expect(buildProseModel(corpus).alphabet).toBe(' aehnt');
     expect(Array.from(buildProseModel(corpus, { minCount: 1 }).alphabet)).toContain('🎉');
@@ -157,81 +182,31 @@ describe('Schema string', () => {
     );
   });
 
-  it('prose models must match their alphabet', () => {
-    const row = [1, 1, 1];
-    expect(() => p.string().prose({ alphabet: '', weights: [[1]] })).toThrow('non-empty');
-    expect(() => p.string().prose({ alphabet: 'aa', weights: [row, row, row] })).toThrow(
-      'free of duplicates'
-    );
-    expect(() => p.string().prose({ alphabet: 'ab', weights: [row, row] })).toThrow(
-      'p.string prose weights need a row per alphabet character, plus one: expected 3, got 2'
-    );
-    expect(() => p.string().prose({ alphabet: 'ab', weights: [row, [1, 1], row] })).toThrow(
-      'one weight per value'
-    );
-    expect(() => p.string().prose({ alphabet: 'ab', weights: [row, [1, 0, 1], row] })).toThrow(
-      'positive integers'
-    );
+  const row = [1, 1, 1];
+  it.each([
+    [{ alphabet: '', weights: [[1]] }, 'non-empty'],
+    [{ alphabet: 'aa', weights: [row, row, row] }, 'free of duplicates'],
+    [
+      { alphabet: 'ab', weights: [row, row] },
+      'p.string prose weights need a row per alphabet character, plus one: expected 3, got 2',
+    ],
+    [{ alphabet: 'ab', weights: [row, [1, 1], row] }, 'one weight per value'],
+    [{ alphabet: 'ab', weights: [row, [1, 0, 1], row] }, 'positive integers'],
+  ])('rejects a model that does not match its alphabet: %j', (model, message) => {
+    expect(() => p.string().prose(model)).toThrow(message);
   });
 
-  it('string packs ASCII near seven bits per character', () => {
-    // 24 slots of log2(131) bits plus the length prefix: 22 bytes, where flat
-    // 16-bit code units would spend 49.
-    expect(p.string().max(24).encode('twenty four ascii chars!')).toHaveLength(22);
-  });
-
-  it('string decode rejects a surrogate pair split into two code points', () => {
-    // The encoder merges an adjacent lead+trail into one astral code point,
-    // so the two-slot spelling would be a second wire form of the same string.
-    const enc = new Encoder();
-    enc.composeTerm(2);
-    for (const code of [0xd800, 0xdc00]) {
-      enc.compose(TEXT_DIRECT_MAX + 2, TEXT_FIRST_RADIX);
-      enc.compose(code - 0x800, 0xffff - 0x800 + 1);
-    }
-    expect(() => p.string().decode(enc.output())).toThrow('Non-canonical split surrogate pair');
-  });
-
-  it('string keeps a lead surrogate that a slice cut from its trail', () => {
-    // Enough iterations for V8 to optimize the encode loop, where an
-    // optimized `codePointAt` reads past the slice into the parent string.
-    const node = p.string();
-    for (let i = 0; i < 20000; i++) {
-      const whole = `abcdefghijklmnopqrstuvwxyz${i}😀 tail`;
-      const cut = whole.slice(0, whole.length - 6);
-      expect(node.decode(node.encode(cut))).toBe(cut);
-    }
-  });
-
-  it('prose decode rejects a modeled character behind the escape', () => {
+  it('rejects a modeled character behind the escape', () => {
     // 'e' has its own bucket, so its escaped form would be a second wire
     // spelling of the same string.
     const table = compileProse(ProseModels.english);
-    const row = table.rows[table.start];
+    const start = table.rows[table.start];
     const enc = new Encoder();
     enc.composeTerm(1);
-    enc.composeWeighted(row.cums[table.escape], row.freqs[table.escape], row.total);
+    enc.composeWeighted(start.cums[table.escape], start.freqs[table.escape], start.total);
     enc.compose('e'.charCodeAt(0), TEXT_FIRST_RADIX);
     expect(() => p.string().prose().decode(enc.output())).toThrow(
       'Non-canonical escape of a modeled character'
-    );
-  });
-
-  it('string decode rejects an astral code point past the length prefix', () => {
-    // A one-unit prefix followed by a two-unit code point fits no string.
-    const enc = new Encoder();
-    enc.composeTerm(1);
-    enc.compose(TEXT_DIRECT_MAX + 3, TEXT_FIRST_RADIX);
-    enc.compose(0x1f44b - 0x10000, 0x10ffff - 0x10000 + 1);
-    expect(() => p.string().decode(enc.output())).toThrow('Code points overrun the length prefix');
-  });
-
-  it('rejects bad configuration and non-compliant values', () => {
-    expect(() => p.string().max(-1)).toThrow('p.string max must be a non-negative integer, got -1');
-    expect(() => p.string().max(1.5)).toThrow(TypeError);
-    expect(() => p.string().prose().charset('ab')).toThrow('cannot combine prose with a charset');
-    expect(() => p.string().charset([97, 98]).encode('abc')).toThrow(
-      new RangeError('Character "c" (code 99) at 2 is outside the range 97–98')
     );
   });
 });

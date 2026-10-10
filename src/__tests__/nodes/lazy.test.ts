@@ -1,5 +1,5 @@
 /**
- * Schema lazy node (`p.lazy()`) — recursive and forward references.
+ * `p.lazy()`: recursive and forward references.
  */
 
 import { p, type PNode } from '../../index';

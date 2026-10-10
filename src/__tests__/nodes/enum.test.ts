@@ -1,37 +1,32 @@
 /**
- * Schema enum node (`p.enum()`) — variants from a fixed list of members.
+ * `p.enum()`: one member of a fixed list.
  */
 
 import { p } from '../../index';
 import { trip } from '../support';
 
 describe('Schema enum', () => {
-  it('enum round-trips a member', () => {
-    expect(trip(p.enum(['admin', 'user', 'guest']), 'user')).toBe('user');
-  });
-
-  it('enum rejects an empty list at construction', () => {
+  it('rejects an empty list at construction', () => {
     expect(() => p.enum([])).toThrow(TypeError);
   });
 
-  it('enum rejects a value not in its list', () => {
-    expect(() => p.enum(['a', 'b']).encode('c' as never)).toThrow(
+  it('rejects a value not in its list, showing the list when it is short', () => {
+    // Lists built at runtime type their members as plain values.
+    const letters: string[] = ['a', 'b'];
+    expect(() => p.enum(letters).encode('c')).toThrow(
       new RangeError('Value "c" is not one of "a", "b"')
     );
-    const many = p.enum(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']);
-    expect(() => many.encode('z' as never)).toThrow('Value "z" is not one of the 9 listed values');
-    expect(() => p.enum([1, 5]).encode('5' as never)).toThrow(
+    const many: string[] = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'];
+    expect(() => p.enum(many).encode('z')).toThrow('Value "z" is not one of the 9 listed values');
+    const numbers: (number | string)[] = [1, 5];
+    expect(() => p.enum(numbers).encode('5')).toThrow(
       new RangeError('Value "5" is not one of 1, 5')
     );
+    const bigints: bigint[] = [1n, 2n];
+    expect(() => p.enum(bigints).encode(3n)).toThrow('Value 3n is not one of 1n, 2n');
   });
 
-  it('enum accepts any primitive literals', () => {
-    expect(trip(p.enum([256, 512, 1024]), 512)).toBe(512);
-    expect(trip(p.enum([true, false]), false)).toBe(false);
-    expect(trip(p.enum(['on', 0.5, false]), 0.5)).toBe(0.5);
-  });
-
-  it('enum matches members by identity, so any stable reference works', () => {
+  it('matches members by identity, so any stable reference works', () => {
     // The wire carries an index into the shared list, so decode hands back
     // the listed member itself: objects and functions included.
     const strategies = [{ retries: 0 }, { retries: 5 }];
@@ -43,7 +38,7 @@ describe('Schema enum', () => {
     expect(trip(Rounding, Math.ceil)).toBe(Math.ceil);
   });
 
-  it('enum rejects NaN and duplicate members at construction', () => {
+  it('rejects NaN and duplicate members at construction', () => {
     // NaN never equals itself under the === that indexOf uses, so a NaN
     // member could never be encoded; a duplicate is unreachable behind its
     // first occurrence and inflates the radix every value pays for.

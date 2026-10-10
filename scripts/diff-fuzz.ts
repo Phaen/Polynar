@@ -1,45 +1,42 @@
 /**
- * Differential fuzz: the working tree against a git ref.
+ * Differential fuzz: the working tree against the latest published release.
  *
- *   npm run fuzz:diff -- <ref> [seed] [iterations]
+ *   npm run fuzz:diff -- [seed] [iterations]
  *
- * Both sides are bundled from `src/index.ts` and fed the same random cases:
- * schemas with values (priors, prose, charsets, block sizes, plus corrupted
- * inputs: truncated, padded, flipped, out-of-charset) and raw packer symbol
- * sequences aimed at block-boundary ties. Encode output, decode results and
- * thrown errors (class, name and message) must match. Any divergence prints
- * with its seed, iteration and a readable schema, and the exit code is 1.
+ * The release is the `polynar-published` devDependency, an alias of
+ * `polynar@latest`. Both sides are fed the same random cases: schemas with
+ * values (priors, prose, charsets, block sizes, plus corrupted inputs:
+ * truncated, padded, flipped, out-of-charset) and raw packer symbol sequences
+ * aimed at block-boundary ties. Encode output, decode results and thrown
+ * errors (class, name and message) must match. Any divergence prints with its
+ * seed, iteration and a readable schema, and the exit code is 1.
  *
- * Refs from e0700c1 on run, on either API shape: the one-`encode` options
- * form and the older `encodeString`/`toUint8Array` options form. Byte output
- * with a string charset exists only in the former, so those cases are
- * skipped against the latter. Earlier refs, with positional charsets, are
- * refused.
+ * A release whose API predates the working tree's is reported and nothing is
+ * compared (exit code 0). Bad arguments exit with 2. Under GitHub Actions a
+ * skip raises a notice annotation, and a divergence raises a warning
+ * annotation and writes the report to the job summary.
  */
 
-import { execFileSync } from 'child_process';
-import { mkdtempSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { join, resolve } from 'path';
-import { pathToFileURL } from 'url';
-import { build } from 'esbuild';
+import { appendFileSync } from 'fs';
+import * as current from '../src/index';
+import * as published from 'polynar-published';
+import { version as publishedVersion } from 'polynar-published/package.json';
 
 type Charset = string | [number, number];
 type Mod = any;
 type Node = any;
 
-/** Layout of one message, in the current API's terms. */
+/** Layout of one message. */
 interface Opts {
   type: 'binary' | 'text';
   charset?: Charset;
   blockBits?: number;
 }
 
-/** One side of the comparison: a bundle and calls shaped for its API. */
+/** One side of the comparison: a module and its codec calls. */
 interface Side {
   label: string;
   mod: Mod;
-  supports(o: Opts): boolean;
   encode(node: Node, value: unknown, o: Opts): Uint8Array | string;
   decode(node: Node, input: Uint8Array | string, o: Opts): unknown;
   output(enc: any, o: Opts): Uint8Array | string;
@@ -47,48 +44,22 @@ interface Side {
 }
 
 const side = (label: string, mod: Mod): Side => {
-  if (typeof mod.Encoder.prototype.output === 'function') {
-    const opts = (o: Opts) => ({ type: o.type, charset: o.charset, blockBits: o.blockBits });
-    return {
-      label,
-      mod,
-      supports: () => true,
-      encode: (node, value, o) => node.encode(value, opts(o)),
-      decode: (node, input, o) => node.decode(input, opts(o)),
-      output: (enc, o) => enc.output(opts(o)),
-      decoder: (input, o) => new mod.Decoder(input, opts(o)),
-    };
-  }
-  if (typeof mod.Encoder.prototype.toUint8Array === 'function' && takesOptions(mod)) {
-    const opts = (o: Opts) =>
-      o.type === 'text'
-        ? { charset: o.charset, blockBits: o.blockBits }
-        : { range: o.charset, blockBits: o.blockBits };
-    return {
-      label,
-      mod,
-      supports: (o) => o.type === 'text' || o.charset === undefined || Array.isArray(o.charset),
-      encode: (node, value, o) =>
-        o.type === 'text' ? node.encodeString(value, opts(o)) : node.encode(value, opts(o)),
-      decode: (node, input, o) =>
-        typeof input === 'string' ? node.decodeString(input, opts(o)) : node.decode(input, opts(o)),
-      output: (enc, o) => (o.type === 'text' ? enc.toString(opts(o)) : enc.toUint8Array(opts(o))),
-      decoder: (input, o) => new mod.Decoder(input, opts(o)),
-    };
-  }
-  throw new Error(
-    `${label}: unsupported API shape; refs from e0700c1 on (options objects) are supported`
-  );
+  const opts = (o: Opts) => ({ type: o.type, charset: o.charset, blockBits: o.blockBits });
+  return {
+    label,
+    mod,
+    encode: (node, value, o) => node.encode(value, opts(o)),
+    decode: (node, input, o) => node.decode(input, opts(o)),
+    output: (enc, o) => enc.output(opts(o)),
+    decoder: (input, o) => new mod.Decoder(input, opts(o)),
+  };
 };
 
-/** Whether `toString` takes an options object rather than a bare charset. */
-const takesOptions = (mod: Mod): boolean => {
-  try {
-    new mod.Encoder().toString({ charset: '01' });
-    return true;
-  } catch {
-    return false;
-  }
+/** Working-tree API the release lacks: runtime exports, and the options-taking `Encoder#output`. */
+const missingApi = (mod: Mod): string[] => {
+  const missing = Object.keys(current).filter((k) => !(k in mod));
+  if (typeof mod.Encoder?.prototype?.output !== 'function') missing.push('Encoder#output');
+  return missing;
 };
 
 // ---------- randomness ----------
@@ -1014,8 +985,8 @@ const BASES = [2, 3, 4, 5, 7, 8, 10, 16, 36, 64, 100, 127, 128, 255, 256, 1000, 
 
 // ---------- driver ----------
 
-let globalMod: Mod;
-let globalCharSets: Record<string, string>;
+const globalMod: Mod = current;
+const globalCharSets: Record<string, string> = current.CharSets;
 
 interface Divergence {
   half: 'schema' | 'packer';
@@ -1033,241 +1004,214 @@ const classify = (stage: string, a: Outcome, b: Outcome): string => {
   return ea === eb ? `${stage}: error message only` : `${stage}: error class`;
 };
 
-const sh = (cmd: string, args: string[], cwd: string): string =>
-  execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-
-const bundle = async (root: string, outfile: string): Promise<Mod> => {
-  await build({
-    entryPoints: [join(root, 'src/index.ts')],
-    bundle: true,
-    format: 'esm',
-    platform: 'node',
-    outfile,
-    logLevel: 'error',
-  });
-  return import(pathToFileURL(outfile).href);
+/** A non-negative integer argument, or undefined when it is anything else. */
+const countArg = (arg: string | undefined, fallback: number): number | undefined => {
+  if (arg === undefined) return fallback;
+  return /^\d+$/.test(arg) && Number.isSafeInteger(Number(arg)) ? Number(arg) : undefined;
 };
 
-const main = async (): Promise<number> => {
-  const [ref, seedArg, itersArg] = process.argv.slice(2);
-  if (!ref) {
-    console.error('usage: npm run fuzz:diff -- <ref> [seed] [iterations]');
+const main = (): number => {
+  const args = process.argv.slice(2);
+  const seed = countArg(args[0], 1);
+  const iterations = countArg(args[1], 1000);
+  if (seed === undefined || iterations === undefined || args.length > 2) {
+    console.error('usage: npm run fuzz:diff -- [seed] [iterations]');
     return 2;
   }
-  const seed = Number(seedArg ?? 1);
-  const iterations = Number(itersArg ?? 1000);
-  const root = sh('git', ['rev-parse', '--show-toplevel'], resolve(__dirname));
-  const commit = sh('git', ['rev-parse', '--verify', `${ref}^{commit}`], root);
-  const tmp = mkdtempSync(join(tmpdir(), 'polynar-diff-'));
-  const tree = join(tmp, 'ref');
-  try {
-    sh('git', ['worktree', 'add', '--detach', tree, commit], root);
-    const cur = side('working tree', await bundle(root, join(tmp, 'current.mjs')));
-    const old = side(`${ref} (${commit.slice(0, 7)})`, await bundle(tree, join(tmp, 'ref.mjs')));
-    globalMod = cur.mod;
-    globalCharSets = cur.mod.CharSets;
+  const missing = missingApi(published);
+  if (missing.length > 0) {
+    const skip = `published ${publishedVersion} predates the working tree's API, nothing compared`;
+    console.log(`polynar diff fuzz: ${skip} (missing ${missing.join(', ')})`);
+    if (process.env.GITHUB_ACTIONS) console.log(`::notice title=Wire check skipped::${skip}`);
+    return 0;
+  }
+  const cur = side('working tree', current);
+  const old = side(`published ${publishedVersion}`, published);
 
-    const divergences: Divergence[] = [];
-    let skipped = 0;
-    let decodes = 0;
+  const divergences: Divergence[] = [];
+  let decodes = 0;
 
-    for (let it = 0; it < iterations; it++) {
-      reseed(seed, it, 0);
-      const c = randomCase(2);
-      const o = randOpts();
-      let value: unknown;
+  for (let it = 0; it < iterations; it++) {
+    reseed(seed, it, 0);
+    const c = randomCase(2);
+    const o = randOpts();
+    let value: unknown;
+    try {
+      // One value in twenty belongs to a different schema, to compare errors.
+      value = rand() < 0.05 ? randomCase(1).gen() : c.gen();
+    } catch {
+      continue;
+    }
+    const nodes = [cur, old].map((sd) => {
       try {
-        // One value in twenty belongs to a different schema, to compare errors.
-        value = rand() < 0.05 ? randomCase(1).gen() : c.gen();
-      } catch {
-        continue;
+        return { node: c.mk(sd.mod) };
+      } catch (e) {
+        return {
+          error: attempt(() => {
+            throw e;
+          }),
+        };
       }
-      if (!cur.supports(o) || !old.supports(o)) {
-        skipped++;
-        continue;
-      }
-      const nodes = [cur, old].map((sd) => {
-        try {
-          return { node: c.mk(sd.mod) };
-        } catch (e) {
-          return {
-            error: attempt(() => {
-              throw e;
-            }),
-          };
-        }
-      });
-      const header = [`schema  ${c.src}`, `value   ${show(value)}`, `options ${JSON.stringify(o)}`];
-      if (nodes[0].error || nodes[1].error) {
-        if (nodes[0].error !== nodes[1].error) {
-          divergences.push({
-            half: 'schema',
-            iteration: it,
-            kind: classify('build', nodes[0].error ?? 'ok', nodes[1].error ?? 'ok'),
-            detail: [
-              ...header,
-              `build   ${cur.label}: ${nodes[0].error ?? 'ok'}`,
-              `build   ${old.label}: ${nodes[1].error ?? 'ok'}`,
-            ],
-          });
-        }
-        continue;
-      }
-      let encoded: Uint8Array | string | undefined;
-      const encodes = [cur, old].map((sd, i) =>
-        attempt(() => {
-          const out = sd.encode(nodes[i].node, value, o);
-          if (i === 0) encoded = out;
-          return out;
-        })
-      );
-      if (encodes[0] !== encodes[1]) {
+    });
+    const header = [`schema  ${c.src}`, `value   ${show(value)}`, `options ${JSON.stringify(o)}`];
+    if (nodes[0].error || nodes[1].error) {
+      if (nodes[0].error !== nodes[1].error) {
         divergences.push({
           half: 'schema',
           iteration: it,
-          kind: classify('encode', encodes[0], encodes[1]),
+          kind: classify('build', nodes[0].error ?? 'ok', nodes[1].error ?? 'ok'),
           detail: [
             ...header,
-            `encode  ${cur.label}: ${encodes[0]}`,
-            `encode  ${old.label}: ${encodes[1]}`,
+            `build   ${cur.label}: ${nodes[0].error ?? 'ok'}`,
+            `build   ${old.label}: ${nodes[1].error ?? 'ok'}`,
           ],
         });
-        continue;
       }
-      if (encoded === undefined) continue;
-      reseed(seed, it, 1);
-      for (const { what, input } of [
-        { what: 'as encoded', input: encoded },
-        ...corruptions(encoded, o),
-      ]) {
-        decodes++;
-        const results = [cur, old].map((sd, i) =>
-          attempt(() => sd.decode(nodes[i].node, input, o))
-        );
-        if (results[0] !== results[1]) {
-          divergences.push({
-            half: 'schema',
-            iteration: it,
-            kind: classify(
-              what === 'as encoded' ? 'decode' : 'corrupt decode',
-              results[0],
-              results[1]
-            ),
-            detail: [
-              ...header,
-              `input   ${what}: ${showInput(input)}`,
-              `decode  ${cur.label}: ${results[0]}`,
-              `decode  ${old.label}: ${results[1]}`,
-            ],
-          });
-          break;
-        }
+      continue;
+    }
+    let encoded: Uint8Array | string | undefined;
+    const encodes = [cur, old].map((sd, i) =>
+      attempt(() => {
+        const out = sd.encode(nodes[i].node, value, o);
+        if (i === 0) encoded = out;
+        return out;
+      })
+    );
+    if (encodes[0] !== encodes[1]) {
+      divergences.push({
+        half: 'schema',
+        iteration: it,
+        kind: classify('encode', encodes[0], encodes[1]),
+        detail: [
+          ...header,
+          `encode  ${cur.label}: ${encodes[0]}`,
+          `encode  ${old.label}: ${encodes[1]}`,
+        ],
+      });
+      continue;
+    }
+    if (encoded === undefined) continue;
+    reseed(seed, it, 1);
+    for (const { what, input } of [
+      { what: 'as encoded', input: encoded },
+      ...corruptions(encoded, o),
+    ]) {
+      decodes++;
+      const results = [cur, old].map((sd, i) => attempt(() => sd.decode(nodes[i].node, input, o)));
+      if (results[0] !== results[1]) {
+        divergences.push({
+          half: 'schema',
+          iteration: it,
+          kind: classify(
+            what === 'as encoded' ? 'decode' : 'corrupt decode',
+            results[0],
+            results[1]
+          ),
+          detail: [
+            ...header,
+            `input   ${what}: ${showInput(input)}`,
+            `decode  ${cur.label}: ${results[0]}`,
+            `decode  ${old.label}: ${results[1]}`,
+          ],
+        });
+        break;
       }
     }
+  }
 
-    for (let it = 0; it < iterations; it++) {
-      reseed(seed, it, 2);
-      const base = pick(BASES);
-      const blockBits = pick([undefined, undefined, 128, 512]);
-      const bits = BigInt(blockBits ?? 2048);
-      let digits = 1;
-      let cap = BigInt(base);
-      while (cap * BigInt(base) <= 1n << bits) {
-        cap *= BigInt(base);
-        digits++;
-      }
-      const type = base <= 256 && rand() < 0.5 ? 'binary' : 'text';
-      const o: Opts = {
-        type,
-        charset: type === 'binary' && base === 256 && rand() < 0.5 ? undefined : [0, base - 1],
-        blockBits,
-      };
-      const syms = genSequence(base, cap, digits);
-      const encodes = [cur, old].map((sd) => packEncode(sd, syms, o));
-      const encDiverges = (s: Sym[]) => packEncode(cur, s, o) !== packEncode(old, s, o);
-      if (encodes[0] !== encodes[1]) {
+  for (let it = 0; it < iterations; it++) {
+    reseed(seed, it, 2);
+    const base = pick(BASES);
+    const blockBits = pick([undefined, undefined, 128, 512]);
+    const bits = BigInt(blockBits ?? 2048);
+    let digits = 1;
+    let cap = BigInt(base);
+    while (cap * BigInt(base) <= 1n << bits) {
+      cap *= BigInt(base);
+      digits++;
+    }
+    const type = base <= 256 && rand() < 0.5 ? 'binary' : 'text';
+    const o: Opts = {
+      type,
+      charset: type === 'binary' && base === 256 && rand() < 0.5 ? undefined : [0, base - 1],
+      blockBits,
+    };
+    const syms = genSequence(base, cap, digits);
+    const encodes = [cur, old].map((sd) => packEncode(sd, syms, o));
+    const encDiverges = (s: Sym[]) => packEncode(cur, s, o) !== packEncode(old, s, o);
+    if (encodes[0] !== encodes[1]) {
+      divergences.push({
+        half: 'packer',
+        iteration: it,
+        kind: classify('packer encode', encodes[0], encodes[1]),
+        detail: [
+          `options ${JSON.stringify(o)}`,
+          `symbols ${JSON.stringify(shrink(syms, encDiverges))} (shrunk from ${syms.length})`,
+          `encode  ${cur.label}: ${packEncode(cur, syms, o).slice(0, 200)}`,
+          `encode  ${old.label}: ${packEncode(old, syms, o).slice(0, 200)}`,
+        ],
+      });
+      continue;
+    }
+    if (encodes[0].startsWith('throw')) continue;
+    const encoded = packEncodeRaw(cur, syms, o);
+    reseed(seed, it, 3);
+    for (const { what, input } of [
+      { what: 'as encoded', input: encoded },
+      ...corruptions(encoded, o),
+    ]) {
+      decodes++;
+      const a = packDecode(cur, input, syms, o);
+      const b = packDecode(old, input, syms, o);
+      if (JSON.stringify(a) !== JSON.stringify(b)) {
+        const step = a.findIndex((x, i) => x !== b[i]);
         divergences.push({
           half: 'packer',
           iteration: it,
-          kind: classify('packer encode', encodes[0], encodes[1]),
+          kind: classify(
+            what === 'as encoded' ? 'packer decode' : 'packer corrupt decode',
+            a[step],
+            b[step]
+          ),
           detail: [
             `options ${JSON.stringify(o)}`,
-            `symbols ${JSON.stringify(shrink(syms, encDiverges))} (shrunk from ${syms.length})`,
-            `encode  ${cur.label}: ${packEncode(cur, syms, o).slice(0, 200)}`,
-            `encode  ${old.label}: ${packEncode(old, syms, o).slice(0, 200)}`,
+            `symbols ${JSON.stringify(syms.length > 40 ? syms.slice(0, step + 1) : syms)}${syms.length > 40 ? ` (first ${step + 1} of ${syms.length})` : ''}`,
+            `input   ${what}: ${showInput(input).slice(0, 400)}`,
+            `step    ${step}`,
+            `decode  ${cur.label}: ${a[step]}`,
+            `decode  ${old.label}: ${b[step]}`,
           ],
         });
-        continue;
-      }
-      if (encodes[0].startsWith('throw')) continue;
-      const encoded = packEncodeRaw(cur, syms, o);
-      reseed(seed, it, 3);
-      for (const { what, input } of [
-        { what: 'as encoded', input: encoded },
-        ...corruptions(encoded, o),
-      ]) {
-        decodes++;
-        const a = packDecode(cur, input, syms, o);
-        const b = packDecode(old, input, syms, o);
-        if (JSON.stringify(a) !== JSON.stringify(b)) {
-          const step = a.findIndex((x, i) => x !== b[i]);
-          divergences.push({
-            half: 'packer',
-            iteration: it,
-            kind: classify(
-              what === 'as encoded' ? 'packer decode' : 'packer corrupt decode',
-              a[step],
-              b[step]
-            ),
-            detail: [
-              `options ${JSON.stringify(o)}`,
-              `symbols ${JSON.stringify(syms.length > 40 ? syms.slice(0, step + 1) : syms)}${syms.length > 40 ? ` (first ${step + 1} of ${syms.length})` : ''}`,
-              `input   ${what}: ${showInput(input).slice(0, 400)}`,
-              `step    ${step}`,
-              `decode  ${cur.label}: ${a[step]}`,
-              `decode  ${old.label}: ${b[step]}`,
-            ],
-          });
-          break;
-        }
+        break;
       }
     }
-
-    console.log(
-      `polynar diff fuzz: working tree vs ${old.label}, seed ${seed}, ${iterations} iterations per half`
-    );
-    console.log(
-      `  ${decodes} decodes compared, ${skipped} schema cases skipped (layout unsupported by one side)`
-    );
-    console.log(`  ${divergences.length} divergence(s)`);
-    const kinds = new Map<string, number>();
-    for (const d of divergences) kinds.set(d.kind, (kinds.get(d.kind) ?? 0) + 1);
-    for (const [kind, n] of [...kinds].sort((x, y) => y[1] - x[1]))
-      console.log(`    ${n}\t${kind}`);
-    // The first of each kind, then the earliest of the rest, up to ten.
-    const firsts = [...kinds.keys()].map((k) => divergences.find((d) => d.kind === k)!);
-    const shown = [...new Set([...firsts, ...divergences])].slice(0, 10);
-    for (const d of shown) {
-      console.log(`\n[${d.half}] ${d.kind} — seed ${seed} iteration ${d.iteration}`);
-      for (const line of d.detail) console.log(`  ${line}`);
-    }
-    if (divergences.length > shown.length)
-      console.log(`\n… ${divergences.length - shown.length} more`);
-    return divergences.length > 0 ? 1 : 0;
-  } finally {
-    try {
-      sh('git', ['worktree', 'remove', '--force', tree], root);
-    } catch {
-      // The worktree may not exist when its creation failed.
-    }
-    rmSync(tmp, { recursive: true, force: true });
   }
+
+  const summary = `working tree vs ${old.label}, seed ${seed}, ${iterations} iterations per half: ${divergences.length} divergence(s)`;
+  const report = [`polynar diff fuzz: ${summary}`, `  ${decodes} decodes compared`];
+  const kinds = new Map<string, number>();
+  for (const d of divergences) kinds.set(d.kind, (kinds.get(d.kind) ?? 0) + 1);
+  for (const [kind, n] of [...kinds].sort((x, y) => y[1] - x[1])) report.push(`    ${n}\t${kind}`);
+  // The first of each kind, then the earliest of the rest, up to ten.
+  const firsts = [...kinds.keys()].map((k) => divergences.find((d) => d.kind === k)!);
+  const shown = [...new Set([...firsts, ...divergences])].slice(0, 10);
+  for (const d of shown) {
+    report.push('', `[${d.half}] ${d.kind} — seed ${seed} iteration ${d.iteration}`);
+    for (const line of d.detail) report.push(`  ${line}`);
+  }
+  if (divergences.length > shown.length)
+    report.push('', `… ${divergences.length - shown.length} more`);
+  console.log(report.join('\n'));
+  if (divergences.length === 0) return 0;
+  if (process.env.GITHUB_ACTIONS) {
+    console.log(`::warning title=Wire divergence::${summary}`);
+    const file = process.env.GITHUB_STEP_SUMMARY;
+    if (file) {
+      const block = report.join('\n').replace(/`{3,}/g, '``');
+      appendFileSync(file, `## Wire divergence\n\n${summary}\n\n\`\`\`\n${block}\n\`\`\`\n`);
+    }
+  }
+  return 1;
 };
 
-main().then(
-  (code) => process.exit(code),
-  (e) => {
-    console.error(e instanceof Error ? e.message : e);
-    process.exit(2);
-  }
-);
+process.exit(main());

@@ -1,23 +1,24 @@
 /**
- * Property fuzz — two invariants over randomly generated schemas and values:
- * round-trip identity (decode(encode(v)) equals v) and canonical closure
- * (bytes that decode at all must re-encode to exactly themselves, so no value
- * ever has a second wire spelling). Both are checked over the byte and text
- * transports, and against corrupted inputs (padding, flipped bytes, truncation).
- * The generator is seeded, so every run exercises the same cases and a
- * failure is reproducible.
+ * Property fuzz over randomly generated schemas and values: round-trip
+ * identity (decode(encode(v)) equals v), canonical closure (bytes that decode
+ * at all re-encode to exactly themselves, so no value has a second wire
+ * spelling), and agreement of the block bound's fast regimes with its exact
+ * one (the same bytes when every block is bounded with exact arithmetic from
+ * its first symbol). Checked over bytes and text in charsets of unusual
+ * sizes and at several block sizes, and against corrupted inputs (padding,
+ * flipped bytes, truncation). The generator is seeded, so every run
+ * exercises the same cases and a failure is reproducible. FUZZ scales the
+ * iteration counts.
  */
 
 import { CharSets, p, PNode, buildProseModel } from '../index';
-import type { Charset } from '../index';
+import type { Charset, CodecOptions, OutputType } from '../index';
+import { setExactOnly } from '../packer/bound';
+import { mulberry32 } from './support';
 
-const mulberry32 = (seed: number) => (): number => {
-  seed |= 0;
-  seed = (seed + 0x6d2b79f5) | 0;
-  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-};
+const SCALE = Math.max(0, Number(process.env.FUZZ ?? 1));
+const runs = (n: number): number => Math.max(1, Math.round(n * SCALE));
+
 const rand = mulberry32(0x5eed);
 const randInt = (lo: number, hi: number): number => lo + Math.floor(rand() * (hi - lo + 1));
 const pick = <T>(xs: readonly T[]): T => xs[randInt(0, xs.length - 1)];
@@ -93,13 +94,42 @@ const scalarCase = (): Case => {
     case 0: {
       const lo = randInt(-1000, 0);
       const hi = lo + randInt(0, 2000);
-      // Weighted half the time, like bool and enum below.
       const bounded = p.int().min(lo).max(hi);
-      const node =
-        rand() < 0.5
-          ? bounded
-          : bounded.weights(Array.from({ length: hi - lo + 1 }, () => randInt(1, 1000)));
-      return { node, gen: () => randInt(lo, hi) };
+      const any = (): number => randInt(lo, hi);
+      switch (randInt(0, 3)) {
+        case 0:
+          return { node: bounded, gen: any };
+        case 1:
+          return {
+            node: bounded.weights(Array.from({ length: hi - lo + 1 }, () => randInt(1, 1000))),
+            gen: any,
+          };
+        case 2: {
+          // One value holds nearly all the weight, so its frequency sits near
+          // the total, and runs of it are likely.
+          const heavy = any();
+          const weights = Array.from({ length: hi - lo + 1 }, (_, i) =>
+            lo + i === heavy ? randInt(2 ** 30, 2 ** 45) : randInt(1, 3)
+          );
+          return {
+            node: bounded.weights(weights),
+            gen: () => (rand() < 0.9 ? heavy : any()),
+          };
+        }
+        default: {
+          // A wide range whose zero holds nearly all of a total near 2^50.
+          const max = 2 ** randInt(20, 40);
+          const heavy = randInt(2 ** 40, 2 ** 50);
+          return {
+            node: p
+              .int()
+              .min(0)
+              .max(max)
+              .cdf((v) => (v === 0 ? 0 : heavy + v)),
+            gen: () => (rand() < 0.9 ? 0 : randInt(0, max)),
+          };
+        }
+      }
     }
     case 1:
       return { node: p.int(), gen: () => randInt(-(2 ** 40), 2 ** 40) };
@@ -208,9 +238,21 @@ const scalarCase = (): Case => {
       }
     }
     case 6: {
-      // Weighted half the time: the prior changes the wire, never the values.
-      const node = rand() < 0.5 ? p.bool() : p.bool().weights([randInt(1, 200), randInt(1, 200)]);
-      return { node, gen: () => rand() < 0.5 };
+      // The prior changes the wire, never the values.
+      switch (randInt(0, 2)) {
+        case 0:
+          return { node: p.bool(), gen: () => rand() < 0.5 };
+        case 1:
+          return {
+            node: p.bool().weights([randInt(1, 200), randInt(1, 200)]),
+            gen: () => rand() < 0.5,
+          };
+        default:
+          return {
+            node: p.bool().weights([randInt(2 ** 30, 2 ** 45), randInt(1, 3)]),
+            gen: () => rand() < 0.95,
+          };
+      }
     }
     case 7: {
       // Membership is identity, so members can mix types freely.
@@ -242,7 +284,9 @@ const scalarCase = (): Case => {
       };
     }
     case 9: {
-      const max = randInt(0, 40);
+      // Whole multiples of 32 bytes put a uniform run's product exactly on a
+      // 256-bit scale step.
+      const max = rand() < 0.3 ? 32 * randInt(1, 4) : randInt(0, 40);
       // Raw bits, so any element pattern must survive: random bytes become
       // random Int16, Float64 (NaN payloads included) and BigUint64 values.
       if (rand() < 0.5) {
@@ -364,7 +408,10 @@ const anyCase = (): Case => ({ node: p.any(), gen: () => anyValue(2, true) });
 
 const arrayCase = (depth: number): Case => {
   const item = randomCase(depth - 1);
-  const length = randInt(0, 4);
+  // Now and then a long run of leaf items, which crosses block boundaries;
+  // a multiple of 256 puts a run of bits exactly on a 256-bit scale step.
+  const long = (): number => (rand() < 0.5 ? randInt(100, 3000) : 256 * randInt(1, 8));
+  const length = depth === 1 && rand() < 0.15 ? long() : randInt(0, 4);
   let node = p.array(item.node as never);
   let free = false;
   let lo = 0;
@@ -446,7 +493,29 @@ const taggedCase = (depth: number): Case => {
   };
 };
 
+// A weighted symbol, then a uniform run whose radix product is exactly a
+// power of two on a 256-bit scale step: the message's bound sits just past
+// the step, where the float regime's margins are thinnest.
+const stepCase = (): Case => {
+  const weights = [randInt(1, 20), randInt(1, 20)];
+  if (rand() < 0.5) {
+    const length = 32 * randInt(1, 6);
+    return {
+      node: p.object({ flag: p.bool().weights(weights), data: p.binary().length(length) }),
+      gen: () => ({ flag: rand() < 0.5, data: randBytes(length) }),
+    };
+  }
+  const length = 256 * randInt(1, 6);
+  return {
+    node: p.object({ flag: p.bool().weights(weights), bits: p.array(p.bool()).length(length) }),
+    gen: () => ({ flag: rand() < 0.5, bits: Array.from({ length }, () => rand() < 0.5) }),
+  };
+};
+
 const randomCase = (depth: number): Case => {
+  if (depth > 1 && rand() < 0.05) {
+    return stepCase();
+  }
   const chosen =
     depth > 0 && rand() < 0.4
       ? pick([arrayCase, objectCase, taggedCase, () => anyCase()] as const)(depth)
@@ -457,9 +526,45 @@ const randomCase = (depth: number): Case => {
   return rand() < 0.1 ? { node: p.versioned(chosen.node), gen: chosen.gen } : chosen;
 };
 
+type Options = CodecOptions<OutputType>;
+
+/**
+ * Transports of unusual digit bases: 3, 95 and 1000 symbols as text, 3 as
+ * bytes, beside the defaults; each at a random block size.
+ */
+const TRANSPORTS: readonly Options[] = [
+  {},
+  { charset: '012' },
+  { type: 'text' },
+  { type: 'text', charset: '012' },
+  { type: 'text', charset: CharSets.printable },
+  { type: 'text', charset: [0x4e00, 0x4e00 + 999] },
+];
+const BLOCK_BITS = [undefined, 128, 4096, 65536] as const;
+
+const encodeWith = (node: PNode<unknown>, value: unknown, o: Options): Uint8Array | string =>
+  o.type === 'text'
+    ? node.encode(value, o as CodecOptions<'text'>)
+    : node.encode(value, o as CodecOptions<'binary'>);
+
+const decodeWith = (node: PNode<unknown>, input: Uint8Array | string, o: Options): unknown =>
+  typeof input === 'string'
+    ? node.decode(input, o as CodecOptions<'text'>)
+    : node.decode(input, o as CodecOptions<'binary'>);
+
+/** Runs `fn` with every block bounded by exact arithmetic from its first symbol. */
+const exactly = <T>(fn: () => T): T => {
+  setExactOnly(true);
+  try {
+    return fn();
+  } finally {
+    setExactOnly(false);
+  }
+};
+
 describe('Property fuzz', () => {
   it('round-trips and re-encodes canonically over random schemas', () => {
-    for (let i = 0; i < 1000; i++) {
+    for (let i = 0; i < runs(1000); i++) {
       const { node, gen } = randomCase(2);
       const value = gen();
       const bytes = node.encode(value as never);
@@ -470,8 +575,20 @@ describe('Property fuzz', () => {
     }
   });
 
+  it('writes the bytes of the exact block bound, over every transport and block size', () => {
+    for (let i = 0; i < runs(600); i++) {
+      const { node, gen } = randomCase(2);
+      const value = gen();
+      const o: Options = { ...pick(TRANSPORTS), blockBits: pick(BLOCK_BITS) };
+      const output = encodeWith(node, value, o);
+      expect(exactly(() => encodeWith(node, value, o))).toEqual(output);
+      expect(decodeWith(node, output, o)).toEqual(value);
+      expect(exactly(() => decodeWith(node, output, o))).toEqual(value);
+    }
+  });
+
   it('mutated bytes either throw or decode to something that owns those bytes', () => {
-    for (let i = 0; i < 1000; i++) {
+    for (let i = 0; i < runs(1000); i++) {
       const { node, gen } = randomCase(2);
       const bytes = node.encode(gen() as never);
       for (let m = 0; m < 3; m++) {
@@ -517,7 +634,7 @@ describe('Property fuzz', () => {
         : String.fromCharCode(randInt(c[0], c[1]));
     };
 
-    for (let i = 0; i < 500; i++) {
+    for (let i = 0; i < runs(500); i++) {
       const { node, gen } = randomCase(2);
       const charset = pick(transports);
       const value = gen();

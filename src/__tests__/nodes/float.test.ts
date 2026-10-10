@@ -1,52 +1,44 @@
 /**
- * Schema float node (`p.float()`) — IEEE 754 doubles with fraction/mantissa packing.
+ * `p.float()`: IEEE 754 doubles, the significand spelled as the cheapest of
+ * a flat mantissa, the simplest fraction in the double's rounding interval,
+ * or that fraction times a power of five, so a value's cost tracks its
+ * arithmetic complexity.
  */
 
 import { p, Encoder, CorruptInputError } from '../../index';
-import { trip } from '../support';
+
+/** Sign, then the exponent at the bias, then the given significand spelling. */
+const spelled = (significand: (enc: Encoder) => void): Uint8Array => {
+  const enc = new Encoder();
+  enc.compose(0, 2);
+  enc.composeTerm(0);
+  significand(enc);
+  return enc.output();
+};
 
 describe('Schema float', () => {
-  it('float round-trips every finite double bit-exact', () => {
-    for (const value of [Math.PI, 0.1 + 0.2, -2.5, 7, 1e300, Number.EPSILON]) {
-      expect(trip(p.float(), value)).toBe(value);
-    }
-  });
-
-  it('float round-trips the edges of the double space', () => {
-    expect(trip(p.float(), Number.MAX_VALUE)).toBe(Number.MAX_VALUE);
-    expect(trip(p.float(), Number.MIN_VALUE)).toBe(Number.MIN_VALUE); // subnormal
-    expect(Object.is(trip(p.float(), -0), -0)).toBe(true); // sign bit survives
-  });
-
-  it('float packs simple values as fractions and full-entropy values flat', () => {
-    // The significand travels as the cheapest of three spellings: flat
-    // mantissa, simplest fraction in the double's rounding interval, or that
-    // fraction times a power of five. A value's cost tracks its arithmetic
-    // complexity, not the worst case.
-    expect(p.float().encode(1.5)).toHaveLength(2);
-    expect(p.float().encode(1 / 3)).toHaveLength(2);
-    expect(p.float().encode(0.1)).toHaveLength(2);
-    expect(p.float().encode(3.14)).toHaveLength(4);
-    expect(p.float().encode(Math.PI)).toHaveLength(8);
+  it.each([
+    [1.5, 2],
+    [1 / 3, 2],
+    [0.1, 2],
+    [3.14, 4],
+    [Math.PI, 8],
     // Float noise is genuine entropy: one addition forfeits the cheap name.
-    expect(p.float().encode(0.1 + 0.2)).toHaveLength(8);
-  });
-
-  it('float keeps decimal values cheap at any magnitude', () => {
+    [0.1 + 0.2, 8],
     // The five realm carries the decimal exponent's 5-adic half, so a typed
     // decimal never pays for the fives its binary exponent cannot absorb.
-    expect(p.float().encode(1e-300)).toHaveLength(5);
-    expect(p.float().encode(6.02e23)).toHaveLength(6);
-    expect(p.float().encode(8.17e-285)).toHaveLength(8);
+    [1e-300, 5],
+    [6.02e23, 6],
+    [8.17e-285, 8],
+  ])('packs %p into %i bytes', (value, bytes) => {
+    expect(p.float().encode(value)).toHaveLength(bytes);
   });
 
-  it('float round-trips fraction-packed values bit-exact', () => {
-    for (const value of [0.1, 1 / 3, -2 / 7, 1.5, 21.57, 0.5, 2, Number.EPSILON]) {
-      expect(trip(p.float(), value)).toBe(value);
-    }
+  it.each([Infinity, -Infinity, NaN])('rejects %p', (value) => {
+    expect(() => p.float().encode(value)).toThrow(TypeError);
   });
 
-  it('rejects a float exponent past the finite range', () => {
+  it('rejects an exponent past the finite range', () => {
     // The exponent zigzag tops out at the last finite exponent; the next term
     // value would be Infinity's slot, which the encoder never emits.
     const enc = new Encoder();
@@ -55,51 +47,51 @@ describe('Schema float', () => {
     expect(() => p.float().decode(enc.output())).toThrow(CorruptInputError);
   });
 
-  it('rejects float significand spellings that are not the canonical one', () => {
-    // 6/4 names the same value as 3/2, so only the simplest form decodes.
-    const reducible = new Encoder();
-    reducible.compose(0, 2); // sign
-    reducible.composeTerm(0); // exponent at the bias
-    reducible.compose(1, 3); // fraction selector
-    reducible.composeTerm(3); // denominator 4
-    reducible.compose(2, 4); // numerator 6
-    expect(() => p.float().decode(reducible.output())).toThrow('not the canonical form');
-
-    // A flat mantissa spelling of 1.5, whose canonical form is 3/2.
-    const flat = new Encoder();
-    flat.compose(0, 2);
-    flat.composeTerm(0);
-    flat.compose(0, 3); // flat selector
-    flat.compose(2 ** 51, 2 ** 52);
-    expect(() => p.float().decode(flat.output())).toThrow('not the canonical form');
-
-    // A denominator whose term already outweighs the flat mantissa could
-    // never have won the cost rule.
-    const dear = new Encoder();
-    dear.compose(0, 2);
-    dear.composeTerm(0);
-    dear.compose(1, 3);
-    dear.composeTerm(3 ** 20);
-    expect(() => p.float().decode(dear.output())).toThrow('dearer than the flat mantissa');
-
-    // A five-realm spelling of a value whose canonical home is the plain
-    // fraction branch: 6/5 times 5^1 names 1.5, but 1.5's canonical form
-    // is the fraction 3/2 with no shift.
-    const shifted = new Encoder();
-    shifted.compose(0, 2);
-    shifted.composeTerm(0);
-    shifted.compose(2, 3); // five-realm selector
-    shifted.composeTerm(0); // shift +1
-    shifted.composeTerm(4); // denominator 5
-    shifted.compose(1, 5); // numerator 6
-    expect(() => p.float().decode(shifted.output())).toThrow('not the canonical form');
-
-    // A shift past the range any shortest-decimal form can produce.
-    const wild = new Encoder();
-    wild.compose(0, 2);
-    wild.composeTerm(0);
-    wild.compose(2, 3);
-    wild.composeTerm(2 * 501);
-    expect(() => p.float().decode(wild.output())).toThrow('outside the canonical range');
+  it.each([
+    [
+      'a reducible fraction: 6/4 names the same value as 3/2',
+      (enc: Encoder) => {
+        enc.compose(1, 3); // fraction selector
+        enc.composeTerm(3); // denominator 4
+        enc.compose(2, 4); // numerator 6
+      },
+      'not the canonical form',
+    ],
+    [
+      'a flat mantissa for 1.5, whose canonical form is 3/2',
+      (enc: Encoder) => {
+        enc.compose(0, 3); // flat selector
+        enc.compose(2 ** 51, 2 ** 52);
+      },
+      'not the canonical form',
+    ],
+    [
+      'a denominator whose term outweighs the flat mantissa',
+      (enc: Encoder) => {
+        enc.compose(1, 3);
+        enc.composeTerm(3 ** 20);
+      },
+      'dearer than the flat mantissa',
+    ],
+    [
+      'a five-realm spelling of a plain fraction: 6/5 · 5 names 1.5',
+      (enc: Encoder) => {
+        enc.compose(2, 3); // five-realm selector
+        enc.composeTerm(0); // shift +1
+        enc.composeTerm(4); // denominator 5
+        enc.compose(1, 5); // numerator 6
+      },
+      'not the canonical form',
+    ],
+    [
+      'a shift past the range any shortest-decimal form produces',
+      (enc: Encoder) => {
+        enc.compose(2, 3);
+        enc.composeTerm(2 * 501);
+      },
+      'outside the canonical range',
+    ],
+  ])('rejects %s', (_name, significand, message) => {
+    expect(() => p.float().decode(spelled(significand))).toThrow(message);
   });
 });

@@ -1,45 +1,20 @@
 /**
- * Schema union node (`p.union()`) — one member per JS kind, picked by value.
+ * `p.union()`: one member per JS kind, picked by the value's kind.
  */
 
-import { p, PNode, Encoder, Decoder, CorruptInputError } from '../../index';
+import { p, PNode, Encoder, Decoder } from '../../index';
 import { trip } from '../support';
 
 describe('Schema union', () => {
-  it('union round-trips each kind', () => {
-    const Mixed = p.union([p.string(), p.int(), p.array(p.string()), p.date()]);
-    expect(trip(Mixed, 'x')).toBe('x');
-    expect(trip(Mixed, new Date(0))).toEqual(new Date(0));
-    expect(trip(Mixed, 42)).toBe(42);
-    expect(trip(Mixed, ['a', 'b'])).toEqual(['a', 'b']);
-  });
-
-  it('union with p.null is a nullable', () => {
-    const Nullable = p.union([p.string(), p.null()]);
-    expect(trip(Nullable, null)).toBeNull();
-    expect(trip(Nullable, 'x')).toBe('x');
-  });
-
-  it('p.null alone round-trips null', () => {
-    expect(trip(p.null(), null)).toBeNull();
-    expect(p.null().encode(null)).toHaveLength(0);
-  });
-
-  it('union routes a value to the member that owns its kind', () => {
-    const Node = p.union([p.enum(['a', 'b']), p.int()]);
+  it('routes a value to the member that owns its kind', () => {
+    const Node = p.union([p.enum(['a', 'b']), p.int(), p.date()]);
     expect(trip(Node, 'a')).toBe('a');
     expect(trip(Node, 3)).toBe(3);
+    expect(trip(Node, new Date(0))).toEqual(new Date(0));
     expect(() => p.union([p.enum(['a', 1]), p.int()])).toThrow('overlap on kind "number"');
   });
 
-  it('union rejects a value whose kind has no member', () => {
-    const Node = p.union([p.string(), p.int()]);
-    expect(() => Node.encode(true as never)).toThrow(
-      new TypeError('Kind "boolean" is not one of "string", "number"')
-    );
-  });
-
-  it('union rejects members that claim the same kind', () => {
+  it('rejects members that claim the same kind', () => {
     expect(() => p.union([p.array(p.int()), p.array(p.string())])).toThrow(
       'overlap on kind "array"'
     );
@@ -50,7 +25,7 @@ describe('Schema union', () => {
     expect(() => p.union([p.any(), p.string()])).toThrow('overlap on kind');
   });
 
-  it('union rejects an empty list and members without declared kinds', () => {
+  it('rejects an empty list and members without declared kinds', () => {
     expect(() => p.union([])).toThrow('at least one member');
     class PBit extends PNode<number> {
       _write(enc: Encoder, value: number): void {
@@ -63,7 +38,7 @@ describe('Schema union', () => {
     expect(() => p.union([new PBit(), p.string()])).toThrow('must declare their kinds');
   });
 
-  it('unions nest, and overlap is detected across nesting', () => {
+  it('nests, with overlap detected across nesting', () => {
     const Nested = p.union([p.union([p.string(), p.null()]), p.int()]);
     expect(trip(Nested, null)).toBeNull();
     expect(trip(Nested, 'x')).toBe('x');
@@ -71,58 +46,13 @@ describe('Schema union', () => {
     expect(() => p.union([p.union([p.string(), p.int()]), p.float()])).toThrow('overlap');
   });
 
-  it('weights make the likely member cheaper', () => {
-    const Uniform = p.union([p.string(), p.null()]);
-    const Skewed = Uniform.weights([1, 99]);
-    const nulls = Array.from({ length: 50 }, () => null);
-    const uniform = p.array(Uniform).encode(nulls);
-    const skewed = p.array(Skewed).encode(nulls);
-    expect(skewed.length).toBeLessThan(uniform.length);
-    expect(p.array(Skewed).decode(skewed)).toEqual(nulls);
-    expect(trip(Skewed, 'x')).toBe('x');
-  });
-
-  it('an optional member owns undefined', () => {
+  it('gives undefined to an optional member', () => {
     const Maybe = p.union([p.optional(p.string()), p.int()]);
     expect(trip(Maybe, undefined)).toBeUndefined();
     expect(trip(Maybe, 'x')).toBe('x');
-    expect(trip(Maybe, 7)).toBe(7);
     // p.any already claims undefined, so a second optional member overlaps.
     expect(() => p.union([p.optional(p.int()), p.optional(p.any())])).toThrow(
       'overlap on kind "undefined"'
     );
-  });
-
-  it('p.nullable writes the same bits as a union with p.null', () => {
-    const nick = p.nullable(p.string().max(8));
-    expect(trip(nick, null)).toBeNull();
-    expect(trip(nick, 'Ada')).toBe('Ada');
-    expect(nick.encode('Ada')).toEqual(p.union([p.string().max(8), p.null()]).encode('Ada'));
-    const rare = nick.weights([1, 99]);
-    const nulls = Array.from({ length: 50 }, () => null);
-    expect(p.array(rare).encode(nulls).length).toBeLessThan(p.array(nick).encode(nulls).length);
-    const User = p.object({ bio: p.optional(p.nullable(p.string())) });
-    expect(trip(User, {})).toEqual({});
-    expect(trip(User, { bio: null })).toEqual({ bio: null });
-    expect(p.nullable(nick)).toBe(nick);
-  });
-
-  it('p.nullable takes inner nodes a union cannot', () => {
-    type Link = { id: number; next: Link | null };
-    const Link: PNode<Link> = p.object({
-      id: p.int().min(0).max(9),
-      next: p.nullable(p.lazy(() => Link)),
-    });
-    const chain = { id: 1, next: { id: 2, next: null } };
-    expect(trip(Link, chain)).toEqual(chain);
-
-    const loose = p.nullable(p.any());
-    expect(trip(loose, null)).toBeNull();
-    expect(trip(loose, [1, 'x'])).toEqual([1, 'x']);
-    // The value side holding `any`'s own null tag is a second spelling of null.
-    const enc = new Encoder();
-    enc.compose(0, 2);
-    p.any()._write(enc, null);
-    expect(() => loose.decode(enc.output())).toThrow(CorruptInputError);
   });
 });

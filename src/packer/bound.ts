@@ -46,6 +46,14 @@ const enum Regime {
   Exact,
 }
 
+/** Starts every block in the exact regime: the reference the faster regimes are tested against. */
+let exactOnly = false;
+
+/** Internal: sets whether blocks start in the exact regime. Not exported from the package. */
+export function setExactOnly(on: boolean): void {
+  exactOnly = on;
+}
+
 /**
  * A positive BigInt as a double mantissa in [1, 2^STEP) times 2^exponent,
  * the exponent a multiple of STEP. The top 53 bits convert exactly and the
@@ -226,6 +234,9 @@ export class BlockBound {
     this.tBig = 1n;
     this.tNum = 1;
     this.commit();
+    if (exactOnly) {
+      this.goExact();
+    }
   }
 
   /** Whether a symbol of `total` states pushes the bound past the block cap. */

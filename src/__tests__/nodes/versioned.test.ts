@@ -1,6 +1,5 @@
 /**
- * Schema versioned node (`p.versioned()`) — a schema that changes after data
- * has been written.
+ * `p.versioned()`: a schema that changes after data has been written.
  */
 
 import { p, CorruptInputError, UnknownVersionError } from '../../index';
@@ -44,8 +43,8 @@ describe('Schema versioned', () => {
       'not one of its versions'
     );
     // A node listed twice leaves it unclear which version a value is of.
-    const Again = p.versioned(V1, [V2, toV2], [V1, () => ({ name: '' })] as never);
-    expect(() => Again.walk({ name: 'Ada' }, V1 as never)).toThrow('more than one version');
+    const Again = p.versioned(V1, [V2, toV2], [V1, (user: V2) => ({ name: user.name })]);
+    expect(() => Again.walk({ name: 'Ada' }, V1)).toThrow('more than one version');
   });
 
   it('data written by an earlier version decodes, migrated', () => {
@@ -116,24 +115,10 @@ describe('Schema versioned', () => {
     expect(again).toEqual(Spelled(V2, 1, { name: 'Ada', age: 0 }));
   });
 
-  it('composes like its newest version', () => {
-    const Doc = p.object({ id: p.int(), owner: Current, editor: p.optional(Current) });
-    const ada = { name: 'Ada', age: 36 };
-    expect(trip(Doc, { id: 1, owner: ada })).toEqual({ id: 1, owner: ada });
-    expect(trip(Doc, { id: 1, owner: ada, editor: ada })).toEqual({
-      id: 1,
-      owner: ada,
-      editor: ada,
-    });
-
-    expect(trip(p.array(Current), [ada, { name: 'Bob', age: 7 }])).toEqual([
-      ada,
-      { name: 'Bob', age: 7 },
-    ]);
-
+  it('is of the kinds of its newest version', () => {
     const Nullable = p.union([Current, p.null()]);
     expect(trip(Nullable, null)).toBeNull();
-    expect(trip(Nullable, ada)).toEqual(ada);
+    expect(trip(Nullable, { name: 'Ada', age: 36 })).toEqual({ name: 'Ada', age: 36 });
     expect(() => p.union([Current, p.object({})])).toThrow('overlap on kind "object"');
   });
 

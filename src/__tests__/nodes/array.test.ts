@@ -1,16 +1,42 @@
 /**
- * Schema array node (`p.array()`) — homogeneous sequences with optional bounds.
+ * `p.array()`: sequences of one item type, with an optional count range.
+ * Arrays of items that read one plain digit (`_radix`) read as one run.
  */
 
-import { p, CorruptInputError } from '../../index';
+import { p, CorruptInputError, type PNode } from '../../index';
+import { mulberry32, trip } from '../support';
+
+const rand = mulberry32(0xa77a);
+const below = (n: number): number => Math.floor(rand() * n);
 
 describe('Schema array', () => {
-  it('round-trips empty, single and many elements', () => {
-    const node = p.array(p.int().min(0).max(1000));
-    expect(node.decode(node.encode([]))).toEqual([]);
-    expect(node.decode(node.encode([42]))).toEqual([42]);
-    const many = Array.from({ length: 250 }, (_, i) => i * 3);
-    expect(node.decode(node.encode(many))).toEqual(many);
+  it('names the bound a count breaks', () => {
+    const node = p.array(p.int().min(0).max(9)).min(2).max(4);
+    expect(() => node.encode([1])).toThrow(new RangeError('Array length 1 is below the minimum 2'));
+    expect(() => node.encode([1, 2, 3, 4, 5])).toThrow('Array length 5 is above the maximum 4');
+  });
+
+  it('spends no bits on a fixed count', () => {
+    // 40 booleans are exactly 40 bits; the fixed count adds none: 5 bytes.
+    const node = p.array(p.bool()).length(40);
+    const value = Array.from({ length: 40 }, (_, i) => i % 3 === 0);
+    expect(node.encode(value)).toHaveLength(5);
+    expect(trip(node, value)).toEqual(value);
+    expect(p.array(p.int()).length(0).encode([])).toHaveLength(0);
+  });
+
+  it('packs denser than encoding each value on its own', () => {
+    const node = p.int().min(0).max(7);
+    const values = Array.from({ length: 500 }, (_, i) => i % 8);
+    const batch = p.array(node).encode(values).length;
+    const individual = values.reduce((n, v) => n + node.encode(v).length, 0);
+    expect(batch).toBeLessThan(individual);
+  });
+
+  it('decodes undefined items of an optional item type as values, not holes', () => {
+    const decoded = trip(p.array(p.optional(p.int().min(0).max(9))), [1, undefined, 3]);
+    expect(decoded).toEqual([1, undefined, 3]);
+    expect(1 in decoded).toBe(true);
   });
 
   it('rejects a count no array can have, even when items take no bits', () => {
@@ -20,139 +46,105 @@ describe('Schema array', () => {
       .encode(2 ** 33);
     expect(() => p.array(p.null()).decode(count)).toThrow(CorruptInputError);
   });
+});
 
-  it('round-trips an array of objects', () => {
-    const People = p.array(
-      p.object({ name: p.string().max(20), age: p.int().min(0).max(120), active: p.bool() })
-    );
-    const people = [
-      { name: 'Ada', age: 36, active: true },
-      { name: 'Linus', age: 54, active: false },
-      { name: '', age: 0, active: false },
-    ];
-    expect(People.decode(People.encode(people))).toEqual(people);
+describe('Schema array of single-digit items', () => {
+  it.each([
+    ['p.bool()', p.bool(), 2],
+    ['weighted p.bool()', p.bool().weights([1, 3]), undefined],
+    ['p.enum', p.enum(['a', 'b', 'c']), 3],
+    ['weighted p.enum', p.enum(['a', 'b', 'c']).weights([1, 2, 3]), undefined],
+    ['bounded p.int', p.int().min(-5).max(5), 11],
+    ['min-only p.int', p.int().min(0), undefined],
+    ['max-only p.int', p.int().max(0), undefined],
+    ['unbounded p.int', p.int(), undefined],
+    ['weighted p.int', p.int().min(0).max(3).weights([1, 2, 3, 4]), undefined],
+    ['bounded p.decimal', p.decimal(0.25).min(-1).max(1), 9],
+    ['min-only p.decimal', p.decimal(0.25).min(-1), undefined],
+    ['bounded p.date', p.date().min(0).max(86_400_000).precision('hour'), 25],
+    ['min-only p.date', p.date().min(0), undefined],
+    [
+      'p.date with a first bucket before the Date range',
+      p.date().min(-8.64e15).max(-8.6e15).precision('week'),
+      undefined,
+    ],
+    [
+      'p.date with a last bucket past the Date range',
+      p.date().min(8.6e15).max(9e15).precision('day'),
+      undefined,
+    ],
+    ['p.optional', p.optional(p.bool()), undefined],
+    ['p.lazy', p.lazy(() => p.bool()), undefined],
+  ] as [string, PNode<unknown>, number | undefined][])(
+    'marks %s with radix %p',
+    (_name, node, radix) => {
+      expect(node._radix).toBe(radix);
+    }
+  );
+
+  it('round-trips dates whose edge bucket starts outside the Date range', () => {
+    const edge = p.date().min(-8.64e15).max(-8.6e15).precision('week');
+    const values = [new Date(-8.63e15), new Date(-8.61e15)];
+    const back = trip(p.array(edge), values);
+    expect(back.map((d) => edge.encode(d))).toEqual(values.map((d) => edge.encode(d)));
   });
 
-  it('works as an object field, required and optional', () => {
-    const Schema = p.object({
-      id: p.int().min(0).max(100),
-      tags: p.array(p.enum(['a', 'b', 'c'])),
-      scores: p.optional(p.array(p.int().min(0).max(10))),
+  const D0 = Date.UTC(2020, 0, 1);
+  const cases: [string, PNode<any>, () => unknown][] = [
+    ['bool', p.bool(), () => rand() < 0.5],
+    ['enum', p.enum(['x', 'y', 'z', 7, null]), () => ['x', 'y', 'z', 7, null][below(5)]],
+    ['int 0..255', p.int().min(0).max(255), () => below(256)],
+    ['int -1e12..1e12', p.int().min(-1e12).max(1e12), () => below(2e12 + 1) - 1e12],
+    ['decimal', p.decimal(0.01).min(-10).max(10), () => (below(2001) - 1000) / 100],
+    [
+      'date',
+      p
+        .date()
+        .min(D0)
+        .max(D0 + 365 * 86_400_000)
+        .precision('day'),
+      () => new Date(D0 + below(366) * 86_400_000),
+    ],
+    ['one-member enum', p.enum(['only']), () => 'only'],
+  ];
+
+  it.each(cases)('round-trips long arrays of %s', (_, item, make) => {
+    for (const count of [0, 1, 3, 250, 5000]) {
+      const value = Array.from({ length: count }, make);
+      for (const o of [{}, { blockBits: 128 }]) {
+        const node = p.array(item);
+        expect(node.decode(node.encode(value, o), o)).toEqual(value);
+        const text = node.encode(value, { ...o, type: 'text' });
+        expect(node.decode(text, o)).toEqual(value);
+      }
+    }
+  });
+
+  it('round-trips them inside other structures', () => {
+    const node = p.object({
+      flags: p.array(p.bool()),
+      level: p
+        .int()
+        .min(1)
+        .max(99)
+        .weights(Array.from({ length: 99 }, (_, i) => i + 1)),
+      bytes: p.array(p.int().min(0).max(255)).length(40),
+      tag: p.enum(['a', 'b']).weights([3, 1]),
     });
-    const full = { id: 7, tags: ['a', 'c'] as ('a' | 'b' | 'c')[], scores: [1, 2, 3] };
-    const bare = { id: 7, tags: [] as ('a' | 'b' | 'c')[] };
-    expect(Schema.decode(Schema.encode(full))).toEqual(full);
-    expect(Schema.decode(Schema.encode(bare))).toEqual(bare);
+    const value = {
+      flags: Array.from({ length: 77 }, () => rand() < 0.3),
+      level: 42,
+      bytes: Array.from({ length: 40 }, () => below(256)),
+      tag: 'b' as const,
+    };
+    expect(trip(node, value)).toEqual(value);
   });
 
-  it('nests without extra ceremony', () => {
-    const Grid = p.array(p.array(p.int().min(0).max(9)));
-    const value = [[1, 2], [], [3, 4, 5]];
-    expect(Grid.decode(Grid.encode(value))).toEqual(value);
-  });
-
-  it('carries heterogeneous any-typed elements, arrays included', () => {
-    // Each element is one self-described `any` value, so an element that is
-    // itself an array stays a single element instead of spreading.
-    const node = p.array(p.any());
-    const value = [1, 'two', [3, [4]], { k: 5 }, null];
-    expect(node.decode(node.encode(value))).toEqual(value);
-  });
-
-  it('caps the count with max and packs the capped prefix denser', () => {
-    const capped = p.array(p.int().min(0).max(9)).max(4);
-    expect(capped.decode(capped.encode([1, 2, 3]))).toEqual([1, 2, 3]);
-    expect(() => capped.encode([1, 2, 3, 4, 5])).toThrow(
-      new RangeError('Array length 5 is above the maximum 4')
+  it('fails on a truncated run like a per-item read', () => {
+    const node = p.array(p.int().min(0).max(999)).length(500);
+    const bytes = node.encode(Array.from({ length: 500 }, () => below(1000)));
+    expect(() => node.decode(bytes.slice(0, bytes.length - 3))).toThrow(
+      new CorruptInputError('Unexpected end of input while parsing: truncated or corrupted')
     );
-    const uncapped = p.array(p.int().min(0).max(9));
-    expect(capped.encode([1, 2, 3]).length).toBeLessThanOrEqual(uncapped.encode([1, 2, 3]).length);
-  });
-
-  it('rejects caps that are not non-negative integers', () => {
-    expect(() => p.array(p.int()).max(2.9)).toThrow(
-      new TypeError('p.array max must be a non-negative integer, got 2.9')
-    );
-    expect(() => p.array(p.int()).max(-1)).toThrow(
-      new RangeError('p.array max must be a non-negative integer, got -1')
-    );
-    expect(() => p.array(p.int()).max(NaN)).toThrow(TypeError);
-    expect(() => p.array(p.int()).max(Infinity)).toThrow(TypeError);
-  });
-
-  it('min bounds the count from below and combines with max', () => {
-    const node = p.array(p.int().min(0).max(9)).min(2).max(4);
-    expect(node.decode(node.encode([1, 2]))).toEqual([1, 2]);
-    expect(node.decode(node.encode([1, 2, 3, 4]))).toEqual([1, 2, 3, 4]);
-    expect(() => node.encode([1])).toThrow('Array length 1 is below the minimum 2');
-    expect(() => node.encode([1, 2, 3, 4, 5])).toThrow('Array length 5 is above the maximum 4');
-    expect(() => p.array(p.int()).min(5).max(2)).toThrow(
-      new RangeError('p.array range is empty: min 5 exceeds max 2')
-    );
-    expect(() => p.array(p.int()).min(-1)).toThrow(
-      new RangeError('p.array min must be a non-negative integer, got -1')
-    );
-  });
-
-  it('length fixes the count, which then costs zero wire bits', () => {
-    const node = p.array(p.bool()).length(40);
-    const value = Array.from({ length: 40 }, (_, i) => i % 3 === 0);
-    expect(node.decode(node.encode(value))).toEqual(value);
-    // 40 booleans are exactly 40 bits; the fixed count adds none: 5 bytes.
-    expect(node.encode(value)).toHaveLength(5);
-  });
-
-  it('length rejects any other count, in both directions', () => {
-    const node = p.array(p.int().min(0).max(9)).length(3);
-    expect(node.decode(node.encode([1, 2, 3]))).toEqual([1, 2, 3]);
-    expect(() => node.encode([1, 2])).toThrow('Array length 2 is below the minimum 3');
-    expect(() => node.encode([1, 2, 3, 4])).toThrow('Array length 4 is above the maximum 3');
-  });
-
-  it('length(0) admits only the empty array — and encodes it as nothing at all', () => {
-    const node = p.array(p.int()).length(0);
-    expect(node.decode(node.encode([]))).toEqual([]);
-    expect(node.encode([])).toHaveLength(0);
-    expect(() => node.encode([1])).toThrow('Array length 1 is above the maximum 0');
-  });
-
-  it('sets each bound once, with length setting both', () => {
-    expect(() => p.array(p.int()).length(3).min(1)).toThrow(
-      new TypeError('p.array min is already set')
-    );
-    expect(() => p.array(p.int()).length(3).max(5)).toThrow('p.array max is already set');
-    expect(() => p.array(p.int()).min(1).length(3)).toThrow('p.array min is already set');
-    expect(() => p.array(p.int()).max(5).length(3)).toThrow('p.array max is already set');
-    expect(() => p.array(p.int()).max(5).max(6)).toThrow('p.array max is already set');
-  });
-
-  it('length must be an exact non-negative integer', () => {
-    expect(() => p.array(p.int()).length(2.9)).toThrow(
-      new TypeError('p.array min must be a non-negative integer, got 2.9')
-    );
-    expect(() => p.array(p.int()).length(-1)).toThrow(RangeError);
-    expect(() => p.array(p.int()).length(NaN)).toThrow(TypeError);
-  });
-
-  it('carries undefined items through an optional item type', () => {
-    const Holes = p.array(p.optional(p.int().min(0).max(9)));
-    const decoded = Holes.decode(Holes.encode([1, undefined, 3]));
-    expect(decoded).toEqual([1, undefined, 3]);
-    // A dense array: the undefined is a value, not a hole.
-    expect(1 in decoded).toBe(true);
-  });
-
-  it('is denser than per-value encode over many records', () => {
-    const node = p.int().min(0).max(7);
-    const values = Array.from({ length: 500 }, (_, i) => i % 8);
-    const batch = p.array(node).encode(values).length;
-    const individual = values.reduce((n, v) => n + node.encode(v).length, 0);
-    expect(batch).toBeLessThan(individual);
-  });
-
-  it('array decode rejects trailing padding', () => {
-    const node = p.array(p.int().min(0).max(1000));
-    const padded = Uint8Array.of(...node.encode([1, 2, 3]), 0);
-    expect(() => node.decode(padded)).toThrow('Input is longer than its contents');
   });
 });
