@@ -22,6 +22,7 @@ export { PDate } from './date';
 export type { DateUnit } from './date';
 export { PArray } from './array';
 export { PObject } from './object';
+export { PCollection } from './collection';
 export { PTagged } from './tagged';
 export { PVersioned } from './versioned';
 export type { Step } from './versioned';

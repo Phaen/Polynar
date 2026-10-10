@@ -21,7 +21,9 @@ import {
   PNullable,
   PTagged,
   PVersioned,
+  PCollection,
 } from './';
+import { MAP, RECORD, SET } from './collection';
 import type { Infer } from './infer';
 import type { TypedArray } from './guards';
 import type { TypedArrayClass } from './binary';
@@ -173,6 +175,27 @@ export const p = {
    */
   array<T>(item: PNode<T>): PArray<T> {
     return new PArray<T>(item);
+  },
+  /**
+   * A `Map` from one key type to one value type: a count, then each key and
+   * value in insertion order. Takes the same count methods as `p.array`.
+   */
+  map<K, V>(key: PNode<K>, value: PNode<V>): PCollection<Map<K, V>> {
+    return new PCollection<Map<K, V>>(MAP, key, value);
+  },
+  /**
+   * A plain object with any string keys and one value type, written like a
+   * `p.map` with `p.string()` keys. Takes the same count methods as `p.array`.
+   */
+  record<V>(value: PNode<V>): PCollection<Record<string, V>> {
+    return new PCollection<Record<string, V>>(RECORD, new PString(), value);
+  },
+  /**
+   * A `Set` of one item type: a count, then each item in insertion order.
+   * Takes the same count methods as `p.array`.
+   */
+  set<T>(item: PNode<T>): PCollection<Set<T>> {
+    return new PCollection<Set<T>>(SET, item);
   },
   /**
    * A node looked up on first use, for schemas that refer to themselves:

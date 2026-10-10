@@ -16,6 +16,33 @@ describe('Schema any', () => {
     const ring: AnyValue[] = [];
     ring.push(ring);
     expect(() => p.any().encode(ring)).toThrow('circular');
+    const map = new Map<AnyValue, AnyValue>();
+    map.set('self', [map]);
+    expect(() => p.any().encode(map)).toThrow('circular');
+    const set = new Set<AnyValue>();
+    set.add({ set });
+    expect(() => p.any().encode(set)).toThrow('circular');
+  });
+
+  it('closes a container whose write threw, so the node encodes it again later', () => {
+    const node = p.any();
+    const inner: { [key: string]: AnyValue } = { n: 1 };
+    expect(() => node.encode([inner, Infinity])).toThrow('[1]: ');
+    expect(() => node.encode({ v: new Set([inner, NaN]) })).toThrow('v[1]: ');
+    expect(trip(node, [inner, inner])).toEqual([{ n: 1 }, { n: 1 }]);
+  });
+
+  it('round-trips Maps and Sets of any values, keys included', () => {
+    const value = new Map<AnyValue, AnyValue>([
+      ['a', 1],
+      [2, new Set<AnyValue>([null, 'x', [1]])],
+      [[0], new Map()],
+      [undefined, -0],
+    ]);
+    const back = trip(p.any(), value);
+    expect(back).toBeInstanceOf(Map);
+    expect(back).toEqual(value);
+    expect([...(back as Map<AnyValue, AnyValue>).keys()]).toEqual(['a', 2, [0], undefined]);
   });
 
   it.each([
@@ -62,8 +89,7 @@ describe('Schema any', () => {
   it.each([
     ['symbol', Symbol('s')],
     ['bigint', 1n],
-    ['Map', new Map([['a', 1]])],
-    ['Set', new Set([1, 2])],
+    ['WeakMap', new WeakMap()],
     ['RegExp', /a/g],
     ['Error', new Error('boom')],
     ['DataView', new DataView(new ArrayBuffer(2))],
@@ -82,7 +108,7 @@ describe('Schema any', () => {
   it('rejects a float tag on an integer value', () => {
     // Integers always travel under the int tag.
     const enc = new Encoder();
-    enc.compose(4, 20); // TAG_FLOAT
+    enc.compose(4, 22); // TAG_FLOAT
     p.float()._write(enc, 42);
     expect(() => p.any().decode(enc.output())).toThrow(
       'Non-canonical float tag on an integer value'
@@ -90,15 +116,15 @@ describe('Schema any', () => {
   });
 
   it('rejects a record whose wire form repeats a key', () => {
-    // The object tag (8 of 20), then a two-entry count, then the same key
+    // The object tag (8 of 22), then a two-entry count, then the same key
     // twice: a shape the encoder never produces.
     const enc = new Encoder();
-    enc.compose(8, 20);
+    enc.compose(8, 22);
     enc.composeTerm(2);
     p.string()._write(enc, 'a');
     p.any()._write(enc, 1);
     p.string()._write(enc, 'a');
     p.any()._write(enc, 2);
-    expect(() => p.any().decode(enc.output())).toThrow('Duplicate key in record');
+    expect(() => p.any().decode(enc.output())).toThrow('Repeated key "a" in p.record');
   });
 });

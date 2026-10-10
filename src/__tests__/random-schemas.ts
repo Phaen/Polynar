@@ -556,7 +556,7 @@ const ANY_TYPED_ARRAYS = [
 ] as const;
 
 export const anyValue = (depth: number, top = false): unknown => {
-  switch (randInt(0, depth > 0 ? 9 : 7)) {
+  switch (randInt(0, depth > 0 ? 11 : 7)) {
     case 0:
       return null;
     case 1:
@@ -582,13 +582,19 @@ export const anyValue = (depth: number, top = false): unknown => {
       return top ? randString(3) : undefined;
     case 8:
       return Array.from({ length: randInt(0, 3) }, () => anyValue(depth - 1));
-    default: {
+    case 9: {
       const record: Record<string, unknown> = {};
       for (let i = 0, n = randInt(0, 3); i < n; i++) {
         record[`k${i}${randString(2)}`] = anyValue(depth - 1);
       }
       return record;
     }
+    case 10:
+      return new Map(
+        Array.from({ length: randInt(0, 3) }, () => [anyValue(depth - 1), anyValue(depth - 1)])
+      );
+    default:
+      return new Set(Array.from({ length: randInt(0, 3) }, () => anyValue(depth - 1)));
   }
 };
 
@@ -620,13 +626,18 @@ const lazyCase = (): Case => ({
   src: 'Tree /* p.object({ v: p.int().min(0).max(9), kids: p.array(p.lazy(() => Tree)).max(3) }) */',
 });
 
-const arrayCase = (depth: number): Case => {
-  const item = randomCase(depth - 1);
-  // Now and then a long run of leaf items, which crosses block boundaries;
-  // a multiple of 256 puts a run of bits exactly on a 256-bit scale step.
-  const long = (): number => (rand() < 0.5 ? randInt(100, 3000) : 256 * randInt(1, 8));
-  const length = depth === 1 && rand() < 0.15 ? long() : randInt(0, 4);
-  const steps: { apply: (n: Node) => Node; src: string }[] = [];
+interface Step {
+  apply: (n: Node) => Node;
+  src: string;
+}
+
+/**
+ * Count methods for a container that will hold `length` items: none, a max,
+ * a fixed length, or a floor with an optional max, and with a max and a free
+ * length now and then a prior.
+ */
+const countSteps = (length: number): Step[] => {
+  const steps: Step[] = [];
   const add = (src: string, apply: (n: Node) => Node): void => {
     steps.push({ src, apply });
   };
@@ -663,12 +674,96 @@ const arrayCase = (depth: number): Case => {
       add(`.weights(${json(w)})`, (n) => n.weights(w));
     }
   }
+  return steps;
+};
+
+const withSteps = (node: Node, steps: Step[]): Node => steps.reduce((n, s) => s.apply(n), node);
+
+const arrayCase = (depth: number): Case => {
+  const item = randomCase(depth - 1);
+  // Now and then a long run of leaf items, which crosses block boundaries;
+  // a multiple of 256 puts a run of bits exactly on a 256-bit scale step.
+  const long = (): number => (rand() < 0.5 ? randInt(100, 3000) : 256 * randInt(1, 8));
+  const length = depth === 1 && rand() < 0.15 ? long() : randInt(0, 4);
+  const steps = countSteps(length);
   return {
-    build: (m) => steps.reduce((n, s) => s.apply(n), m.p.array(item.build(m))),
+    build: (m) => withSteps(m.p.array(item.build(m)), steps),
     migrates: item.migrates,
     gen: () => Array.from({ length }, () => item.gen()),
     src: `p.array(${item.src})${steps.map((s) => s.src).join('')}`,
   };
+};
+
+// Keys and items come from nodes with far more values than a collection
+// holds, so drawing until the collection is full always gets there.
+const keyCase = (): Case =>
+  pick([
+    unboundedIntCase,
+    halfBoundedIntCase,
+    anyCase,
+    (): Case => ({ build: (m) => m.p.string(), gen: () => randString(6), src: 'p.string()' }),
+    (): Case => ({ build: (m) => m.p.float(), gen: randFloat, src: 'p.float()' }),
+  ])();
+
+/** Draws entries until `size` reports `length`; repeated keys only overwrite. */
+const fill = <T>(into: T, size: (c: T) => number, length: number, add: (c: T) => void): T => {
+  while (size(into) < length) add(into);
+  return into;
+};
+
+// One map, record or set over random keys, values and count methods. A
+// record's keys include integer-like ones, which an object lists first.
+const collectionCase = (depth: number): Case => {
+  const length = randInt(0, 4);
+  const steps = countSteps(length);
+  const value = randomCase(depth - 1);
+  const tail = steps.map((s) => s.src).join('');
+  switch (randInt(0, 2)) {
+    case 0: {
+      const key = keyCase();
+      return {
+        build: (m) => withSteps(m.p.map(key.build(m), value.build(m)), steps),
+        migrates: value.migrates,
+        gen: () =>
+          fill(
+            new Map(),
+            (c) => c.size,
+            length,
+            (c) => c.set(key.gen(), value.gen())
+          ),
+        src: `p.map(${key.src}, ${value.src})${tail}`,
+      };
+    }
+    case 1:
+      return {
+        build: (m) => withSteps(m.p.record(value.build(m)), steps),
+        migrates: value.migrates,
+        gen: () =>
+          fill<Record<string, unknown>>(
+            {},
+            (c) => Object.keys(c).length,
+            length,
+            (c) => {
+              c[rand() < 0.3 ? String(randInt(0, 30)) : randString(4)] = value.gen();
+            }
+          ),
+        src: `p.record(${value.src})${tail}`,
+      };
+    default: {
+      const item = keyCase();
+      return {
+        build: (m) => withSteps(m.p.set(item.build(m)), steps),
+        gen: () =>
+          fill(
+            new Set(),
+            (c) => c.size,
+            length,
+            (c) => c.add(item.gen())
+          ),
+        src: `p.set(${item.src})${tail}`,
+      };
+    }
+  }
 };
 
 interface Field {
@@ -785,7 +880,7 @@ export const randomCase = (depth: number): Case => {
   }
   const chosen =
     depth > 0 && rand() < 0.4
-      ? pick([arrayCase, objectCase, taggedCase, anyCase, lazyCase] as const)(depth)
+      ? pick([arrayCase, objectCase, taggedCase, anyCase, lazyCase, collectionCase] as const)(depth)
       : rand() < 0.9
         ? scalarCase()
         : anyCase();

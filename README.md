@@ -79,7 +79,7 @@ assert.deepStrictEqual(User.decode(bytes), user);
 
 ## API
 
-Each `p.*` factory creates a node for one type, and the node's methods narrow which values it allows. Every method changes the encoding, usually making it denser, rather than only checking values. Methods return a new node; they never change the one they're called on. A schema that contradicts itself, such as `.min(5).max(2)`, throws as soon as it's defined, and so does setting `.min` or `.max` a second time. A value outside a declared bound, step, length or list throws when it's encoded, and is never rounded to fit. Values the TypeScript types rule out, like a string where a number belongs, aren't checked at runtime. The exceptions are mistakes that would otherwise encode wrong without an error, such as a missing required field or a `Map` given to `p.any()`. Object keys outside the shape are dropped.
+Each `p.*` factory creates a node for one type, and the node's methods narrow which values it allows. Every method changes the encoding, usually making it denser, rather than only checking values. Methods return a new node; they never change the one they're called on. A schema that contradicts itself, such as `.min(5).max(2)`, throws as soon as it's defined, and so does setting `.min` or `.max` a second time. A value outside a declared bound, step, length or list throws when it's encoded, and is never rounded to fit. Values the TypeScript types rule out, like a string where a number belongs, aren't checked at runtime. The exceptions are mistakes that would otherwise encode wrong without an error, such as a missing required field or a class instance given to `p.any()`. Object keys outside the shape are dropped.
 
 - [`p.int`](#pint)
 - [`p.decimal`](#pdecimalstep-number)
@@ -92,6 +92,9 @@ Each `p.*` factory creates a node for one type, and the node's methods narrow wh
 - [`p.null`](#pnull)
 - [`p.object`](#pobjectshape-recordstring-pnode)
 - [`p.array`](#parrayitem-pnode)
+- [`p.map`](#pmapkey-pnode-value-pnode)
+- [`p.record`](#precordvalue-pnode)
+- [`p.set`](#psetitem-pnode)
 - [`p.optional`](#poptionalnode-pnode)
 - [`p.nullable`](#pnullablenode-pnode)
 - [`p.union`](#punionmembers-pnode)
@@ -208,6 +211,26 @@ An array of one item type, stored with its length. Infers an array of the item's
 | `.cdf(fn: (n: number) => number)` | Prior over the item count, called with the count; needs `.max`.                                              |
 | `.weights(w: number[])`           | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                          |
 
+### `p.map(key: PNode, value: PNode)`
+
+A `Map` from one key type to one value type: `p.map(p.string(), p.int())` is `Map<string, number>`. Keys can be any node, and entries are stored with their count, in insertion order.
+
+| Method                            | Description                                                                                                 |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                 | Lower bound on the entry count; smaller maps throw.                                                         |
+| `.max(n: number)`                 | Upper bound on the entry count; larger maps throw. With both bounds the count takes a fixed number of bits. |
+| `.length(n: number)`              | Fixed entry count, the same as `.min(n).max(n)`; costs zero bits.                                           |
+| `.cdf(fn: (n: number) => number)` | Prior over the entry count, called with the count; needs `.max`.                                            |
+| `.weights(w: number[])`           | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                         |
+
+### `p.record(value: PNode)`
+
+A plain object with any string keys and one value type: `p.record(p.int())` is `{ [key: string]: number }`. It's stored like `p.map(p.string(), value)` and decodes to a plain object. Unlike `p.object`, every key is written, so it suits dictionaries whose keys aren't known up front. A record counts as an object, so it can't sit next to `p.object` or `p.tagged` in a `p.union`. Same methods as `p.map`.
+
+### `p.set(item: PNode)`
+
+A `Set` of one item type: `p.set(p.string())` is `Set<string>`. Items are stored with their count, in insertion order. Same methods as `p.map`, bounding and weighing the number of items.
+
 ### `p.optional(node: PNode)`
 
 A value or `undefined`, at the cost of one bit: `p.optional(p.int())` is `number | undefined`. As an object field it can be left out: it infers an optional key, and a missing key and an `undefined` value both decode with the key left out. Only `undefined` means absent; `null` is a value and goes to the inner node. Wrapping twice is the same as once.
@@ -226,7 +249,7 @@ A value or `null`: `p.nullable(p.string())` is `string | null`, written the same
 
 ### `p.union(members: PNode[])`
 
-One of several members: `p.union([p.string(), p.int(), p.array(p.string())])` is `string | number | string[]`. The member is picked by the value's kind: string, number, boolean, null, undefined, date, array, object, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. Members must know their kinds, so `p.lazy` and custom nodes without `_kinds` can't be members. `p.any()` takes nearly every kind, so it overlaps with almost any other member. A value whose kind has no member throws. Recording which member was used costs log2(members) bits.
+One of several members: `p.union([p.string(), p.int(), p.array(p.string())])` is `string | number | string[]`. The member is picked by the value's kind: string, number, boolean, null, undefined, date, array, map, set, object, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. Members must know their kinds, so `p.lazy` and custom nodes without `_kinds` can't be members. `p.any()` takes nearly every kind, so it overlaps with almost any other member. A value whose kind has no member throws. Recording which member was used costs log2(members) bits.
 
 | Method                  | Description                                  |
 | ----------------------- | -------------------------------------------- |
@@ -267,7 +290,7 @@ Data written by any listed version decodes and is migrated step by step to the n
 
 ### `p.any()`
 
-Self-describing escape hatch: numbers, strings, booleans, dates, null, undefined, typed arrays, arrays and plain objects, with a type tag per value. Infers `AnyValue`, the type of exactly those values. Everything round-trips bit-exact, and a typed array decodes as the same class. Any other class instance (a `Map`, a `Set`) or a circular structure throws. Costs more than a precise node. No methods.
+Self-describing escape hatch: numbers, strings, booleans, dates, null, undefined, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values. Everything round-trips bit-exact, and a typed array decodes as the same class. Any other class instance or a circular structure throws. Costs more than a precise node. No methods.
 
 ### Priors: `.weights()`
 
@@ -287,7 +310,7 @@ p.int()
   .cdf((v) => (v * (v + 1)) / 2);
 ```
 
-What `i` is depends on the node: the value itself on `p.int`, the step count (`value / step`) on `p.decimal`, the bucket number on `p.date` (counting from the bucket that holds 1970-01-01 as 0), the length on `p.string` and `p.binary`, and the item count on `p.array`. The node calls `fn` at the lower bound, at one past the upper bound to get the total, and around each value it encodes or decodes.
+What `i` is depends on the node: the value itself on `p.int`, the step count (`value / step`) on `p.decimal`, the bucket number on `p.date` (counting from the bucket that holds 1970-01-01 as 0), the length on `p.string` and `p.binary`, and the item or entry count on `p.array`, `p.map`, `p.record` and `p.set`. The node calls `fn` at the lower bound, at one past the upper bound to get the total, and around each value it encodes or decodes.
 
 - `fn` returns safe integers and never goes down. A value whose weight is zero can't be encoded.
 - Only the differences between results matter, so adding a constant changes nothing.

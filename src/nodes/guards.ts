@@ -2,7 +2,6 @@
  * Type checking utilities
  */
 
-export const isArray = (o: any): o is any[] => Array.isArray(o);
 export const isDate = (o: any): o is Date => o instanceof Date;
 
 /**
@@ -18,7 +17,7 @@ export const isPlainObject = (o: unknown): o is Record<string, unknown> => {
   return proto === null || proto === Object.prototype;
 };
 
-/** The JS kinds `p.union` tells apart: `typeof`, with null, arrays, dates and each typed-array class split out of `'object'`. */
+/** The JS kinds `p.union` tells apart: `typeof`, with null, arrays, dates, maps, sets and each typed-array class split out of `'object'`. */
 export type Kind =
   | 'string'
   | 'number'
@@ -30,6 +29,8 @@ export type Kind =
   | 'null'
   | 'array'
   | 'date'
+  | 'map'
+  | 'set'
   | 'object'
   // A typed array's kind is its built-in class name, e.g. 'Int16Array'; the
   // intersection keeps the names above as suggestions.
@@ -39,6 +40,8 @@ export const kindOf = (v: unknown): Kind => {
   if (v === null) return 'null';
   if (Array.isArray(v)) return 'array';
   if (v instanceof Date) return 'date';
+  if (v instanceof Map) return 'map';
+  if (v instanceof Set) return 'set';
   if (ArrayBuffer.isView(v)) return typedArrayKind(v);
   return typeof v;
 };

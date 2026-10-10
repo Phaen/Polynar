@@ -14,6 +14,22 @@ describe('Schema union', () => {
     expect(() => p.union([p.enum(['a', 1]), p.int()])).toThrow('overlap on kind "number"');
   });
 
+  it('tells Maps and Sets from objects and arrays', () => {
+    const Node = p.union([
+      p.map(p.string(), p.int()),
+      p.set(p.int()),
+      p.record(p.bool()),
+      p.array(p.int()),
+    ]);
+    const map = new Map([['a', 1]]);
+    expect(trip(Node, map)).toEqual(map);
+    expect(trip(Node, new Set([1, 2]))).toEqual(new Set([1, 2]));
+    expect(trip(Node, { a: true })).toEqual({ a: true });
+    expect(trip(Node, [3])).toEqual([3]);
+    expect(() => p.union([p.set(p.int()), p.set(p.string())])).toThrow('overlap on kind "set"');
+    expect(() => p.union([p.any(), p.map(p.int(), p.int())])).toThrow('overlap on kind "map"');
+  });
+
   it('rejects members that claim the same kind', () => {
     expect(() => p.union([p.array(p.int()), p.array(p.string())])).toThrow(
       'overlap on kind "array"'

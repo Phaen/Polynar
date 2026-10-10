@@ -1,19 +1,17 @@
 /**
  * The type checks behind `p.any` and `p.union`: which JS values count as
- * arrays, dates and plain objects, and the kind each value has.
+ * dates and plain objects, and the kind each value has.
  */
 
 import { runInNewContext } from 'vm';
-import { isArray, isDate, isPlainObject, kindOf, typedArrayKind } from '../../nodes/guards';
+import { isDate, isPlainObject, kindOf, typedArrayKind } from '../../nodes/guards';
 
 class Point {
   x = 1;
 }
 
-describe('isArray and isDate', () => {
-  it('tell arrays and dates from everything else', () => {
-    expect([[], new Array(3), runInNewContext('[]')].every(isArray)).toBe(true);
-    expect([{ length: 0 }, new Uint8Array(1), 'ab', null].some(isArray)).toBe(false);
+describe('isDate', () => {
+  it('tells dates from everything else', () => {
     expect(isDate(new Date(NaN))).toBe(true);
     expect([0, '2020-01-01', { getTime: () => 0 }, undefined].some(isDate)).toBe(false);
   });
@@ -59,7 +57,10 @@ describe('kindOf', () => {
     [[], 'array'],
     [new Date(0), 'date'],
     [{}, 'object'],
-    [new Map(), 'object'],
+    [new Map(), 'map'],
+    [new Set(), 'set'],
+    [new WeakMap(), 'object'],
+    [runInNewContext('[]'), 'array'],
     [new Int16Array(1), 'Int16Array'],
     [new DataView(new ArrayBuffer(1)), 'DataView'],
     [Buffer.from('a'), 'Uint8Array'],

@@ -23,6 +23,7 @@ export {
   PDate,
   PObject,
   PArray,
+  PCollection,
   PAny,
   PNull,
   PUnion,

@@ -67,11 +67,19 @@ const side = (label: string, mod: Mod): Side => {
 };
 
 /** Working-tree API the release lacks: runtime exports, and the options-taking `Encoder#output`. */
+/**
+ * The codec API both sides need for any comparison at all. Factories added
+ * since don't count here: a schema that uses one is skipped on its own.
+ */
 const missingApi = (mod: Mod): string[] => {
-  const missing = Object.keys(current).filter((k) => !(k in mod));
+  const missing = ['p', 'Encoder', 'Decoder'].filter((k) => !(k in mod));
   if (typeof mod.Encoder?.prototype?.output !== 'function') missing.push('Encoder#output');
   return missing;
 };
+
+/** Whether every `p.*` factory a schema's source names exists in a copy of the library. */
+const hasFactories = (mod: Mod, src: string): boolean =>
+  [...src.matchAll(/\bp\.(\w+)\(/g)].every(([, name]) => typeof mod.p[name] === 'function');
 
 // ---------- randomness ----------
 
@@ -96,6 +104,8 @@ const show = (v: unknown): string => {
     return `${view.constructor.name}(${hexOf(bytes)})`;
   }
   if (Array.isArray(v)) return `[${v.map(show).join(',')}]`;
+  if (v instanceof Map) return `Map{${[...v].map(([k, x]) => `${show(k)}=>${show(x)}`).join(',')}}`;
+  if (v instanceof Set) return `Set{${[...v].map(show).join(',')}}`;
   const entries = Object.keys(v).map((k) => `${JSON.stringify(k)}:${show((v as any)[k])}`);
   return `{${entries.join(',')}}`;
 };
@@ -466,6 +476,7 @@ const compare = (old: Side, seed: number, iterations: number): number => {
 
   const divergences: Divergence[] = [];
   let decodes = 0;
+  let unsupported = 0;
 
   for (let it = 0; it < iterations; it++) {
     reseed(seed, it, 0);
@@ -476,6 +487,10 @@ const compare = (old: Side, seed: number, iterations: number): number => {
       // One value in twenty belongs to a different schema, to compare errors.
       value = rand() < 0.05 ? randomCase(1).gen() : c.gen();
     } catch {
+      continue;
+    }
+    if (!hasFactories(old.mod, c.src)) {
+      unsupported++;
       continue;
     }
     const nodes = [cur, old].map((sd) => {
@@ -625,6 +640,8 @@ const compare = (old: Side, seed: number, iterations: number): number => {
 
   const summary = `working tree vs ${old.label}, seed ${seed}, ${iterations} iterations per half: ${divergences.length} divergence(s)`;
   const report = [`polynar diff fuzz: ${summary}`, `  ${decodes} decodes compared`];
+  if (unsupported > 0)
+    report.push(`  ${unsupported} schemas skipped, using factories ${old.label} lacks`);
   const kinds = new Map<string, number>();
   for (const d of divergences) kinds.set(d.kind, (kinds.get(d.kind) ?? 0) + 1);
   for (const [kind, n] of [...kinds].sort((x, y) => y[1] - x[1])) report.push(`    ${n}\t${kind}`);

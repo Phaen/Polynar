@@ -119,16 +119,28 @@ const _takesUndefined: Equals<
   { id: number; tag?: string | number; extra?: Exclude<AnyValue, undefined>; note?: string }
 > = true;
 
-// p.any infers the values it encodes, nested in arrays and plain objects.
+// p.any infers the values it encodes, nested in arrays, plain objects, Maps and Sets.
 type AnyScalar = null | undefined | boolean | number | string | Date | TypedArray;
 const _any: Equals<Infer<ReturnType<typeof p.any>>, AnyValue> = true;
 const _anyScalars: Equals<Extract<AnyValue, AnyScalar>, AnyScalar> = true;
 const _anyArray: Equals<Extract<AnyValue, unknown[]>, AnyValue[]> = true;
+const _anyMap: Equals<Extract<AnyValue, Map<any, any>>, Map<AnyValue, AnyValue>> = true;
+const _anySet: Equals<Extract<AnyValue, Set<any>>, Set<AnyValue>> = true;
 p.any().encode({ at: new Date(), samples: new Int16Array(2), tags: ['a', null] });
-// @ts-expect-error — p.any has no tag for a Map
-p.any().encode(new Map());
+p.any().encode(new Map<AnyValue, AnyValue>([[1, new Set<AnyValue>(['a'])]]));
+// @ts-expect-error — p.any has no tag for a WeakMap
+p.any().encode(new WeakMap());
 // @ts-expect-error — nor for a bigint
 p.any().encode(1n);
+
+// Collections infer a Map, an object with string keys and a Set, whatever
+// their count methods.
+const Scores = p.map(p.string(), p.int()).max(10);
+const _scores: Equals<Infer<typeof Scores>, Map<string, number>> = true;
+const Prices = p.record(p.optional(p.decimal(0.01))).min(1);
+const _prices: Equals<Infer<typeof Prices>, { [key: string]: number | undefined }> = true;
+const Tags = p.set(p.enum(['a', 'b'])).length(2);
+const _tags: Equals<Infer<typeof Tags>, Set<'a' | 'b'>> = true;
 
 // A binary node decodes to the class it was given.
 const Samples = p.binary(Int16Array);
