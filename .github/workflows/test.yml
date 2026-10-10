@@ -70,4 +70,4 @@ jobs:
       run: npm ci
 
     - name: Compare the wire format against the latest published release
-      run: npm run fuzz:diff -- ${{ github.run_number }} 10000
+      run: npm run fuzz:diff -- --seed ${{ github.run_number }} --runs 10000

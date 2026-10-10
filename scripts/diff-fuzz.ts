@@ -1,23 +1,31 @@
 /**
- * Differential fuzz: the working tree against the latest published release.
+ * Differential fuzz: the working tree against the latest published release,
+ * or against any git ref. See USAGE below.
  *
- *   npm run fuzz:diff -- [seed] [iterations]
+ * Without a ref the other side is the `polynar-published` devDependency, an
+ * alias of `polynar@latest`. With a ref, that commit is checked out into a
+ * temporary detached worktree and its `src/index.ts` is imported directly;
+ * the worktree is removed afterwards. The two copies load as separate module
+ * instances, so neither sees the other's module state.
  *
- * The release is the `polynar-published` devDependency, an alias of
- * `polynar@latest`. Both sides are fed the same random cases: schemas with
- * values (priors, prose, charsets, block sizes, plus corrupted inputs:
- * truncated, padded, flipped, out-of-charset) and raw packer symbol sequences
- * aimed at block-boundary ties. Encode output, decode results and thrown
- * errors (class, name and message) must match. Any divergence prints with its
- * seed, iteration and a readable schema, and the exit code is 1.
+ * Both sides are fed the same random cases: schemas with values (priors,
+ * prose, charsets, block sizes, plus corrupted inputs: truncated, padded,
+ * flipped, out-of-charset) and raw packer symbol sequences aimed at
+ * block-boundary ties. Encode output, decode results and thrown errors (class,
+ * name and message) must match. Any divergence prints with its seed, iteration
+ * and a readable schema, and the exit code is 1.
  *
- * A release whose API predates the working tree's is reported and nothing is
- * compared (exit code 0). Bad arguments exit with 2. Under GitHub Actions a
- * skip raises a notice annotation, and a divergence raises a warning
- * annotation and writes the report to the job summary.
+ * A side whose API predates the working tree's is reported and nothing is
+ * compared (exit code 0). Bad arguments print the usage and exit with 2. Under
+ * GitHub Actions a skip raises a notice annotation, and a divergence raises a
+ * warning annotation and writes the report to the job summary.
  */
 
-import { appendFileSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { appendFileSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
+import { parseArgs } from 'util';
 import * as current from '../src/index';
 import * as published from 'polynar-published';
 import { version as publishedVersion } from 'polynar-published/package.json';
@@ -1010,23 +1018,96 @@ const countArg = (arg: string | undefined, fallback: number): number | undefined
   return /^\d+$/.test(arg) && Number.isSafeInteger(Number(arg)) ? Number(arg) : undefined;
 };
 
-const main = (): number => {
-  const args = process.argv.slice(2);
-  const seed = countArg(args[0], 1);
-  const iterations = countArg(args[1], 1000);
-  if (seed === undefined || iterations === undefined || args.length > 2) {
-    console.error('usage: npm run fuzz:diff -- [seed] [iterations]');
+const USAGE = `usage: npm run fuzz:diff -- [<ref>] [--seed <n>] [--runs <n>]
+
+Compares the working tree's wire format against another version of polynar.
+
+  <ref>        a git ref (HEAD, a hash, a branch, a tag) to compare against;
+               without one, the latest published release
+  --seed <n>   seed for the random cases (default: random, printed in the report)
+  --runs <n>   iterations per half, schemas and packer (default: 1000)
+  --help       print this text`;
+
+const ROOT = resolve(__dirname, '..');
+
+const git = (...args: string[]): string =>
+  execFileSync('git', ['-C', ROOT, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+
+/** The other side reported as skipped when its API predates the working tree's; exit code 0. */
+const skipped = (label: string, missing: string[]): number => {
+  const skip = `${label} predates the working tree's API, nothing compared`;
+  console.log(`polynar diff fuzz: ${skip} (missing ${missing.join(', ')})`);
+  if (process.env.GITHUB_ACTIONS) console.log(`::notice title=Wire check skipped::${skip}`);
+  return 0;
+};
+
+/** The working tree against `old` on the side's module, or the skip when its API falls short. */
+const run = (old: Side, seed: number, iterations: number): number => {
+  const missing = missingApi(old.mod);
+  if (missing.length > 0) return skipped(old.label, missing);
+  return compare(old, seed, iterations);
+};
+
+/** The working tree against a git ref, checked out into a temporary worktree for the run. */
+const runRef = async (ref: string, seed: number, iterations: number): Promise<number> => {
+  let hash: string;
+  try {
+    hash = git('rev-parse', '--verify', '--quiet', `${ref}^{commit}`);
+  } catch {
+    console.error(`polynar diff fuzz: unknown git ref ${ref}`);
     return 2;
   }
-  const missing = missingApi(published);
-  if (missing.length > 0) {
-    const skip = `published ${publishedVersion} predates the working tree's API, nothing compared`;
-    console.log(`polynar diff fuzz: ${skip} (missing ${missing.join(', ')})`);
-    if (process.env.GITHUB_ACTIONS) console.log(`::notice title=Wire check skipped::${skip}`);
+  const dir = mkdtempSync(join(tmpdir(), 'polynar-diff-'));
+  try {
+    git('worktree', 'add', '--detach', '--quiet', dir, hash);
+    const mod: Mod = await import(join(dir, 'src', 'index.ts'));
+    return run(side(`${ref} (${hash.slice(0, 7)})`, mod), seed, iterations);
+  } finally {
+    try {
+      git('worktree', 'remove', '--force', dir);
+    } catch {
+      // A failed `worktree add` leaves nothing registered to remove.
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+const main = async (): Promise<number> => {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      allowPositionals: true,
+      options: {
+        seed: { type: 'string' },
+        runs: { type: 'string' },
+        help: { type: 'boolean', short: 'h' },
+      },
+    });
+  } catch {
+    console.error(USAGE);
+    return 2;
+  }
+  const { values, positionals } = parsed;
+  if (values.help) {
+    console.log(USAGE);
     return 0;
   }
+  const seed = countArg(values.seed, Math.floor(Math.random() * 2 ** 31));
+  const iterations = countArg(values.runs, 1000);
+  if (seed === undefined || iterations === undefined || positionals.length > 1) {
+    console.error(USAGE);
+    return 2;
+  }
+  const [ref] = positionals;
+  if (ref !== undefined) return runRef(ref, seed, iterations);
+  return run(side(`published ${publishedVersion}`, published), seed, iterations);
+};
+
+const compare = (old: Side, seed: number, iterations: number): number => {
   const cur = side('working tree', current);
-  const old = side(`published ${publishedVersion}`, published);
 
   const divergences: Divergence[] = [];
   let decodes = 0;
@@ -1214,4 +1295,4 @@ const main = (): number => {
   return 1;
 };
 
-process.exit(main());
+main().then((code) => process.exit(code));
