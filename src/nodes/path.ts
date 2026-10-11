@@ -6,7 +6,8 @@
 const PATH = Symbol('polynar.path');
 
 interface Located {
-  [PATH]?: { segments: (string | number)[]; message: string };
+  // null marks an error whose message stays as thrown.
+  [PATH]?: { segments: (string | number)[]; message: string } | null;
 }
 
 export const formatPath = (segments: readonly (string | number)[]): string =>
@@ -16,12 +17,25 @@ export const formatPath = (segments: readonly (string | number)[]): string =>
     )
     .join('');
 
+/**
+ * Marks an error so containers leave its message as thrown: for an error
+ * whose path says nothing, such as a nesting limit, where the path only
+ * spells out the limit one segment per level.
+ */
+export function unlocated<E extends Error>(error: E): E {
+  (error as E & Located)[PATH] = null;
+  return error;
+}
+
 /** Prepend one container segment to an error thrown below it. */
 export function atPath(error: unknown, segment: string | number): unknown {
   if (!(error instanceof Error)) {
     return error;
   }
   const located = error as Error & Located;
+  if (located[PATH] === null) {
+    return error;
+  }
   const info = (located[PATH] ??= { segments: [], message: error.message });
   info.segments.unshift(segment);
   const head = `${error.name}: ${error.message}`;

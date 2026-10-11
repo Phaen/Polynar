@@ -562,10 +562,14 @@ export const anyValue = (depth: number, top = false): unknown => {
     case 1:
       return rand() < 0.5;
     case 2:
-      return randInt(-1e6, 1e6);
+      // Safe integers take the int tag; from 2^53 on integers take the float tag.
+      return rand() < 0.8
+        ? randInt(-1e6, 1e6)
+        : pick([1, -1]) *
+            pick([Number.MAX_SAFE_INTEGER, 2 ** 53, 2 ** 53 + 2, 2 ** randInt(54, 1023)]);
     case 3:
-      // Integer-valued doubles (dyadics, huge magnitudes) take the int tag,
-      // everything else the float tag, so one generator feeds both.
+      // Doubles of every shape, integer-valued ones included, so both number
+      // tags see them.
       return randFloat();
     case 4:
       return randString(6);
@@ -585,13 +589,20 @@ export const anyValue = (depth: number, top = false): unknown => {
     case 9: {
       const record: Record<string, unknown> = {};
       for (let i = 0, n = randInt(0, 3); i < n; i++) {
-        record[`k${i}${randString(2)}`] = anyValue(depth - 1);
+        // Integer-like keys, which an object lists first, test the key order.
+        record[rand() < 0.3 ? String(randInt(0, 30)) : `k${i}${randString(2)}`] = anyValue(
+          depth - 1
+        );
       }
       return record;
     }
     case 10:
+      // -0 and 0 are one Map key, so -0 as a key decodes as 0.
       return new Map(
-        Array.from({ length: randInt(0, 3) }, () => [anyValue(depth - 1), anyValue(depth - 1)])
+        Array.from({ length: randInt(0, 3) }, () => [
+          rand() < 0.2 ? pick([-0, 0]) : anyValue(depth - 1),
+          anyValue(depth - 1),
+        ])
       );
     default:
       return new Set(Array.from({ length: randInt(0, 3) }, () => anyValue(depth - 1)));
@@ -600,7 +611,9 @@ export const anyValue = (depth: number, top = false): unknown => {
 
 const anyCase = (): Case => ({
   build: (m) => m.p.any(),
-  gen: () => anyValue(2, true),
+  // Most values nest two levels, some up to six; a container holds fewer
+  // than one container on average, so deep values stay small.
+  gen: () => anyValue(rand() < 0.2 ? randInt(3, 6) : 2, true),
   src: 'p.any()',
 });
 

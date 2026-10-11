@@ -1,4 +1,4 @@
-import { Encoder, Decoder } from '../packer';
+import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { PNode } from './base';
 import { typedArrayKind, type Kind, type TypedArray } from './guards';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
@@ -92,10 +92,15 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
   }
 
   _read(dec: Decoder): A {
+    const length = this._length.read(dec);
+    // No buffer holds more than 2^53 - 1 bytes, so a larger length was never
+    // written, and below it the byte count stays a safe integer.
+    if (length > Number.MAX_SAFE_INTEGER / this._size) {
+      throw new CorruptInputError(`Binary length ${length} is above the largest possible buffer`);
+    }
     // Reading before allocating means a corrupt length prefix runs out of
     // input as corrupt data instead of requesting an absurd buffer.
-    const count = this._length.read(dec) * this._size;
-    const raw = Uint8Array.from(dec.parseMany(256, count));
+    const raw = Uint8Array.from(dec.parseMany(256, length * this._size));
     if (!LITTLE_ENDIAN) {
       for (let at = 0; at < raw.length; at += this._size) {
         raw.subarray(at, at + this._size).reverse();

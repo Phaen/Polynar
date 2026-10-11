@@ -290,7 +290,7 @@ Data written by any listed version decodes and is migrated step by step to the n
 
 ### `p.any()`
 
-Self-describing escape hatch: numbers, strings, booleans, dates, null, undefined, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values. Everything round-trips bit-exact, and a typed array decodes as the same class. Any other class instance throws, and so does nesting containers more than 512 levels deep, which includes a value that contains itself. Costs more than a precise node. No methods.
+Self-describing escape hatch: numbers, strings, booleans, dates, null, undefined, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values; an object typed with an interface needs an index signature to count as one. Everything round-trips bit-exact, and a typed array decodes as the same class. A subclass of any of these, such as a `Buffer` or a class extending `Map`, decodes as the built-in class. Any other class instance throws a `TypeError`. Nesting containers more than 512 levels deep, which includes a value that contains itself, throws a `RangeError` without the path in front. Costs more than a precise node. No methods.
 
 ### Priors: `.weights()`
 
@@ -366,7 +366,7 @@ User.decode(ascii, { charset: CharSets.printable });
 
 Input that doesn't decode — truncated, padded, or with characters outside the charset — throws a `CorruptInputError`. There is no checksum, so damaged input that still decodes gives whatever value those bytes encode. Its subclass `UnknownVersionError` is thrown when `p.versioned` gets data from a version it doesn't list.
 
-A value that can't be encoded throws with its path in front and the limit it broke, like `filters[2].op: Value "gt" is not one of "eq", "lt"` or `tags: Array length 5 is above the maximum 3`. A value outside what the schema allows — a bound, step, length, list, tag or charset — throws a `RangeError`. A value the schema has no place for at all throws a `TypeError`: a non-integer, a non-finite number, an invalid date, a missing required field, a kind no union member takes, or a type `p.any` can't encode. An invalid schema throws a `TypeError` or `RangeError` as soon as it's defined.
+A value that can't be encoded throws with its path in front and the limit it broke, like `filters[2].op: Value "gt" is not one of "eq", "lt"` or `tags: Array length 5 is above the maximum 3`. A value outside what the schema allows — a bound, step, length, list, tag, charset or nesting depth — throws a `RangeError`. A value the schema has no place for at all throws a `TypeError`: a non-integer, a non-finite number, an invalid date, a missing required field, a kind no union member takes, or a type `p.any` can't encode. An invalid schema throws a `TypeError` or `RangeError` as soon as it's defined.
 
 ## Types
 

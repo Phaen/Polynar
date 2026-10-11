@@ -11,6 +11,7 @@ import { PEnum } from './enum';
 import { PNull } from './null';
 import { PArray } from './array';
 import { PCollection, MAP, RECORD, SET } from './collection';
+import { unlocated } from './path';
 
 /**
  * Every value `p.any` encodes: the JSON-like scalars plus `undefined`, dates
@@ -31,9 +32,6 @@ export type AnyValue =
 
 // Type tags for the self-describing `any` codec: absent values, then scalars,
 // then containers, then one tag per typed-array class in TYPED_ARRAYS order.
-// Integers and floats are distinct so integer values round-trip bit-exact
-// through the int lattice instead of drifting through the fraction
-// approximation.
 const TAG_UNDEFINED = 0;
 const TAG_NULL = 1;
 const TAG_BOOLEAN = 2;
@@ -63,6 +61,15 @@ const TYPED_ARRAYS = [
 ] as const;
 
 const TAG_COUNT = TAG_TYPED + TYPED_ARRAYS.length;
+
+/**
+ * Whether a number travels under the int tag rather than the float tag. Both
+ * round-trip every finite double exactly; the int lattice is the smaller
+ * encoding for safe integers, and the float one for larger magnitudes. -0 is
+ * a safe integer to the check, but the int lattice drops its sign.
+ */
+const travelsAsInt = (value: number): boolean =>
+  Number.isSafeInteger(value) && !Object.is(value, -0);
 
 /** Whether a tag stands for an array, record, map or set, which hold `p.any` itself. */
 const isContainer = (tag: number): boolean => tag >= TAG_ARRAY && tag <= TAG_SET;
@@ -142,7 +149,8 @@ export class PAny extends PNode<AnyValue> {
     }
     // A value that contains itself is infinitely deep, so this also stops cycles.
     if (this._depth === MAX_DEPTH) {
-      throw new TypeError(`p.any nests deeper than ${MAX_DEPTH} levels`);
+      // Every level would add a segment to the path, so the message leaves it out.
+      throw unlocated(new RangeError(`p.any nests deeper than ${MAX_DEPTH} levels`));
     }
     this._depth++;
     try {
@@ -155,9 +163,7 @@ export class PAny extends PNode<AnyValue> {
   private _tagOf(value: unknown): number {
     const kind = kindOf(value);
     if (kind === 'number') {
-      // -0 is integer-valued but the int lattice normalizes it away; the
-      // float path carries its sign bit, so every double round-trips exact.
-      return Number.isInteger(value) && !Object.is(value, -0) ? TAG_INT : TAG_FLOAT;
+      return travelsAsInt(value as number) ? TAG_INT : TAG_FLOAT;
     }
     if (kind === 'object' && !isPlainObject(value)) {
       const name = (value as object).constructor?.name ?? 'this type';
@@ -185,11 +191,12 @@ export class PAny extends PNode<AnyValue> {
       }
     }
     const value = this._nodes[tag]._read(dec);
-    // Integer-valued doubles always travel under the int tag (-0 is the one
-    // exception), so a float-tagged integer is a second spelling of the same
-    // value — the encoder never emits it.
-    if (tag === TAG_FLOAT && Number.isInteger(value) && !Object.is(value, -0)) {
-      throw new CorruptInputError('Non-canonical float tag on an integer value');
+    // A number under the other number tag is a second spelling of the same
+    // value, which the encoder never emits.
+    if ((tag === TAG_INT || tag === TAG_FLOAT) && (tag === TAG_INT) !== travelsAsInt(value)) {
+      throw new CorruptInputError(
+        `Non-canonical ${tag === TAG_INT ? 'int' : 'float'} tag on the number ${value}`
+      );
     }
     return value;
   }

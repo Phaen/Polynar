@@ -5,7 +5,7 @@
  */
 
 import { p, CharSets, CorruptInputError, Encoder, PNode, type PObject } from '../../index';
-import { atPath, describe as show, formatPath, oneOf } from '../../nodes/path';
+import { atPath, describe as show, formatPath, oneOf, unlocated } from '../../nodes/path';
 
 /** A runtime-built member list, typed as plain strings. */
 const letters = (): string[] => ['a', 'b'];
@@ -153,6 +153,13 @@ describe('atPath', () => {
     expect(atPath(atPath(error, 1), 'list')).toBe(error);
     expect(error.message).toBe('list[1]: bad');
     expect(error.stack?.startsWith('RangeError: list[1]: bad')).toBe(true);
+  });
+
+  it('leaves an unlocated error as thrown', () => {
+    const error = unlocated(new RangeError('bad'));
+    expect(atPath(atPath(error, 1), 'list')).toBe(error);
+    expect(error.message).toBe('bad');
+    expect(error.stack?.startsWith('RangeError: bad')).toBe(true);
   });
 
   it('leaves a missing or foreign stack alone', () => {

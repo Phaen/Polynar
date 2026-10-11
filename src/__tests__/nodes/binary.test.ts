@@ -98,6 +98,24 @@ describe('Schema binary', () => {
     expect(() => p.binary().decode(claim)).toThrow(CorruptInputError);
   });
 
+  it('rejects a length whose byte size no buffer holds', () => {
+    // From 2^50 elements on the byte count leaves the safe integers, and at
+    // 2^1021 it is Infinity.
+    for (const length of [2 ** 1021, 2 ** 50]) {
+      const claim = p.int().min(0).encode(length);
+      expect(() => p.binary(Float64Array).decode(claim)).toThrow(
+        new CorruptInputError(`Binary length ${length} is above the largest possible buffer`)
+      );
+    }
+    // One element fewer fits in 2^53 - 1 bytes, so only the missing input stops it.
+    const edge = p
+      .int()
+      .min(0)
+      .encode(2 ** 50 - 1);
+    expect(() => p.binary(Float64Array).decode(edge)).toThrow(CorruptInputError);
+    expect(() => p.binary(Float64Array).decode(edge)).not.toThrow('largest possible buffer');
+  });
+
   it('writes the same bytes on a machine that stores the high byte first', async () => {
     // The library is loaded a second time with Uint16Array reporting the
     // high byte first, so that copy takes the big-endian path. An element of

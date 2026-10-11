@@ -31,12 +31,19 @@ describe('Schema any', () => {
 
   it.each(wrappers)('refuses to encode %s nesting deeper than MAX_DEPTH', (_kind, wrap) => {
     expect(() => p.any().encode(nest(wrap, MAX_DEPTH + 1))).toThrow(
-      new RegExp(`p\\.any nests deeper than ${MAX_DEPTH} levels$`)
+      new RangeError(`p.any nests deeper than ${MAX_DEPTH} levels`)
+    );
+  });
+
+  it('leaves the path out of the depth error, even below a field', () => {
+    const node = p.object({ data: p.any() });
+    expect(() => node.encode({ data: nest((inner) => [inner], MAX_DEPTH + 1) })).toThrow(
+      new RangeError(`p.any nests deeper than ${MAX_DEPTH} levels`)
     );
   });
 
   it('refuses a value that contains itself, which is infinitely deep', () => {
-    const message = `p.any nests deeper than ${MAX_DEPTH} levels`;
+    const message = new RangeError(`p.any nests deeper than ${MAX_DEPTH} levels`);
     const loop: { [key: string]: AnyValue } = {};
     loop.self = loop;
     expect(() => p.any().encode(loop)).toThrow(message);
@@ -118,6 +125,21 @@ describe('Schema any', () => {
     expect(back).not.toBeInstanceOf(Bytes);
   });
 
+  it('reads a subclass of Date, Array, Map or Set as its built-in class', () => {
+    class Day extends Date {}
+    class List extends Array<AnyValue> {}
+    class Table extends Map<AnyValue, AnyValue> {}
+    class Bag extends Set<AnyValue> {}
+    for (const [value, plain] of [
+      [new Day(0), new Date(0)],
+      [List.of(1), [1]],
+      [new Table([[1, 2]]), new Map([[1, 2]])],
+      [new Bag([1]), new Set([1])],
+    ] as [AnyValue, AnyValue][]) {
+      expect(trip(p.any(), value)).toStrictEqual(plain);
+    }
+  });
+
   it('accepts a null-prototype dictionary', () => {
     const dict = Object.create(null) as { [key: string]: AnyValue };
     dict.a = 1;
@@ -150,13 +172,44 @@ describe('Schema any', () => {
     expect(() => p.any().encode(value)).toThrow(TypeError);
   });
 
-  it('rejects a float tag on an integer value', () => {
-    // Integers always travel under the int tag.
+  it.each([
+    [0, 1],
+    [-(2 ** 53 - 1), 9],
+    [2 ** 53 - 1, 9],
+    [-0, 10],
+    [0.5, 2],
+    [2 ** 53, 3],
+    [-(2 ** 53), 3],
+    // Under the int tag 1e300 would take 128 bytes.
+    [1e300, 6],
+    [Number.MAX_VALUE, 10],
+  ])('round-trips %p in %p bytes, safe integers under the int tag', (value, bytes) => {
+    expect(trip(p.any(), value)).toBe(value);
+    expect(p.any().encode(value)).toHaveLength(bytes);
+  });
+
+  it.each([
+    [4, p.float(), 42, 'Non-canonical float tag on the number 42'],
+    [4, p.float(), 2 ** 53 - 1, 'Non-canonical float tag on the number 9007199254740991'],
+    [3, p.int(), 2 ** 53, 'Non-canonical int tag on the number 9007199254740992'],
+    [3, p.int(), 1e300, 'Non-canonical int tag on the number 1e+300'],
+  ] as [number, PNode<number>, number, string][])(
+    'rejects tag %p on a number the other tag carries',
+    (tag, node, value, message) => {
+      const enc = new Encoder();
+      enc.compose(tag, 22);
+      node._write(enc, value);
+      expect(() => p.any().decode(enc.output())).toThrow(new CorruptInputError(message));
+    }
+  );
+
+  it('rejects a typed-array length too large for any buffer', () => {
+    // The Float64Array tag, then a count whose byte size is past 2^53.
     const enc = new Encoder();
-    enc.compose(4, 22); // TAG_FLOAT
-    p.float()._write(enc, 42);
+    enc.compose(19, 22);
+    enc.composeTerm(2 ** 1021);
     expect(() => p.any().decode(enc.output())).toThrow(
-      'Non-canonical float tag on an integer value'
+      new CorruptInputError(`Binary length ${2 ** 1021} is above the largest possible buffer`)
     );
   });
 
