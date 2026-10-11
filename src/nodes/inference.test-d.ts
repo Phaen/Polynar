@@ -186,6 +186,25 @@ p.versioned(UserV1, [
   (user) => ({ ...user }),
 ]);
 
+// The chain has no length cap: prev is typed from the previous version at every position.
+const Counter = p.versioned(
+  p.int().max(1),
+  p.int().max(2),
+  p.int().max(3),
+  p.int().max(4),
+  p.int().max(5),
+  p.int().max(6),
+  p.int().max(7),
+  p.int().max(8),
+  p.int().max(9),
+  [p.string(), (n) => String(n + 1)],
+  [p.object({ label: p.string() }), (label) => ({ label: label.toUpperCase() })]
+);
+const _counter: Equals<Infer<typeof Counter>, { label: string }> = true;
+Counter.walk(0);
+// @ts-expect-error — a first-version value is a number
+Counter.walk('0');
+
 // A versioned schema starts from a first version, a node with no migration.
 // @ts-expect-error — no versions
 p.versioned();

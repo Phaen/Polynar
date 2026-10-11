@@ -13,7 +13,24 @@ export type Step<Prev, Next> = [Prev] extends [Next]
   ? PNode<Next> | readonly [PNode<Next>, (prev: Prev) => NoInfer<Next>]
   : readonly [PNode<Next>, (prev: Prev) => NoInfer<Next>];
 
+/**
+ * The argument list of `p.versioned` for the version types `T`: the first
+ * node, then a `Step` from each version to the next. `[never, ...T][K]` is
+ * the element before `T[K]`.
+ */
+export type Chain<T extends readonly unknown[]> = {
+  [K in keyof T]: K extends '0' ? PNode<T[K]> : Step<[never, ...T][K & keyof [never, ...T]], T[K]>;
+};
+
+/** The last element of a tuple. */
+export type Last<T extends readonly unknown[]> = T extends readonly [...unknown[], infer L]
+  ? L
+  : never;
+
 type Migrate = (prev: unknown) => unknown;
+
+/** What `PVersioned` is built from: the first node, then nodes or `[node, migrate]` pairs. */
+export type Versions = readonly [PNode<any>, ...(PNode<any> | readonly [PNode<any>, Migrate])[]];
 
 /** The version index: a lattice term counting up from 0. */
 const VERSION = new IndexRange('p.versioned', 0);
@@ -36,7 +53,7 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
   /** `_migrations[i]` turns a value of version i into one of version i + 1. */
   private readonly _migrations: readonly Migrate[];
 
-  constructor(versions: readonly [PNode<any>, ...(PNode<any> | readonly [PNode<any>, Migrate])[]]) {
+  constructor(versions: Versions) {
     super();
     this._nodes = versions.map((step) => (step instanceof PNode ? step : step[0]));
     this._migrations = versions
