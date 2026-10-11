@@ -82,15 +82,56 @@ describe('Schema decimal', () => {
     expect(() => p.decimal(1 / 3)).toThrow(TypeError);
   });
 
-  it('refuses bounds and values outside exact arithmetic', () => {
+  it('keeps a fractional step within 2^53 of its last decimal place', () => {
+    // The limit sits on the scaled value, so 0.25 reaches no further than 0.01.
     expect(() => p.decimal(0.01).max(1e20)).toThrow(
-      'p.decimal max 100000000000000000000 is outside the exact range ±90071992547409.9'
+      'p.decimal max 100000000000000000000 is outside the exact range ±90071992547409.9 of step 0.01'
     );
-    expect(() => p.decimal(0.01).min(-1e20)).toThrow('p.decimal min -100000000000000000000');
-    expect(() => p.decimal(1).encode(1e20)).toThrow(
-      'Value 100000000000000000000 is outside the exact range ±9007199254740991'
+    expect(() => p.decimal(0.25).min(-1e20)).toThrow(
+      'p.decimal min -100000000000000000000 is outside the exact range ±90071992547409.9 of step 0.25'
     );
+    expect(() => p.decimal(0.1).encode(1e15)).toThrow(
+      'Value 1000000000000000 is outside the exact range ±900719925474099.1 of step 0.1'
+    );
+    expect(trip(p.decimal(0.1), 900719925474099)).toBe(900719925474099);
     expect(() => p.decimal(1).encode(NaN)).toThrow('p.decimal expected a finite number');
+  });
+
+  it.each([
+    [1, 1e20],
+    [1000, 1e16],
+    [1000, -(1000 * 2 ** 60)],
+    [1e21, 3e21],
+    [1e21, 0],
+    [3, 3 * 2 ** 60],
+  ])('reaches as far as p.int on the integer step %p: %p', (step, value) => {
+    expect(trip(p.decimal(step), value)).toBe(value);
+  });
+
+  it('still refuses what is off the grid of an integer step past 2^53', () => {
+    expect(() => p.decimal(1000).encode(1e16 + 2)).toThrow(
+      'Value 10000000000000002 is not a multiple of step 1000'
+    );
+    expect(() => p.decimal(3).encode(2 ** 60)).toThrow('not a multiple of step 3');
+    expect(() => p.decimal(1e21).encode(1e21 + 2 ** 20)).toThrow('not a multiple of step 1e+21');
+  });
+
+  it('bounds an integer step past 2^53 by its multiples', () => {
+    const node = p
+      .decimal(1000)
+      .min(1e18)
+      .max(1e18 + 1024000);
+    expect(trip(node, 1e18 + 512000)).toBe(1e18 + 512000);
+    expect(node.encode(1e18)).toHaveLength(2);
+    expect(() => node.encode(1e18 - 128000)).toThrow(
+      'Value 999999999999872000 is below the minimum 1000000000000000000'
+    );
+    expect(() =>
+      p
+        .decimal(1000)
+        .min(-1e18)
+        .encode(-1e18 - 128000)
+    ).toThrow('below the minimum');
   });
 
   it('rejects a step multiple that cannot reconstruct exactly', () => {
@@ -100,6 +141,25 @@ describe('Schema decimal', () => {
     enc.compose(0, 2);
     enc.composeTerm(2 ** 60);
     expect(() => p.decimal(0.01).decode(enc.output())).toThrow(CorruptInputError);
+    // An integer step has no limit, but this multiple's product with the step
+    // is odd past 2^53, so it rounds.
+    const odd = new Encoder();
+    odd.compose(0, 2);
+    odd.composeTerm(2 ** 52 + 1);
+    expect(() => p.decimal(3).decode(odd.output())).toThrow(CorruptInputError);
+  });
+
+  it('rejects a bounded multiple whose product rounds between exact bounds', () => {
+    // Both bounds are doubles, and the one multiple between them is not.
+    const node = p
+      .decimal(3)
+      .min(3 * 2 ** 52)
+      .max(3 * 2 ** 52 + 6);
+    expect(trip(node, 3 * 2 ** 52 + 6)).toBe(3 * 2 ** 52 + 6);
+    const enc = new Encoder();
+    enc.compose(1, 3);
+    expect(() => node.decode(enc.output())).toThrow(CorruptInputError);
+    expect(() => node._fromDigit?.(1)).toThrow(CorruptInputError);
   });
 });
 

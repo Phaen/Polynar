@@ -405,7 +405,7 @@ describe('checkRange', () => {
     expect(() => checkRange('r', 1, 0, (i) => `#${i}`)).toThrow(
       new RangeError('r range is empty: min #1 exceeds max #0')
     );
-    expect(() => checkRange('r', -1, Number.MAX_SAFE_INTEGER - 1)).toThrow(
+    expect(() => checkRange('r', -1, Number.MAX_SAFE_INTEGER)).toThrow(
       'spans more than 2^53 values'
     );
   });

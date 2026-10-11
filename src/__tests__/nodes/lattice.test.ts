@@ -8,6 +8,7 @@
 
 import { p, Encoder, Decoder, CorruptInputError } from '../../index';
 import { IndexRange, checkUnset, lengthBound, lengthRange } from '../../nodes/lattice';
+import type { PNode } from '../../nodes/base';
 import { trip } from '../support';
 
 const day = new Date('2020-01-01Z');
@@ -79,7 +80,7 @@ describe('Ranges', () => {
           .max(2 ** 53),
       '[-9007199254740992, 9007199254740992]',
     ],
-    ['p.int', () => p.int().min(0).max(Number.MAX_SAFE_INTEGER), '[0, 9007199254740991]'],
+    ['p.int', () => p.int().min(-1).max(Number.MAX_SAFE_INTEGER), '[-1, 9007199254740991]'],
     ['p.decimal', () => p.decimal(1).min(-9e15).max(9e15), '[-9000000000000000, 9000000000000000]'],
     [
       'p.date',
@@ -89,6 +90,42 @@ describe('Ranges', () => {
   ])('%s refuses a range of more than 2^53 values at definition', (who, thunk, range) => {
     expect(thunk).toThrow(new RangeError(`${who} range ${range} spans more than 2^53 values`));
   });
+
+  it.each([
+    ['p.int', p.int().min(0).max(Number.MAX_SAFE_INTEGER), [0, 2 ** 27, Number.MAX_SAFE_INTEGER]],
+    [
+      'p.int',
+      p
+        .int()
+        .min(-(2 ** 52))
+        .max(2 ** 52 - 1),
+      [-(2 ** 52), -1, 2 ** 52 - 1],
+    ],
+    [
+      'p.decimal',
+      p
+        .decimal(2)
+        .min(-(2 ** 53))
+        .max(2 ** 53 - 2),
+      [-(2 ** 53), 2, 2 ** 53 - 2],
+    ],
+    [
+      'p.date',
+      p
+        .date()
+        .min(-(2 ** 52))
+        .max(2 ** 52 - 1),
+      [new Date(-(2 ** 52)), new Date(0), new Date(2 ** 52 - 1)],
+    ],
+  ] as [string, PNode<unknown>, unknown[]][])(
+    '%s round-trips a range of exactly 2^53 values in 53 bits',
+    (_who, node, values) => {
+      for (const value of values) {
+        expect(trip(node, value)).toEqual(value);
+        expect(node.encode(value)).toHaveLength(7);
+      }
+    }
+  );
 });
 
 describe('Lone bounds', () => {
@@ -174,10 +211,25 @@ describe('IndexRange', () => {
     expect(() => new IndexRange('r', 3, 2, undefined, (i) => `#${i}`)).toThrow(
       new RangeError('r range is empty: min #3 exceeds max #2')
     );
-    expect(() => new IndexRange('r', 0, Number.MAX_SAFE_INTEGER)).toThrow(
-      new RangeError(`r range [0, ${Number.MAX_SAFE_INTEGER}] spans more than 2^53 values`)
+    expect(() => new IndexRange('r', -1, Number.MAX_SAFE_INTEGER)).toThrow(
+      new RangeError(`r range [-1, ${Number.MAX_SAFE_INTEGER}] spans more than 2^53 values`)
     );
     expect(new IndexRange('r', 0, Number.MAX_SAFE_INTEGER - 1).radix).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it('splits a range of exactly 2^53 values over two slots', () => {
+    // One state past the largest radix, so the offset packs as two digits
+    // whose radices multiply to 2^53; a prior over it would need as many
+    // states in one total, and stays refused there.
+    const range = new IndexRange('r', 1, 2 ** 53);
+    const indices = [1, 2 ** 27, 2 ** 27 + 1, 12345678901234, 2 ** 53];
+    expect(roundTrip(range, indices)).toEqual(indices);
+    expect(
+      roundTrip(new IndexRange('r', -(2 ** 52), 2 ** 52 - 1), [-(2 ** 52), 0, 2 ** 52 - 1])
+    ).toEqual([-(2 ** 52), 0, 2 ** 52 - 1]);
+    const enc = new Encoder();
+    range.write(enc, 2 ** 53);
+    expect(enc.output()).toHaveLength(7);
   });
 
   it('takes a prior only between two bounds', () => {
@@ -201,6 +253,7 @@ describe('IndexRange', () => {
       new IndexRange('r', 0),
       new IndexRange('r', undefined, 0),
       new IndexRange('r', 0, 3, [1, 1, 1, 1]),
+      new IndexRange('r', 0, Number.MAX_SAFE_INTEGER),
     ]) {
       expect(other.radix).toBeUndefined();
       expect(other.fromDigit).toBeUndefined();

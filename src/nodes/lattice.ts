@@ -1,23 +1,33 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { RangePrior, checkIndex, checkRange, priorKind, type Prior } from './weights';
 
+const MAX_SAFE = Number.MAX_SAFE_INTEGER;
+/**
+ * The two slots of a range of exactly 2^53 values: a radix is a safe
+ * integer, and 2^53 is one past the largest, so the offset packs as two
+ * digits whose radices multiply to it, at the same 53 bits.
+ */
+const SPLIT_HIGH = 2 ** 26;
+const SPLIT_LOW = 2 ** 27;
+
 /**
  * One integer index on the shared lattice wire, against optional [min, max]
  * bounds and optionally under a prior: the half of PInt, PDecimal, PDate,
  * p.versioned and every length prefix that is not about mapping a value to
- * its index. Both bounds -> one slot of exact radix; one bound -> a term
- * counting away from it (downward from a max, so the term stays
- * non-negative); unbounded -> sign before magnitude, the order every signed
- * value on the wire reads. Every bounded integer packs through here, so their
- * layouts can never drift apart. The range is validated once here, and
- * `write`/`read` check the bounds and pack the index, uniformly or weighted.
- * `show` spells an index as the value it stands for in an error.
+ * its index. Both bounds -> one slot of exact radix, or two whose radices
+ * multiply to 2^53 for the widest range, one state past what a radix holds;
+ * one bound -> a term counting away from it (downward from a max, so the
+ * term stays non-negative); unbounded -> sign before magnitude, the order
+ * every signed value on the wire reads. Every bounded integer packs through
+ * here, so their layouts can never drift apart. The range is validated once
+ * here, and `write`/`read` check the bounds and pack the index, uniformly or
+ * weighted. `show` spells an index as the value it stands for in an error.
  */
 export class IndexRange {
   readonly lo?: number;
   readonly hi?: number;
   readonly prior?: RangePrior;
-  /** The one radix an index packs in: both bounds and no prior. */
+  /** The one radix an index packs in: both bounds, no prior, fewer than 2^53 values. */
   readonly radix?: number;
   /** Set with `radix`: the index `digit` steps above min, as a digit read in `radix` stands for. */
   readonly fromDigit?: (digit: number) => number;
@@ -41,7 +51,7 @@ export class IndexRange {
     // A max of -0 reads back as max - 0, itself -0; stored as 0, no index
     // decodes as -0.
     this.hi = hi === undefined ? undefined : hi + 0;
-    if (lo !== undefined && hi !== undefined && prior === undefined) {
+    if (lo !== undefined && hi !== undefined && prior === undefined && hi - lo < MAX_SAFE) {
       this.radix = hi - lo + 1;
       this.fromDigit = (digit) => lo + digit;
     }
@@ -70,7 +80,13 @@ export class IndexRange {
   private writeIndex(enc: Encoder, index: number): void {
     const { lo, hi } = this;
     if (lo !== undefined && hi !== undefined) {
-      enc.compose(index - lo, hi - lo + 1);
+      const offset = index - lo;
+      if (hi - lo < MAX_SAFE) {
+        enc.compose(offset, hi - lo + 1);
+      } else {
+        enc.compose(Math.floor(offset / SPLIT_LOW), SPLIT_HIGH);
+        enc.compose(offset % SPLIT_LOW, SPLIT_LOW);
+      }
     } else if (lo !== undefined) {
       const offset = index - lo;
       // Float subtraction rounds once the offset passes 2^53, which would
@@ -102,7 +118,10 @@ export class IndexRange {
   private readIndex(dec: Decoder): number {
     const { lo, hi } = this;
     if (lo !== undefined && hi !== undefined) {
-      return lo + dec.parse(hi - lo + 1);
+      if (hi - lo < MAX_SAFE) {
+        return lo + dec.parse(hi - lo + 1);
+      }
+      return lo + dec.parse(SPLIT_HIGH) * SPLIT_LOW + dec.parse(SPLIT_LOW);
     }
     if (lo !== undefined) {
       const offset = dec.parseTerm();

@@ -118,14 +118,14 @@ An integer. Infers `number`. Non-integers, NaN and Infinity throw; `-0` is store
 
 ### `p.decimal(step: number)`
 
-A number on a fixed decimal step, like `p.decimal(0.01)` for cents. Infers `number`. The step must be an exact decimal of at most 15 places (`1 / 3` throws), and both bounds must sit on the step. Values must already sit on the step, so round first: `0.1 + 0.2` throws on step 0.1. Values are stored exactly, except that `-0` becomes `0`. NaN and Infinity throw, and so do values too large to store exactly.
+A number on a fixed decimal step, like `p.decimal(0.01)` for cents. Infers `number`. The step must be an exact decimal of at most 15 places (`1 / 3` throws), and both bounds must sit on the step. Values must already sit on the step, so round first: `0.1 + 0.2` throws on step 0.1. Values are stored exactly, except that `-0` becomes `0`. NaN and Infinity throw. An integer step reaches as far as `p.int` does: `p.decimal(1000).encode(1e18)` round-trips. A fractional step keeps values below 2^53 in its last decimal place, about ±9e13 for `0.01` and `0.25` alike; past that, doubles are coarser than the grid.
 
-| Method                            | Description                                                                                                                                                                                                                 |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.min(n: number)`                 | Lower bound; smaller values throw.                                                                                                                                                                                          |
-| `.max(n: number)`                 | Upper bound; larger values throw. With both bounds the value takes a fixed number of bits: `p.decimal(0.01).min(0).max(100)` fits a price in 2 bytes. The range can't span more than 2^53 steps, and an empty range throws. |
-| `.cdf(fn: (k: number) => number)` | Prior over the grid, called with `k` for the k-th multiple of the step (`value / step`); needs both bounds.                                                                                                                 |
-| `.weights(w: number[])`           | Prior: one weight per grid point from `min` to `max`, lowest first; needs both bounds.                                                                                                                                      |
+| Method                            | Description                                                                                                                                                                                                                  |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                 | Lower bound; smaller values throw.                                                                                                                                                                                           |
+| `.max(n: number)`                 | Upper bound; larger values throw. With both bounds the value takes a fixed number of bits: `p.decimal(0.01).min(0).max(100)` fits a price in 2 bytes. The range can't span more than 2^53 values, and an empty range throws. |
+| `.cdf(fn: (k: number) => number)` | Prior over the grid, called with `k` for the k-th multiple of the step (`value / step`); needs both bounds.                                                                                                                  |
+| `.weights(w: number[])`           | Prior: one weight per grid point from `min` to `max`, lowest first; needs both bounds.                                                                                                                                       |
 
 ### `p.float()`
 

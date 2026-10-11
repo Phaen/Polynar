@@ -95,7 +95,7 @@ export type Cdf = (v: number) => number;
 
 /**
  * The definition-time checks of an integer range, either bound optional: each
- * bound is an integer, and a pair is non-empty and spans fewer than 2^53
+ * bound is an integer, and a pair is non-empty and spans at most 2^53
  * values, so index arithmetic (`index - lo`) stays exact. `show` spells a
  * bound as the value it stands for in an error.
  */
@@ -115,7 +115,7 @@ export function checkRange(
     if (lo > hi) {
       throw new RangeError(`${who} range is empty: min ${show(lo)} exceeds max ${show(hi)}`);
     }
-    if (hi - lo >= Number.MAX_SAFE_INTEGER) {
+    if (hi - lo > Number.MAX_SAFE_INTEGER) {
       throw new RangeError(`${who} range [${show(lo)}, ${show(hi)}] spans more than 2^53 values`);
     }
   }

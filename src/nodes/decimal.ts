@@ -34,6 +34,12 @@ export const decimalPlaces = (x: number): number | null => {
  * decimal-scaled integers — never
  * raw float division — so on-grid values encode and decode bit-exact and
  * off-grid values throw instead of snapping to a neighbour.
+ *
+ * An integer step scales by one, and a double that is a multiple of an
+ * integer divides into another double, which multiplies back out exactly, so
+ * the grid reaches as far as p.int's. A fractional step scales the value by a
+ * power of ten first, which rounds past 2^53, so there the scaled value is
+ * kept a safe integer.
  */
 export class PDecimal extends PNode<number> {
   readonly _kinds: readonly Kind[] = ['number'];
@@ -75,9 +81,7 @@ export class PDecimal extends PNode<number> {
     this._radix = this._range.radix;
     const fromDigit = this._range.fromDigit;
     if (fromDigit !== undefined) {
-      // Both bounds sit within the exact range, so every multiple between
-      // them does too and the read-side range check cannot fail.
-      this._fromDigit = (digit) => this._valueAt(fromDigit(digit));
+      this._fromDigit = (digit) => this._decode(fromDigit(digit));
     }
   }
 
@@ -120,13 +124,29 @@ export class PDecimal extends PNode<number> {
   }
 
   _read(dec: Decoder): number {
-    const k = this._range.read(dec);
-    // Counterpart of the encode-side exactness guard: a product past 2^53 rounds,
-    // and the encoder could never have emitted it.
-    if (Math.abs(k * this._scaledStep) > Number.MAX_SAFE_INTEGER) {
+    return this._decode(this._range.read(dec));
+  }
+
+  /**
+   * The value of the k-th step multiple read off the wire, or a
+   * CorruptInputError for a multiple the encoder could never have emitted:
+   * one whose product with the scaled step rounds. On a fractional step that
+   * is any product past 2^53, the encode-side limit. On an integer step the
+   * remainder tells: with a and s the odd parts of k and the step, a·s
+   * overflowing 53 bits by t bits puts s above 2^(t-1), as a is below 2^53,
+   * while the rounding error stays within 2^(t-1), so a rounded product is
+   * never a multiple of the step.
+   */
+  private _decode(k: number): number {
+    const scaled = k * this._scaledStep;
+    const rounded =
+      this._scale === 1
+        ? scaled % this._scaledStep !== 0
+        : Math.abs(scaled) > Number.MAX_SAFE_INTEGER;
+    if (rounded) {
       throw new CorruptInputError('Step multiple is outside the exact range of its step');
     }
-    return this._valueAt(k);
+    return scaled / this._scale;
   }
 
   /** The step multiple a bound sits on; anything else rejects the schema. */
@@ -143,15 +163,18 @@ export class PDecimal extends PNode<number> {
    */
   private _multiple(value: number, subject: (value: number) => string): number {
     const scaled = Math.round(value * this._scale);
-    // Beyond 2^53 the scaled integer (and the decode product) stops being
-    // exact, which would silently violate the bit-exact contract.
-    if (Math.abs(scaled) > Number.MAX_SAFE_INTEGER) {
+    // Beyond 2^53 a scaled value (and the decode product) stops being exact,
+    // which would silently violate the bit-exact contract. An integer step
+    // scales by one and needs no limit: the value is its own scaled integer.
+    if (this._scale !== 1 && Math.abs(scaled) > Number.MAX_SAFE_INTEGER) {
       throw new RangeError(
-        `${subject(value)} is outside the exact range ±${Number.MAX_SAFE_INTEGER / this._scale}`
+        `${subject(value)} is outside the exact range ±${Number.MAX_SAFE_INTEGER / this._scale} of step ${this._step}`
       );
     }
     // Round-tripping through the scale proves the value carries no precision
     // beyond the grid; the remainder check proves it sits on a step multiple.
+    // Both are exact at any size: a remainder always is, and the quotient of
+    // a double by an integer that divides it is a double.
     if (scaled / this._scale !== value || scaled % this._scaledStep !== 0) {
       throw new RangeError(`${subject(value)} is not a multiple of step ${this._step}`);
     }
