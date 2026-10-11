@@ -18,7 +18,7 @@ The waste shows up when your data doesn't fit a power of two. Say a field is mal
 
 That idea is where the name comes from. Binary counts in base 2 and ternary in base 3; a polynary number mixes many bases inside one number, a different base for every piece of data, each sized to exactly that piece. A boolean rides in a base-2 slot, a three-way enum in a base-3 slot, a 0-to-99 integer in a base-100 slot, and nothing rounds up to a whole byte or character. Your data fits perfectly, without waste.
 
-Under the hood, the message packs into arbitrary-precision integers in blocks of 2048 bits by default, so encoding stays fast and the output lands within a hair of the information-theoretic minimum. You give the constraints, Polynar does the arithmetic.
+Under the hood, the message packs into arbitrary-precision integers, and the output lands within a hair of the information-theoretic minimum. You give the constraints, Polynar does the arithmetic.
 
 ## Size in practice
 

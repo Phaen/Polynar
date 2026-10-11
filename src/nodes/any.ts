@@ -12,6 +12,7 @@ import { PNull } from './null';
 import { PArray } from './array';
 import { PCollection, MAP, RECORD, SET } from './collection';
 import { describe, unlocated } from './path';
+import { buildWeights, readTable, writeTable } from './weights';
 
 /**
  * Every value `p.any` encodes: the JSON-like scalars plus `undefined`,
@@ -71,6 +72,23 @@ const TYPED_ARRAYS = [
 ] as const;
 
 const TAG_COUNT = TAG_TYPED + TYPED_ARRAYS.length;
+
+const COMMON_TAGS: ReadonlySet<number> = new Set([
+  TAG_NULL,
+  TAG_BOOLEAN,
+  TAG_INT,
+  TAG_FLOAT,
+  TAG_STRING,
+  TAG_ARRAY,
+  TAG_OBJECT,
+]);
+
+// Two tiers, 100 for the JSON-like kinds and 1 for the rest, so a common tag costs about 2.8 bits instead of 4.7.
+export const TAG_WEIGHTS = buildWeights(
+  Array.from({ length: TAG_COUNT }, (_, tag) => (COMMON_TAGS.has(tag) ? 100 : 1)),
+  TAG_COUNT,
+  'p.any'
+);
 
 /**
  * Whether a number travels under the int tag rather than the float tag. Both
@@ -283,7 +301,7 @@ export class PAny extends PNode<AnyValue> {
 
   _write(enc: Encoder, value: AnyValue): void {
     const tag = this._tagOf(value);
-    enc.compose(tag, TAG_COUNT);
+    writeTable(enc, TAG_WEIGHTS, tag);
     const node = this._nodes[tag];
     if (!isContainer(tag)) {
       node._write(enc, value);
@@ -319,7 +337,7 @@ export class PAny extends PNode<AnyValue> {
   }
 
   _read(dec: Decoder): AnyValue {
-    const tag = dec.parse(TAG_COUNT);
+    const tag = readTable(dec, TAG_WEIGHTS);
     if (isContainer(tag)) {
       // The encoder never nests deeper, and deeper input could overflow the stack.
       if (this._depth === MAX_DEPTH) {

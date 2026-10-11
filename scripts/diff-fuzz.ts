@@ -645,22 +645,20 @@ const compare = (old: Side, seed: number, iterations: number): number => {
   const kinds = new Map<string, number>();
   for (const d of divergences) kinds.set(d.kind, (kinds.get(d.kind) ?? 0) + 1);
   for (const [kind, n] of [...kinds].sort((x, y) => y[1] - x[1])) report.push(`    ${n}\t${kind}`);
-  // The first of each kind, then the earliest of the rest, up to ten.
+  // Every divergence, the first of each kind leading.
   const firsts = [...kinds.keys()].map((k) => divergences.find((d) => d.kind === k)!);
-  const shown = [...new Set([...firsts, ...divergences])].slice(0, 10);
-  for (const d of shown) {
+  for (const d of new Set([...firsts, ...divergences])) {
     report.push('', `[${d.half}] ${d.kind} — seed ${seed} iteration ${d.iteration}`);
     for (const line of d.detail) report.push(`  ${line}`);
   }
-  if (divergences.length > shown.length)
-    report.push('', `… ${divergences.length - shown.length} more`);
   console.log(report.join('\n'));
   if (divergences.length === 0) return 0;
   if (process.env.GITHUB_ACTIONS) {
     console.log(`::warning title=Wire divergence::${summary}`);
     const file = process.env.GITHUB_STEP_SUMMARY;
     if (file) {
-      const block = report.join('\n').replace(/`{3,}/g, '``');
+      // GitHub caps a job summary at 1 MiB.
+      const block = report.join('\n').replace(/`{3,}/g, '``').slice(0, 900_000);
       appendFileSync(file, `## Wire divergence\n\n${summary}\n\n\`\`\`\n${block}\n\`\`\`\n`);
     }
   }

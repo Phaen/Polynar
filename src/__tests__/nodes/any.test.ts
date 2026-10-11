@@ -3,11 +3,9 @@
  */
 
 import { p, Encoder, CorruptInputError, type AnyValue, type PNode } from '../../index';
-import { MAX_DEPTH } from '../../nodes/any';
+import { MAX_DEPTH, TAG_WEIGHTS } from '../../nodes/any';
+import { writeTable } from '../../nodes/weights';
 import { trip } from '../support';
-
-/** How many type tags p.any has. */
-const TAGS = 26;
 
 describe('Schema any', () => {
   it('copies shared references', () => {
@@ -75,7 +73,7 @@ describe('Schema any', () => {
       // A container's tag, then that container around MAX_DEPTH more levels:
       // one level past what the encoder writes.
       const enc = new Encoder();
-      enc.compose(tag, TAGS);
+      writeTable(enc, TAG_WEIGHTS, tag);
       container._write(enc, nest(wrap, MAX_DEPTH + 1));
       expect(() => p.any().decode(enc.output())).toThrow(
         new CorruptInputError(`p.any input nests deeper than ${MAX_DEPTH} levels`)
@@ -83,12 +81,19 @@ describe('Schema any', () => {
     }
   );
 
+  it('packs a JSON-like value into fewer bytes than a uniform tag would', () => {
+    // A uniform tag costs 4.7 bits per value and took 25 bytes here.
+    const value = { name: 'Ada', age: 36, tags: ['a', 'b'] };
+    expect(trip(p.any(), value)).toEqual(value);
+    expect(p.any().encode(value)).toHaveLength(24);
+  });
+
   it('unwinds its depth after a write or read that threw, so the node works again', () => {
     const node = p.any();
     const wrap = (inner: AnyValue) => [inner];
     expect(() => node.encode(nest(wrap, MAX_DEPTH, Symbol('s') as never))).toThrow('symbol');
     const enc = new Encoder();
-    enc.compose(9, TAGS);
+    writeTable(enc, TAG_WEIGHTS, 9);
     p.array(p.any())._write(enc, [nest(wrap, MAX_DEPTH)]);
     expect(() => node.decode(enc.output())).toThrow(CorruptInputError);
     const value = nest(wrap, MAX_DEPTH);
@@ -186,7 +191,7 @@ describe('Schema any', () => {
   it.each([Infinity, -Infinity, NaN])('round-trips %p under the float tag', (value) => {
     expect(trip(p.any(), value)).toBe(value);
     const enc = new Encoder();
-    enc.compose(4, TAGS);
+    writeTable(enc, TAG_WEIGHTS, 4);
     p.float()._write(enc, value);
     expect(p.any().encode(value)).toEqual(enc.output());
   });
@@ -224,7 +229,7 @@ describe('Schema any', () => {
   });
 
   it.each([
-    [0n, 1],
+    [0n, 2],
     [-1n, 2],
     [100n, 3],
     [2n ** 64n, 11],
@@ -235,7 +240,7 @@ describe('Schema any', () => {
 
   it('rejects a bigint bit count that outruns the input', () => {
     const enc = new Encoder();
-    enc.compose(5, TAGS);
+    writeTable(enc, TAG_WEIGHTS, 5);
     enc.composeTerm(1000);
     expect(() => p.any().decode(enc.output())).toThrow(CorruptInputError);
   });
@@ -306,7 +311,7 @@ describe('Schema any', () => {
   /** The RegExp tag, then a source and a flag mask as the encoder lays them out. */
   const regexpWire = (source: string, mask: number): Uint8Array => {
     const enc = new Encoder();
-    enc.compose(8, TAGS);
+    writeTable(enc, TAG_WEIGHTS, 8);
     p.string()._write(enc, source);
     enc.compose(mask, 256);
     return enc.output();
@@ -340,7 +345,7 @@ describe('Schema any', () => {
     [2 ** 53, 3],
     [-(2 ** 53), 3],
     // Under the int tag 1e300 would take 128 bytes.
-    [1e300, 6],
+    [1e300, 5],
     [Number.MAX_VALUE, 10],
   ])('round-trips %p in %p bytes, safe integers under the int tag', (value, bytes) => {
     expect(trip(p.any(), value)).toBe(value);
@@ -356,7 +361,7 @@ describe('Schema any', () => {
     'rejects tag %p on a number the other tag carries',
     (tag, node, value, message) => {
       const enc = new Encoder();
-      enc.compose(tag, TAGS);
+      writeTable(enc, TAG_WEIGHTS, tag);
       node._write(enc, value);
       expect(() => p.any().decode(enc.output())).toThrow(new CorruptInputError(message));
     }
@@ -365,7 +370,7 @@ describe('Schema any', () => {
   it('rejects a typed-array length too large for any buffer', () => {
     // The Float64Array tag, then a count whose byte size is past 2^53.
     const enc = new Encoder();
-    enc.compose(23, TAGS);
+    writeTable(enc, TAG_WEIGHTS, 23);
     enc.composeTerm(2 ** 1021);
     expect(() => p.any().decode(enc.output())).toThrow(
       new CorruptInputError(`Binary length ${2 ** 1021} is above the largest possible buffer`)
@@ -376,7 +381,7 @@ describe('Schema any', () => {
     // The object tag, then a two-entry count, then the same key twice: a
     // shape the encoder never produces.
     const enc = new Encoder();
-    enc.compose(10, TAGS);
+    writeTable(enc, TAG_WEIGHTS, 10);
     enc.composeTerm(2);
     p.string()._write(enc, 'a');
     p.any()._write(enc, 1);
