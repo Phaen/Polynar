@@ -64,6 +64,17 @@ const TYPED_ARRAYS = [
 
 const TAG_COUNT = TAG_TYPED + TYPED_ARRAYS.length;
 
+/** Whether a tag stands for an array, record, map or set, which hold `p.any` itself. */
+const isContainer = (tag: number): boolean => tag >= TAG_ARRAY && tag <= TAG_SET;
+
+/**
+ * How many containers `p.any` may nest. Encoding and decoding recurse two
+ * frames per level, which before optimization take about 500 bytes of stack,
+ * so the deepest value needs about 256 KB. That is under half of a 600 KB
+ * stack, about what a browser gives, and leaves the rest to the caller.
+ */
+export const MAX_DEPTH = 512;
+
 // The default nodes behind the scalar tags. Module singletons: `any` has no
 // configuration, so these never vary.
 const ANY_UNDEFINED = new PEnum([undefined]);
@@ -100,14 +111,8 @@ export class PAny extends PNode<AnyValue> {
   /** The node behind each tag, in tag order. */
   private readonly _nodes: readonly PNode<any>[];
 
-  /**
-   * The containers between the root and the value being written. Every
-   * nested value comes back through `_write`, so a container met again
-   * while it is open is a cycle, which would otherwise recurse forever. It
-   * is closed on the way out, so a shared (diamond) reference still encodes,
-   * once per occurrence, as separate copies.
-   */
-  private readonly _open = new Set<object>();
+  /** How many containers deep the value being written or read sits. */
+  private _depth = 0;
 
   constructor() {
     super();
@@ -131,18 +136,19 @@ export class PAny extends PNode<AnyValue> {
     const tag = this._tagOf(value);
     enc.compose(tag, TAG_COUNT);
     const node = this._nodes[tag];
-    if (typeof value !== 'object' || value === null) {
+    if (!isContainer(tag)) {
       node._write(enc, value);
       return;
     }
-    if (this._open.has(value)) {
-      throw new TypeError('p.any cannot encode a circular structure');
+    // A value that contains itself is infinitely deep, so this also stops cycles.
+    if (this._depth === MAX_DEPTH) {
+      throw new TypeError(`p.any nests deeper than ${MAX_DEPTH} levels`);
     }
-    this._open.add(value);
+    this._depth++;
     try {
       node._write(enc, value);
     } finally {
-      this._open.delete(value);
+      this._depth--;
     }
   }
 
@@ -166,6 +172,18 @@ export class PAny extends PNode<AnyValue> {
 
   _read(dec: Decoder): AnyValue {
     const tag = dec.parse(TAG_COUNT);
+    if (isContainer(tag)) {
+      // The encoder never nests deeper, and deeper input could overflow the stack.
+      if (this._depth === MAX_DEPTH) {
+        throw new CorruptInputError(`p.any input nests deeper than ${MAX_DEPTH} levels`);
+      }
+      this._depth++;
+      try {
+        return this._nodes[tag]._read(dec);
+      } finally {
+        this._depth--;
+      }
+    }
     const value = this._nodes[tag]._read(dec);
     // Integer-valued doubles always travel under the int tag (-0 is the one
     // exception), so a float-tagged integer is a second spelling of the same

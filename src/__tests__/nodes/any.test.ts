@@ -2,34 +2,79 @@
  * `p.any()`: self-describing values of no declared type.
  */
 
-import { p, Encoder, type AnyValue } from '../../index';
+import { p, Encoder, CorruptInputError, type AnyValue, type PNode } from '../../index';
+import { MAX_DEPTH } from '../../nodes/any';
 import { trip } from '../support';
 
 describe('Schema any', () => {
-  it('copies shared references and refuses cycles', () => {
+  it('copies shared references', () => {
     const shared = { n: 1 };
     expect(trip(p.any(), { a: shared, b: shared })).toEqual({ a: { n: 1 }, b: { n: 1 } });
-
-    const loop: { [key: string]: AnyValue } = {};
-    loop.self = loop;
-    expect(() => p.any().encode(loop)).toThrow('circular');
-    const ring: AnyValue[] = [];
-    ring.push(ring);
-    expect(() => p.any().encode(ring)).toThrow('circular');
-    const map = new Map<AnyValue, AnyValue>();
-    map.set('self', [map]);
-    expect(() => p.any().encode(map)).toThrow('circular');
-    const set = new Set<AnyValue>();
-    set.add({ set });
-    expect(() => p.any().encode(set)).toThrow('circular');
   });
 
-  it('closes a container whose write threw, so the node encodes it again later', () => {
+  const wrappers: [string, (inner: AnyValue) => AnyValue, PNode<any>, number][] = [
+    ['array', (inner) => [inner], p.array(p.any()), 7],
+    ['record', (inner) => ({ k: inner }), p.record(p.any()), 8],
+    ['map', (inner) => new Map([['k', inner]]), p.map(p.any(), p.any()), 9],
+    ['set', (inner) => new Set([inner]), p.set(p.any()), 10],
+  ];
+  const nest = (wrap: (inner: AnyValue) => AnyValue, levels: number, leaf: AnyValue = 0) => {
+    let value: AnyValue = leaf;
+    for (let i = 0; i < levels; i++) value = wrap(value);
+    return value;
+  };
+
+  it.each(wrappers)('round-trips %s nesting exactly MAX_DEPTH levels deep', (_kind, wrap) => {
+    const value = nest(wrap, MAX_DEPTH);
+    expect(trip(p.any(), value)).toEqual(value);
+  });
+
+  it.each(wrappers)('refuses to encode %s nesting deeper than MAX_DEPTH', (_kind, wrap) => {
+    expect(() => p.any().encode(nest(wrap, MAX_DEPTH + 1))).toThrow(
+      new RegExp(`p\\.any nests deeper than ${MAX_DEPTH} levels$`)
+    );
+  });
+
+  it('refuses a value that contains itself, which is infinitely deep', () => {
+    const message = `p.any nests deeper than ${MAX_DEPTH} levels`;
+    const loop: { [key: string]: AnyValue } = {};
+    loop.self = loop;
+    expect(() => p.any().encode(loop)).toThrow(message);
+    const ring: AnyValue[] = [];
+    ring.push(ring);
+    expect(() => p.any().encode(ring)).toThrow(message);
+    const map = new Map<AnyValue, AnyValue>();
+    map.set('self', [map]);
+    expect(() => p.any().encode(map)).toThrow(message);
+    const set = new Set<AnyValue>();
+    set.add({ set });
+    expect(() => p.any().encode(set)).toThrow(message);
+  });
+
+  it.each(wrappers)(
+    'rejects input with %s nesting deeper than MAX_DEPTH',
+    (_kind, wrap, container, tag) => {
+      // A container's tag, then that container around MAX_DEPTH more levels:
+      // one level past what the encoder writes.
+      const enc = new Encoder();
+      enc.compose(tag, 22);
+      container._write(enc, nest(wrap, MAX_DEPTH + 1));
+      expect(() => p.any().decode(enc.output())).toThrow(
+        new CorruptInputError(`p.any input nests deeper than ${MAX_DEPTH} levels`)
+      );
+    }
+  );
+
+  it('unwinds its depth after a write or read that threw, so the node works again', () => {
     const node = p.any();
-    const inner: { [key: string]: AnyValue } = { n: 1 };
-    expect(() => node.encode([inner, Infinity])).toThrow('[1]: ');
-    expect(() => node.encode({ v: new Set([inner, NaN]) })).toThrow('v[1]: ');
-    expect(trip(node, [inner, inner])).toEqual([{ n: 1 }, { n: 1 }]);
+    const wrap = (inner: AnyValue) => [inner];
+    expect(() => node.encode(nest(wrap, MAX_DEPTH, Infinity))).toThrow('finite');
+    const enc = new Encoder();
+    enc.compose(7, 22);
+    p.array(p.any())._write(enc, [nest(wrap, MAX_DEPTH)]);
+    expect(() => node.decode(enc.output())).toThrow(CorruptInputError);
+    const value = nest(wrap, MAX_DEPTH);
+    expect(trip(node, value)).toEqual(value);
   });
 
   it('round-trips Maps and Sets of any values, keys included', () => {

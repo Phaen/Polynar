@@ -290,7 +290,7 @@ Data written by any listed version decodes and is migrated step by step to the n
 
 ### `p.any()`
 
-Self-describing escape hatch: numbers, strings, booleans, dates, null, undefined, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values. Everything round-trips bit-exact, and a typed array decodes as the same class. Any other class instance or a circular structure throws. Costs more than a precise node. No methods.
+Self-describing escape hatch: numbers, strings, booleans, dates, null, undefined, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values. Everything round-trips bit-exact, and a typed array decodes as the same class. Any other class instance throws, and so does nesting containers more than 512 levels deep, which includes a value that contains itself. Costs more than a precise node. No methods.
 
 ### Priors: `.weights()`
 
