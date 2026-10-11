@@ -14,6 +14,17 @@ describe('Schema union', () => {
     expect(() => p.union([p.enum(['a', 1]), p.int()])).toThrow('overlap on kind "number"');
   });
 
+  it('gives bigints, regular expressions and buffers kinds of their own', () => {
+    const pattern = /a/g;
+    const Node = p.union([p.enum([1n, 2n]), p.enum([pattern]), p.object({})]);
+    expect(trip(Node, 2n)).toBe(2n);
+    expect(trip(Node, pattern)).toBe(pattern);
+    expect(() => Node.encode(/b/ as never)).toThrow(RangeError);
+    expect(() => Node.encode(new ArrayBuffer(1) as never)).toThrow('Kind "ArrayBuffer" is not');
+    expect(() => p.union([p.any(), p.enum([1n])])).toThrow('overlap on kind "bigint"');
+    expect(() => p.union([p.any(), p.enum([pattern])])).toThrow('overlap on kind "regexp"');
+  });
+
   it('tells Maps and Sets from objects and arrays', () => {
     const Node = p.union([
       p.map(p.string(), p.int()),

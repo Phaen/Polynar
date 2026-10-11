@@ -31,8 +31,8 @@ describe('Error paths', () => {
       'filters[2].op: Value "c" is not one of "a", "b"'
     );
     expect(() => p.array(p.int().max(1)).encode([0, 5])).toThrow('[1]: ');
-    expect(() => p.any().encode({ a: [1, [Infinity]] })).toThrow(
-      'a[1][0]: p.float expected a finite number, got Infinity'
+    expect(() => p.any().encode({ a: [1, [new WeakMap() as never]] })).toThrow(
+      'a[1][0]: p.any cannot encode WeakMap values, only plain objects'
     );
   });
 
@@ -194,6 +194,7 @@ describe('describe', () => {
     expect(show(-Infinity)).toBe('-Infinity');
     expect(show(NaN)).toBe('NaN');
     expect(show(10n)).toBe('10n');
+    expect(show(/a+b/gi)).toBe('/a+b/gi');
     expect(show(undefined)).toBe('undefined');
     expect(show(null)).toBe('null');
     expect(show(Symbol('s'))).toBe('Symbol(s)');

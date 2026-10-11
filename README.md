@@ -129,7 +129,7 @@ A number on a fixed decimal step, like `p.decimal(0.01)` for cents. Infers `numb
 
 ### `p.float()`
 
-Any finite double, bit-exact, `-0` included. Infers `number`. Short decimals and simple fractions like `0.1`, `1/3` or `6.02e23` take 2–6 bytes; arbitrary doubles take 8. NaN and Infinity throw. No methods.
+Any double, `-0`, NaN, `Infinity` and `-Infinity` included. Infers `number`. Every value round-trips bit-exact, except that all NaNs come back as the standard NaN; `p.binary(Float64Array)` keeps the raw bits when a NaN's payload matters. Short decimals and simple fractions like `0.1`, `1/3` or `6.02e23` take 2–6 bytes; arbitrary doubles take 8. No methods.
 
 ### `p.string()`
 
@@ -249,7 +249,7 @@ A value or `null`: `p.nullable(p.string())` is `string | null`, written the same
 
 ### `p.union(members: PNode[])`
 
-One of several members: `p.union([p.string(), p.int(), p.array(p.string())])` is `string | number | string[]`. The member is picked by the value's kind: string, number, boolean, null, undefined, date, array, map, set, object, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. Members must know their kinds, so `p.lazy` and custom nodes without `_kinds` can't be members. `p.any()` takes nearly every kind, so it overlaps with almost any other member. A value whose kind has no member throws. Recording which member was used costs log2(members) bits.
+One of several members: `p.union([p.string(), p.int(), p.array(p.string())])` is `string | number | string[]`. The member is picked by the value's kind: string, number, bigint, boolean, null, undefined, date, regular expression, array, map, set, object, ArrayBuffer, DataView, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. Members must know their kinds, so `p.lazy` and custom nodes without `_kinds` can't be members. `p.any()` takes nearly every kind, so it overlaps with almost any other member. A value whose kind has no member throws. Recording which member was used costs log2(members) bits.
 
 | Method                  | Description                                  |
 | ----------------------- | -------------------------------------------- |
@@ -290,7 +290,7 @@ Data written by any listed version decodes and is migrated step by step to the n
 
 ### `p.any()`
 
-Self-describing escape hatch: numbers, strings, booleans, dates, null, undefined, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values; an object typed with an interface needs an index signature to count as one. Everything round-trips bit-exact, and a typed array decodes as the same class. A subclass of any of these, such as a `Buffer` or a class extending `Map`, decodes as the built-in class. Any other class instance throws a `TypeError`. Nesting containers more than 512 levels deep, which includes a value that contains itself, throws a `RangeError` without the path in front. Costs more than a precise node. No methods.
+Self-describing escape hatch: numbers, bigints, strings, booleans, dates, regular expressions, null, undefined, ArrayBuffers, DataViews, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values; an object typed with an interface needs an index signature to count as one. Numbers round-trip as they do through `p.float`, everything else bit-exact, and a typed array decodes as the same class. A regular expression keeps its source and flags but not its `lastIndex`, and a DataView decodes over a new buffer of just its bytes. Shared references and holes in sparse arrays aren't kept: an object that appears twice comes back as two separate copies, and a hole comes back as `undefined`. A subclass of any of these, such as a `Buffer` or a class extending `RegExp` or `Map`, decodes as the built-in class. Any other class instance throws a `TypeError`, and so do errors and boxed primitives like `new Number(1)`. Nesting containers more than 512 levels deep, which includes a value that contains itself, throws a `RangeError` without the path in front. Costs more than a precise node. No methods.
 
 ### Priors: `.weights()`
 

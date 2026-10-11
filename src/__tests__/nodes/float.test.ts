@@ -67,17 +67,51 @@ describe('Schema float', () => {
     }
   );
 
-  it.each([Infinity, -Infinity, NaN])('rejects %p', (value) => {
-    expect(() => p.float().encode(value)).toThrow(TypeError);
+  it.each([
+    [Infinity, 0, 2047],
+    [-Infinity, 1, 2047],
+    [NaN, 0, 2048],
+  ])(
+    'round-trips %p as sign bit %p and the exponent zigzag %p past the finite ones',
+    (value, sign, zigzag) => {
+      const enc = new Encoder();
+      enc.compose(sign, 2);
+      enc.composeTerm(zigzag);
+      expect(p.float().encode(value)).toEqual(enc.output());
+      expect(p.float().decode(enc.output())).toBe(value);
+    }
+  );
+
+  it.each([null, undefined, '1', 1n])('rejects the non-number %p', (value) => {
+    expect(() => p.float().encode(value as never)).toThrow(/^p\.float expected a number, got /);
   });
 
-  it('rejects an exponent past the finite range', () => {
-    // The exponent zigzag tops out at the last finite exponent; the next term
-    // value would be Infinity's slot, which the encoder never emits.
+  it('reads every NaN as the standard NaN, its payload and sign dropped', () => {
+    const standard = new BigUint64Array(Float64Array.of(NaN).buffer)[0];
+    for (const bits of [0x7ff8000000000001n, 0xfff8000000000000n, 0x7ff0000000000123n]) {
+      const nan = new Float64Array(new BigUint64Array([bits]).buffer)[0];
+      expect(p.float().encode(nan)).toEqual(p.float().encode(NaN));
+      const back = p.float().decode(p.float().encode(nan));
+      expect(new BigUint64Array(Float64Array.of(back).buffer)[0]).toBe(standard);
+    }
+  });
+
+  it('rejects a NaN with the sign bit set, which the encoder never writes', () => {
+    const enc = new Encoder();
+    enc.compose(1, 2);
+    enc.composeTerm(2048);
+    expect(() => p.float().decode(enc.output())).toThrow(
+      new CorruptInputError('Non-canonical negative NaN')
+    );
+  });
+
+  it('rejects an exponent past NaN', () => {
     const enc = new Encoder();
     enc.compose(0, 2);
-    enc.composeTerm(2047);
-    expect(() => p.float().decode(enc.output())).toThrow(CorruptInputError);
+    enc.composeTerm(2049);
+    expect(() => p.float().decode(enc.output())).toThrow(
+      new CorruptInputError('Float exponent is outside the range of doubles')
+    );
   });
 
   it.each([

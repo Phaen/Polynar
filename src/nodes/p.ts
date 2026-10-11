@@ -103,7 +103,7 @@ export const p = {
   int(): PInt {
     return new PInt();
   },
-  /** Any finite double, bit-exact; simple values pack as fractions in a few bytes at any magnitude. */
+  /** Any double, bit-exact apart from NaN payloads; simple values pack as fractions in a few bytes at any magnitude. */
   float(): PFloat {
     return new PFloat();
   },

@@ -60,13 +60,17 @@ export const oneOf = (values: readonly unknown[]): string =>
 
 /**
  * A value as an error message shows it: as JSON, so a string is quoted and
- * `"5"` reads differently from `5`. Numbers and invalid dates, which JSON
- * writes as `null`, show as text, a BigInt with its `n`, and anything JSON
+ * `"5"` reads differently from `5`. Numbers, regular expressions and invalid
+ * dates, which JSON writes as `null` or `{}`, show as text, a BigInt with its `n`, and anything JSON
  * can't write as text. Long renderings are cut short.
  */
 export const describe = (value: unknown): string => {
   let text: string;
-  if (typeof value === 'number' || (value instanceof Date && Number.isNaN(value.getTime()))) {
+  if (
+    typeof value === 'number' ||
+    value instanceof RegExp ||
+    (value instanceof Date && Number.isNaN(value.getTime()))
+  ) {
     text = String(value);
   } else if (typeof value === 'bigint') {
     text = `${value}n`;

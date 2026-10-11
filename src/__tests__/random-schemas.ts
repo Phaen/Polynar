@@ -82,7 +82,8 @@ const nudge = (value: number): number => {
 // Covers all three significand spellings — noise, ratios, decimals, dyadics
 // and scientific magnitudes — plus the values with no [1, 2) significand at
 // all: zeros, subnormals and the extremes of the finite range, which live on
-// the flat paths the fraction search never reaches.
+// the flat paths the fraction search never reaches, and the non-finite
+// values past them. Large scientific magnitudes overflow to Infinity.
 const FLOAT_GENS = [
   () => (rand() * 2 - 1) * 10 ** randInt(-20, 20),
   () => randInt(1, 5000) / randInt(1, 5000),
@@ -91,14 +92,14 @@ const FLOAT_GENS = [
   () => Number(`${randInt(1, 9999)}e${rand() < 0.5 ? '-' : ''}${randInt(0, 300)}`),
   () => pick([0, -0, Number.MIN_VALUE, -Number.MIN_VALUE, Number.MAX_VALUE, 2 ** -1022]),
   () => randInt(1, 2 ** 40) * 2 ** -1074,
+  () => pick([NaN, Infinity, -Infinity]),
 ] as const;
 
-// Nudges a share of every family so the codec also sees the doubles adjacent
-// to cheap fractions, binade edges and the subnormal boundary.
+// Nudges a share of every finite family so the codec also sees the doubles
+// adjacent to cheap fractions, binade edges and the subnormal boundary.
 export const randFloat = (): number => {
-  const raw = pick(FLOAT_GENS)();
-  const value = Number.isFinite(raw) ? raw : 1.5;
-  return rand() < 0.3 ? nudge(value) : value;
+  const value = pick(FLOAT_GENS)();
+  return Number.isFinite(value) && rand() < 0.3 ? nudge(value) : value;
 };
 
 /**
@@ -555,8 +556,16 @@ const ANY_TYPED_ARRAYS = [
   BigUint64Array,
 ] as const;
 
+// Valid with and without the u flag; a slash and a line break are among the
+// characters a RegExp's source escapes.
+const ANY_REGEXP_SOURCES = ['a', '', 'a/b', 'x\ny', '^\\d+$', '(?<y>\\w)\\k<y>', '[^/]*', '\\p{L}'];
+
+/** A RegExp over one of those sources, each flag set with even odds. */
+const randRegExp = (): RegExp =>
+  new RegExp(pick(ANY_REGEXP_SOURCES), [...'dgimsuy'].filter(() => rand() < 0.5).join(''));
+
 export const anyValue = (depth: number, top = false): unknown => {
-  switch (randInt(0, depth > 0 ? 11 : 7)) {
+  switch (randInt(0, depth > 0 ? 14 : 10)) {
     case 0:
       return null;
     case 1:
@@ -584,9 +593,27 @@ export const anyValue = (depth: number, top = false): unknown => {
       // A required object field reads undefined as absent, so the top of a
       // field value stays defined; anywhere deeper it is a real value.
       return top ? randString(3) : undefined;
-    case 8:
+    case 8: {
+      // Small ones, both sides of each 32-bit digit boundary, and huge ones.
+      const magnitude = pick([
+        BigInt(randInt(0, 1000)),
+        2n ** BigInt(randInt(0, 96)) + BigInt(randInt(-1, 1)),
+        BigInt(randInt(1, 2 ** 40)) ** BigInt(randInt(2, 12)),
+      ]);
+      return rand() < 0.5 ? -magnitude : magnitude;
+    }
+    case 9:
+      return randRegExp();
+    case 10: {
+      // A DataView may sit inside a larger buffer; only its own bytes travel.
+      const bytes = randBytes(randInt(0, 6));
+      if (rand() < 0.5) return bytes.buffer;
+      const at = randInt(0, bytes.length);
+      return new DataView(bytes.buffer, at, randInt(0, bytes.length - at));
+    }
+    case 11:
       return Array.from({ length: randInt(0, 3) }, () => anyValue(depth - 1));
-    case 9: {
+    case 12: {
       const record: Record<string, unknown> = {};
       for (let i = 0, n = randInt(0, 3); i < n; i++) {
         // Integer-like keys, which an object lists first, test the key order.
@@ -596,7 +623,7 @@ export const anyValue = (depth: number, top = false): unknown => {
       }
       return record;
     }
-    case 10:
+    case 13:
       // -0 and 0 are one Map key, so -0 as a key decodes as 0.
       return new Map(
         Array.from({ length: randInt(0, 3) }, () => [

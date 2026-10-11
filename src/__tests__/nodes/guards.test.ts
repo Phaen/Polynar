@@ -56,6 +56,7 @@ describe('kindOf', () => {
     [null, 'null'],
     [[], 'array'],
     [new Date(0), 'date'],
+    [/a/g, 'regexp'],
     [{}, 'object'],
     [new Map(), 'map'],
     [new Set(), 'set'],
@@ -63,6 +64,8 @@ describe('kindOf', () => {
     [runInNewContext('[]'), 'array'],
     [new Int16Array(1), 'Int16Array'],
     [new DataView(new ArrayBuffer(1)), 'DataView'],
+    [new ArrayBuffer(1), 'ArrayBuffer'],
+    [new SharedArrayBuffer(1), 'object'],
     [Buffer.from('a'), 'Uint8Array'],
   ])('reads %p as %p', (value, kind) => {
     expect(kindOf(value)).toBe(kind);

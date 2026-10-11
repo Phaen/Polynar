@@ -120,7 +120,18 @@ const _takesUndefined: Equals<
 > = true;
 
 // p.any infers the values it encodes, nested in arrays, plain objects, Maps and Sets.
-type AnyScalar = null | undefined | boolean | number | string | Date | TypedArray;
+type AnyScalar =
+  | null
+  | undefined
+  | boolean
+  | number
+  | bigint
+  | string
+  | Date
+  | RegExp
+  | ArrayBuffer
+  | DataView
+  | TypedArray;
 const _any: Equals<Infer<ReturnType<typeof p.any>>, AnyValue> = true;
 const _anyScalars: Equals<Extract<AnyValue, AnyScalar>, AnyScalar> = true;
 const _anyArray: Equals<Extract<AnyValue, unknown[]>, AnyValue[]> = true;
@@ -128,10 +139,11 @@ const _anyMap: Equals<Extract<AnyValue, Map<any, any>>, Map<AnyValue, AnyValue>>
 const _anySet: Equals<Extract<AnyValue, Set<any>>, Set<AnyValue>> = true;
 p.any().encode({ at: new Date(), samples: new Int16Array(2), tags: ['a', null] });
 p.any().encode(new Map<AnyValue, AnyValue>([[1, new Set<AnyValue>(['a'])]]));
+p.any().encode([1n, /a/g, new ArrayBuffer(1), new DataView(new ArrayBuffer(1)), NaN]);
 // @ts-expect-error — p.any has no tag for a WeakMap
 p.any().encode(new WeakMap());
-// @ts-expect-error — nor for a bigint
-p.any().encode(1n);
+// @ts-expect-error — nor for a symbol
+p.any().encode(Symbol('s'));
 
 // Collections infer a Map, an object with string keys and a Set, whatever
 // their count methods.

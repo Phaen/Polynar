@@ -16,15 +16,19 @@ const FLOAT_SCRATCH = new Float64Array(1);
 const FLOAT_BITS = new BigUint64Array(FLOAT_SCRATCH.buffer);
 const MANTISSA_BITS = 52n;
 const MANTISSA_RADIX = 2 ** 52;
-// Finite doubles use exponents 0..2046; 2047 encodes NaN/Infinity, which this
-// codec rejects. The exponent rides the term encoding as the zigzag of its
-// distance from the bias (0, -1, +1, -2 -> 0, 1, 2, 3): real-world magnitudes
-// cluster near 1, so the common exponents spend ~2-8 bits where a flat radix
-// would spend 11. Zigzag over sign-plus-magnitude because it is a bijection,
-// leaving no signed-zero wire state to reject.
+// Finite doubles use exponents 0..2046. The exponent rides the term encoding
+// as the zigzag of its distance from the bias (0, -1, +1, -2 -> 0, 1, 2, 3):
+// real-world magnitudes cluster near 1, so the common exponents spend ~2-8
+// bits where a flat radix would spend 11. Zigzag over sign-plus-magnitude
+// because it is a bijection, leaving no signed-zero wire state to reject.
+// Finite exponents fill the zigzags 0..2046, and the next two stand for
+// Infinity, signed by the sign bit before it, and NaN, with nothing after
+// either. Every NaN is the one NaN with sign bit 0: its payload is not kept.
 const EXPONENT_BIAS = 1023;
 const EXPONENT_FINITE_MAX = 2046;
 const EXPONENT_ZIGZAG_MAX = 2046;
+const ZIGZAG_INFINITY = EXPONENT_ZIGZAG_MAX + 1;
+const ZIGZAG_NAN = EXPONENT_ZIGZAG_MAX + 2;
 /** Full significand of 1.0: the implicit leading bit of every normal double. */
 const SIGNIFICAND_ONE = 1n << MANTISSA_BITS;
 /** One past the top of the significand grid [2^52, 2^53). */
@@ -350,7 +354,7 @@ export function doubleFrom(exponent: number, mantissa: bigint): number {
 }
 
 /**
- * IEEE-754 double, bit-exact. The significand travels as the cheapest of
+ * IEEE-754 double, bit-exact apart from NaN payloads. The significand travels as the cheapest of
  * three spellings — flat mantissa, simplest fraction in the double's
  * rounding interval, or that fraction times a power of five (the decimal
  * realm) — so human-entered values pack in a few bytes at any magnitude.
@@ -360,8 +364,19 @@ export class PFloat extends PNode<number> {
   readonly _kinds: readonly Kind[] = ['number'];
 
   _write(enc: Encoder, value: number): void {
-    if (!Number.isFinite(value)) {
-      throw new TypeError(`p.float expected a finite number, got ${describe(value)}`);
+    if (Number.isNaN(value)) {
+      enc.compose(0, 2);
+      enc.composeTerm(ZIGZAG_NAN);
+      return;
+    }
+    if (value === Infinity || value === -Infinity) {
+      enc.compose(value < 0 ? 1 : 0, 2);
+      enc.composeTerm(ZIGZAG_INFINITY);
+      return;
+    }
+    // Data typed `any` can still carry something other than a number.
+    if (typeof value !== 'number') {
+      throw new TypeError(`p.float expected a number, got ${describe(value)}`);
     }
 
     FLOAT_SCRATCH[0] = value;
@@ -401,10 +416,19 @@ export class PFloat extends PNode<number> {
   _read(dec: Decoder): number {
     const sign = BigInt(dec.parse(2));
     const zigzag = dec.parseTerm();
-    // A term is open-ended where a radix is not: anything past the top finite
-    // exponent is a wire state the encoder cannot emit.
+    if (zigzag === ZIGZAG_INFINITY) {
+      return sign === 0n ? Infinity : -Infinity;
+    }
+    if (zigzag === ZIGZAG_NAN) {
+      if (sign !== 0n) {
+        throw new CorruptInputError('Non-canonical negative NaN');
+      }
+      return NaN;
+    }
+    // A term is open-ended where a radix is not: anything past NaN's slot is
+    // a wire state the encoder cannot emit.
     if (zigzag > EXPONENT_ZIGZAG_MAX) {
-      throw new CorruptInputError('Float exponent is outside the finite range');
+      throw new CorruptInputError('Float exponent is outside the range of doubles');
     }
     const exponent =
       zigzag % 2 === 0 ? EXPONENT_BIAS + zigzag / 2 : EXPONENT_BIAS - (zigzag + 1) / 2;
