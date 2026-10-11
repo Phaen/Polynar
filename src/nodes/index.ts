@@ -7,6 +7,7 @@ export { PNode, POptional } from './base';
 export { PInt } from './int';
 export { PDecimal } from './decimal';
 export { PFloat } from './float';
+export type { FloatWeights } from './float';
 export { PString } from './string';
 export { PBinary } from './binary';
 export type { TypedArrayClass } from './binary';

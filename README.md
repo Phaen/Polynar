@@ -129,7 +129,11 @@ A number on a fixed decimal step, like `p.decimal(0.01)` for cents. Infers `numb
 
 ### `p.float()`
 
-Any double, `-0`, NaN, `Infinity` and `-Infinity` included. Infers `number`. Every value round-trips bit-exact, except that all NaNs come back as the standard NaN; `p.binary(Float64Array)` keeps the raw bits when a NaN's payload matters. Short decimals and simple fractions like `0.1`, `1/3` or `6.02e23` take 2–6 bytes; arbitrary doubles take 8. No methods.
+Any double, `-0`, NaN, `Infinity` and `-Infinity` included. Infers `number`. Every value round-trips bit-exact, except that all NaNs come back as the standard NaN; `p.binary(Float64Array)` keeps the raw bits when a NaN's payload matters. Zero takes a byte; integers and short decimals like `65535`, `0.1` or `6.02e23` take 1–6 bytes, simple fractions like `1/3` 2–4; arbitrary doubles take 8, or 9 at extreme magnitudes.
+
+| Method                               | Description                                                                                                                                                                                                                                                            |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.weights(w: Partial<FloatWeights>)` | Prior over the kinds of number: `zero`, `integer`, `decimal`, `fraction` and `other`, which is noise and arithmetic results that take the full mantissa. Keys left out keep their weight; the default is `{ zero: 1, integer: 3, decimal: 3, fraction: 1, other: 2 }`. |
 
 ### `p.string()`
 

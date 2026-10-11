@@ -39,6 +39,7 @@ export type {
   InferTagged,
   Cdf,
   DateUnit,
+  FloatWeights,
   Kind,
   ProseModel,
   ProseModelOptions,

@@ -8,6 +8,7 @@ import {
 import { PNode } from './base';
 import { describe } from './path';
 import type { Kind } from './guards';
+import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
 
 // Scratch views for splitting a double into its IEEE-754 fields and back.
 // Both views share one buffer, so platform endianness cancels out; the wire
@@ -123,12 +124,46 @@ export function termRunStates(n: bigint): bigint {
   return states * PAYLOAD_DIGIT ** BigInt(digits - 1) * (PAYLOAD_DIGIT - 1n);
 }
 
-// Selector states for a normal significand: flat mantissa, plain fraction,
-// or a fraction times a power of five (the decimal realm).
+// Selector states of a normal significand's spelling: a flat mantissa, the
+// simplest fraction in the rounding window, the dyadic p/2^j in the window,
+// or that dyadic in the five realm (times a power of five). Zero is a fifth
+// state that exists only at exponent code 0, so it rides the cheapest
+// exponent spelling and no other binade pays for it. The selector is a
+// weighted symbol: the weights are the node's prior over the kinds of
+// number it carries.
 const SIG_FLAT = 0;
 const SIG_FRACTION = 1;
-const SIG_FRACTION5 = 2;
-const SIG_SELECTOR = 3;
+const SIG_DYADIC = 2;
+const SIG_DYADIC5 = 3;
+const SIG_ZERO = 4;
+const SIG_FORMS = 4;
+
+/** Prior over the kinds of number a `p.float` carries; see `PFloat.weights`. */
+export interface FloatWeights {
+  /** Exactly zero, either sign. */
+  zero: number;
+  /** Integers, and any value with a short binary expansion like 0.75. */
+  integer: number;
+  /** Short decimals like 0.1, 998.3 or 6.02e23. */
+  decimal: number;
+  /** Simple ratios like 1/3 or 2/7. */
+  fraction: number;
+  /** Everything else: arithmetic results, noise, full-precision measurements. */
+  other: number;
+}
+
+export const DEFAULT_FLOAT_WEIGHTS: Readonly<FloatWeights> = {
+  zero: 1,
+  integer: 3,
+  decimal: 3,
+  fraction: 1,
+  other: 2,
+};
+
+const FLOAT_WEIGHT_KEYS = Object.keys(DEFAULT_FLOAT_WEIGHTS) as (keyof FloatWeights)[];
+
+/** The form weights in selector order. */
+const formWeights = (w: FloatWeights): number[] => [w.other, w.fraction, w.integer, w.decimal];
 /**
  * Bound on the five-realm shift the decoder accepts. A normal double's
  * shortest decimal has at most 17 digits, the last at a place in
@@ -193,34 +228,66 @@ export function fiveShiftCandidate(value: number): number {
   return shift;
 }
 
+/**
+ * Simplest dyadic (smallest power-of-two denominator, then smallest
+ * numerator) in the open interval (a/b, c/d), as [numerator, exponent]:
+ * the value is numerator / 2^exponent. The numerator is odd unless the
+ * exponent is 0, since an even numerator would halve into a smaller
+ * exponent. Endpoints may be negative; the denominators must be positive
+ * and the interval non-empty.
+ */
+export function simplestDyadic(a: bigint, b: bigint, c: bigint, d: bigint): [bigint, number] {
+  if (b <= 0n || d <= 0n) {
+    throw new RangeError(`simplestDyadic needs positive denominators, got ${b} and ${d}`);
+  }
+  if (a * d >= c * b) {
+    throw new RangeError(`simplestDyadic got the empty interval (${a}/${b}, ${c}/${d})`);
+  }
+  // The interval scaled by 2^j holds an integer once it is wide enough, so
+  // the climb ends; the first integer above the scaled bottom is the one.
+  for (let j = 0; ; j++) {
+    const lo = a << BigInt(j);
+    let n = lo / b + 1n;
+    if (lo < 0n && lo % b !== 0n) {
+      n -= 1n;
+    }
+    if (n * d < c << BigInt(j)) {
+      return [n, j];
+    }
+  }
+}
+
 /** The canonical spelling of a normal significand. */
 export interface SignificandForm {
   sel: number;
-  /** Five-realm shift; 0 outside SIG_FRACTION5. */
+  /** Five-realm shift; 0 outside SIG_DYADIC5. */
   f: number;
-  /** Fraction p/q with p in [q, 2q); 0/0 for SIG_FLAT. */
+  /** Fraction p/q with p in [q, 2q), q a power of two in the dyadic states; 0/0 for SIG_FLAT. */
   p: bigint;
   q: bigint;
 }
 
 /**
- * Simplest fraction in the rounding interval of a significand on the grid
- * [2^52, 2^53), scaled into the five realm by a shift within
- * ±FIVE_SHIFT_MAX and 2-normalized so p lands in [q, 2q): the window's top
- * lies in (1, 2], so the simplest value of the open window is 1 or lies in
- * (1, 2).
+ * The open rounding window of a significand on the grid [2^52, 2^53),
+ * scaled into the five realm by a shift within ±FIVE_SHIFT_MAX and
+ * 2-normalized so the window's top lies in (1, 2], as the fractions
+ * (loN/loD, hiN/hiD). The simplest value of the window is then 1 or lies in
+ * (1, 2), so its numerator lands in [q, 2q).
  */
-export function windowFraction(significand: bigint, shift: number): [bigint, bigint] {
+export function roundingWindow(
+  significand: bigint,
+  shift: number
+): [bigint, bigint, bigint, bigint] {
   if (significand < SIGNIFICAND_ONE || significand >= SIGNIFICAND_END) {
     throw new RangeError(
-      `windowFraction expected a significand in [2^52, 2^53), got ${significand}`
+      `roundingWindow expected a significand in [2^52, 2^53), got ${significand}`
     );
   }
   if (!Number.isInteger(shift)) {
-    throw new TypeError(`windowFraction expected an integer shift, got ${shift}`);
+    throw new TypeError(`roundingWindow expected an integer shift, got ${shift}`);
   }
   if (Math.abs(shift) > FIVE_SHIFT_MAX) {
-    throw new RangeError(`windowFraction shift ${shift} is outside ±${FIVE_SHIFT_MAX}`);
+    throw new RangeError(`roundingWindow shift ${shift} is outside ±${FIVE_SHIFT_MAX}`);
   }
   // At the binade floor the neighbour below is in the previous binade, so
   // the gap on that side is half an ulp.
@@ -256,46 +323,74 @@ export function windowFraction(significand: bigint, shift: number): [bigint, big
     }
   }
 
-  return simplestInInterval(loN, loD, hiN, hiD);
+  return [loN, loD, hiN, hiD];
 }
 
 /**
- * The canonical form of a normal double's significand: flat, fraction, or
- * fraction in the five realm — whichever spends the fewest wire states, with
- * ties going to the earlier selector. The sign plays no part. Interval
- * endpoints always carry denominators far beyond any fraction that can win,
- * so open intervals are exact here and rounding ties never reach the wire
- * format.
+ * Wire states a denominator's spelling consumes: a term of j for 2^j in the
+ * dyadic states, a term of q - 1 for a fraction.
  */
-export function canonicalSignificand(value: number): SignificandForm {
+const denominatorStates = (sel: number, q: bigint): bigint =>
+  sel === SIG_FRACTION ? termRunStates(q - 1n) : termRunStates(BigInt(bitLength(q) - 1));
+
+/**
+ * The canonical form of a normal double's significand: flat, fraction,
+ * dyadic or dyadic in the five realm — whichever is cheapest, with ties
+ * going to the earlier selector. A form's cost is its wire states per
+ * unit of selector weight, `weights` listing one weight per form in
+ * selector order; the selector's total is the same factor for every form,
+ * so it cancels. A denominator past the mantissa grid, 2^52, never wins:
+ * the numerator slot must stay a safe radix. The sign plays no part.
+ * Interval endpoints always carry denominators far beyond any fraction
+ * that can win, so open intervals are exact here and rounding ties never
+ * reach the wire format.
+ */
+export function canonicalSignificand(value: number, weights: readonly number[]): SignificandForm {
   if (!Number.isFinite(value)) {
     throw new TypeError(`canonicalSignificand expected a finite number, got ${value}`);
   }
   if (Math.abs(value) < MIN_NORMAL) {
     throw new RangeError(`canonicalSignificand expected a normal double, got ${value}`);
   }
+  if (weights.length !== SIG_FORMS) {
+    throw new TypeError(
+      `canonicalSignificand expected ${SIG_FORMS} form weights, got ${weights.length}`
+    );
+  }
   FLOAT_SCRATCH[0] = value;
   const significand = SIGNIFICAND_ONE | (FLOAT_BITS[0] & MANTISSA_MASK);
 
   let best: SignificandForm = { sel: SIG_FLAT, f: 0, p: 0n, q: 0n };
   let bestStates = SIGNIFICAND_ONE;
+  let bestWeight = BigInt(weights[SIG_FLAT]);
+  const offer = (sel: number, f: number, [p, q]: [bigint, bigint]): void => {
+    const weight = BigInt(weights[sel]);
+    const states =
+      (f === 0 ? 1n : termRunStates(BigInt(zigNonzero(f)))) * denominatorStates(sel, q) * q;
+    if (q <= SIGNIFICAND_ONE && states * bestWeight < bestStates * weight) {
+      best = { sel, f, p, q };
+      bestStates = states;
+      bestWeight = weight;
+    }
+  };
 
-  const [p, q] = windowFraction(significand, 0);
-  const states = termRunStates(q - 1n) * q;
-  if (states < bestStates) {
-    best = { sel: SIG_FRACTION, f: 0, p, q };
-    bestStates = states;
-  }
+  const window = roundingWindow(significand, 0);
 
+  offer(SIG_FRACTION, 0, simplestInInterval(...window));
+  // Under shift 0 the dyadic is the significand with its trailing zero bits
+  // dropped: no other dyadic on or below the grid's resolution fits the
+  // open window.
+  const [p, j] = simplestDyadic(...window);
+  offer(SIG_DYADIC, 0, [p, 1n << BigInt(j)]);
   // The shift lies within FIVE_SHIFT_MAX (see there), so the decoder
-  // accepts every form chosen here.
+  // accepts every form chosen here. A ratio scaled by a power of ten gets
+  // no shift of its own: the candidate comes from the shortest decimal,
+  // whose exponent is off by the digit count, so such values stay plain
+  // fractions or go flat.
   const shift = fiveShiftCandidate(value);
   if (shift !== 0) {
-    const [p5, q5] = windowFraction(significand, shift);
-    const states5 = termRunStates(BigInt(zigNonzero(shift))) * termRunStates(q5 - 1n) * q5;
-    if (states5 < bestStates) {
-      best = { sel: SIG_FRACTION5, f: shift, p: p5, q: q5 };
-    }
+    const [p5, j5] = simplestDyadic(...roundingWindow(significand, shift));
+    offer(SIG_DYADIC5, shift, [p5, 1n << BigInt(j5)]);
   }
 
   return best;
@@ -354,14 +449,55 @@ export function doubleFrom(exponent: number, mantissa: bigint): number {
 }
 
 /**
- * IEEE-754 double, bit-exact apart from NaN payloads. The significand travels as the cheapest of
- * three spellings — flat mantissa, simplest fraction in the double's
- * rounding interval, or that fraction times a power of five (the decimal
- * realm) — so human-entered values pack in a few bytes at any magnitude.
- * `p.float`.
+ * IEEE-754 double, bit-exact apart from NaN payloads. The significand
+ * travels as the cheapest of four spellings — flat mantissa, simplest
+ * fraction or simplest dyadic in the double's rounding interval, or that
+ * dyadic times a power of five (the decimal realm) — so human-entered
+ * values pack in a few bytes at any magnitude, and zero in one. A weighted
+ * selector names the spelling; its weights are the node's prior over the
+ * kinds of number it carries. `p.float`.
  */
 export class PFloat extends PNode<number> {
   readonly _kinds: readonly Kind[] = ['number'];
+
+  private readonly _declared: Readonly<FloatWeights>;
+  /** One weight per form in selector order. */
+  private readonly _formWeights: readonly number[];
+  private readonly _forms: WeightTable;
+  /** The selector at exponent code 0, where the zero state lives. */
+  private readonly _formsAtBias: WeightTable;
+
+  constructor(
+    weights?: Partial<FloatWeights>,
+    base: Readonly<FloatWeights> = DEFAULT_FLOAT_WEIGHTS
+  ) {
+    super();
+    const resolved = { ...base };
+    for (const key of FLOAT_WEIGHT_KEYS) {
+      const weight = weights?.[key];
+      if (weight !== undefined) {
+        resolved[key] = weight;
+      }
+    }
+    this._declared = resolved;
+    this._formWeights = formWeights(resolved);
+    this._forms = buildWeights(this._formWeights, SIG_FORMS, 'p.float');
+    this._formsAtBias = buildWeights(
+      [...this._formWeights, resolved.zero],
+      SIG_FORMS + 1,
+      'p.float'
+    );
+  }
+
+  /**
+   * Declare how likely each kind of number is: `zero`, `integer`, `decimal`,
+   * `fraction` and `other` (noise and arithmetic results, which take the
+   * full mantissa). Keys left out keep their current weight. A prior, not a
+   * constraint, and part of the wire format.
+   */
+  weights(w: Partial<FloatWeights>): PFloat {
+    return new PFloat(w, this._declared);
+  }
 
   _write(enc: Encoder, value: number): void {
     if (Number.isNaN(value)) {
@@ -384,30 +520,42 @@ export class PFloat extends PNode<number> {
     const exponent = Number((bits >> MANTISSA_BITS) & 0x7ffn);
     const mantissa = bits & MANTISSA_MASK;
     enc.compose(Number(bits >> 63n), 2);
+
+    // Zero rides the cheapest exponent code and its own selector state there.
+    if (exponent === 0 && mantissa === 0n) {
+      enc.composeTerm(0);
+      writeTable(enc, this._formsAtBias, SIG_ZERO);
+      return;
+    }
+
     enc.composeTerm(
       exponent >= EXPONENT_BIAS
         ? (exponent - EXPONENT_BIAS) * 2
         : (EXPONENT_BIAS - exponent) * 2 - 1
     );
 
-    // Zero and subnormals have no implicit bit and no [1, 2) significand, so
-    // the fraction forms are undefined there: the mantissa goes flat with no
+    // Subnormals have no implicit bit and no [1, 2) significand, so the
+    // fraction forms are undefined there: the mantissa goes flat with no
     // selector slot.
     if (exponent === 0) {
       enc.compose(Number(mantissa), MANTISSA_RADIX);
       return;
     }
 
-    const form = canonicalSignificand(value);
-    enc.compose(form.sel, SIG_SELECTOR);
+    const form = canonicalSignificand(value, this._formWeights);
+    writeTable(enc, exponent === EXPONENT_BIAS ? this._formsAtBias : this._forms, form.sel);
     if (form.sel === SIG_FLAT) {
       enc.compose(Number(mantissa), MANTISSA_RADIX);
       return;
     }
-    if (form.sel === SIG_FRACTION5) {
+    if (form.f !== 0) {
       enc.composeTerm(zigNonzero(form.f));
     }
-    enc.composeTerm(Number(form.q - 1n));
+    if (form.sel === SIG_FRACTION) {
+      enc.composeTerm(Number(form.q - 1n));
+    } else {
+      enc.composeTerm(bitLength(form.q) - 1);
+    }
     // p sits in [q, 2q) by construction: the numerator rides in an exact
     // radix-q slot as its offset from q.
     enc.compose(Number(form.p - form.q), Number(form.q));
@@ -437,11 +585,15 @@ export class PFloat extends PNode<number> {
     if (exponent === 0) {
       mantissa = BigInt(dec.parse(MANTISSA_RADIX));
     } else {
-      const sel = dec.parse(SIG_SELECTOR);
+      const sel = readTable(dec, exponent === EXPONENT_BIAS ? this._formsAtBias : this._forms);
+      if (sel === SIG_ZERO) {
+        FLOAT_BITS[0] = sign << 63n;
+        return FLOAT_SCRATCH[0];
+      }
       let f = 0;
       let p = 0n;
       let q = 0n;
-      if (sel === SIG_FRACTION5) {
+      if (sel === SIG_DYADIC5) {
         f = unzigNonzero(dec.parseTerm());
         if (Math.abs(f) > FIVE_SHIFT_MAX) {
           throw new CorruptInputError('Five-realm shift is outside the canonical range');
@@ -451,15 +603,27 @@ export class PFloat extends PNode<number> {
       if (sel === SIG_FLAT) {
         mantissa = BigInt(dec.parse(MANTISSA_RADIX));
       } else {
-        q = BigInt(dec.parseTerm()) + 1n;
         // Checked before the numerator slot so an absurd denominator fails as
         // corruption rather than as an oversized radix.
+        if (sel === SIG_FRACTION) {
+          q = BigInt(dec.parseTerm()) + 1n;
+          if (q > SIGNIFICAND_ONE) {
+            throw new CorruptInputError('Fraction denominator is past the mantissa grid');
+          }
+        } else {
+          const j = dec.parseTerm();
+          if (j > Number(MANTISSA_BITS)) {
+            throw new CorruptInputError('Dyadic denominator is past the mantissa grid');
+          }
+          q = 1n << BigInt(j);
+        }
         const states =
-          (sel === SIG_FRACTION5 ? termRunStates(BigInt(zigNonzero(f))) : 1n) *
-          termRunStates(q - 1n) *
-          q;
-        if (states >= SIGNIFICAND_ONE) {
-          throw new CorruptInputError('Fraction spelling is dearer than the flat mantissa');
+          (f === 0 ? 1n : termRunStates(BigInt(zigNonzero(f)))) * denominatorStates(sel, q) * q;
+        if (
+          states * BigInt(this._formWeights[SIG_FLAT]) >=
+          SIGNIFICAND_ONE * BigInt(this._formWeights[sel])
+        ) {
+          throw new CorruptInputError('Significand spelling is dearer than the flat mantissa');
         }
         p = q + BigInt(dec.parse(Number(q)));
         // Rebuild the named significand in exact arithmetic: the name is
@@ -471,7 +635,7 @@ export class PFloat extends PNode<number> {
 
       // One spelling per value: whatever branch the wire took must be the
       // spelling the encoder would have chosen for the decoded significand.
-      const form = canonicalSignificand(doubleFrom(exponent, mantissa));
+      const form = canonicalSignificand(doubleFrom(exponent, mantissa), this._formWeights);
       if (form.sel !== sel || form.f !== f || form.p !== p || form.q !== q) {
         throw new CorruptInputError('Significand spelling is not the canonical form');
       }

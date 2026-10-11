@@ -312,6 +312,23 @@ const stringCase = (): Case => {
   }
 };
 
+// A prior over the kinds of number, any subset of the keys; the values are
+// the same mix either way.
+const floatCase = (): Case => {
+  if (rand() < 0.5) {
+    return { build: (m) => m.p.float(), gen: randFloat, src: 'p.float()' };
+  }
+  const w: Partial<Record<'zero' | 'integer' | 'decimal' | 'fraction' | 'other', number>> = {};
+  for (const key of ['zero', 'integer', 'decimal', 'fraction', 'other'] as const) {
+    if (rand() < 0.7) w[key] = randInt(1, 100);
+  }
+  return {
+    build: (m) => m.p.float().weights(w),
+    gen: randFloat,
+    src: `p.float().weights(${json(w)})`,
+  };
+};
+
 // The prior changes the wire, never the values.
 const boolCase = (): Case => {
   switch (randInt(0, 2)) {
@@ -526,7 +543,7 @@ export const scalarCase = (): Case => {
     case 3:
       return decimalCase();
     case 4:
-      return { build: (m) => m.p.float(), gen: randFloat, src: 'p.float()' };
+      return floatCase();
     case 5:
       return stringCase();
     case 6:
@@ -806,7 +823,7 @@ const keyCase = (): Case =>
     halfBoundedIntCase,
     anyCase,
     (): Case => ({ build: (m) => m.p.string(), gen: () => randString(6), src: 'p.string()' }),
-    (): Case => ({ build: (m) => m.p.float(), gen: randFloat, src: 'p.float()' }),
+    floatCase,
   ])();
 
 /** Draws entries until `size` reports `length`; repeated keys only overwrite. */

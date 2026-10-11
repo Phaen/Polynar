@@ -1,37 +1,60 @@
 /**
  * `p.float()`: IEEE 754 doubles, the significand spelled as the cheapest of
- * a flat mantissa, the simplest fraction in the double's rounding interval,
- * or that fraction times a power of five, so a value's cost tracks its
- * arithmetic complexity.
+ * a flat mantissa, the simplest fraction or the simplest dyadic in the
+ * double's rounding interval, or that dyadic times a power of five, so a
+ * value's cost tracks its arithmetic complexity. A weighted selector names
+ * the spelling, and zero is a selector state of its own.
  */
 
 import { p, Encoder, CorruptInputError } from '../../index';
 import {
   simplestInInterval,
+  simplestDyadic,
   termRunStates,
   zigNonzero,
   unzigNonzero,
   fiveShiftCandidate,
-  windowFraction,
+  roundingWindow,
   canonicalSignificand,
   roundToSignificand,
   doubleFrom,
+  DEFAULT_FLOAT_WEIGHTS,
 } from '../../nodes/float';
+import { buildWeights, writeTable } from '../../nodes/weights';
 import { mulberry32 } from '../support';
 
-/** Sign, then the exponent at the bias, then the given significand spelling. */
-const spelled = (significand: (enc: Encoder) => void): Uint8Array => {
+const SIG_FLAT = 0;
+const SIG_FRACTION = 1;
+const SIG_DYADIC = 2;
+const SIG_DYADIC5 = 3;
+
+/** The default form weights in selector order. */
+const FORM_WEIGHTS = [
+  DEFAULT_FLOAT_WEIGHTS.other,
+  DEFAULT_FLOAT_WEIGHTS.fraction,
+  DEFAULT_FLOAT_WEIGHTS.integer,
+  DEFAULT_FLOAT_WEIGHTS.decimal,
+];
+/** The selector at the bias exponent, where the zero state lives. */
+const FORMS_AT_BIAS = buildWeights([...FORM_WEIGHTS, DEFAULT_FLOAT_WEIGHTS.zero], 5, 'p.float');
+
+/** Sign, the exponent at the bias, the selector, then the given significand spelling. */
+const spelled = (sel: number, significand: (enc: Encoder) => void): Uint8Array => {
   const enc = new Encoder();
   enc.compose(0, 2);
   enc.composeTerm(0);
+  writeTable(enc, FORMS_AT_BIAS, sel);
   significand(enc);
   return enc.output();
 };
 
 describe('Schema float', () => {
   it.each([
+    [0, 1],
+    [-0, 1],
+    [1, 1],
     [1.5, 2],
-    [1 / 3, 2],
+    [1 / 3, 3],
     [0.1, 2],
     [3.14, 4],
     [Math.PI, 8],
@@ -40,8 +63,14 @@ describe('Schema float', () => {
     // The five realm carries the decimal exponent's 5-adic half, so a typed
     // decimal never pays for the fives its binary exponent cannot absorb.
     [1e-300, 5],
-    [6.02e23, 6],
-    [8.17e-285, 8],
+    [6.02e23, 5],
+    [8.17e-285, 7],
+    // An integer's denominator is a power of two, spelled by its exponent
+    // alone, so its cost grows with its bits, not with its denominator.
+    [65535, 5],
+    [123456789, 6],
+    [2 ** 30, 2],
+    [998.3, 5],
   ])('packs %p into %i bytes', (value, bytes) => {
     expect(p.float().encode(value)).toHaveLength(bytes);
   });
@@ -60,12 +89,71 @@ describe('Schema float', () => {
     expect(p.float().decode(p.float().encode(value))).toBe(value);
   });
 
-  it.each([0, -0, 5e-324, -3 * 2 ** -1074, 2 ** -1023])(
-    'round-trips the zero or subnormal %p through the flat mantissa',
+  it.each([0, -0])('round-trips %p as the zero state at the bias exponent', (value) => {
+    const enc = new Encoder();
+    enc.compose(Object.is(value, -0) ? 1 : 0, 2);
+    enc.composeTerm(0);
+    writeTable(enc, FORMS_AT_BIAS, 4);
+    expect(p.float().encode(value)).toEqual(enc.output());
+    expect(Object.is(p.float().decode(enc.output()), value)).toBe(true);
+  });
+
+  it.each([5e-324, -3 * 2 ** -1074, 2 ** -1023])(
+    'round-trips the subnormal %p through the flat mantissa',
     (value) => {
       expect(Object.is(p.float().decode(p.float().encode(value)), value)).toBe(true);
     }
   );
+
+  it('round-trips a mixed sample under any weights', () => {
+    const rand = mulberry32(0x7a);
+    const sample = [0, -0, 1, -2, 0.5, 0.1, 1 / 3, 65535, 998.3, Math.PI, 1e-300, 5e-324];
+    for (let i = 0; i < 50; i++) {
+      const node = p.float().weights({
+        zero: 1 + Math.floor(rand() * 100),
+        integer: 1 + Math.floor(rand() * 100),
+        decimal: 1 + Math.floor(rand() * 100),
+        fraction: 1 + Math.floor(rand() * 100),
+        other: 1 + Math.floor(rand() * 100),
+      });
+      for (const value of sample) {
+        expect(Object.is(node.decode(node.encode(value)), value)).toBe(true);
+      }
+    }
+  });
+
+  describe('weights', () => {
+    it('makes the weighted kind cheaper', () => {
+      const zeros = Array<number>(100).fill(0);
+      const plain = p.array(p.float()).encode(zeros);
+      const weighted = p.array(p.float().weights({ zero: 50 })).encode(zeros);
+      expect(weighted.length).toBeLessThan(plain.length);
+      expect(p.array(p.float().weights({ zero: 50 })).decode(weighted)).toEqual(zeros);
+    });
+
+    it('keeps the weights of the keys left out', () => {
+      const values = [0, 1, 0.1, 1 / 3, Math.PI];
+      const chained = p.array(p.float().weights({ zero: 9 }).weights({ integer: 2 }));
+      const atOnce = p.array(p.float().weights({ zero: 9, integer: 2 }));
+      expect(chained.encode(values)).toEqual(atOnce.encode(values));
+      expect(chained.encode(values)).not.toEqual(
+        p.array(p.float().weights({ integer: 2 })).encode(values)
+      );
+    });
+
+    it('treats an undefined weight as left out', () => {
+      expect(p.float().weights({ zero: undefined }).encode(0)).toEqual(p.float().encode(0));
+    });
+
+    it.each([0, -1, 1.5, NaN])('rejects the weight %p', (weight) => {
+      expect(() => p.float().weights({ decimal: weight })).toThrow(
+        new TypeError(`p.float weights must be positive integers, got ${weight}`)
+      );
+      expect(() => p.float().weights({ zero: weight })).toThrow(
+        new TypeError(`p.float weights must be positive integers, got ${weight}`)
+      );
+    });
+  });
 
   it.each([
     [Infinity, 0, 2047],
@@ -117,49 +205,151 @@ describe('Schema float', () => {
   it.each([
     [
       'a reducible fraction: 6/4 names the same value as 3/2',
+      SIG_FRACTION,
       (enc: Encoder) => {
-        enc.compose(1, 3); // fraction selector
         enc.composeTerm(3); // denominator 4
         enc.compose(2, 4); // numerator 6
       },
       'not the canonical form',
     ],
     [
-      'a flat mantissa for 1.5, whose canonical form is 3/2',
+      'a flat mantissa for 1.5, whose canonical form is the dyadic 3/2',
+      SIG_FLAT,
       (enc: Encoder) => {
-        enc.compose(0, 3); // flat selector
         enc.compose(2 ** 51, 2 ** 52);
       },
       'not the canonical form',
     ],
     [
-      'a denominator whose term outweighs the flat mantissa',
+      'a fraction 3/2 for 1.5, whose canonical form is the dyadic 3/2',
+      SIG_FRACTION,
       (enc: Encoder) => {
-        enc.compose(1, 3);
+        enc.composeTerm(1); // denominator 2
+        enc.compose(1, 2); // numerator 3
+      },
+      'not the canonical form',
+    ],
+    [
+      'a fraction denominator whose term outweighs the flat mantissa',
+      SIG_FRACTION,
+      (enc: Encoder) => {
         enc.composeTerm(3 ** 20);
       },
       'dearer than the flat mantissa',
     ],
     [
-      'a five-realm spelling of a plain fraction: 6/5 · 5 names 1.5',
+      'a fraction denominator past the mantissa grid',
+      SIG_FRACTION,
       (enc: Encoder) => {
-        enc.compose(2, 3); // five-realm selector
-        enc.composeTerm(0); // shift +1
-        enc.composeTerm(4); // denominator 5
-        enc.compose(1, 5); // numerator 6
+        enc.composeTerm(2 ** 52); // denominator 2^52 + 1
+      },
+      'Fraction denominator is past the mantissa grid',
+    ],
+    [
+      'a dyadic denominator past the mantissa grid',
+      SIG_DYADIC,
+      (enc: Encoder) => {
+        enc.composeTerm(53);
+      },
+      'Dyadic denominator is past the mantissa grid',
+    ],
+    [
+      'a dyadic denominator whose term outweighs the flat mantissa',
+      SIG_DYADIC,
+      (enc: Encoder) => {
+        enc.composeTerm(52);
+      },
+      'dearer than the flat mantissa',
+    ],
+    [
+      'a five-realm spelling of a plain dyadic: 15/8 · 5^-1 names 1.5',
+      SIG_DYADIC5,
+      (enc: Encoder) => {
+        enc.composeTerm(1); // shift -1
+        enc.composeTerm(3); // denominator 8
+        enc.compose(7, 8); // numerator 15
       },
       'not the canonical form',
     ],
     [
       'a shift past the range any shortest-decimal form produces',
+      SIG_DYADIC5,
       (enc: Encoder) => {
-        enc.compose(2, 3);
         enc.composeTerm(2 * 501);
       },
       'outside the canonical range',
     ],
-  ])('rejects %s', (_name, significand, message) => {
-    expect(() => p.float().decode(spelled(significand))).toThrow(message);
+  ])('rejects %s', (_name, sel, significand, message) => {
+    expect(() => p.float().decode(spelled(sel, significand))).toThrow(message);
+  });
+});
+
+describe('simplestDyadic', () => {
+  it.each([
+    [
+      [1n, 3n, 1n, 2n],
+      [3n, 3],
+    ],
+    [
+      [1n, 2n, 5n, 2n],
+      [1n, 0],
+    ],
+    [
+      [-3n, 2n, -1n, 2n],
+      [-1n, 0],
+    ],
+    [
+      [-1n, 3n, 1n, 3n],
+      [0n, 0],
+    ],
+    [
+      [-1n, 2n, -1n, 3n],
+      [-3n, 3],
+    ],
+    [
+      [0n, 1n, 1n, 1000n],
+      [1n, 10],
+    ],
+  ])('finds the simplest dyadic in %p', (args, expected) => {
+    const [a, b, c, d] = args;
+    expect(simplestDyadic(a, b, c, d)).toEqual(expected);
+  });
+
+  it('agrees with a brute-force search over small intervals', () => {
+    const rand = mulberry32(0x3d);
+    const brute = (a: bigint, b: bigint, c: bigint, d: bigint): [bigint, number] => {
+      for (let j = 0; ; j++) {
+        const q = 1n << BigInt(j);
+        let n = (a * q) / b - 1n;
+        while (n * b <= a * q) n++;
+        if (n * d < c * q) return [n, j];
+      }
+    };
+    for (let i = 0; i < 2000; i++) {
+      const b = BigInt(1 + Math.floor(rand() * 40));
+      const d = BigInt(1 + Math.floor(rand() * 40));
+      const a = BigInt(Math.floor(rand() * 200) - 100);
+      const c = (a * d) / b + 1n + BigInt(Math.floor(rand() * 20));
+      expect(simplestDyadic(a, b, c, d)).toEqual(brute(a, b, c, d));
+    }
+  });
+
+  it.each([
+    [1n, 0n, 1n, 1n],
+    [1n, 1n, 2n, 0n],
+  ])('rejects the denominators of (%p/%p, %p/%p)', (a, b, c, d) => {
+    expect(() => simplestDyadic(a, b, c, d)).toThrow(
+      new RangeError(`simplestDyadic needs positive denominators, got ${b} and ${d}`)
+    );
+  });
+
+  it.each([
+    [1n, 2n, 2n, 4n],
+    [2n, 1n, 1n, 1n],
+  ])('rejects the empty interval (%p/%p, %p/%p)', (a, b, c, d) => {
+    expect(() => simplestDyadic(a, b, c, d)).toThrow(
+      new RangeError(`simplestDyadic got the empty interval (${a}/${b}, ${c}/${d})`)
+    );
   });
 });
 
@@ -335,7 +525,53 @@ describe('fiveShiftCandidate', () => {
   });
 });
 
-describe('windowFraction', () => {
+describe('roundingWindow', () => {
+  it('opens half an ulp around the significand, a quarter below the binade floor', () => {
+    expect(roundingWindow(ONE, 0)).toEqual([
+      (ONE << 2n) - 1n,
+      ONE << 2n,
+      (ONE << 1n) + 1n,
+      ONE << 1n,
+    ]);
+    expect(roundingWindow(ONE + 1n, 0)).toEqual([
+      ((ONE + 1n) << 1n) - 1n,
+      ONE << 1n,
+      ((ONE + 1n) << 1n) + 1n,
+      ONE << 1n,
+    ]);
+  });
+
+  it.each([500, -500, 1, -1])('normalizes the top into (1, 2] under shift %p', (shift) => {
+    for (const significand of [ONE, ONE + 12345n, END - 1n]) {
+      const [loN, loD, hiN, hiD] = roundingWindow(significand, shift);
+      expect(loN * hiD < hiN * loD).toBe(true);
+      expect(hiN > hiD && hiN <= 2n * hiD).toBe(true);
+    }
+  });
+
+  it.each([ONE - 1n, END, 0n, -1n])('rejects the significand %p', (significand) => {
+    expect(() => roundingWindow(significand, 0)).toThrow(
+      new RangeError(`roundingWindow expected a significand in [2^52, 2^53), got ${significand}`)
+    );
+  });
+
+  it.each([0.5, NaN, Infinity])('rejects the shift %p', (shift) => {
+    expect(() => roundingWindow(ONE, shift)).toThrow(
+      new TypeError(`roundingWindow expected an integer shift, got ${shift}`)
+    );
+  });
+
+  it.each([501, -501])('rejects the shift %p past the five-realm bound', (shift) => {
+    expect(() => roundingWindow(ONE, shift)).toThrow(
+      new RangeError(`roundingWindow shift ${shift} is outside ±500`)
+    );
+  });
+});
+
+describe('the simplest fraction in a rounding window', () => {
+  const windowFraction = (significand: bigint, shift: number): [bigint, bigint] =>
+    simplestInInterval(...roundingWindow(significand, shift));
+
   it.each([
     [ONE, 0, [1n, 1n]],
     [3n << 51n, 0, [3n, 2n]],
@@ -351,49 +587,80 @@ describe('windowFraction', () => {
       expect(p >= q && p < 2n * q).toBe(true);
     }
   });
+});
 
-  it.each([ONE - 1n, END, 0n, -1n])('rejects the significand %p', (significand) => {
-    expect(() => windowFraction(significand, 0)).toThrow(
-      new RangeError(`windowFraction expected a significand in [2^52, 2^53), got ${significand}`)
-    );
+describe('the simplest dyadic in a rounding window', () => {
+  const windowDyadic = (significand: bigint, shift: number): [bigint, number] =>
+    simplestDyadic(...roundingWindow(significand, shift));
+
+  it.each([
+    [ONE, 0, [1n, 0]],
+    [3n << 51n, 0, [3n, 1]],
+    [ONE + 1n, 0, [ONE + 1n, 52]],
+    // Under shift 0 the dyadic is the significand with its trailing zeros dropped.
+    [END - 1n, 0, [END - 1n, 52]],
+    // 0.1's significand, 1.6, is 2^3 · 5^-1 · 2^-2: in the five realm it is 1.
+    [0x1999999999999an, -1, [1n, 0]],
+  ])('spells %p under shift %p', (significand, shift, expected) => {
+    expect(windowDyadic(significand, shift)).toEqual(expected);
   });
 
-  it.each([0.5, NaN, Infinity])('rejects the shift %p', (shift) => {
-    expect(() => windowFraction(ONE, shift)).toThrow(
-      new TypeError(`windowFraction expected an integer shift, got ${shift}`)
-    );
-  });
-
-  it.each([501, -501])('rejects the shift %p past the five-realm bound', (shift) => {
-    expect(() => windowFraction(ONE, shift)).toThrow(
-      new RangeError(`windowFraction shift ${shift} is outside ±500`)
-    );
+  it.each([500, -500, 1, -1])('keeps p odd in [2^j, 2^(j+1)) under shift %p', (shift) => {
+    for (const significand of [ONE, ONE + 12345n, END - 1n]) {
+      const [p, j] = windowDyadic(significand, shift);
+      const q = 1n << BigInt(j);
+      expect(p >= q && p < 2n * q).toBe(true);
+      expect(j === 0 || p % 2n === 1n).toBe(true);
+    }
   });
 });
 
 describe('canonicalSignificand', () => {
   it.each([
-    [1, { sel: 1, f: 0, p: 1n, q: 1n }],
-    [1.5, { sel: 1, f: 0, p: 3n, q: 2n }],
-    [-1.5, { sel: 1, f: 0, p: 3n, q: 2n }],
-    [0.1, { sel: 2, f: -1, p: 1n, q: 1n }],
-    [25, { sel: 2, f: 2, p: 1n, q: 1n }],
-    [Math.PI, { sel: 0, f: 0, p: 0n, q: 0n }],
-    [2 ** -1022, { sel: 1, f: 0, p: 1n, q: 1n }],
-    [Number.MAX_VALUE, { sel: 0, f: 0, p: 0n, q: 0n }],
+    [1, { sel: SIG_DYADIC, f: 0, p: 1n, q: 1n }],
+    [1.5, { sel: SIG_DYADIC, f: 0, p: 3n, q: 2n }],
+    [-1.5, { sel: SIG_DYADIC, f: 0, p: 3n, q: 2n }],
+    [1 / 3, { sel: SIG_FRACTION, f: 0, p: 4n, q: 3n }],
+    [0.1, { sel: SIG_DYADIC5, f: -1, p: 1n, q: 1n }],
+    [25, { sel: SIG_DYADIC5, f: 2, p: 1n, q: 1n }],
+    [2.5, { sel: SIG_DYADIC5, f: 1, p: 1n, q: 1n }],
+    [3.14, { sel: SIG_DYADIC5, f: -2, p: 157n, q: 128n }],
+    [65535, { sel: SIG_DYADIC, f: 0, p: 65535n, q: 32768n }],
+    [Math.PI, { sel: SIG_FLAT, f: 0, p: 0n, q: 0n }],
+    [2 ** -1022, { sel: SIG_DYADIC, f: 0, p: 1n, q: 1n }],
+    [Number.MAX_VALUE, { sel: SIG_FLAT, f: 0, p: 0n, q: 0n }],
   ])('spells %p canonically', (value, form) => {
-    expect(canonicalSignificand(value)).toEqual(form);
+    expect(canonicalSignificand(value, FORM_WEIGHTS)).toEqual(form);
+  });
+
+  it('weighs the forms: a heavy fraction weight makes 3/2 a fraction', () => {
+    expect(canonicalSignificand(1.5, [1, 100, 1, 1])).toEqual({
+      sel: SIG_FRACTION,
+      f: 0,
+      p: 3n,
+      q: 2n,
+    });
+  });
+
+  it('ties go to the earlier selector', () => {
+    expect(canonicalSignificand(1.5, [1, 1, 1, 1]).sel).toBe(SIG_FRACTION);
   });
 
   it.each([0, -0, 5e-324, 2 ** -1023])('rejects the non-normal %p', (value) => {
-    expect(() => canonicalSignificand(value)).toThrow(
+    expect(() => canonicalSignificand(value, FORM_WEIGHTS)).toThrow(
       new RangeError(`canonicalSignificand expected a normal double, got ${value}`)
     );
   });
 
   it.each([NaN, Infinity, -Infinity])('rejects %p', (value) => {
-    expect(() => canonicalSignificand(value)).toThrow(
+    expect(() => canonicalSignificand(value, FORM_WEIGHTS)).toThrow(
       new TypeError(`canonicalSignificand expected a finite number, got ${value}`)
+    );
+  });
+
+  it('rejects a weight list of the wrong length', () => {
+    expect(() => canonicalSignificand(1, [1, 2])).toThrow(
+      new TypeError('canonicalSignificand expected 4 form weights, got 2')
     );
   });
 });
