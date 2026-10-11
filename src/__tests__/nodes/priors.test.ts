@@ -15,7 +15,7 @@ import {
   validateCdf,
   writeTable,
 } from '../../nodes/weights';
-import { trip } from '../support';
+import { mulberry32, trip } from '../support';
 
 describe('Schema priors', () => {
   it('weights validate as positive integers of the right count', () => {
@@ -53,14 +53,97 @@ describe('Schema priors', () => {
         .max(5)
         .cdf(() => 1)
     ).toThrow('p.int cdf must put positive weight on the range, got 0');
-    // Interior non-monotonicity is the caller's contract; it fails loudly at
-    // the first encode or decode that touches the descent, not eagerly.
+    // Interior non-monotonicity is not checked eagerly, as a range may be
+    // huge; a value whose own weight is negative fails at its encode.
     const parabola = p
       .int()
       .min(0)
       .max(100)
       .cdf((v) => v * (101 - v) + Math.floor(v / 100));
     expect(() => parabola.encode(80)).toThrow('non-decreasing integer function, fails at 80');
+  });
+
+  it('a cdf that goes down elsewhere in the range cannot encode a value it would misdecode', () => {
+    // 6 -> 7 descends, so 7's bucket [50, 80) overlaps 5's and 6's. The
+    // decoder bisects the range on the cdf: for 7 it probes 5, 8 and 6, finds
+    // 60 above 7's bucket and lands on 5. Encode refuses instead, while 5,
+    // whose own bucket decodes to 5, still works.
+    const sums = [0, 10, 20, 30, 40, 50, 60, 50, 80, 90, 100, 110];
+    const dip = p
+      .int()
+      .min(0)
+      .max(10)
+      .cdf((v) => sums[v]);
+    expect(() => dip.encode(7)).toThrow(
+      new TypeError('p.int cdf must be a non-decreasing integer function, fails between 6 and 7')
+    );
+    expect(() => dip.encode(6)).toThrow(
+      new TypeError('p.int cdf must be a non-decreasing integer function, fails at 6')
+    );
+    for (const v of [0, 1, 2, 3, 4, 5, 8, 9, 10]) {
+      expect(trip(dip, v)).toBe(v);
+    }
+    // A descent can also fake a bucket spanning the whole total at residual
+    // 0, which the decoder would take as a symbol written for free. Value 3
+    // passes its probes, so the decoder has to notice from the other end.
+    const fake = [0, 110, 50, 60, 70, 80, 90, 100, 105, 108, 109, 110];
+    const node = p
+      .int()
+      .min(0)
+      .max(10)
+      .cdf((v) => fake[v]);
+    const list = p.array(node).length(2);
+    expect(trip(list, [3, 3])).toEqual([3, 3]);
+  });
+
+  it('a bad cdf either refuses a value at encode or round-trips it', () => {
+    const rand = mulberry32(11);
+    const randInt = (lo: number, hi: number): number => lo + Math.floor(rand() * (hi - lo + 1));
+    let encoded = 0;
+    for (let c = 0; c < 2000; c++) {
+      const n = randInt(2, 24);
+      const sums = [0];
+      for (let i = 0; i < n; i++) {
+        sums.push(sums[i] + randInt(0, 20));
+      }
+      for (let d = randInt(1, 3); d > 0; d--) {
+        sums[randInt(1, n - 1)] = randInt(0, sums[n]);
+      }
+      if (sums[n] < 1) {
+        continue;
+      }
+      const node = p
+        .int()
+        .min(0)
+        .max(n - 1)
+        .cdf((v) => sums[v]);
+      // Both alone, so its symbol is the message's last, and after an int
+      // that may leave it at a block boundary.
+      const schema = p.object({
+        a: p
+          .int()
+          .min(0)
+          .max(2 ** randInt(4, 40)),
+        b: node,
+      });
+      const blockBits = [16, 32, 64, 2048][randInt(0, 3)];
+      for (const [target, value] of [
+        [node, randInt(0, n - 1)],
+        [schema, { a: randInt(0, 2 ** 4), b: randInt(0, n - 1) }],
+      ] as const) {
+        let bytes: Uint8Array;
+        try {
+          bytes = (target as typeof node).encode(value as number, { blockBits });
+        } catch (e) {
+          // The cdf fails along the probes, or the value has no weight.
+          expect([TypeError, RangeError]).toContain((e as Error).constructor);
+          continue;
+        }
+        encoded++;
+        expect((target as typeof node).decode(bytes, { blockBits })).toEqual(value);
+      }
+    }
+    expect(encoded).toBeGreaterThan(300);
   });
 
   it('int weights are a histogram over the bounded range', () => {
@@ -465,6 +548,16 @@ describe('RangePrior', () => {
     );
     expect(() => steps.write(new Encoder(), 2, () => 'Item')).toThrow(
       new TypeError('r cdf must be a non-decreasing integer function, fails at 2')
+    );
+    // A descent between a value and one of the decoder's probes for it, on
+    // either side of the value.
+    const below = new RangePrior((v) => [0, 1, 3, 2, 4][v], 0, 3, 'r');
+    expect(() => below.write(new Encoder(), 3, () => 'Item')).toThrow(
+      new TypeError('r cdf must be a non-decreasing integer function, fails between 2 and 3')
+    );
+    const above = new RangePrior((v) => [0, 3, 2, 3, 4][v], 0, 3, 'r');
+    expect(() => above.write(new Encoder(), 0, () => 'Item')).toThrow(
+      new TypeError('r cdf must be a non-decreasing integer function, fails between 1 and 2')
     );
   });
 });

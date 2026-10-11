@@ -314,9 +314,9 @@ p.int()
   .cdf((v) => (v * (v + 1)) / 2);
 ```
 
-What `i` is depends on the node: the value itself on `p.int`, the step count (`value / step`) on `p.decimal`, the bucket number on `p.date` (counting from the bucket that holds 1970-01-01 as 0), the length on `p.string` and `p.binary`, and the item or entry count on `p.array`, `p.map`, `p.record` and `p.set`. The node calls `fn` at the lower bound, at one past the upper bound to get the total, and around each value it encodes or decodes.
+What `i` is depends on the node: the value itself on `p.int`, the step count (`value / step`) on `p.decimal`, the bucket number on `p.date` (counting from the bucket that holds 1970-01-01 as 0), the length on `p.string` and `p.binary`, and the item or entry count on `p.array`, `p.map`, `p.record` and `p.set`. The node calls `fn` at the lower bound, at one past the upper bound to get the total, and around each value it encodes or decodes, plus once per halving of the range to find that value: about log2(range) calls.
 
-- `fn` returns safe integers and never goes down. A value whose weight is zero can't be encoded.
+- `fn` returns safe integers and never goes down. A value whose weight is zero can't be encoded, and neither can one that a dip in `fn` would make decode as another value: encode only ever produces bytes that decode back.
 - Only the differences between results matter, so adding a constant changes nothing.
 - Encoder and decoder must get identical numbers from it, so stick to BigInt or plain `+ - * /`; `Math.exp` and friends round differently per engine.
 - Keep the total small. On top of what the weights predict, every block of the message (2048 bits by default) can take up to log2(total) + 1 extra bits.

@@ -250,14 +250,8 @@ export class RangePrior {
     this.who = who;
     this.show = show;
     this.locate = (residual) => {
-      let min = lo;
-      let max = hi;
-      while (min < max) {
-        const mid = min + Math.ceil((max - min) / 2);
-        if (cdf(mid) <= residual) min = mid;
-        else max = mid - 1;
-      }
-      return [min, cdf(min), cdf(min + 1) - cdf(min)];
+      const v = this.bisect((mid) => cdf(mid) <= residual);
+      return [v, cdf(v), cdf(v + 1) - cdf(v)];
     };
     this.position = {
       count: hi - lo + 1,
@@ -294,6 +288,47 @@ export class RangePrior {
     if (freq === 0) {
       throw new RangeError(`${subject()} has zero weight under the declared cdf`);
     }
+    // The decoder reaches v by bisecting on `cdf(mid) <= residual`, which
+    // only works where the cdf is non-decreasing along the probes it makes.
+    // Walking those same probes for both end residuals of the bucket proves
+    // that the whole bucket decodes to v: each probe's verdict is monotone in
+    // the residual, so a verdict shared by both ends is shared in between. A
+    // descent the probes never cross cannot affect v.
+    const last = cum + freq - 1;
+    this.bisect((mid) => {
+      if (v >= mid) {
+        if (!(this.cdf(mid) <= cum)) {
+          throw this.descent(mid, v);
+        }
+        return true;
+      }
+      if (this.cdf(mid) <= last) {
+        throw this.descent(v + 1, mid);
+      }
+      return false;
+    });
     return [cum, freq];
+  }
+
+  /**
+   * The binary search `parseWeighted` resolves a residual with, shared with
+   * the encode side so both walk the same probes: the largest v in `[lo, hi]`
+   * where `right(mid)` has held for every probe below it.
+   */
+  private bisect(right: (mid: number) => boolean): number {
+    let min = this.lo;
+    let max = this.hi;
+    while (min < max) {
+      const mid = min + Math.ceil((max - min) / 2);
+      if (right(mid)) min = mid;
+      else max = mid - 1;
+    }
+    return min;
+  }
+
+  private descent(from: number, to: number): TypeError {
+    return new TypeError(
+      `${this.who} cdf must be a non-decreasing integer function, fails between ${from} and ${to}`
+    );
   }
 }

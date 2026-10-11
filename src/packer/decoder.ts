@@ -325,7 +325,10 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
    * as that index rather than a bucket; the digit count tells which.
    *
    * A bucket holding all `total` states carries nothing, so the encoder
-   * records nothing for it and this returns its symbol without reading.
+   * records nothing for it and this returns its symbol without reading. Such
+   * a bucket is recognised by both ends of the residual range landing on its
+   * symbol: a user cdf that goes down somewhere can hand a full-width bucket
+   * to one end only, and then a symbol was written and must be read.
    */
   parseWeighted<T>(
     total: number,
@@ -347,7 +350,7 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
     // found from the untouched value, tells it apart.
     if (bound.exceedsCap(states) || bound.exceedsCapacity(states)) {
       const only = locate(0);
-      if (only[2] === total) {
+      if (only[2] === total && locate(total - 1)[0] === only[0]) {
         return only[0];
       }
       if (this.stepBound(states, members)) {
