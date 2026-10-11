@@ -77,7 +77,8 @@ export const SHIFTS = Array.from({ length: 54 }, (_, i) => BigInt(i));
  * The block sizes a message may choose. A block's cap exceeds
  * 2^blockBits / base, so with bases up to 2^16 the floor keeps it above
  * 2^112, and any first symbol, with fewer than 2^53 states, fits a fresh
- * block. The ceiling keeps one block's BigInt arithmetic cheap.
+ * block even after a checksum of up to 2^32 states. The ceiling keeps one
+ * block's BigInt arithmetic cheap.
  */
 const MIN_BLOCK_BITS = 128;
 const MAX_BLOCK_BITS = 65536;
@@ -93,6 +94,63 @@ export function validateBlockBits(bits: number = DEFAULT_BLOCK_BITS): number {
     );
   }
   return bits;
+}
+
+/** The widest checksum: the hash behind it is 32 bits. */
+const MAX_CHECKSUM_BITS = 32;
+
+/** A message's checksum width in bits: 0 when there is none, else an integer in [1, 32]. */
+export function validateChecksum(bits?: number): number {
+  if (bits === undefined) {
+    return 0;
+  }
+  if (!Number.isInteger(bits)) {
+    throw new TypeError(`Checksum width must be an integer number of bits, got ${bits}`);
+  }
+  if (bits < 1 || bits > MAX_CHECKSUM_BITS) {
+    throw new RangeError(`Checksum width ${bits} bits is outside [1, ${MAX_CHECKSUM_BITS}]`);
+  }
+  return bits;
+}
+
+/** One FNV-1a step over a 32-bit word. */
+function mix(h: number, x: number): number {
+  return Math.imul(h ^ x, 0x01000193);
+}
+
+/**
+ * The `bits`-bit checksum of a message: the value of its first block before
+ * the checksum is folded in, its digit count, and the `rest` digits after
+ * the first block, read through `digitAt`. FNV-1a over 32-bit limbs ends in
+ * murmur3's finaliser, so every input bit reaches every output bit, and the
+ * top `bits` bits are the checksum. Everything is 32-bit integer arithmetic,
+ * which every engine computes exactly.
+ */
+export function checksumOf(
+  bits: number,
+  value: bigint | number,
+  length: number,
+  rest: number,
+  digitAt: (i: number) => number
+): number {
+  let h = mix(0x811c9dc5, length);
+  let v = BigInt(value);
+  let limbs = 0;
+  while (v > 0n) {
+    h = mix(h, Number(BigInt.asUintN(32, v)));
+    v >>= 32n;
+    limbs++;
+  }
+  h = mix(h, limbs);
+  for (let i = 0; i < rest; i++) {
+    h = mix(h, digitAt(i));
+  }
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  return (h >>> 0) >>> (32 - bits);
 }
 
 /** The highest code a string charset may reach and still find its digits in a dense table. */

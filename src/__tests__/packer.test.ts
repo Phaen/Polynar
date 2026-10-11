@@ -949,6 +949,119 @@ describe('Corruption detection', () => {
   });
 });
 
+describe('Checksum', () => {
+  const User = p.object({
+    name: p.string().max(40),
+    age: p.int().min(0).max(120),
+    active: p.bool(),
+  });
+  const user = { name: 'Ada Lovelace', age: 36, active: true };
+  const layouts: { o: Options; base: number }[] = [
+    { o: {}, base: 256 },
+    { o: { type: 'text', charset: root.CharSets.urlSafe }, base: 66 },
+    { o: { charset: [0, 1] }, base: 2 },
+    { o: { blockBits: 128 }, base: 256 },
+  ];
+
+  it('round-trips at every width, over every layout, for a few digits', () => {
+    for (const { o, base } of layouts) {
+      const off = User.encode(user, o).length;
+      for (const k of [1, 8, 16, 32]) {
+        const on = User.encode(user, { ...o, checksum: k } as never);
+        expect(User.decode(on, { ...o, checksum: k } as never)).toEqual(user);
+        const extra = on.length - off;
+        expect(extra).toBeGreaterThanOrEqual(Math.floor(k / Math.log2(base)));
+        expect(extra).toBeLessThanOrEqual(Math.ceil(k / Math.log2(base)) + 1);
+      }
+    }
+  });
+
+  it('gives an empty message its checksum digits', () => {
+    const Empty = p.object({});
+    const bytes = Empty.encode({}, { checksum: 16 });
+    expect(bytes).toHaveLength(2);
+    expect(Empty.decode(bytes, { checksum: 16 })).toEqual({});
+  });
+
+  it('rejects empty input', () => {
+    const message = 'Input is too short to hold its checksum';
+    expect(() => User.decode(new Uint8Array(0), { checksum: 8 })).toThrow(
+      new CorruptInputError(message)
+    );
+    expect(() => User.decode('', { checksum: 8, type: 'text' })).toThrow(message);
+  });
+
+  it('rejects one corrupted digit of a 32-bit checksum', () => {
+    const bytes = User.encode(user, { checksum: 32 });
+    for (const at of [0, bytes.length - 1]) {
+      const bad = bytes.slice();
+      bad[at] ^= 1;
+      expect(() => User.decode(bad, { checksum: 32 })).toThrow(
+        new CorruptInputError('Checksum mismatch: corrupted input')
+      );
+    }
+    const text = User.encode(user, { type: 'text', checksum: 32 });
+    const swapped = text.slice(0, 3) + (text[3] === 'A' ? 'B' : 'A') + text.slice(4);
+    expect(() => User.decode(swapped, { type: 'text', checksum: 32 })).toThrow(CorruptInputError);
+  });
+
+  it('rejects a different width than the one encoded', () => {
+    const bytes = User.encode(user, { checksum: 16 });
+    expect(() => User.decode(bytes, { checksum: 8 })).toThrow(CorruptInputError);
+    expect(() => User.decode(bytes, { checksum: 32 })).toThrow(CorruptInputError);
+  });
+
+  it('does not decode checksummed output to the value without the option', () => {
+    const bytes = User.encode(user, { checksum: 16 });
+    let decoded: unknown;
+    try {
+      decoded = User.decode(bytes);
+    } catch (e) {
+      expect(e).toBeInstanceOf(CorruptInputError);
+      return;
+    }
+    expect(decoded).not.toEqual(user);
+  });
+
+  it('seals a raw Encoder and Decoder', () => {
+    const bytes = new Encoder().output({ checksum: 8 }) as Uint8Array;
+    expect(bytes).toHaveLength(1);
+    new Decoder(bytes, { checksum: 8 }).finalize();
+  });
+
+  it('covers every block of a multi-block message', () => {
+    const o = { blockBits: 128, checksum: 32 };
+    const encoder = new Encoder();
+    for (let i = 0; i < 3000; i++) {
+      encoder.compose(i % 1000, 1000);
+    }
+    const bytes = encoder.output(o) as Uint8Array;
+    const decoder = new Decoder(bytes, o);
+    for (let i = 0; i < 3000; i++) {
+      expect(decoder.parse(1000)).toBe(i % 1000);
+    }
+    decoder.finalize();
+    for (const at of [0, bytes.length - 1]) {
+      const bad = bytes.slice();
+      bad[at] ^= 1;
+      expect(() => new Decoder(bad, o)).toThrow(CorruptInputError);
+    }
+  });
+
+  it('seals a first block too big for a double', () => {
+    const o = { checksum: 32 };
+    const encoder = new Encoder();
+    for (const v of [5, 77, 1000]) {
+      encoder.compose(v, 2 ** 20);
+    }
+    const decoder = new Decoder(encoder.output(o), o);
+    expect([decoder.parse(2 ** 20), decoder.parse(2 ** 20), decoder.parse(2 ** 20)]).toEqual([
+      5, 77, 1000,
+    ]);
+    decoder.finalize();
+  });
+});
+
 describe('emitDigits', () => {
   const emit = (value: bigint | number, count: number, size: number): number[] => {
     const digits: number[] = [];

@@ -6,12 +6,14 @@
 import {
   Alphabet,
   bitLength,
+  checksumOf,
   digitChunk,
   log2Exact,
   outputAlphabet,
   radixOf,
   stringAlphabet,
   validateBlockBits,
+  validateChecksum,
 } from '../packer/utils';
 import type { Radix } from '../packer/types';
 
@@ -287,5 +289,67 @@ describe('outputAlphabet', () => {
   it('needs two symbols in any form', () => {
     expect(() => outputAlphabet('text', 'a')).toThrow(TypeError);
     expect(() => outputAlphabet('binary', [5, 5])).toThrow(RangeError);
+  });
+});
+
+describe('validateChecksum', () => {
+  it('is 0 when omitted', () => {
+    expect(validateChecksum(undefined)).toBe(0);
+  });
+
+  it('passes every integer in [1, 32]', () => {
+    expect(validateChecksum(1)).toBe(1);
+    expect(validateChecksum(32)).toBe(32);
+  });
+
+  it('rejects a width outside [1, 32] with a RangeError', () => {
+    expect(() => validateChecksum(0)).toThrow(
+      new RangeError('Checksum width 0 bits is outside [1, 32]')
+    );
+    expect(() => validateChecksum(33)).toThrow(
+      new RangeError('Checksum width 33 bits is outside [1, 32]')
+    );
+  });
+
+  it('rejects a width that is no integer with a TypeError', () => {
+    expect(() => validateChecksum(1.5)).toThrow(
+      new TypeError('Checksum width must be an integer number of bits, got 1.5')
+    );
+    expect(() => validateChecksum(NaN)).toThrow(TypeError);
+  });
+});
+
+describe('checksumOf', () => {
+  const digits = [3, 1, 4, 1, 5];
+  const sum = (bits: number, value: bigint | number, rest: number[], length = rest.length + 7) =>
+    checksumOf(bits, value, length, rest.length, (i) => rest[i]);
+
+  it('is deterministic', () => {
+    expect(sum(32, 123456789n, digits)).toBe(sum(32, 123456789n, digits));
+  });
+
+  it('differs when the value, a rest digit or the length changes', () => {
+    const base = sum(32, 1000, digits);
+    expect(sum(32, 1001, digits)).not.toBe(base);
+    expect(sum(32, 1000, [3, 1, 4, 1, 6])).not.toBe(base);
+    expect(sum(32, 1000, digits, digits.length + 8)).not.toBe(base);
+  });
+
+  it('separates values that differ only in the high bits of a high limb', () => {
+    expect(sum(8, 1n << 100n, [])).not.toBe(sum(8, 1n << 101n, []));
+  });
+
+  it('stays below 2^bits', () => {
+    for (const bits of [1, 8, 32]) {
+      for (let v = 0; v < 50; v++) {
+        const h = sum(bits, v * 7919, digits);
+        expect(h).toBeGreaterThanOrEqual(0);
+        expect(h).toBeLessThan(2 ** bits);
+      }
+    }
+  });
+
+  it('hashes a Number and the same BigInt alike', () => {
+    expect(sum(32, 123456, digits)).toBe(sum(32, 123456n, digits));
   });
 });

@@ -15,7 +15,7 @@ import * as lib from '../index';
 import type { CodecOptions, PNode } from '../index';
 import { setExactOnly } from '../packer/bound';
 import { mulberry32 } from './support';
-import { corruptions, randOpts, randomCase, useRng } from './random-schemas';
+import { corruptions, rand, randOpts, randomCase, useRng } from './random-schemas';
 import type { Opts } from './random-schemas';
 
 const SCALE = Math.max(0, Number(process.env.FUZZ ?? 1));
@@ -117,5 +117,40 @@ describe('Property fuzz', () => {
       expect(encodeWith(node, decoded, o)).toBe(str);
       expectRejectedOrOwned(c, str, o);
     }
+  });
+
+  it('checksummed messages round-trip, re-encode canonically and reject or own corrupted input', () => {
+    for (let i = 0; i < runs(400); i++) {
+      const c = randomNode();
+      const o = { ...randOpts(), checksum: 1 + Math.floor(rand() * 32) };
+      const value = c.gen();
+      const output = encodeWith(c.node, value, o);
+      const decoded = decodeWith(c.node, output, o);
+      expect(decoded).toEqual(value);
+      expect(encodeWith(c.node, decoded, o)).toEqual(output);
+      expectRejectedOrOwned(c, output, o);
+    }
+  });
+
+  it('lets a corrupted message past a 16-bit checksum well under one time in a hundred', () => {
+    const node = lib.p.array(lib.p.int().min(0).max(255)).max(64);
+    const o: Opts = { type: 'binary' };
+    const withSum = { ...o, checksum: 16 };
+    let corrupted = 0;
+    let missed = 0;
+    for (let i = 0; i < runs(300); i++) {
+      const value = Array.from({ length: Math.floor(rand() * 65) }, () => Math.floor(rand() * 256));
+      const encoded = encodeWith(node as PNode<unknown>, value, withSum);
+      for (const { input } of corruptions(encoded, o)) {
+        corrupted++;
+        try {
+          decodeWith(node as PNode<unknown>, input, withSum);
+          missed++;
+        } catch {
+          // rejected
+        }
+      }
+    }
+    expect(missed / corrupted).toBeLessThan(0.01);
   });
 });

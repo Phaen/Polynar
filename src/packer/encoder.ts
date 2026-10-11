@@ -19,7 +19,15 @@ import {
   TERM_PAYLOAD_BASE,
   TERM_PAYLOAD_MIN_DIGITS,
 } from './constants';
-import { outputAlphabet, validateBlockBits, digitChunk, SHIFTS, type DigitChunk } from './utils';
+import {
+  outputAlphabet,
+  validateBlockBits,
+  validateChecksum,
+  checksumOf,
+  digitChunk,
+  SHIFTS,
+  type DigitChunk,
+} from './utils';
 import { BlockBound } from './bound';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
@@ -273,18 +281,30 @@ export class Encoder {
    * of it, while V would pay it once per symbol. With every freq at 1, V and
    * S both equal the radix product: the plain mixed-radix wire format, byte for byte.
    * `BlockBound` carries these rationals for both sides.
+   *
+   * A checksum of `sum` bits is the first block's first symbol, a uniform
+   * slot of 2^sum states that the bound reserves like any other, so the
+   * block layout does not depend on the checksum's value. It covers the
+   * first block's other symbols and every digit after that block, so it is
+   * taken once the rest is spelled out, and the first block is emitted last.
+   * A message with a checksum always has a first block, even an empty one.
    */
-  private toDigits(size: Base, blockBits: number): number[] {
+  private toDigits(size: Base, blockBits: number, sum: number): number[] {
     const bound = new BlockBound(size, blockBits);
     const chunk = digitChunk(size);
     const digits: number[] = [];
     const totals = this.totals;
     const n = totals.length;
+    const sumRadix = (2 ** sum) as Radix;
+    let head: { value: bigint | number; count: number } | undefined;
 
     let start = 0;
-    while (start < n) {
+    while (start < n || (sum > 0 && head === undefined)) {
       // The block extends while the freq-blind bound stays within the cap.
       bound.reset();
+      if (sum > 0 && start === 0) {
+        bound.update(sumRadix, ONE, sumRadix);
+      }
       // The message's last symbol has nothing after it to fill the fractional
       // part of its bucket, so as a bucket it needs log2(total) bits of state.
       // When that does not fit the digits its plain index needs, it is
@@ -323,11 +343,33 @@ export class Encoder {
       }
 
       const tail = indexed ? { index: this.lastIndex, count: this.lastCount } : undefined;
-      emitDigits(digits, this.fold(start, end, tail), count, chunk);
+      const value = this.fold(start, end, tail);
+      if (sum > 0 && start === 0) {
+        head = { value, count };
+      } else {
+        emitDigits(digits, value, count, chunk);
+      }
       start = end;
     }
 
-    return digits;
+    if (head === undefined) {
+      return digits;
+    }
+    const h = checksumOf(
+      sum,
+      head.value,
+      head.count + digits.length,
+      digits.length,
+      (i) => digits[i]
+    );
+    const value = head.value;
+    const sealed =
+      typeof value === 'number' && value * sumRadix + h <= MAX_SAFE
+        ? value * sumRadix + h
+        : (BigInt(value) << SHIFTS[sum]) + BigInt(h);
+    const first: number[] = [];
+    emitDigits(first, sealed, head.count, chunk);
+    return first.concat(digits);
   }
 
   /**
@@ -409,7 +451,11 @@ export class Encoder {
   output(options: CodecOptions<OutputType> = {}): Uint8Array | string {
     const type = options.type ?? 'binary';
     const alphabet = outputAlphabet(type, options.charset);
-    const digits = this.toDigits(alphabet.size, validateBlockBits(options.blockBits));
+    const digits = this.toDigits(
+      alphabet.size,
+      validateBlockBits(options.blockBits),
+      validateChecksum(options.checksum)
+    );
 
     if (type === 'text') {
       let str = '';

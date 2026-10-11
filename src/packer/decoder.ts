@@ -18,6 +18,8 @@ import { CorruptInputError } from './errors';
 import {
   outputAlphabet,
   validateBlockBits,
+  validateChecksum,
+  checksumOf,
   type OutputAlphabet,
   digitChunk,
   log2Exact,
@@ -70,6 +72,33 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
     this.bound = new BlockBound(this.size, validateBlockBits(options.blockBits));
     this.chunk = digitChunk(this.size);
     this.loadBlock(0);
+    const sum = validateChecksum(options.checksum);
+    if (sum > 0) {
+      this.verifyChecksum(sum);
+    }
+  }
+
+  /**
+   * Read the `bits`-bit checksum the encoder wrote as the first block's
+   * first symbol and check it against the rest of the input, before any
+   * value is read. A first block without room for it, the empty input
+   * among them, is corrupt.
+   */
+  private verifyChecksum(bits: number): void {
+    const radix = (2 ** bits) as Radix;
+    const bound = this.bound;
+    if (bound.exceedsCapacity(radix)) {
+      throw new CorruptInputError('Input is too short to hold its checksum');
+    }
+    bound.update(radix, ONE, radix);
+    const stored = this.divide(radix);
+    const length = this.input.length;
+    const end = Math.min(bound.blockDigits, length);
+    const value = this.small ? this.num : this.big;
+    const h = checksumOf(bits, value, length, length - end, (i) => this.digitAt(end + i));
+    if (h !== stored) {
+      throw new CorruptInputError('Checksum mismatch: corrupted input');
+    }
   }
 
   /** Digit value of the input at position `i`, in [0, input.length), validated against the charset. */

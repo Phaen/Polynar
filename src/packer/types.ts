@@ -25,6 +25,8 @@ export interface CodecOptions<T extends OutputType = never> {
   charset?: Charset;
   /** Block size in bits, 2048 when omitted. */
   blockBits?: number;
+  /** Width of the checksum in bits, 1 to 32; none when omitted. */
+  checksum?: number;
 }
 
 declare const radixBrand: unique symbol;

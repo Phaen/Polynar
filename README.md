@@ -325,10 +325,10 @@ What `i` is depends on the node: the value itself on `p.int`, the step count (`v
 
 Every node has these two methods, where `T` is the type it infers.
 
-| Method                                                                                                                 | Description                                                        |
-| ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `.encode(value: T, options?: { type?: 'binary' \| 'text'; charset?: Charset; blockBits?: number })`                    | Encodes to a `Uint8Array`, or to a string when `type` is `'text'`. |
-| `.decode(input: Uint8Array \| string, options?: { type?: 'binary' \| 'text'; charset?: Charset; blockBits?: number })` | Decodes bytes or text made by `encode` with the same options.      |
+| Method                                                                                                                                    | Description                                                        |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `.encode(value: T, options?: { type?: 'binary' \| 'text'; charset?: Charset; blockBits?: number; checksum?: number })`                    | Encodes to a `Uint8Array`, or to a string when `type` is `'text'`. |
+| `.decode(input: Uint8Array \| string, options?: { type?: 'binary' \| 'text'; charset?: Charset; blockBits?: number; checksum?: number })` | Decodes bytes or text made by `encode` with the same options.      |
 
 ```typescript
 const bytes = User.encode(user); // Uint8Array
@@ -343,6 +343,8 @@ User.decode(link, { charset: CharSets.urlSafe });
 Each value has one encoding, so decoding a message and encoding the result gives back the same bytes, except when `p.versioned` upgrades old data.
 
 `blockBits` is the size of the blocks a message is packed in, from 128 to 65536 bits and 2048 by default. Bigger blocks save a little space, and smaller ones are faster.
+
+`checksum` adds an integrity check of that many bits, from 1 to 32, to the message, and costs exactly that many bits. The decoder needs the same setting, and throws a `CorruptInputError` when the input doesn't match it. A corrupted message slips through with probability 2^-k for a `checksum` of k bits. There is no key, so it is no defence against deliberate tampering.
 
 A charset is the set of symbols a message is written in, and it works for both text and binary output. It is a string of at least two different characters, or a `[min, max]` range of character codes. Charsets hold characters from the Basic Multilingual Plane only, so no emoji. Text defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. Binary output defaults to every byte value and writes each symbol as its character code, so its charset can only hold codes from 0 to 255. That keeps bytes inside a smaller set, such as printable ASCII:
 
@@ -368,7 +370,7 @@ User.decode(ascii, { charset: CharSets.printable });
 
 ## Errors
 
-Input that doesn't decode — truncated, padded, or with characters outside the charset — throws a `CorruptInputError`. There is no checksum, so damaged input that still decodes gives whatever value those bytes encode. Its subclass `UnknownVersionError` is thrown when `p.versioned` gets data from a version it doesn't list.
+Input that doesn't decode — truncated, padded, or with characters outside the charset — throws a `CorruptInputError`. Without a `checksum`, damaged input that still decodes gives whatever value those bytes encode; with one it throws instead, except with probability 2^-k. Its subclass `UnknownVersionError` is thrown when `p.versioned` gets data from a version it doesn't list.
 
 A value that can't be encoded throws with its path in front and the limit it broke, like `filters[2].op: Value "gt" is not one of "eq", "lt"` or `tags: Array length 5 is above the maximum 3`. A value outside what the schema allows — a bound, step, length, list, tag, charset or nesting depth — throws a `RangeError`. A value the schema has no place for at all throws a `TypeError`: a non-integer, a non-finite number, an invalid date, a missing required field, a kind no union member takes, or a type `p.any` can't encode. An invalid schema throws a `TypeError` or `RangeError` as soon as it's defined.
 
