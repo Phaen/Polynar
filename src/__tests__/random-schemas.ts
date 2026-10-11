@@ -556,13 +556,77 @@ const ANY_TYPED_ARRAYS = [
   BigUint64Array,
 ] as const;
 
-// Valid with and without the u flag; a slash and a line break are among the
-// characters a RegExp's source escapes.
-const ANY_REGEXP_SOURCES = ['a', '', 'a/b', 'x\ny', '^\\d+$', '(?<y>\\w)\\k<y>', '[^/]*', '\\p{L}'];
+// Pieces of RegExp syntax, joined at random: escapes, classes, groups,
+// lookarounds, Unicode escapes, and the characters a source has to escape
+// (a slash, line breaks, U+2028), plus astral and lone-surrogate code units.
+const REGEXP_PIECES = [
+  'a',
+  'Z',
+  '0',
+  '.',
+  '^',
+  '$',
+  '|',
+  '*',
+  '+',
+  '?',
+  '{2}',
+  '{1,3}',
+  '/',
+  '\\/',
+  '\n',
+  '\r',
+  ' ',
+  '\\n',
+  '\\d',
+  '\\W',
+  '\\b',
+  '\\\\',
+  '[',
+  ']',
+  '[a-z]',
+  '[^/]',
+  '(',
+  ')',
+  '(?:',
+  '(?=',
+  '(?!',
+  '(?<=',
+  '(?<!',
+  '(?<n>',
+  '\\k<n>',
+  '\\1',
+  '\\p{L}',
+  '\\P{Lu}',
+  '\\u{1F600}',
+  '\\u0041',
+  '\\x41',
+  '\\cJ',
+  '😀',
+  '\ud83d',
+  '-',
+  ' ',
+  '#',
+  '&&',
+  '[[a]--[b]]',
+];
+const REGEXP_FLAGS = [...'dgimsuvy'];
 
-/** A RegExp over one of those sources, each flag set with even odds. */
-const randRegExp = (): RegExp =>
-  new RegExp(pick(ANY_REGEXP_SOURCES), [...'dgimsuy'].filter(() => rand() < 0.5).join(''));
+/**
+ * A RegExp from random pieces and random flags; sources the engine refuses
+ * are drawn again, so every returned value is one the engine built.
+ */
+const randRegExp = (): RegExp => {
+  for (;;) {
+    const source = Array.from({ length: randInt(0, 6) }, () => pick(REGEXP_PIECES)).join('');
+    const flags = REGEXP_FLAGS.filter(() => rand() < 0.3).join('');
+    try {
+      return new RegExp(source, flags);
+    } catch {
+      // Invalid syntax for these flags, or a flag this engine lacks.
+    }
+  }
+};
 
 export const anyValue = (depth: number, top = false): unknown => {
   switch (randInt(0, depth > 0 ? 14 : 10)) {
