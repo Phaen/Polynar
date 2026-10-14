@@ -2,7 +2,7 @@
  * Adaptive priors: the adaptation's checks, the live-table helpers, the
  * table that learns a message's values on top of its fixed weights, and the
  * user-facing prior that picks the cheapest of its static spelling and the
- * ladder's adaptive ones per message.
+ * ladder's adaptive ones per message, and its estimate of a bucket.
  */
 
 import { Encoder, Decoder } from '../../packer';
@@ -10,6 +10,7 @@ import {
   AdaptivePrior,
   AdaptiveTable,
   DEFAULT_ADAPTIVE_WINDOW,
+  LiveCounts,
   LADDER,
   MAX_ADAPTIVE_MEMBERS,
   checkAdaptation,
@@ -17,6 +18,7 @@ import {
   readLive,
   writeLive,
 } from '../../nodes/adaptive';
+import { Exclusion, excludedBucket } from '../../nodes/excluded';
 import { Fenwick } from '../../nodes/fenwick';
 import { buildWeights, readTable, writeTable } from '../../nodes/weights';
 import { mulberry32 } from '../support';
@@ -338,11 +340,30 @@ describe('AdaptiveTable', () => {
 const selectorTable = (prior: AdaptivePrior) =>
   buildWeights([prior.rungs.length, ...ones(prior.rungs.length)], 1 + prior.rungs.length, 'w');
 
+/** `bucket(pos)` with the members of `excluded` owning no states. */
+const cut = (
+  bucket: (pos: number) => readonly number[],
+  pos: number,
+  excluded: readonly number[]
+): [number, number, number] => {
+  let [cum, freq, total] = bucket(pos);
+  for (const member of excluded) {
+    const width = bucket(member)[1];
+    total -= width;
+    cum -= member < pos ? width : 0;
+    freq = member === pos ? 0 : freq;
+  }
+  return [cum, freq, total];
+};
+
 /**
  * A message of `symbols` in contexts `rows`, spelled by hand under `coding`
  * of `prior`: the first value static, the selector, then every later value
  * static under coding 0, or under coding i through the brute-force count
  * model of its row at the i-th rung, each row learning its own values.
+ * `excluded[i]` lists the members ruled out of value i, which is not
+ * written when they leave it alone; `learned[i]` marks a value learned
+ * without being written. Either way the value is still learned.
  */
 const forge = (
   prior: AdaptivePrior,
@@ -350,22 +371,29 @@ const forge = (
   coding: number,
   symbols: readonly number[],
   rows: readonly number[] = symbols.map(() => 0),
-  window = Math.max(DEFAULT_ADAPTIVE_WINDOW, prior.members)
+  window = Math.max(DEFAULT_ADAPTIVE_WINDOW, prior.members),
+  excluded: readonly (readonly number[])[] = [],
+  learned: readonly boolean[] = []
 ): Uint8Array => {
   const enc = new Encoder();
   const models: Model[] = [];
   const model = (row: number): Model =>
     (models[row] ??= new Model(weights[row], prior.rungs[coding - 1], window));
+  let written = 0;
   symbols.forEach((symbol, i) => {
     const row = rows[i];
-    if (i === 1) {
-      writeTable(enc, selectorTable(prior), coding);
-    }
-    if (i === 0 || coding === 0) {
-      writeTable(enc, prior.bases[row], symbol);
-    } else {
-      const [cum, freq, total] = model(row).bucket(symbol);
+    const out = excluded[i] ?? [];
+    if (!learned[i] && out.length < prior.members - 1) {
+      if (written === 1) {
+        writeTable(enc, selectorTable(prior), coding);
+      }
+      const base = prior.bases[row];
+      const [cum, freq, total] =
+        written === 0 || coding === 0
+          ? cut((pos) => [base.cums[pos], base.freqs[pos], base.total], symbol, out)
+          : cut((pos) => model(row).bucket(pos), symbol, out);
       enc.composeWeighted(cum, freq, total, { index: symbol, count: prior.members });
+      written++;
     }
     if (coding > 0) {
       model(row).bump(symbol);
@@ -399,6 +427,62 @@ const selector = (prior: AdaptivePrior, bytes: Uint8Array, row = 0): number => {
 };
 
 const zeros = (n: number): number[] => new Array<number>(n).fill(0);
+
+/** A message's values: each written with `excluded` ruled out, or learned when `learned`. */
+interface Script {
+  readonly symbols: readonly number[];
+  readonly rows: readonly number[];
+  readonly excluded: readonly (readonly number[])[];
+  readonly learned: readonly boolean[];
+}
+
+const exclusionOf = (prior: AdaptivePrior, members: readonly number[]): Exclusion => {
+  const exclusion = new Exclusion(prior.members);
+  members.forEach((member) => exclusion.add(member));
+  return exclusion;
+};
+
+const encodeScript = (prior: AdaptivePrior, script: Script): Uint8Array => {
+  const enc = new Encoder();
+  script.symbols.forEach((symbol, i) => {
+    if (script.learned[i]) {
+      prior.learn(enc, symbol, script.rows[i]);
+    } else {
+      prior.write(enc, symbol, script.rows[i], exclusionOf(prior, script.excluded[i] ?? []));
+    }
+  });
+  return enc.output();
+};
+
+const decodeScript = (prior: AdaptivePrior, bytes: Uint8Array, script: Script): number[] => {
+  const dec = new Decoder(bytes);
+  const out = script.symbols.map((symbol, i) => {
+    if (script.learned[i]) {
+      prior.learn(dec, symbol, script.rows[i]);
+      return symbol;
+    }
+    return prior.read(dec, script.rows[i], exclusionOf(prior, script.excluded[i] ?? []));
+  });
+  dec.finalize();
+  return out;
+};
+
+const forgeScript = (
+  prior: AdaptivePrior,
+  weights: readonly number[][],
+  coding: number,
+  script: Script
+): Uint8Array =>
+  forge(
+    prior,
+    weights,
+    coding,
+    script.symbols,
+    script.rows,
+    undefined,
+    script.excluded,
+    script.learned
+  );
 
 describe('AdaptivePrior', () => {
   it('scales the ladder by the member count, each rung at least 1, repeats collapsed', () => {
@@ -609,5 +693,201 @@ describe('AdaptivePrior', () => {
     expect(() => lone.write(new Encoder(), 7)).toThrow(
       new RangeError('Position 7 is outside [0, 1)')
     );
+  });
+});
+
+describe('AdaptivePrior exclusion and learning', () => {
+  /**
+   * A seeded script over `m` members in two rows: values skewed to member
+   * 0, some with members excluded (now and then all but the value), some
+   * learned, as `mode` asks. The first value is known from its exclusion or
+   * learned, so the first written value comes later.
+   */
+  const script = (m: number, mode: 'excluded' | 'learned' | 'both'): Script => {
+    const random = mulberry32(m * 7 + mode.length);
+    const symbols = sequence(m * 3 + mode.length, 400, m, 0.6);
+    const rows = symbols.map(() => (random() < 0.3 ? 1 : 0));
+    const excluded = symbols.map((symbol, i) => {
+      if (mode === 'learned') {
+        return [];
+      }
+      const others = [...Array(m).keys()].filter((member) => member !== symbol);
+      if (i === 0 || random() < 0.1) {
+        return others;
+      }
+      return others.filter(() => random() < 0.3);
+    });
+    const learned = symbols.map((_, i) =>
+      mode === 'excluded' ? false : i === 0 || i === 3 || random() < 0.3
+    );
+    return { symbols, rows, excluded, learned };
+  };
+
+  it.each([
+    [3, 'excluded'],
+    [5, 'excluded'],
+    [8, 'excluded'],
+    [3, 'learned'],
+    [5, 'learned'],
+    [5, 'both'],
+    [8, 'both'],
+  ] as const)(
+    'decodes a message of %i members with values %s, forged under every coding, and encodes as one of them',
+    (m, mode) => {
+      const random = mulberry32(m + 100);
+      const weights = [0, 1].map(() =>
+        Array.from({ length: m }, () => 1 + Math.floor(random() * 9))
+      );
+      const prior = new AdaptivePrior(weights, m, undefined, 'w');
+      const run = script(m, mode);
+      const forged = Array.from({ length: 1 + prior.rungs.length }, (_, coding) =>
+        forgeScript(prior, weights, coding, run)
+      );
+      forged.forEach((bytes) => {
+        expect(decodeScript(prior, bytes, run)).toEqual(run.symbols);
+      });
+      const bytes = encodeScript(prior, run);
+      expect(forged).toContainEqual(bytes);
+      expect(decodeScript(prior, bytes, run)).toEqual(run.symbols);
+    }
+  );
+
+  it('writes the same as before with nothing excluded', () => {
+    const prior = new AdaptivePrior([ones(8)], 8, undefined, 'w');
+    const symbols = sequence(1, 300, 8, 0.9);
+    const enc = new Encoder();
+    const none = new Exclusion(8);
+    symbols.forEach((symbol) => prior.write(enc, symbol, 0, none));
+    expect(enc.output()).toEqual(encodeAll(prior, symbols));
+  });
+
+  it('writes nothing for a value its exclusion leaves alone, and still learns it', () => {
+    const prior = new AdaptivePrior([ones(3)], 3, undefined, 'w');
+    const enc = new Encoder();
+    prior.write(enc, 1, 0, exclusionOf(prior, [0, 2]));
+    expect(enc.output()).toEqual(new Encoder().output());
+    const dec = new Decoder(new Encoder().output());
+    expect(prior.read(dec, 0, exclusionOf(prior, [2, 0]))).toBe(1);
+    dec.finalize();
+
+    const tail = sequence(9, 200, 3, 0.9);
+    const lead = new Array<number>(40).fill(2);
+    const known: Script = {
+      symbols: [...lead, ...tail],
+      rows: zeros(lead.length + tail.length),
+      excluded: lead.map(() => [0, 1]),
+      learned: [],
+    };
+    const learned: Script = { ...known, excluded: [], learned: lead.map(() => true) };
+    const bytes = encodeScript(prior, known);
+    expect(bytes).toEqual(encodeScript(prior, learned));
+    expect(bytes).not.toEqual(encodeAll(prior, tail));
+    expect(decodeScript(prior, bytes, known)).toEqual(known.symbols);
+  });
+
+  it('keeps nothing learned under the static coding', () => {
+    // A short message stays static; values learned after its selector are dropped.
+    const prior = new AdaptivePrior([ones(4)], 4, undefined, 'w');
+    const run: Script = {
+      symbols: [3, 1, 0, 0, 2],
+      rows: zeros(5),
+      excluded: [],
+      learned: [true, false, false, true, false],
+    };
+    const bytes = encodeScript(prior, run);
+    expect(bytes).toEqual(forgeScript(prior, [ones(4)], 0, run));
+    expect(decodeScript(prior, bytes, run)).toEqual(run.symbols);
+  });
+
+  it('refuses a position outside its members and a row outside its rows on either side', () => {
+    const prior = new AdaptivePrior([ones(3), ones(3)], 3, undefined, 'w');
+    for (const side of [new Encoder(), new Decoder(new Encoder().output())]) {
+      expect(() => prior.learn(side, 3)).toThrow(new RangeError('Position 3 is outside [0, 3)'));
+      expect(() => prior.learn(side, -1)).toThrow(new RangeError('Position -1 is outside [0, 3)'));
+      expect(() => prior.learn(side, 0.5)).toThrow(new TypeError('Position 0.5 is not an integer'));
+      for (const row of [2, -1, 0.5, NaN]) {
+        expect(() => prior.learn(side, 0, row)).toThrow(
+          new RangeError(`Row ${row} is outside [0, 2)`)
+        );
+      }
+    }
+  });
+
+  it('learns nothing for a lone member', () => {
+    const prior = new AdaptivePrior([[3]], 1, undefined, 'w');
+    const enc = new Encoder();
+    prior.learn(enc, 0);
+    prior.write(enc, 0);
+    expect(enc.output()).toEqual(new Encoder().output());
+    const dec = new Decoder(new Encoder().output());
+    prior.learn(dec, 0);
+    expect(prior.read(dec)).toBe(0);
+    dec.finalize();
+    expect(() => prior.learn(enc, 1)).toThrow(new RangeError('Position 1 is outside [0, 1)'));
+  });
+});
+
+describe('AdaptivePrior estimate', () => {
+  const weights = [[5, 3, 2, 1, 1], ones(5)];
+  const symbols = [0, 1, 0, 2, 0, 0, 3, 1];
+
+  /** The second rung's live table of row 0 after `symbols`, built by hand. */
+  const handLive = (prior: AdaptivePrior): LiveCounts => {
+    const live = new LiveCounts(
+      buildWeights(weights[0], 5, 'w'),
+      prior.rungs[1],
+      DEFAULT_ADAPTIVE_WINDOW
+    );
+    symbols.forEach((symbol) => live.learn(symbol));
+    return live;
+  };
+
+  it("gives a member's bucket in the second rung's live table, excluded members ruled out", () => {
+    const prior = new AdaptivePrior(weights, 5, undefined, 'w');
+    const enc = new Encoder();
+    symbols.forEach((symbol, i) =>
+      i % 2 === 0 ? prior.write(enc, symbol) : prior.learn(enc, symbol)
+    );
+    const live = handLive(prior);
+    for (let pos = 0; pos < 5; pos++) {
+      expect(prior.estimate(enc, pos)).toEqual(live.bucket(pos));
+    }
+    const excluded = new Exclusion(5);
+    excluded.add(0);
+    excluded.add(3);
+    expect(prior.estimate(enc, 4, 0, excluded)).toEqual(excludedBucket(live, excluded, 4));
+    // Row 1 has learned nothing: its weights at the rung's prior.
+    expect(prior.estimate(enc, 2, 1)).toEqual([
+      2 * prior.rungs[1],
+      prior.rungs[1],
+      5 * prior.rungs[1],
+    ]);
+  });
+
+  it('learns nothing, so writing after an estimate writes the same', () => {
+    const plain = new AdaptivePrior(weights, 5, undefined, 'w');
+    const estimated = new AdaptivePrior(weights, 5, undefined, 'w');
+    const a = new Encoder();
+    const b = new Encoder();
+    symbols.forEach((symbol) => {
+      plain.write(a, symbol);
+      estimated.estimate(b, symbol);
+      estimated.estimate(b, symbol, 1);
+      estimated.write(b, symbol);
+    });
+    expect(b.output()).toEqual(a.output());
+  });
+
+  it('estimates a lone member as its whole table', () => {
+    const prior = new AdaptivePrior([[3]], 1, undefined, 'w');
+    expect(prior.estimate(new Encoder(), 0)).toEqual([0, 3 * prior.rungs[1], 3 * prior.rungs[1]]);
+  });
+
+  it('refuses a position outside its members and a row outside its rows', () => {
+    const prior = new AdaptivePrior(weights, 5, undefined, 'w');
+    const enc = new Encoder();
+    expect(() => prior.estimate(enc, 5)).toThrow(new RangeError('Position 5 is outside [0, 5)'));
+    expect(() => prior.estimate(enc, 0.5)).toThrow(new TypeError('Position 0.5 is not an integer'));
+    expect(() => prior.estimate(enc, 0, 2)).toThrow(new RangeError('Row 2 is outside [0, 2)'));
   });
 });

@@ -138,6 +138,17 @@ function message(radix: number, digits: number[], o: Options, tail?: (enc: Encod
 const digitsIn = (radix: number, count: number): number[] =>
   Array.from({ length: count }, () => (rand() < 0.1 ? radix - 1 : randInt(0, radix - 1)));
 
+describe('Decoder digits', () => {
+  it("counts the input's digits: bytes, or characters of text", () => {
+    const enc = new Encoder();
+    enc.compose(1234, 100000);
+    const bytes = enc.output();
+    expect(new Decoder(bytes).digits).toBe(bytes.length);
+    expect(new Decoder('').digits).toBe(0);
+    expect(new Decoder('AbCd', { type: 'text' }).digits).toBe(4);
+  });
+});
+
 describe('compose / parse / parseMany', () => {
   it('folds radices whose product rounds to exactly 2^53 as doubles', () => {
     // 3002399751580331 · 3 = 2^53 + 1, which a double rounds to 2^53.

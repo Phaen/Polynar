@@ -163,14 +163,24 @@ describe('Schema any', () => {
     expect(together.encode(value).length).toBeLessThan(apart.encode(value).length);
   });
 
+  it('copies stretches that strings share', () => {
+    const value = [
+      'the quick brown fox jumps over the lazy dog',
+      'the quick brown cat jumps over the lazy dog',
+      'a quick brown fox jumps over a lazy dog',
+    ];
+    expect(trip(p.any(), value)).toEqual(value);
+  });
+
   it('recalls a Map key among string values, and a record key apart from them', () => {
     const recalled = p.any().encode(new Map([['hello', 'hello']]));
     expect(recalled.length).toBeLessThan(p.any().encode(new Map([['hello', 'world']])).length);
-    // Keys and values share what their characters learn, which depends on
-    // the counts alone, so only recall could tell these two apart.
-    expect(p.any().encode({ hello: 'hello' }).length).toBe(
-      p.any().encode({ hello: 'olleh' }).length
-    );
+    // Keys and values share what their characters learn, which below the
+    // warm-up of contexts and repeats depends on the counts alone, so only
+    // recall could tell these two apart.
+    const record = { hello: 'hello' };
+    expect(trip(p.any(), record)).toEqual(record);
+    expect(p.any().encode(record).length).toBe(p.any().encode({ hello: 'olleh' }).length);
   });
 
   it('round-trips Maps and Sets of any values, keys included', () => {

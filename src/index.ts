@@ -34,6 +34,7 @@ export {
 export { ProseModels, buildProseModel, members } from './nodes';
 export type {
   AdaptiveOptions,
+  SequenceAdaptiveOptions,
   AnyValue,
   Infer,
   InferShape,

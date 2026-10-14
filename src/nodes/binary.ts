@@ -1,9 +1,10 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { PNode } from './base';
 import { typedArrayKind, type Kind, type TypedArray } from './guards';
-import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
+import { checkUnset } from './lattice';
 import type { Cdf } from './weights';
-import type { AdaptiveOptions } from './adaptive';
+import type { SequenceAdaptiveOptions } from './adaptive';
+import { Sequence, type SequenceBounds, type Symbols } from './sequence';
 
 /**
  * A typed-array class: its element width and a way to build it on a buffer.
@@ -20,6 +21,95 @@ export interface TypedArrayClass<A extends TypedArray> {
 const LITTLE_ENDIAN = new Uint8Array(Uint16Array.of(1).buffer)[0] === 1;
 
 /**
+ * A typed array's bytes, each item one byte in wire order: an element's low
+ * byte first on every machine.
+ */
+class Bytes<A extends TypedArray> implements Symbols<A> {
+  readonly who = 'p.binary';
+  /** Every element width, as each spells its bytes alike. */
+  readonly pool = 'bytes';
+  readonly size = 256;
+  readonly start = 0;
+  readonly noun = 'length';
+  readonly item = 'byte';
+  readonly tailless = true;
+  readonly order = 0;
+  /** Bytes per element. */
+  private readonly width: number;
+
+  constructor(private readonly type: TypedArrayClass<A>) {
+    this.width = type.BYTES_PER_ELEMENT;
+  }
+
+  count(value: A): number {
+    return value.length;
+  }
+
+  span(count: number): number {
+    return count * this.width;
+  }
+
+  check(count: number): void {
+    // No buffer holds more than 2^53 - 1 bytes, so a larger length was never
+    // written, and below it the byte count stays a safe integer.
+    if (count > Number.MAX_SAFE_INTEGER / this.width) {
+      throw new CorruptInputError(`Binary length ${count} is above the largest possible buffer`);
+    }
+  }
+
+  items(value: A): number[] {
+    const raw = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    const width = this.width;
+    const bytes: number[] = [];
+    for (let at = 0; at < raw.length; at += width) {
+      for (let b = 0; b < width; b++) {
+        bytes.push(raw[LITTLE_ENDIAN ? at + b : at + width - 1 - b]);
+      }
+    }
+    return bytes;
+  }
+
+  units(): number {
+    return 1;
+  }
+
+  symbol(byte: number): number {
+    return byte;
+  }
+
+  tail(): void {}
+
+  tails(): number {
+    return 1;
+  }
+
+  untail(_dec: Decoder, byte: number): number {
+    return byte;
+  }
+
+  row(): number {
+    return 0;
+  }
+
+  build(bytes: number[]): A {
+    // The bytes are read before the buffer is allocated, so a corrupt length
+    // prefix runs out of input as corrupt data instead of requesting an
+    // absurd buffer.
+    const raw = Uint8Array.from(bytes);
+    if (!LITTLE_ENDIAN) {
+      for (let at = 0; at < raw.length; at += this.width) {
+        raw.subarray(at, at + this.width).reverse();
+      }
+    }
+    return new this.type(raw.buffer) as A;
+  }
+
+  subject(value: A): string {
+    return `Binary length ${value.length}`;
+  }
+}
+
+/**
  * A typed array as its raw bits: a length prefix counting elements, then each
  * element's bytes, low byte first on every machine. Nothing interprets the
  * values, so every element round-trips bit-exact, NaN payloads and -0
@@ -29,16 +119,14 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
   readonly _kinds: readonly Kind[];
 
   private readonly _type: TypedArrayClass<A>;
-  private readonly _size: number;
-  private readonly _bounds: LengthBounds;
-  private readonly _length: IndexRange;
+  private readonly _bounds: SequenceBounds;
+  private readonly _sequence: Sequence<A>;
 
-  constructor(type: TypedArrayClass<A>, bounds: LengthBounds = {}) {
+  constructor(type: TypedArrayClass<A>, bounds: SequenceBounds = {}) {
     super();
     this._type = type;
-    this._size = type.BYTES_PER_ELEMENT;
     this._bounds = bounds;
-    this._length = lengthRange(bounds, 'p.binary', 'length');
+    this._sequence = new Sequence(new Bytes(type), bounds);
     this._kinds = [typedArrayKind(new type(new ArrayBuffer(0)))];
   }
 
@@ -82,17 +170,23 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
   }
 
   /**
-   * Let the prior over the element count learn from the message: the declared
-   * weights, or even ones when none are, are the starting point, and each
-   * element count coded counts as one observation, so an element count that
-   * keeps recurring gets cheaper as the message goes on. `window` is how many
-   * observations the counts hold before they halve, so the newest weigh most
-   * (1024 when left out, and raised to the number of values it counts when
-   * smaller). From its second value on, the node spends one bit to stay static,
-   * or a few to name the learning rate that paid off. Requires a max and takes
-   * weights, not a cdf; part of the wire format, like the weights.
+   * Let the node learn from the message. Each byte is priced by the three
+   * bytes before it, as the message so far has followed them, falling back
+   * to a prior over the bytes that learns too; a stretch of bytes that
+   * already occurred in the message is referred back to instead of spelled
+   * again; and the element count learns when there is a max. The bytes
+   * learn together with those of every other adaptive binary of the message
+   * with the same window, whatever its element type, unless `separate`. The
+   * declared
+   * weights, or even ones when none are, are where the count's prior
+   * starts. `window` is how many observations a prior's counts hold before
+   * they halve, so the newest weigh most (1024 when left out, and raised to
+   * the number of values they count when smaller). From its second value
+   * on, each prior spends one bit to stay static, or a few to name the
+   * learning rate that paid off. The element count takes weights, not a
+   * cdf; part of the wire format, like the weights.
    */
-  adaptive(options?: AdaptiveOptions): PBinary<A> {
+  adaptive(options?: SequenceAdaptiveOptions): PBinary<A> {
     return new PBinary(this._type, {
       ...this._bounds,
       adaptive: options ?? {},
@@ -100,31 +194,10 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
   }
 
   _write(enc: Encoder, value: A): void {
-    this._length.write(enc, value.length, () => `Binary length ${value.length}`);
-    const raw = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-    const size = this._size;
-    for (let at = 0; at < raw.length; at += size) {
-      for (let b = 0; b < size; b++) {
-        enc.compose(raw[LITTLE_ENDIAN ? at + b : at + size - 1 - b], 256);
-      }
-    }
+    this._sequence.write(enc, value);
   }
 
   _read(dec: Decoder): A {
-    const length = this._length.read(dec);
-    // No buffer holds more than 2^53 - 1 bytes, so a larger length was never
-    // written, and below it the byte count stays a safe integer.
-    if (length > Number.MAX_SAFE_INTEGER / this._size) {
-      throw new CorruptInputError(`Binary length ${length} is above the largest possible buffer`);
-    }
-    // Reading before allocating means a corrupt length prefix runs out of
-    // input as corrupt data instead of requesting an absurd buffer.
-    const raw = Uint8Array.from(dec.parseMany(256, length * this._size));
-    if (!LITTLE_ENDIAN) {
-      for (let at = 0; at < raw.length; at += this._size) {
-        raw.subarray(at, at + this._size).reverse();
-      }
-    }
-    return new this._type(raw.buffer) as A;
+    return this._sequence.read(dec);
   }
 }

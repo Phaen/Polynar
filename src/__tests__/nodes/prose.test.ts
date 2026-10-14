@@ -1,18 +1,15 @@
 /**
  * The prose model internals behind `p.string().prose()`: the English weight
- * rules, context rows and the per-code-point coding.
+ * rules, the compiled table and model building.
  */
 
-import { Encoder, Decoder, ProseModels, buildProseModel } from '../../index';
+import { ProseModels, buildProseModel } from '../../index';
 import {
   baseWeight,
   contextMultiplier,
   englishWeights,
   compileProse,
   proseContext,
-  contextRow,
-  composeProsePoint,
-  parseProsePoint,
 } from '../../nodes/prose';
 
 const english = compileProse(ProseModels.english);
@@ -97,55 +94,6 @@ describe('proseContext', () => {
     for (const code of [0x10ffff, 0xe9, -1, 0.5, NaN, Infinity]) {
       expect(proseContext(english, code)).toBe(english.escape);
     }
-  });
-});
-
-describe('contextRow', () => {
-  it('returns the first and last rows', () => {
-    expect(contextRow(english, 0)).toBe(english.rows[0]);
-    expect(contextRow(english, english.escape)).toBe(english.rows[english.escape]);
-  });
-
-  it.each([-1, 0.5, NaN, Infinity, 98, 99])('rejects the context %p', (ctx) => {
-    expect(() => contextRow(english, ctx)).toThrow(
-      new RangeError(`Prose context ${ctx} is not a row of the model (0–${english.escape})`)
-    );
-  });
-});
-
-describe('composeProsePoint', () => {
-  it('round-trips modeled and escaped code points in any row', () => {
-    const codes = ['e', ' ', '~', 'é', '👋', '\ud800'].map((ch) => ch.codePointAt(0)!);
-    const enc = new Encoder();
-    let ctx = english.start;
-    for (const code of codes) {
-      composeProsePoint(enc, english, code, ctx);
-      ctx = proseContext(english, code);
-    }
-    composeProsePoint(enc, english, 0x10ffff, english.escape);
-    const dec = new Decoder(enc.output());
-    ctx = english.start;
-    for (const code of codes) {
-      expect(parseProsePoint(dec, english, ctx)).toBe(code);
-      ctx = proseContext(english, code);
-    }
-    expect(parseProsePoint(dec, english, english.escape)).toBe(0x10ffff);
-  });
-
-  it.each([-1, 0.5, NaN, english.escape + 1])('rejects the context %p', (ctx) => {
-    const message = `Prose context ${ctx} is not a row of the model (0–${english.escape})`;
-    expect(() => composeProsePoint(new Encoder(), english, 101, ctx)).toThrow(
-      new RangeError(message)
-    );
-    expect(() => parseProsePoint(new Decoder(new Uint8Array([1])), english, ctx)).toThrow(
-      new RangeError(message)
-    );
-  });
-
-  it.each([0x110000, -1])('rejects the code point %p', (code) => {
-    expect(() => composeProsePoint(new Encoder(), english, code, english.start)).toThrow(
-      new RangeError(`Code point ${code} is outside 0–0x10FFFF`)
-    );
   });
 });
 

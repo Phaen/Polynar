@@ -7,9 +7,16 @@
  * and start over with the next message.
  */
 
-import type { Encoder, Decoder, Bucket } from '../packer';
+import { Encoder, type Decoder, type Bucket } from '../packer';
+import {
+  type Exclusion,
+  excludedBucket,
+  readExcluded,
+  staticTable,
+  writeExcluded,
+} from './excluded';
 import { Fenwick } from './fenwick';
-import { buildWeights, readTable, writeTable, type WeightTable } from './weights';
+import { buildWeights, readTable, type WeightTable } from './weights';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 
@@ -20,6 +27,15 @@ const MAX_SAFE = Number.MAX_SAFE_INTEGER;
  */
 export interface AdaptiveOptions {
   readonly window?: number;
+}
+
+/**
+ * The options of `p.string` and `p.binary`'s `.adaptive()`: `separate` keeps
+ * the node's characters or bytes learning on their own, instead of with
+ * every other node of its alphabet and window in the message.
+ */
+export interface SequenceAdaptiveOptions extends AdaptiveOptions {
+  readonly separate?: boolean;
 }
 
 /** The observations an adaptive prior holds before halving, unless declared; a table with more members holds that many. */
@@ -110,11 +126,6 @@ export function readLive(dec: Decoder, table: LiveTable): number {
     (residual) => table.located(table.locate(residual)),
     table.positions
   );
-}
-
-/** Member `pos`'s bucket in the static table `base`. */
-function staticBucket(base: WeightTable, pos: number): Bucket {
-  return [base.cums[pos], base.freqs[pos], base.total];
 }
 
 /**
@@ -265,18 +276,25 @@ function ladderRungs(members: number): number[] {
 /** An encoder's view of one message: values written so far and each row's live tables, one per rung. */
 interface Writing {
   written: number;
+  /**
+   * The values learned before any live table exists, as position and row
+   * pairs: the tables are built when the selector first needs them, from
+   * these, so a node written once per message never builds any.
+   */
+  readonly pending: number[];
+  /** Whether the live tables exist; the pending values are replayed when they are first built. */
+  live: boolean;
   readonly lives: (LiveCounts[] | undefined)[];
 }
 
 /**
- * A decoder's view of one message: values read so far, the first one and
- * its row, the selector once read, and each row's live table under the
- * chosen rung.
+ * A decoder's view of one message: values read so far, the values learned
+ * before the selector was read as position and row pairs, the selector once
+ * read, and each row's live table under the chosen rung.
  */
 interface Reading {
   read: number;
-  first: number;
-  firstRow: number;
+  readonly pending: number[];
   coding: number;
   readonly lives: (LiveCounts | undefined)[];
 }
@@ -292,7 +310,13 @@ interface Reading {
  * selector before the second value tells the decoder how the rest are
  * spelled: 0 static, `i` the `i`-th rung, a tie going to the lower index.
  * The selector weighs static as all rungs together, so staying static costs
- * one bit. Every row learns only the values written in it.
+ * one bit. Every row learns only the values coded in it.
+ *
+ * A value may come with members excluded, ruled out by a model consulted
+ * before this one: they own no states in any coding. A value whose
+ * exclusion leaves one member is known without being written; it is
+ * learned, but the first value and the selector wait for one that is
+ * written. A value coded elsewhere entirely is learned through `learn`.
  */
 export class AdaptivePrior {
   /** The static table of each row. */
@@ -346,8 +370,8 @@ export class AdaptivePrior {
     return base;
   }
 
-  /** Writes member `pos`, an integer in `[0, members)`, in context `row`. */
-  write(enc: Encoder, pos: number, row = 0): void {
+  /** The static table of `row`, refusing a row outside the rows and a position outside `[0, members)`. */
+  private check(pos: number, row: number): WeightTable {
     const base = this.base(row);
     if (!Number.isInteger(pos)) {
       throw new TypeError(`Position ${pos} is not an integer`);
@@ -355,66 +379,161 @@ export class AdaptivePrior {
     if (pos < 0 || pos >= this.members) {
       throw new RangeError(`Position ${pos} is outside [0, ${this.members})`);
     }
+    return base;
+  }
+
+  /**
+   * Writes member `pos`, an integer in `[0, members)`, in context `row`,
+   * with the members of `excluded` ruled out; `pos` is never one of them.
+   */
+  write(enc: Encoder, pos: number, row = 0, excluded?: Exclusion): void {
+    const base = this.check(pos, row);
     if (this.members === 1) {
       return;
     }
-    const state = enc.state<Writing>(this, () => ({ written: 0, lives: [] }));
-    const lives = (state.lives[row] ??= this.rungs.map(
-      (prior) => new LiveCounts(base, prior, this.window)
-    ));
-    if (state.written === 0) {
-      writeTable(enc, base, pos);
-    } else {
-      if (state.written === 1) {
-        enc.composeSelector(this, this.choices);
+    const state = this.writing(enc);
+    if (excluded === undefined || excluded.count < this.members - 1) {
+      const table = staticTable(base);
+      if (state.written === 0) {
+        writeExcluded(enc, table, excluded, pos);
+      } else {
+        if (state.written === 1) {
+          enc.composeSelector(this, this.choices);
+        }
+        enc.composeAlternatives(
+          this,
+          [table, ...this.rowLives(state, base, row)].map((t) => excludedBucket(t, excluded, pos)),
+          { index: pos, count: this.members }
+        );
       }
-      enc.composeAlternatives(
-        this,
-        [staticBucket(base, pos), ...lives.map((live) => live.bucket(pos))],
-        { index: pos, count: this.members }
-      );
+      state.written++;
     }
-    state.written++;
-    for (const live of lives) {
-      live.learn(pos);
-    }
+    this.teach(state, pos, row);
   }
 
-  /** Reads a member written by `write` in context `row`. */
-  read(dec: Decoder, row = 0): number {
+  /**
+   * An estimate, on the encoder, of the bucket `write` would give member
+   * `pos` in context `row` under `excluded`: its bucket in the live table
+   * of the second-fastest rung, a middle guess at the coding the selector
+   * will name. The checks are `write`'s; nothing is learned.
+   */
+  estimate(enc: Encoder, pos: number, row = 0, excluded?: Exclusion): Bucket {
+    const base = this.check(pos, row);
+    // The slowest rung, twice the members, is above the fastest, at most
+    // half of them, so there are always at least two.
+    return excludedBucket(this.rowLives(this.writing(enc), base, row)[1], excluded, pos);
+  }
+
+  /** Reads a member written by `write` in context `row` under the same exclusion. */
+  read(dec: Decoder, row = 0, excluded?: Exclusion): number {
     const base = this.base(row);
     if (this.members === 1) {
       return 0;
     }
-    const state = dec.state<Reading>(this, () => ({
-      read: 0,
-      first: 0,
-      firstRow: 0,
-      coding: 0,
-      lives: [],
-    }));
-    if (state.read === 0) {
+    const state = this.reading(dec);
+    let pos: number;
+    if (excluded !== undefined && excluded.count === this.members - 1) {
+      // The value is never excluded, so the one member left is it.
+      pos = 0;
+      while (excluded.has(pos)) {
+        pos++;
+      }
+    } else if (state.read === 0) {
       state.read = 1;
-      state.first = readTable(dec, base);
-      state.firstRow = row;
-      return state.first;
+      pos = readExcluded(dec, staticTable(base), excluded);
+    } else {
+      if (state.read === 1) {
+        state.read = 2;
+        state.coding = readTable(dec, this.selector);
+        // Under the static coding no live table is consulted, so none is
+        // built; under a rung, the values learned so far are its tables'
+        // first lessons, in the order they came.
+        if (state.coding > 0) {
+          for (let i = 0; i < state.pending.length; i += 2) {
+            this.live(state, state.pending[i + 1]).learn(state.pending[i]);
+          }
+        }
+        state.pending.length = 0;
+      }
+      pos = readExcluded(
+        dec,
+        state.coding === 0 ? staticTable(base) : this.live(state, row),
+        excluded
+      );
     }
-    if (state.read === 1) {
-      state.read = 2;
-      state.coding = readTable(dec, this.selector);
-      // Under the static coding no live table is consulted, so none is
-      // built; under a rung, the first value is its table's first lesson.
-      if (state.coding > 0) {
-        this.live(state, state.firstRow).learn(state.first);
+    this.study(state, pos, row);
+    return pos;
+  }
+
+  /**
+   * Learns member `pos` in context `row`, a value coded elsewhere that this
+   * prior still counts: the encoder's live tables learn it at once, the
+   * decoder's once its selector names their rung.
+   */
+  learn(side: Encoder | Decoder, pos: number, row = 0): void {
+    this.check(pos, row);
+    if (this.members === 1) {
+      return;
+    }
+    if (side instanceof Encoder) {
+      this.teach(this.writing(side), pos, row);
+    } else {
+      this.study(this.reading(side), pos, row);
+    }
+  }
+
+  private writing(enc: Encoder): Writing {
+    return enc.state<Writing>(this, () => ({ written: 0, pending: [], live: false, lives: [] }));
+  }
+
+  private reading(dec: Decoder): Reading {
+    return dec.state<Reading>(this, () => ({ read: 0, pending: [], coding: 0, lives: [] }));
+  }
+
+  /** The encoder's live tables of `row`, one per rung, built on first use. */
+  /**
+   * The encoder's live tables of `row`, one per rung. The first request
+   * builds the tables of every row learned so far from the pending values;
+   * from then on the values learn directly and a new row starts empty.
+   */
+  private rowLives(state: Writing, base: WeightTable, row: number): LiveCounts[] {
+    if (!state.live) {
+      state.live = true;
+      const learned = state.pending.splice(0);
+      for (let i = 0; i < learned.length; i += 2) {
+        this.teach(state, learned[i], learned[i + 1]);
       }
     }
-    if (state.coding === 0) {
-      return readTable(dec, base);
+    return (state.lives[row] ??= this.rungs.map(
+      (prior) => new LiveCounts(base, prior, this.window)
+    ));
+  }
+
+  /** Every rung's live table learns `pos`. */
+  /**
+   * The encoder learns `pos` in `row`: queued while no live table exists,
+   * else into every rung's table of the row.
+   */
+  private teach(state: Writing, pos: number, row: number): void {
+    if (!state.live) {
+      state.pending.push(pos, row);
+      return;
     }
-    const live = this.live(state, row);
-    const pos = readLive(dec, live);
-    live.learn(pos);
-    return pos;
+    for (const live of this.rowLives(state, this.bases[row], row)) {
+      live.learn(pos);
+    }
+  }
+
+  /**
+   * The decoder learns `pos` in `row`: queued until the selector is read,
+   * then into the chosen rung's table; under the static coding, not at all.
+   */
+  private study(state: Reading, pos: number, row: number): void {
+    if (state.read < 2) {
+      state.pending.push(pos, row);
+    } else if (state.coding > 0) {
+      this.live(state, row).learn(pos);
+    }
   }
 
   /** The live table of `row` under the rung a message's selector chose. */

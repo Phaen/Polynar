@@ -13,11 +13,13 @@ import {
 import { buildWeights, readTable, writeTable, type WeightTable } from './weights';
 
 /**
- * A node's declared prior over its members: weights, adapting when
+ * A node's declared prior over its members: weights, or `rows` of weights
+ * with one list per context the members are spelled in, adapting when
  * `adaptive` is set, `{}` for the default options.
  */
 export interface MemberPrior {
   readonly weights?: readonly number[];
+  readonly rows?: readonly (readonly number[])[];
   readonly adaptive?: AdaptiveOptions;
 }
 
@@ -28,13 +30,13 @@ export interface MemberPrior {
 export interface Members {
   readonly count: number;
   readonly radix?: number;
-  /** Writes member `pos`, an integer in `[0, count)`. */
-  write(enc: Encoder, pos: number): void;
-  /** Reads a member written by `write`. */
-  read(dec: Decoder): number;
+  /** Writes member `pos`, an integer in `[0, count)`, in context `row`. */
+  write(enc: Encoder, pos: number, row?: number): void;
+  /** Reads a member written by `write` in context `row`. */
+  read(dec: Decoder, row?: number): number;
 }
 
-/** Every member equally likely: one digit in radix `count`. */
+/** Every member equally likely in every row: one digit in radix `count`. */
 class UniformMembers implements Members {
   readonly radix: number;
 
@@ -51,46 +53,57 @@ class UniformMembers implements Members {
   }
 }
 
-/** Members under a static weight table. */
+/** Members under a static weight table per row. */
 class WeightedMembers implements Members {
-  private readonly table: WeightTable;
+  private readonly tables: readonly WeightTable[];
 
   constructor(
     readonly count: number,
-    weights: readonly number[],
+    rows: readonly (readonly number[])[],
     who: string
   ) {
-    this.table = buildWeights(weights, count, who);
+    this.tables = rows.map((weights) => buildWeights(weights, count, who));
   }
 
-  write(enc: Encoder, pos: number): void {
-    writeTable(enc, this.table, pos);
+  /** The table of `row`, which must be one of the rows. */
+  private table(row: number): WeightTable {
+    const table = this.tables[row];
+    // Any row outside the list (negative, fractional, NaN, past the end)
+    // reads undefined.
+    if (table === undefined) {
+      throw new RangeError(`Row ${row} is outside [0, ${this.tables.length})`);
+    }
+    return table;
   }
 
-  read(dec: Decoder): number {
-    return readTable(dec, this.table);
+  write(enc: Encoder, pos: number, row = 0): void {
+    writeTable(enc, this.table(row), pos);
+  }
+
+  read(dec: Decoder, row = 0): number {
+    return readTable(dec, this.table(row));
   }
 }
 
-/** Members under an adaptive prior, starting at the weights. */
+/** Members under an adaptive prior, starting at the rows. */
 class AdaptiveMembers implements Members {
   private readonly prior: AdaptivePrior;
 
   constructor(
     readonly count: number,
-    weights: readonly number[],
+    rows: readonly (readonly number[])[],
     adaptation: AdaptiveOptions,
     who: string
   ) {
-    this.prior = new AdaptivePrior([weights], count, adaptation.window, who);
+    this.prior = new AdaptivePrior(rows, count, adaptation.window, who);
   }
 
-  write(enc: Encoder, pos: number): void {
-    this.prior.write(enc, pos);
+  write(enc: Encoder, pos: number, row = 0): void {
+    this.prior.write(enc, pos, row);
   }
 
-  read(dec: Decoder): number {
-    return this.prior.read(dec);
+  read(dec: Decoder, row = 0): number {
+    return this.prior.read(dec, row);
   }
 }
 
@@ -107,14 +120,22 @@ function checkCount(count: number, who: string): void {
 /** The spelling of `count` members under `prior`; `who` names the node in an error. */
 export function members(count: number, prior: MemberPrior | undefined, who: string): Members {
   checkCount(count, who);
+  const weights = prior?.weights;
+  const given = prior?.rows;
+  if (weights !== undefined && given !== undefined) {
+    throw new TypeError(`${who} takes weights or rows, not both`);
+  }
+  if (given?.length === 0) {
+    throw new TypeError(`${who} rows need at least one row`);
+  }
+  const rows = given ?? (weights === undefined ? undefined : [weights]);
   if (prior?.adaptive !== undefined) {
     const adaptation = checkAdaptation(prior.adaptive, who);
     checkAdaptiveMembers(count, who);
-    const weights = prior.weights ?? new Array<number>(count).fill(1);
-    return new AdaptiveMembers(count, weights, adaptation, who);
+    return new AdaptiveMembers(count, rows ?? [new Array<number>(count).fill(1)], adaptation, who);
   }
-  if (prior?.weights !== undefined) {
-    return new WeightedMembers(count, prior.weights, who);
+  if (rows !== undefined) {
+    return new WeightedMembers(count, rows, who);
   }
   return new UniformMembers(count);
 }

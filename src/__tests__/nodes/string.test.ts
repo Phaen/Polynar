@@ -2,10 +2,34 @@
  * `p.string()`: unicode strings, optionally under a charset or a prose model.
  */
 
-import { p, Encoder, ProseModels, buildProseModel } from '../../index';
+import { p, CharSets, Encoder, ProseModels, buildProseModel } from '../../index';
+import type { PNode, PString } from '../../index';
 import { TEXT_DIRECT_MAX, TEXT_FIRST_RADIX } from '../../nodes/codepoint';
 import { compileProse } from '../../nodes/prose';
+import { buildWeights } from '../../nodes/weights';
+import { Repeats } from '../../nodes/repeats';
 import { mulberry32, trip } from '../support';
+
+/** The size comparison's lorem ipsum, from examples/size-comparison.ts. */
+const LOREM_IPSUM =
+  'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor ' +
+  'incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud ' +
+  'exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure ' +
+  'dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. ' +
+  'Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt ' +
+  'mollit anim id est laborum.\n\n' +
+  'Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque ' +
+  'laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi ' +
+  'architecto beatae vitae dicta sunt explicabo. Nemo enim ipsam voluptatem quia voluptas ' +
+  'sit aspernatur aut odit aut fugit, sed quia consequuntur magni dolores eos qui ratione ' +
+  'voluptatem sequi nesciunt. Neque porro quisquam est, qui dolorem ipsum quia dolor sit ' +
+  'amet, consectetur, adipisci velit, sed quia non numquam eius modi tempora incidunt ut ' +
+  'labore et dolore magnam aliquam quaerat voluptatem.\n\n' +
+  'At vero eos et accusamus et iusto odio dignissimos ducimus qui blanditiis praesentium ' +
+  'voluptatum deleniti atque corrupti quos dolores et quas molestias excepturi sint ' +
+  'occaecati cupiditate non provident, similique sunt in culpa qui officia deserunt ' +
+  'mollitia animi, id est laborum et dolorum fuga. Et harum quidem rerum facilis est et ' +
+  'expedita distinctio.';
 
 const rand = mulberry32(0x57a1);
 const below = (n: number): number => Math.floor(rand() * n);
@@ -199,7 +223,7 @@ describe('Schema string prose', () => {
   it('reads a modeled character behind the escape as that character', () => {
     // 'e' has its own bucket; its escaped form reads back as the same string.
     const table = compileProse(ProseModels.english);
-    const start = table.rows[table.start];
+    const start = buildWeights(ProseModels.english.weights[table.start], table.escape + 1, 'test');
     const enc = new Encoder();
     enc.composeTerm(1);
     enc.composeWeighted(start.cums[table.escape], start.freqs[table.escape], start.total);
@@ -291,7 +315,11 @@ describe('p.string adaptive', () => {
     expect(trip(plain.adaptive({ window: 64 }), 'abcdefg')).toBe('abcdefg');
     // 400 characters halve a window of 64 or 131 several times, and one of
     // 1024 never; the characters' table holds 131.
-    const text = 'abracadabra '.repeat(34);
+    const random = mulberry32(3);
+    const text = Array.from(
+      { length: 400 },
+      () => 'abcdefghijklmnop'[Math.floor(random() * 16)]
+    ).join('');
     const encode = (window?: number) => p.string().adaptive({ window }).encode(text);
     expect(encode(64)).toEqual(encode(TEXT_FIRST_RADIX));
     expect(encode(64)).not.toEqual(encode(1024));
@@ -318,5 +346,134 @@ describe('p.string adaptive', () => {
     const cdf = new TypeError('p.string adaptive takes weights, not a cdf');
     expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
     expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
+  });
+});
+
+describe('p.string adaptive fields', () => {
+  const url = 'https://api.example.com/v1/users/12345/repositories?page=2&per_page=100';
+  /** The bytes of `value` under `node`, after checking it round-trips. */
+  const size = (node: PNode<any>, value: unknown): number => {
+    expect(trip(node, value)).toEqual(value);
+    return node.encode(value).length;
+  };
+  const pairOf = (a: PString, b: PString) => p.object({ a, b });
+
+  it.each([
+    ['the ladder', () => p.string()],
+    ['a prose model', () => p.string().prose()],
+    ['a charset', () => p.string().charset(CharSets.asciiSafe)],
+    ['a range', () => p.string().charset([32, 126])],
+  ])('learns the characters of every field in %s together', (_name, node) => {
+    const value = { a: url, b: url };
+    const shared = size(pairOf(node().adaptive(), node().adaptive()), value);
+    const apart = size(
+      pairOf(node().adaptive({ separate: true }), node().adaptive({ separate: true })),
+      value
+    );
+    expect(shared).toBeLessThan(apart - 20);
+  });
+
+  it.each([
+    ['the ladder and prose', p.string(), p.string().prose()],
+    [
+      'two charsets',
+      p.string().charset(CharSets.asciiSafe),
+      p.string().charset([...CharSets.asciiSafe].reverse().join('')),
+    ],
+    ['two ranges', p.string().charset([32, 126]), p.string().charset([32, 127])],
+    ['two prose models', p.string().prose(), p.string().prose(buildProseModel(url))],
+  ])('keeps %s apart', (_name, a, b) => {
+    const value = { a: url, b: url };
+    expect(size(pairOf(a.adaptive(), b.adaptive()), value)).toBe(
+      size(pairOf(a.adaptive({ separate: true }), b.adaptive({ separate: true })), value)
+    );
+  });
+
+  it('shares across the fields of nested arrays of objects', () => {
+    const node = (options?: { separate: true }) =>
+      p.array(
+        p.object({
+          url: p.string().adaptive(options),
+          tags: p.array(p.object({ name: p.string().max(40).adaptive(options) })),
+        })
+      );
+    const value = Array.from({ length: 6 }, (_, i) => ({
+      url: `${url}&item=${i}`,
+      tags: [{ name: `users/12345/item=${i}` }, { name: 'repositories' }],
+    }));
+    expect(size(node(), value)).toBeLessThan(size(node({ separate: true }), value));
+  });
+
+  it('shares with the strings and keys of an adaptive p.any of the same window', () => {
+    const node = (separate: boolean) =>
+      p.object({ s: p.string().adaptive({ separate }), x: p.any().adaptive() });
+    const value = { s: url, x: { [url]: url } };
+    expect(size(node(false), value)).toBeLessThan(size(node(true), value) - 20);
+  });
+
+  it('spells a message with one adaptive string as a separate one', () => {
+    for (const value of [url, LOREM_IPSUM]) {
+      expect(p.string().adaptive().encode(value)).toEqual(
+        p.string().adaptive({ separate: true }).encode(value)
+      );
+      const values = [value, value.slice(9), value];
+      expect(p.array(p.string().prose().adaptive()).encode(values)).toEqual(
+        p.array(p.string().prose().adaptive({ separate: true })).encode(values)
+      );
+    }
+  });
+});
+
+describe('p.string adaptive contexts and repeats', () => {
+  const text = LOREM_IPSUM.repeat(3);
+
+  it.each([
+    ['the ladder', p.string(), p.string().adaptive()],
+    ['prose', p.string().prose(), p.string().prose().adaptive()],
+    ['a charset', p.string().charset([0, 127]), p.string().charset([0, 127]).adaptive()],
+  ])('learns repeated text in %s to under half its static size', (_name, fixed, learning) => {
+    expect(trip(learning, text)).toBe(text);
+    expect(learning.encode(text).length).toBeLessThan(fixed.encode(text).length / 2);
+  });
+
+  it('spells the README lorem ipsum under prose in at most 563 bytes', () => {
+    const node = p.string().prose().adaptive();
+    const options = { blockBits: 65536 };
+    const bytes = node.encode(LOREM_IPSUM, options);
+    expect(node.decode(bytes, options)).toBe(LOREM_IPSUM);
+    expect(bytes.length).toBeLessThanOrEqual(563);
+  });
+
+  it('copies a lone surrogate inside a repeat', () => {
+    const value = 'ab\uD800cdefgh'.repeat(8) + '\uDC00';
+    const matches = jest.spyOn(Repeats.prototype, 'writeMatch');
+    try {
+      for (const node of [p.string().adaptive(), p.string().prose().adaptive()]) {
+        expect(trip(node, value)).toBe(value);
+      }
+      expect(matches).toHaveBeenCalled();
+    } finally {
+      matches.mockRestore();
+    }
+  });
+
+  it('copies an astral character as one item, at either end of a match', () => {
+    const matches = jest.spyOn(Repeats.prototype, 'writeMatch');
+    try {
+      // Forty characters ahead lift the value past the warm-up.
+      const value = 'Lorem ipsum dolor sit amet, consectetur 👋abcdefghijklm👋xyz👋abcdefghijklm👋';
+      expect(trip(p.string().adaptive(), value)).toBe(value);
+      // The second 👋abcdefghijklm👋 refers back to the first: fifteen code
+      // points, the whole rest of the value, seventeen code units.
+      expect(matches.mock.calls.map(([, match, , limit]) => [match, limit])).toContainEqual([
+        { distance: 18, length: 15 },
+        17,
+      ]);
+    } finally {
+      matches.mockRestore();
+    }
+    for (const value of ['abcd👋abcd👋', '👋👋👋👋👋👋👋', 'abcdabcd👋']) {
+      expect(trip(p.string().adaptive(), value)).toBe(value);
+    }
   });
 });

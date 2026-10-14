@@ -262,3 +262,11 @@ const shared: CodecOptions = { charset: '0123456789', blockBits: 4096 };
 const _sharedEncode: Uint8Array = Digit.encode(5, shared);
 Digit.decode(digitBytes, shared);
 Digit.decode(digitText, shared);
+
+// Only strings and binaries learn apart on request.
+p.string().adaptive({ separate: true });
+p.binary(Uint16Array).adaptive({ separate: true, window: 64 });
+// @ts-expect-error — an int's prior is its own already
+p.int().adaptive({ separate: true });
+// @ts-expect-error — nor does p.any take it
+p.any().adaptive({ separate: true });

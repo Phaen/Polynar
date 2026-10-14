@@ -16,6 +16,8 @@ import {
   validateChecksum,
 } from '../packer/utils';
 import type { Radix } from '../packer/types';
+import { ScaledRatio } from '../packer';
+import { mulberry32 } from './support';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const radix = (n: number) => n as Radix;
@@ -351,5 +353,93 @@ describe('checksumOf', () => {
 
   it('hashes a Number and the same BigInt alike', () => {
     expect(sum(32, 123456, digits)).toBe(sum(32, 123456n, digits));
+  });
+});
+
+describe('ScaledRatio', () => {
+  it('starts at one and compares by exponent, then mantissa', () => {
+    const one = new ScaledRatio();
+    const other = new ScaledRatio();
+    expect(one.exceeds(other)).toBe(false);
+    other.multiply(3, 2);
+    expect(other.exceeds(one)).toBe(true);
+    expect(one.exceeds(other)).toBe(false);
+    other.multiply(1, 3);
+    expect(one.exceeds(other)).toBe(true);
+  });
+
+  it('keeps ratios far outside the double range apart', () => {
+    const big = new ScaledRatio();
+    const bigger = new ScaledRatio();
+    for (let i = 0; i < 200; i++) {
+      big.multiply(2 ** 52, 1);
+      bigger.multiply(2 ** 52, 1);
+    }
+    expect(big.exceeds(bigger)).toBe(false);
+    bigger.multiply(2, 1);
+    expect(bigger.exceeds(big)).toBe(true);
+    const tiny = new ScaledRatio();
+    for (let i = 0; i < 200; i++) {
+      tiny.multiply(1, 2 ** 52);
+    }
+    expect(new ScaledRatio().exceeds(tiny)).toBe(true);
+    expect(tiny.exceeds(new ScaledRatio())).toBe(false);
+  });
+
+  /** A ratio of `num / den` taken `times` times. */
+  const ratio = (num: number, den: number, times = 1): ScaledRatio => {
+    const r = new ScaledRatio();
+    for (let i = 0; i < times; i++) {
+      r.multiply(num, den);
+    }
+    return r;
+  };
+  const same = (a: ScaledRatio, b: ScaledRatio): boolean => !a.exceeds(b) && !b.exceeds(a);
+
+  it('multiplies and divides ratios into new ones, leaving both alone', () => {
+    const one = new ScaledRatio();
+    const a = ratio(3, 4);
+    const b = ratio(5, 2);
+    expect(same(a.times(one), a)).toBe(true);
+    expect(same(one.times(a), a)).toBe(true);
+    expect(same(a.over(one), a)).toBe(true);
+    expect(same(a.over(a), one)).toBe(true);
+    expect(same(a.times(b), ratio(15, 8))).toBe(true);
+    expect(same(a.over(b), ratio(3, 10))).toBe(true);
+    expect(same(b.over(a), ratio(10, 3))).toBe(true);
+    expect(same(a, ratio(3, 4))).toBe(true);
+    expect(same(b, ratio(5, 2))).toBe(true);
+  });
+
+  it('multiplies and divides past the double range', () => {
+    // Mantissas just under 2^512 multiply to just under 2^1024, still finite.
+    const near = ratio(2 ** 52 - 1, 2 ** 52, 1)
+      .times(ratio(2 ** 52, 1, 9))
+      .times(ratio(2 ** 43, 1));
+    const square = near.times(near);
+    expect(square.exceeds(near)).toBe(true);
+    expect(same(square.over(near), near)).toBe(true);
+    const big = ratio(2 ** 52, 1, 30);
+    const tiny = ratio(1, 2 ** 52, 30);
+    expect(same(big.times(tiny), new ScaledRatio())).toBe(true);
+    expect(same(big.times(big), ratio(2 ** 52, 1, 60))).toBe(true);
+    expect(same(tiny.times(tiny), ratio(1, 2 ** 52, 60))).toBe(true);
+    expect(same(new ScaledRatio().over(big), tiny)).toBe(true);
+    expect(same(tiny.over(big), ratio(1, 2 ** 52, 60))).toBe(true);
+    expect(same(big.over(tiny), ratio(2 ** 52, 1, 60))).toBe(true);
+  });
+
+  it('gives back a ratio multiplied then divided by another when the product is exact', () => {
+    // Mantissas of at most 26 significant bits multiply exactly, and the
+    // powers of two carry them past the double range either way.
+    const random = mulberry32(17);
+    for (let i = 0; i < 200; i++) {
+      const x = 1 + Math.floor(random() * 2 ** 26);
+      const y = 1 + Math.floor(random() * 2 ** 26);
+      const a = ratio(x, 1).times(ratio(2 ** 52, 1, i % 40));
+      const b = ratio(y, 1).times(ratio(1, 2 ** 52, i % 25));
+      expect(same(a.times(b).over(b), a)).toBe(true);
+      expect(same(b.times(a).over(a), b)).toBe(true);
+    }
   });
 });

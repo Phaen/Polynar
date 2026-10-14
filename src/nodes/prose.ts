@@ -8,9 +8,7 @@
  * more. The English model below is built from base weights, bigram boosts
  * and context rules; together they ARE its wire format.
  */
-import { Encoder, Decoder } from '../packer';
-import { composeCodePoint, parseCodePoint } from './codepoint';
-import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
+import { buildWeights } from './weights';
 
 /** Occurrences per ten thousand characters of running English text. */
 const BASE_WEIGHTS: Record<string, number> = {
@@ -279,7 +277,7 @@ export const ProseModels: { readonly english: ProseModel } = Object.freeze({
   english: Object.freeze({ alphabet: ENGLISH_ALPHABET, weights: Object.freeze(englishWeights()) }),
 });
 
-/** A model compiled for coding: symbol lookup and per-row bucket tables. */
+/** A model compiled for coding: symbol lookup, escape and start row; the weights are checked once here. */
 export interface ProseTable {
   /** Code point of each symbol, in alphabet order. */
   readonly codes: readonly number[];
@@ -288,7 +286,6 @@ export interface ProseTable {
   readonly escape: number;
   /** Row of the imaginary character before the first. */
   readonly start: number;
-  readonly rows: readonly WeightTable[];
   /** Type-only mark: compileProse is the one source of a consistent table. */
   readonly [compiledTable]: true;
 }
@@ -314,13 +311,14 @@ export function compileProse(model: ProseModel): ProseTable {
         `p.string prose weights need a row per alphabet character, plus one: expected ${escape + 1}, got ${model.weights.length}`
       );
     }
-    const rows = model.weights.map((row) => buildWeights(row, escape + 1, 'p.string prose'));
+    for (const row of model.weights) {
+      buildWeights(row, escape + 1, 'p.string prose');
+    }
     const fields: Omit<ProseTable, typeof compiledTable> = {
       codes,
       index,
       escape,
       start: index.get(SPACE) ?? escape,
-      rows,
     };
     table = fields as ProseTable;
     compiled.set(model, table);
@@ -331,17 +329,6 @@ export function compileProse(model: ProseModel): ProseTable {
 /** The row for the character after `code`. */
 export const proseContext = (table: ProseTable, code: number): number =>
   table.index.get(code) ?? table.escape;
-
-/** The bucket table of row `ctx`, which must be one of the table's rows. */
-export function contextRow(table: ProseTable, ctx: number): WeightTable {
-  const row = table.rows[ctx];
-  // Any index outside the rows (negative, fractional, NaN, past the end)
-  // reads undefined.
-  if (row === undefined) {
-    throw new RangeError(`Prose context ${ctx} is not a row of the model (0–${table.escape})`);
-  }
-  return row;
-}
 
 export interface ProseModelOptions {
   /** The modeled characters; overrides `minCount`. */
@@ -396,31 +383,4 @@ export function buildProseModel(corpus: string, options: ProseModelOptions = {})
     ctx = sym;
   }
   return { alphabet: chars, weights };
-}
-
-/**
- * One prose-weighted code point in the given row: the symbol's bucket, or
- * the escape bucket followed by a laddered slot for anything outside the
- * model.
- */
-export function composeProsePoint(
-  enc: Encoder,
-  table: ProseTable,
-  code: number,
-  ctx: number
-): void {
-  const sym = table.index.get(code) ?? table.escape;
-  writeTable(enc, contextRow(table, ctx), sym);
-  if (sym === table.escape) {
-    composeCodePoint(enc, code);
-  }
-}
-
-/** Read one prose-weighted code point in the given row. */
-export function parseProsePoint(dec: Decoder, table: ProseTable, ctx: number): number {
-  const sym = readTable(dec, contextRow(table, ctx));
-  if (sym !== table.escape) {
-    return table.codes[sym];
-  }
-  return parseCodePoint(dec);
 }

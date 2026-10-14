@@ -83,6 +83,11 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
     return this.states.get(key, init);
   }
 
+  /** The input's length in digits. */
+  get digits(): number {
+    return this.input.length;
+  }
+
   /**
    * Read the `bits`-bit checksum the encoder wrote as the first block's
    * first symbol and check it against the rest of the input, before any

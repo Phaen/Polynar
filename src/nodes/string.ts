@@ -5,52 +5,246 @@
  * for the order-1 frequency model; an explicit charset trades generality for
  * density over a known alphabet. `p.string`.
  */
-import { Encoder, Decoder, CorruptInputError, Alphabet } from '../packer';
+import { Encoder, Decoder, Alphabet } from '../packer';
 import type { Charset } from '../packer';
 import { PNode } from './base';
 import { describe } from './path';
-import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
+import { checkUnset } from './lattice';
 import type { Cdf } from './weights';
-import { AdaptivePrior, checkAdaptation, type AdaptiveOptions } from './adaptive';
+import type { SequenceAdaptiveOptions } from './adaptive';
 import type { Kind } from './guards';
-import { TEXT_FIRST_RADIX, composeCodePoint, parseCodePoint } from './codepoint';
 import {
-  ProseModels,
-  compileProse,
-  composeProsePoint,
-  parseProsePoint,
-  proseContext,
-  type ProseModel,
-  type ProseTable,
-} from './prose';
+  TEXT_FIRST_RADIX,
+  codePointSymbol,
+  codePointTailRadix,
+  composeCodePoint,
+  composeCodePointTail,
+  parseCodePoint,
+  parseCodePointTail,
+} from './codepoint';
+import { ProseModels, compileProse, proseContext, type ProseModel, type ProseTable } from './prose';
+import { Sequence, type SequenceBounds, type Symbols } from './sequence';
+
+/** What every text alphabet shares: a length prefix counting UTF-16 code units. */
+abstract class Text {
+  readonly who = 'p.string';
+  readonly noun = 'length';
+  readonly start: number = 0;
+
+  // The length prefix counts UTF-16 code units (`.length`), not code
+  // points, so `.max()` keeps plain JS string semantics.
+  count(value: string): number {
+    return value.length;
+  }
+
+  span(count: number): number {
+    return count;
+  }
+
+  subject(value: string): string {
+    return `String length ${value.length}`;
+  }
+}
+
+/** Text spelled one code point per item: the ladder and the prose model. */
+abstract class CodePoints extends Text {
+  readonly item = 'code point';
+  readonly tailless = false;
+
+  items(value: string): number[] {
+    // Every adjacent lead+trail pair merges into one code point; lone
+    // surrogates fall through as their own code points. The pairing reads
+    // code units: V8's optimized `codePointAt` merges a sliced string's
+    // final lead with the trail beyond the slice.
+    const codes: number[] = [];
+    for (let i = 0; i < value.length; ) {
+      const unit = value.charCodeAt(i);
+      const next = i + 1 < value.length ? value.charCodeAt(i + 1) : 0;
+      const code =
+        unit >= 0xd800 && unit <= 0xdbff && next >= 0xdc00 && next <= 0xdfff
+          ? (unit - 0xd800) * 0x400 + (next - 0xdc00) + 0x10000
+          : unit;
+      codes.push(code);
+      i += code > 0xffff ? 2 : 1;
+    }
+    return codes;
+  }
+
+  units(code: number): number {
+    return code > 0xffff ? 2 : 1;
+  }
+
+  build(codes: number[]): string {
+    let value = '';
+    for (const code of codes) {
+      value += String.fromCodePoint(code);
+    }
+    return value;
+  }
+}
+
+/** The laddered default: the first slot is the symbol, the band offset its tail. */
+class Ladder extends CodePoints implements Symbols<string> {
+  readonly pool = 'ladder';
+  readonly size = TEXT_FIRST_RADIX;
+  readonly order = 0;
+
+  symbol(code: number): number {
+    return codePointSymbol(code);
+  }
+
+  tail(enc: Encoder, code: number, symbol: number): void {
+    composeCodePointTail(enc, code, symbol);
+  }
+
+  tails(_code: number, symbol: number): number {
+    return codePointTailRadix(symbol);
+  }
+
+  untail(dec: Decoder, symbol: number): number {
+    return parseCodePointTail(dec, symbol);
+  }
+
+  row(): number {
+    return 0;
+  }
+}
+
+/**
+ * The prose model: a symbol per modeled character plus the escape, priced
+ * in the row of the character before; an escaped code point follows its
+ * symbol on the ladder.
+ */
+class Prose extends CodePoints implements Symbols<string> {
+  /** The rows are keyed by the previous symbol. */
+  readonly order = 1;
+  /** The model: the same model compiles to the same table. */
+  readonly pool: ProseModel;
+  readonly size: number;
+  readonly rows: readonly (readonly number[])[];
+  override readonly start: number;
+
+  constructor(
+    model: ProseModel,
+    private readonly table: ProseTable
+  ) {
+    super();
+    this.pool = model;
+    this.size = table.escape + 1;
+    this.rows = model.weights;
+    this.start = table.start;
+  }
+
+  symbol(code: number): number {
+    return this.table.index.get(code) ?? this.table.escape;
+  }
+
+  tail(enc: Encoder, code: number, symbol: number): void {
+    if (symbol === this.table.escape) {
+      composeCodePoint(enc, code);
+    }
+  }
+
+  tails(code: number, symbol: number): number {
+    return symbol === this.table.escape
+      ? TEXT_FIRST_RADIX * codePointTailRadix(codePointSymbol(code))
+      : 1;
+  }
+
+  untail(dec: Decoder, symbol: number): number {
+    return symbol === this.table.escape ? parseCodePoint(dec) : this.table.codes[symbol];
+  }
+
+  row(code: number): number {
+    return proseContext(this.table, code);
+  }
+}
+
+/** An explicit charset: each character is its digit in the alphabet. */
+class CharsetText extends Text implements Symbols<string> {
+  readonly item = 'character';
+  readonly tailless = true;
+  readonly order = 0;
+  readonly size: number;
+  /** The charset, a range by its ends: the same charset is the same alphabet. */
+  readonly pool: string;
+
+  constructor(private readonly alphabet: Alphabet) {
+    super();
+    this.size = alphabet.size;
+    const charset = alphabet.charset;
+    this.pool =
+      typeof charset === 'string' ? `charset ${charset}` : `range ${charset[0]} ${charset[1]}`;
+  }
+
+  items(value: string): number[] {
+    const alphabet = this.alphabet;
+    const digits: number[] = [];
+    for (let i = 0; i < value.length; i++) {
+      const code = value.charCodeAt(i);
+      const digit = alphabet.digitOf(code);
+      if (digit === -1) {
+        const charset = alphabet.charset;
+        throw new RangeError(
+          typeof charset === 'string'
+            ? `Character ${describe(value.charAt(i))} at ${i} is not in the character set`
+            : `Character ${describe(value.charAt(i))} (code ${code}) at ${i} is outside the range ${charset[0]}–${charset[1]}`
+        );
+      }
+      digits.push(digit);
+    }
+    return digits;
+  }
+
+  units(): number {
+    return 1;
+  }
+
+  symbol(digit: number): number {
+    return digit;
+  }
+
+  tail(): void {}
+
+  tails(): number {
+    return 1;
+  }
+
+  untail(_dec: Decoder, digit: number): number {
+    return digit;
+  }
+
+  row(): number {
+    return 0;
+  }
+
+  build(digits: number[]): string {
+    let value = '';
+    for (const digit of digits) {
+      value += this.alphabet.charAt(digit);
+    }
+    return value;
+  }
+}
 
 export class PString extends PNode<string> {
   readonly _kinds: readonly Kind[] = ['string'];
 
-  private readonly _bounds: LengthBounds;
-  private readonly _length: IndexRange;
+  private readonly _bounds: SequenceBounds;
   /** Explicit charset; undefined selects the laddered code-point default. */
   private readonly _alphabet?: Alphabet;
-  /** Prose model replacing the flat ladder, as given and compiled. */
+  /** Prose model replacing the flat ladder, as given. */
   private readonly _prose?: ProseModel;
-  private readonly _table?: ProseTable;
-  /**
-   * Set under `.adaptive()`: the prior the characters learn, over the prose
-   * model's symbols in a row per context, the charset's characters, or the
-   * ladder's first slot.
-   */
-  private readonly _chars?: AdaptivePrior;
+  /** The length and the characters, in the ladder, the prose model or the charset. */
+  private readonly _sequence: Sequence<string>;
 
-  constructor(bounds: LengthBounds = {}, charset?: Charset, prose?: ProseModel) {
+  constructor(bounds: SequenceBounds = {}, charset?: Charset, prose?: ProseModel) {
     super();
     this._bounds = bounds;
-    // Without a max the length has no range to learn over; the characters
-    // learn alone.
-    const { adaptive, ...fixed } = bounds;
-    this._length = lengthRange(bounds.max === undefined ? fixed : bounds, 'p.string', 'length');
+    let symbols: Symbols<string> = new Ladder();
     if (prose !== undefined) {
       this._prose = prose;
-      this._table = compileProse(prose);
+      symbols = new Prose(prose, compileProse(prose));
     }
     if (charset !== undefined) {
       if (prose !== undefined) {
@@ -60,22 +254,9 @@ export class PString extends PNode<string> {
       // of the array can't change the node. One character is a legal
       // alphabet: each character then costs nothing.
       this._alphabet = new Alphabet(charset, 1);
+      symbols = new CharsetText(this._alphabet);
     }
-    if (adaptive !== undefined) {
-      const { window } = checkAdaptation(adaptive, 'p.string');
-      if (prose !== undefined) {
-        const { escape } = compileProse(prose);
-        this._chars = new AdaptivePrior(prose.weights, escape + 1, window, 'p.string');
-      } else {
-        const size = this._alphabet?.size ?? TEXT_FIRST_RADIX;
-        this._chars = new AdaptivePrior(
-          [new Array<number>(size).fill(1)],
-          size,
-          window,
-          'p.string'
-        );
-      }
-    }
+    this._sequence = new Sequence(symbols, bounds);
   }
 
   /** A floor on the length; the prefix then counts up from it. */
@@ -118,18 +299,23 @@ export class PString extends PNode<string> {
   }
 
   /**
-   * Let every prior the node has learn from the message: the length's when it
-   * has a max, and the characters' always. The declared weights, or even ones
-   * when none are, are the starting point (the prose model's rows for
-   * `.prose()`), and each length or character coded counts as one observation,
-   * so one that keeps recurring gets cheaper as the message goes on. `window`
-   * is how many observations the counts hold before they halve, so the newest
-   * weigh most (1024 when left out, and raised to the number of values they
-   * count when smaller). From its second value on, each prior spends one bit to
-   * stay static, or a few to name the learning rate that paid off. The length
+   * Let the node learn from the message. Each character is priced by the
+   * three characters before it, as the message so far has followed them,
+   * falling back to a prior over the characters that learns too; a stretch
+   * that already occurred in the message is referred back to instead of
+   * spelled again; and the length learns when there is a max. The
+   * characters learn together with those of every other adaptive string
+   * of the message with the same charset, prose model or ladder and the same
+   * window, unless `separate`. The declared
+   * weights, or even ones when none are, are where the priors start (the
+   * prose model's rows for `.prose()`). `window` is how many observations a
+   * prior's counts hold before they halve, so the newest weigh most (1024
+   * when left out, and raised to the number of values they count when
+   * smaller). From its second value on, each prior spends one bit to stay
+   * static, or a few to name the learning rate that paid off. The length
    * takes weights, not a cdf; part of the wire format, like the weights.
    */
-  adaptive(options?: AdaptiveOptions): PString {
+  adaptive(options?: SequenceAdaptiveOptions): PString {
     return new PString(
       { ...this._bounds, adaptive: options ?? {} },
       this._alphabet?.charset,
@@ -153,111 +339,10 @@ export class PString extends PNode<string> {
   }
 
   _write(enc: Encoder, value: string): void {
-    // The length prefix counts UTF-16 code units (`.length`), not code
-    // points, so `.max()` keeps plain JS string semantics.
-    this._length.write(enc, value.length, () => `String length ${value.length}`);
-
-    const alphabet = this._alphabet;
-    if (alphabet === undefined) {
-      // Every adjacent lead+trail pair merges into one code point; lone
-      // surrogates fall through as their own code points. The
-      // pairing reads code units: V8's optimized `codePointAt` merges a
-      // sliced string's final lead with the trail beyond the slice.
-      const table = this._table;
-      const chars = this._chars;
-      const writeFirst =
-        chars === undefined ? undefined : (symbol: number) => chars.write(enc, symbol);
-      let ctx = table?.start ?? 0;
-      for (let i = 0; i < value.length; ) {
-        const unit = value.charCodeAt(i);
-        const next = i + 1 < value.length ? value.charCodeAt(i + 1) : 0;
-        const code =
-          unit >= 0xd800 && unit <= 0xdbff && next >= 0xdc00 && next <= 0xdfff
-            ? (unit - 0xd800) * 0x400 + (next - 0xdc00) + 0x10000
-            : unit;
-        if (table === undefined) {
-          composeCodePoint(enc, code, writeFirst);
-        } else if (chars === undefined) {
-          composeProsePoint(enc, table, code, ctx);
-        } else {
-          const sym = table.index.get(code) ?? table.escape;
-          chars.write(enc, sym, ctx);
-          if (sym === table.escape) {
-            composeCodePoint(enc, code);
-          }
-        }
-        if (table !== undefined) {
-          ctx = proseContext(table, code);
-        }
-        i += code > 0xffff ? 2 : 1;
-      }
-      return;
-    }
-
-    for (let i = 0; i < value.length; i++) {
-      const code = value.charCodeAt(i);
-      const digit = alphabet.digitOf(code);
-      if (digit === -1) {
-        const charset = alphabet.charset;
-        throw new RangeError(
-          typeof charset === 'string'
-            ? `Character ${describe(value.charAt(i))} at ${i} is not in the character set`
-            : `Character ${describe(value.charAt(i))} (code ${code}) at ${i} is outside the range ${charset[0]}–${charset[1]}`
-        );
-      }
-      if (this._chars === undefined) {
-        enc.compose(digit, alphabet.size);
-      } else {
-        this._chars.write(enc, digit);
-      }
-    }
+    this._sequence.write(enc, value);
   }
 
   _read(dec: Decoder): string {
-    const length = this._length.read(dec);
-    let value = '';
-
-    const alphabet = this._alphabet;
-    if (alphabet === undefined) {
-      let units = 0;
-      const table = this._table;
-      const chars = this._chars;
-      const readFirst = chars === undefined ? undefined : () => chars.read(dec);
-      let ctx = table?.start ?? 0;
-      while (units < length) {
-        let code: number;
-        if (table === undefined) {
-          code = parseCodePoint(dec, readFirst);
-        } else if (chars === undefined) {
-          code = parseProsePoint(dec, table, ctx);
-        } else {
-          const sym = chars.read(dec, ctx);
-          code = sym === table.escape ? parseCodePoint(dec) : table.codes[sym];
-        }
-        if (table !== undefined) {
-          ctx = proseContext(table, code);
-        }
-        value += String.fromCodePoint(code);
-        units += code > 0xffff ? 2 : 1;
-      }
-      // An astral code point in the final slot can overshoot the unit count;
-      // no string encodes that way.
-      if (units > length) {
-        throw new CorruptInputError('Code points overrun the length prefix');
-      }
-      return value;
-    }
-
-    const chars = this._chars;
-    if (chars !== undefined) {
-      for (let i = 0; i < length; i++) {
-        value += alphabet.charAt(chars.read(dec));
-      }
-      return value;
-    }
-    for (const digit of dec.parseMany(alphabet.size, length)) {
-      value += alphabet.charAt(digit);
-    }
-    return value;
+    return this._sequence.read(dec);
   }
 }

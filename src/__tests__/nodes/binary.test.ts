@@ -89,6 +89,18 @@ describe('Schema binary', () => {
     expect(trip(p.binary(), bytes)).toEqual(bytes);
   });
 
+  it('learns the bytes of every adaptive binary together, whatever the element type', () => {
+    const bytes = Uint8Array.from({ length: 96 }, () => Math.floor(rand() * 256));
+    const value = { a: bytes, b: new Uint16Array(bytes.buffer.slice(0)) };
+    const node = (separate: boolean) =>
+      p.object({
+        a: p.binary().adaptive({ separate }),
+        b: p.binary(Uint16Array).adaptive({ separate }),
+      });
+    expect(trip(node(false), value)).toEqual(value);
+    expect(node(false).encode(value).length).toBeLessThan(node(true).encode(value).length - 64);
+  });
+
   it('runs out of input on a corrupted length instead of allocating it', () => {
     // An unbounded length prefix claiming 2^40 bytes, followed by nothing.
     const claim = p
@@ -176,13 +188,41 @@ describe('p.binary adaptive', () => {
     );
   });
 
-  it('written once, spends the bytes of its static form', () => {
+  it('written once, spends the bytes of its static form through its first byte, at most one more after', () => {
     for (const value of run(20, 4)) {
-      expect(plain.adaptive().encode(value)).toEqual(plain.encode(value));
-      expect(plain.weights(weights).adaptive().encode(value)).toEqual(
-        plain.weights(weights).encode(value)
-      );
+      for (const [learning, fixed] of [
+        [plain.adaptive(), plain],
+        [plain.weights(weights).adaptive(), plain.weights(weights)],
+      ]) {
+        const bytes = learning.encode(value);
+        if (value.length <= 1) {
+          expect(bytes).toEqual(fixed.encode(value));
+        }
+        expect(bytes.length).toBeLessThanOrEqual(fixed.encode(value).length + 1);
+      }
     }
+  });
+
+  it('learns the bytes: a long run of mostly one value shrinks, a short one costs its static length', () => {
+    const value = new Uint8Array(500).map((_, i) => (i % 17 === 0 ? i & 255 : 7));
+    expect(trip(p.binary().adaptive(), value)).toEqual(value);
+    expect(p.binary().adaptive().encode(value).length).toBeLessThan(
+      p.binary().encode(value).length / 5
+    );
+    const short = new Uint8Array(3);
+    expect(plain.adaptive().encode(short)).toHaveLength(plain.encode(short).length);
+  });
+
+  it('learns the bytes of every element width', () => {
+    const value = Int32Array.from({ length: 200 }, (_, i) => (i % 9 === 0 ? -i : 0x01020304));
+    const node = p.binary(Int32Array).adaptive({ window: 64 });
+    expect(trip(node, value)).toEqual(value);
+    expect(node.encode(value).length).toBeLessThan(p.binary(Int32Array).encode(value).length / 2);
+  });
+
+  it('takes no max, the bytes then learning alone', () => {
+    const values = run(50, 5);
+    expect(trip(p.array(p.binary().adaptive()), values)).toEqual(values);
   });
 
   it('refuses bad options', () => {
@@ -197,11 +237,29 @@ describe('p.binary adaptive', () => {
         'p.binary adaptive prior 16 and window 1024 overflow with weights totalling 35184372088839'
       )
     );
-    expect(() => p.binary().adaptive()).toThrow(
-      new TypeError('p.binary adaptive requires a max length')
-    );
     const cdf = new TypeError('p.binary adaptive takes weights, not a cdf');
     expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
     expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
+  });
+});
+
+describe('p.binary adaptive repeats', () => {
+  it('copies a repeated byte pattern', () => {
+    const pattern = Uint8Array.from([0x13, 0xf7, 0x00, 0x8a, 0x42, 0x99, 0x5c, 0xe1]);
+    const value = new Uint8Array(400).map((_, i) => pattern[i % pattern.length]);
+    const node = p.binary().adaptive();
+    expect(trip(node, value)).toEqual(value);
+    expect(node.encode(value).length).toBeLessThan(40);
+  });
+
+  it('copies repeats across Int16Array elements', () => {
+    const random = mulberry32(9);
+    const stretch = Int16Array.from({ length: 12 }, () => Math.floor(random() * 65536) - 32768);
+    const value = Int16Array.from({ length: 120 }, (_, i) =>
+      i % 30 < 12 ? stretch[i % 30] : Math.floor(random() * 65536) - 32768
+    );
+    const node = p.binary(Int16Array).adaptive();
+    expect(trip(node, value)).toEqual(value);
+    expect(node.encode(value).length).toBeLessThan(p.binary(Int16Array).encode(value).length - 40);
   });
 });

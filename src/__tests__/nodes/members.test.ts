@@ -1,6 +1,6 @@
 /**
  * The three spellings of a node's members: uniform, a static prior and an
- * adaptive one.
+ * adaptive one, the priors in one row or a row per context.
  */
 
 import { Encoder, Decoder } from '../../packer';
@@ -122,5 +122,84 @@ describe('members', () => {
         `w adaptive prior 4 and window 1024 overflow with weights totalling ${2 ** 50 + 1}`
       )
     );
+  });
+
+  describe('rows', () => {
+    const rows = [
+      [1, 5, 2, 2],
+      [9, 1, 1, 1],
+    ];
+    const rowsOf = (positions: number[]) => positions.map((_, i) => i % 2);
+
+    it.each([
+      ['static', { rows }],
+      ['adaptive', { rows, adaptive: adaptation }],
+    ])('round-trips the %s spelling with a row per member', (_name, prior) => {
+      const spelling = members(4, prior, 'w');
+      const positions = seeded(6, 200, 4);
+      const order = rowsOf(positions);
+      const enc = new Encoder();
+      positions.forEach((pos, i) => spelling.write(enc, pos, order[i]));
+      const dec = new Decoder(enc.output());
+      expect(order.map((row) => spelling.read(dec, row))).toEqual(positions);
+      dec.finalize();
+    });
+
+    it('spells a static row as its own weight table', () => {
+      const spelling = members(4, { rows }, 'w');
+      const enc = new Encoder();
+      spelling.write(enc, 0, 1);
+      const plain = new Encoder();
+      writeTable(plain, buildWeights(rows[1], 4, 'w'), 0);
+      expect(enc.output()).toEqual(plain.output());
+    });
+
+    it('spells one row the same as its weights', () => {
+      const positions = seeded(7, 100, 4);
+      for (const adaptive of [undefined, adaptation]) {
+        const a = members(4, { rows: [rows[0]], adaptive }, 'w');
+        const b = members(4, { weights: rows[0], adaptive }, 'w');
+        const encA = new Encoder();
+        const encB = new Encoder();
+        for (const pos of positions) {
+          a.write(encA, pos);
+          b.write(encB, pos);
+        }
+        expect(encA.output()).toEqual(encB.output());
+      }
+    });
+
+    it('ignores the row when uniform', () => {
+      const enc = new Encoder();
+      members(4, undefined, 'w').write(enc, 2, 7);
+      const dec = new Decoder(enc.output());
+      expect(members(4, {}, 'w').read(dec, 3)).toBe(2);
+    });
+
+    it.each([-1, 2, 0.5, NaN])('refuses the row %p on write and read', (row) => {
+      for (const adaptive of [undefined, adaptation]) {
+        const spelling = members(4, { rows, adaptive }, 'w');
+        const error = new RangeError(`Row ${row} is outside [0, 2)`);
+        expect(() => spelling.write(new Encoder(), 0, row)).toThrow(error);
+        expect(() => spelling.read(new Decoder(new Uint8Array([1])), row)).toThrow(error);
+      }
+    });
+
+    it('refuses weights and rows together, and no rows', () => {
+      for (const adaptive of [undefined, adaptation]) {
+        expect(() => members(4, { weights: rows[0], rows, adaptive }, 'w')).toThrow(
+          new TypeError('w takes weights or rows, not both')
+        );
+        expect(() => members(4, { rows: [], adaptive }, 'w')).toThrow(
+          new TypeError('w rows need at least one row')
+        );
+      }
+    });
+
+    it('refuses a row of the wrong length', () => {
+      expect(() => members(4, { rows: [rows[0], [1, 2]] }, 'w')).toThrow(
+        new TypeError('w weights must list one weight per value: expected 4, got 2')
+      );
+    });
   });
 });
