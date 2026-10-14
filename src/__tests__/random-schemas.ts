@@ -851,13 +851,17 @@ export const anyValue = (depth: number, top = false): unknown => {
   }
 };
 
-const anyCase = (): Case => ({
-  build: (m) => m.p.any(),
-  // Most values nest two levels, some up to six; a container holds fewer
-  // than one container on average, so deep values stay small.
-  gen: () => anyValue(rand() < 0.2 ? randInt(3, 6) : 2, true),
-  src: 'p.any()',
-});
+// Plain or adaptive; an adaptive window covers the 27 type tags.
+const anyCase = (): Case => {
+  const a = rand() < 0.5 ? randAdaptive(27) : undefined;
+  return {
+    build: (m) => (a ? a.apply(m.p.any()) : m.p.any()),
+    // Most values nest two levels, some up to six; a container holds fewer
+    // than one container on average, so deep values stay small.
+    gen: () => anyValue(rand() < 0.2 ? randInt(3, 6) : 2, true),
+    src: `p.any()${a ? a.src : ''}`,
+  };
+};
 
 const trees = new WeakMap<Lib, Node>();
 const treeOf = (m: Lib): Node => {

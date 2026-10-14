@@ -24,21 +24,21 @@ Under the hood, the message packs into arbitrary-precision integers, and the out
 
 Seven payload shapes encoded as JSON, MessagePack, Protobuf, Avro and Polynar, 250 seeded random samples each; lorem is one fixed text. Every number comes from [`examples/size-comparison.ts`](examples/size-comparison.ts) — run it to reproduce.
 
-A cell is the mean size in bytes, and the smallest number in each row is bold. The number in parentheses is the same payload after brotli. The url-safe and ascii-safe columns are text output in `CharSets.urlSafe` and `CharSets.asciiSafe`, text that drops straight into a URL, cookie, header or log line; binary is the default output.
+A cell is the mean size in bytes, and the smallest number in each row is bold. For the other formats the number in parentheses is the same payload after brotli; Polynar's output is already entropy coded, so brotli gains nothing on it, and its number in parentheses is the same schema with `.adaptive()` on every node that takes it. The url-safe and ascii-safe columns are text output in `CharSets.urlSafe` and `CharSets.asciiSafe`, text that drops straight into a URL, cookie, header or log line; binary is the default output.
 
 The first table is self-describing: keys and types travel with the data. Polynar's entry is `p.any().encode(value)`, which writes a type tag per value and the key names, like the other two.
 
-| Payload        |         JSON |  MessagePack | url-safe | ascii-safe |   binary |
-| -------------- | -----------: | -----------: | -------: | ---------: | -------: |
-| User profile   |  62.8 (64.3) |  44.6 (48.4) |     49.4 |       45.6 | **37.5** |
-| GPS position   |  32.0 (36.0) |  27.0 (31.0) |     27.4 |       25.2 | **20.8** |
-| Chat message   |  95.5 (89.3) |  69.1 (71.1) |     70.9 |       65.3 | **53.8** |
-| Sensor reading |  53.8 (55.9) |  39.9 (43.7) |     41.1 |       37.8 | **31.2** |
-| Shopping cart  | 124.4 (67.0) |  85.1 (61.9) |     46.4 |       42.7 | **35.1** |
-| Status feed    | 521.8 (63.4) | 323.8 (60.4) |     34.5 |       31.7 | **26.1** |
-| Lorem ipsum    |   1375 (641) |   1372 (631) |      785 |        722 |  **593** |
+| Payload        |         JSON |  MessagePack |     url-safe |   ascii-safe |           binary |
+| -------------- | -----------: | -----------: | -----------: | -----------: | ---------------: |
+| User profile   |  62.8 (64.3) |  44.6 (48.4) |  54.3 (49.4) |  49.9 (45.6) |  41.1 (**37.5**) |
+| GPS position   |  32.0 (36.0) |  27.0 (31.0) |  27.2 (27.4) |  25.0 (25.2) |  **20.7** (20.8) |
+| Chat message   |  95.5 (89.3) |  69.1 (71.1) |  79.3 (70.9) |  73.1 (65.3) |  60.1 (**53.8**) |
+| Sensor reading |  53.8 (55.9) |  39.9 (43.7) |  43.5 (41.1) |  40.0 (37.8) |  32.9 (**31.2**) |
+| Shopping cart  | 124.4 (67.0) |  85.1 (61.9) | 101.2 (46.4) |  93.2 (42.7) |  76.7 (**35.1**) |
+| Status feed    | 521.8 (63.4) | 323.8 (60.4) | 385.8 (34.5) | 354.9 (31.7) | 291.5 (**26.1**) |
+| Lorem ipsum    |   1375 (641) |   1372 (631) |   1597 (785) |   1469 (722) |   1207 (**593**) |
 
-In the second table both sides share a schema and only the values are written. Protobuf and Avro get the same decimal steps as scaled integers, but only Polynar can use the bounds. Protobuf tags every field and rounds it up to whole bytes, Avro drops the tags but keeps the bytes, and Polynar spends fractional bits. Polynar's number in parentheses is `.adaptive()` on every node that takes it rather than brotli, which gains nothing on output that is already entropy coded.
+In the second table both sides share a schema and only the values are written. Protobuf and Avro get the same decimal steps as scaled integers, but only Polynar can use the bounds. Protobuf tags every field and rounds it up to whole bytes, Avro drops the tags but keeps the bytes, and Polynar spends fractional bits.
 
 | Payload        |     Protobuf |         Avro |    url-safe |  ascii-safe |          binary |
 | -------------- | -----------: | -----------: | ----------: | ----------: | --------------: |
@@ -50,7 +50,7 @@ In the second table both sides share a schema and only the values are written. P
 | Status feed    | 102.0 (27.8) | 103.0 (28.1) | 27.0 (11.5) | 25.0 (10.6) |  20.0 (**8.9**) |
 | Lorem ipsum    |   1372 (629) |   1371 (632) |   975 (745) |   898 (685) |   737 (**563**) |
 
-Polynar's binary output is smaller than every binary format's on every row, plain or compressed, and on every row but lorem its url-safe text is smaller than every text format's and rivals the binary ones. On the status feed `.adaptive()` even makes it three to one.
+With `.adaptive()`, Polynar's binary output is smaller than every binary format's on every row, plain or compressed, and its url-safe text is smaller than JSON on every row and rivals the binary formats; on the status feed it is even three to one.
 
 ## Install
 
@@ -322,7 +322,13 @@ Data written by any listed version decodes and is migrated step by step to the n
 
 ### `p.any()`
 
-Self-describing escape hatch: numbers, bigints, strings, booleans, dates, regular expressions, null, undefined, ArrayBuffers, DataViews, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values; an object typed with an interface needs an index signature to count as one. Numbers round-trip as they do through `p.float`, everything else bit-exact, and a typed array decodes as the same class. A regular expression keeps its source and flags but not its `lastIndex`, and a DataView decodes over a new buffer of just its bytes. Shared references and holes in sparse arrays aren't kept: an object that appears twice comes back as two separate copies, and a hole comes back as `undefined`. A subclass of any of these, such as a `Buffer` or a class extending `RegExp` or `Map`, decodes as the built-in class. Any other class instance throws a `TypeError`, and so do errors and boxed primitives like `new Number(1)`. Nesting containers more than 512 levels deep, which includes a value that contains itself, throws a `RangeError` without the path in front. Type tags, strings, object keys and whole key lists are priced by what the message has already seen, so the status feed's hundred strings from a set of three average 26 bytes, and an array of same-shaped objects pays for its keys once. The characters of new strings and keys learn as well, so lorem costs about what `.prose()` does. Nothing to configure. Costs more than a precise node. No methods.
+Self-describing escape hatch: numbers, bigints, strings, booleans, dates, regular expressions, null, undefined, ArrayBuffers, DataViews, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values; an object typed with an interface needs an index signature to count as one. Numbers round-trip as they do through `p.float`, everything else bit-exact, and a typed array decodes as the same class. A regular expression keeps its source and flags but not its `lastIndex`, and a DataView decodes over a new buffer of just its bytes. Shared references and holes in sparse arrays aren't kept: an object that appears twice comes back as two separate copies, and a hole comes back as `undefined`. A subclass of any of these, such as a `Buffer` or a class extending `RegExp` or `Map`, decodes as the built-in class. Any other class instance throws a `TypeError`, and so do errors and boxed primitives like `new Number(1)`. Nesting containers more than 512 levels deep, which includes a value that contains itself, throws a `RangeError` without the path in front. Costs more than a precise node.
+
+| Method                                     | Description                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.adaptive(options?: { window?: number })` | Type tags, strings, object keys and whole key lists learn from the message: each is priced by what the message has already seen, so a value that recurs costs a fraction of its first spelling, and the characters of new strings and keys learn as well. Encoding and decoding take 5–40× as long. See [Priors that learn](#priors-that-learn-adaptive). |
+
+Under `.adaptive()` the status feed's hundred strings from a set of three average 26 bytes instead of 292, an array of same-shaped objects pays for its keys once, and lorem costs about what `.prose()` does.
 
 ### Priors: `.weights()`
 

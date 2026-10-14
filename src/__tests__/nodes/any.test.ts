@@ -5,20 +5,107 @@
 import { p, Encoder, CorruptInputError, type AnyValue, type PNode } from '../../index';
 import { MAX_DEPTH, TAG_PRIOR, TAG_TIERS, TAG_WINDOW } from '../../nodes/any';
 import { AdaptiveTable } from '../../nodes/adaptive';
+import { members } from '../../nodes/members';
 import { PRecall } from '../../nodes/recall';
 import { mulberry32, trip } from '../support';
 
+/** The static tag table inside a plain `p.any`. */
+const tags = () => members(TAG_TIERS.length, { weights: TAG_TIERS }, 'p.any');
+
 /**
- * A tag table like the one inside a `p.any`. Its counts live on the encoder,
- * so every tag written through one table bumps them as the decoding node's
- * reads do, and a hand-built message matches.
+ * A tag table like the one inside `p.any().adaptive()`. Its counts live on
+ * the encoder, so every tag written through one table bumps them as the
+ * decoding node's reads do, and a hand-built message matches.
  */
-const tags = () => new AdaptiveTable(TAG_TIERS, TAG_TIERS.length, TAG_PRIOR, TAG_WINDOW, 'p.any');
+const adaptiveTags = () =>
+  new AdaptiveTable(TAG_TIERS, TAG_TIERS.length, TAG_PRIOR, TAG_WINDOW, 'p.any');
+
+/** A value of every kind `p.any` has a tag for, nested in every container. */
+const everyKind = (): AnyValue => ({
+  absent: undefined,
+  nothing: null,
+  flags: [false, true],
+  numbers: [0, -7, 2 ** 60, 0.1, -0, NaN, Infinity],
+  big: [0n, -(2n ** 70n)],
+  text: ['', 'hello', 'hello', 'héllo 👋'],
+  when: new Date(0),
+  pattern: /a+b/gi,
+  nested: { deep: [{ k: 1 }, { k: 2 }], '': {} },
+  map: new Map<AnyValue, AnyValue>([
+    ['k', 1],
+    [[0], new Set<AnyValue>(['x', 2])],
+  ]),
+  set: new Set<AnyValue>([null, 'x']),
+  buffer: Uint8Array.of(1, 2, 3).buffer,
+  view: new DataView(Uint8Array.of(4, 5).buffer),
+  typed: [Int16Array.of(-1, 2), Float64Array.of(0.5), BigUint64Array.of(1n)],
+});
+
+/**
+ * The bytes `p.any().adaptive()` gives this value with the Unit K sequence
+ * engine, pinned as a regression check of its wire format.
+ */
+const LEARNING_VALUE = {
+  name: 'Ada',
+  tags: ['x', 'y', 'x'],
+  rows: [
+    { id: 1, ok: true, at: null },
+    { id: 2, ok: false, at: 2.5 },
+  ],
+  big: -12n,
+};
+const LEARNING_BYTES = [
+  8, 32, 150, 178, 144, 32, 204, 66, 161, 84, 232, 186, 170, 114, 194, 36, 99, 22, 25, 96, 71, 158,
+  171, 60, 149, 37, 60, 82, 145, 41, 34, 44, 86, 72, 138, 7, 106, 169, 212, 217, 28, 139, 96, 244,
+  8,
+];
 
 /** The tags of the kinds the hand-built messages use. */
 const TAG = { INT: 4, FLOAT: 5, BIGINT: 6, REGEXP: 9, OBJECT: 11, FLOAT64_ARRAY: 24 };
 
 describe('Schema any', () => {
+  it.each([
+    ['p.any()', p.any()],
+    ['p.any().adaptive()', p.any().adaptive()],
+    ['p.any().adaptive({ window: 30 })', p.any().adaptive({ window: 30 })],
+  ])('round-trips a value of every kind through %s', (_name, node) => {
+    const value = everyKind();
+    const back = trip(node, value) as { buffer: ArrayBuffer; view: DataView };
+    expect(back).toEqual(value);
+    expect([...new Uint8Array(back.buffer)]).toEqual([1, 2, 3]);
+    expect([...new Uint8Array(back.view.buffer)]).toEqual([4, 5]);
+  });
+
+  it('keeps the pinned wire format of p.any().adaptive()', () => {
+    expect([...p.any().adaptive().encode(LEARNING_VALUE)]).toEqual(LEARNING_BYTES);
+    expect(p.any().adaptive().decode(Uint8Array.from(LEARNING_BYTES))).toEqual(LEARNING_VALUE);
+  });
+
+  it('spells a recurring key list again when plain, and recalls it when adaptive', () => {
+    const once = [{ a: 1, b: 2 }];
+    const twice = [...once, ...once];
+    const extra = (node: PNode<AnyValue>) => node.encode(twice).length - node.encode(once).length;
+    expect(trip(p.any(), twice)).toEqual(twice);
+    expect(extra(p.any().adaptive())).toBeLessThan(extra(p.any()));
+  });
+
+  it.each([
+    [0, RangeError],
+    [-1, RangeError],
+    [1.5, TypeError],
+  ])('refuses the adaptive window %p', (window, type) => {
+    expect(() => p.any().adaptive({ window })).toThrow(
+      new type(`p.any adaptive window must be a positive integer, got ${window}`)
+    );
+  });
+
+  it('halves its counts after the declared window', () => {
+    const value = Array.from({ length: 400 }, (_, i) => (i < 200 ? 'ok' : i % 3 ? 'warn' : i));
+    const windowed = p.any().adaptive({ window: 30 });
+    expect(trip(windowed, value)).toEqual(value);
+    expect(windowed.encode(value)).not.toEqual(p.any().adaptive().encode(value));
+  });
+
   it('copies shared references', () => {
     const shared = { n: 1 };
     const back = trip(p.any(), { a: shared, b: shared }) as { a: object; b: object };
@@ -97,10 +184,10 @@ describe('Schema any', () => {
   });
 
   it('packs a JSON-like value into fewer bytes than a uniform tag would', () => {
-    // A uniform tag costs 4.7 bits per value and took 25 bytes here.
+    // A uniform tag costs 4.8 bits per value and took 25 bytes here.
     const value = { name: 'Ada', age: 36, tags: ['a', 'b'] };
     expect(trip(p.any(), value)).toEqual(value);
-    expect(p.any().encode(value)).toHaveLength(23);
+    expect(p.any().encode(value)).toHaveLength(24);
   });
 
   it('works again after a write or read that threw', () => {
@@ -121,8 +208,11 @@ describe('Schema any', () => {
     expect(node.decode(bytes)).toEqual(value);
   });
 
-  it('names the key of a record value it cannot encode', () => {
-    expect(() => p.any().encode({ a: [Symbol('s') as never] })).toThrow(
+  it.each([
+    ['p.any()', p.any()],
+    ['p.any().adaptive()', p.any().adaptive()],
+  ])('names the key of a record value %s cannot encode', (_name, node) => {
+    expect(() => node.encode({ a: [Symbol('s') as never] })).toThrow(
       'a[0]: p.any cannot encode symbol values'
     );
   });
@@ -134,30 +224,30 @@ describe('Schema any', () => {
       return r < 0.9 ? 'ok' : r < 0.99 ? 'warn' : 'error';
     });
     expect(new Set(statuses).size).toBe(3);
-    expect(trip(p.any(), statuses)).toEqual(statuses);
-    expect(p.any().encode(statuses).length).toBeLessThanOrEqual(30);
+    expect(trip(p.any().adaptive(), statuses)).toEqual(statuses);
+    expect(p.any().adaptive().encode(statuses).length).toBeLessThanOrEqual(30);
   });
 
   it('spends about a byte per object on keys when the objects share a shape', () => {
     const objects = Array.from({ length: 20 }, (_, i) => ({ id: i, name: 'x', ok: i % 2 === 0 }));
     const tuples = objects.map(({ id, name, ok }) => [id, name, ok]);
-    expect(trip(p.any(), objects)).toEqual(objects);
-    expect(p.any().encode(objects).length).toBeLessThanOrEqual(
-      p.any().encode(tuples).length + objects.length
+    expect(trip(p.any().adaptive(), objects)).toEqual(objects);
+    expect(p.any().adaptive().encode(objects).length).toBeLessThanOrEqual(
+      p.any().adaptive().encode(tuples).length + objects.length
     );
   });
 
   it('spends under a bit on each boolean of a long run', () => {
     const flags = Array.from({ length: 200 }, (_, i) => i % 7 !== 0);
-    expect(trip(p.any(), flags)).toEqual(flags);
-    expect(p.any().encode(flags).length).toBeLessThan(flags.length / 8);
+    expect(trip(p.any().adaptive(), flags)).toEqual(flags);
+    expect(p.any().adaptive().encode(flags).length).toBeLessThan(flags.length / 8);
   });
 
   it('learns per node, so two nodes in one object each spell a string anew', () => {
     const value = { a: 'hello', b: 'hello' };
-    const shared = p.any();
+    const shared = p.any().adaptive();
     const together = p.object({ a: shared, b: shared });
-    const apart = p.object({ a: p.any(), b: p.any() });
+    const apart = p.object({ a: p.any().adaptive(), b: p.any().adaptive() });
     expect(trip(together, value)).toEqual(value);
     expect(trip(apart, value)).toEqual(value);
     expect(together.encode(value).length).toBeLessThan(apart.encode(value).length);
@@ -169,18 +259,19 @@ describe('Schema any', () => {
       'the quick brown cat jumps over the lazy dog',
       'a quick brown fox jumps over a lazy dog',
     ];
-    expect(trip(p.any(), value)).toEqual(value);
+    expect(trip(p.any().adaptive(), value)).toEqual(value);
   });
 
   it('recalls a Map key among string values, and a record key apart from them', () => {
-    const recalled = p.any().encode(new Map([['hello', 'hello']]));
-    expect(recalled.length).toBeLessThan(p.any().encode(new Map([['hello', 'world']])).length);
+    const node = p.any().adaptive();
+    const recalled = node.encode(new Map([['hello', 'hello']]));
+    expect(recalled.length).toBeLessThan(node.encode(new Map([['hello', 'world']])).length);
     // Keys and values share what their characters learn, which below the
     // warm-up of contexts and repeats depends on the counts alone, so only
     // recall could tell these two apart.
     const record = { hello: 'hello' };
-    expect(trip(p.any(), record)).toEqual(record);
-    expect(p.any().encode(record).length).toBe(p.any().encode({ hello: 'olleh' }).length);
+    expect(trip(node, record)).toEqual(record);
+    expect(node.encode(record).length).toBe(node.encode({ hello: 'olleh' }).length);
   });
 
   it('round-trips Maps and Sets of any values, keys included', () => {
@@ -466,8 +557,8 @@ describe('Schema any', () => {
       'p.any shape'
     );
 
-  it('reads a record whose key list repeats a key, the last value winning', () => {
-    const table = tags();
+  it('reads an adaptive record whose key list repeats a key, the last value winning', () => {
+    const table = adaptiveTags();
     const enc = new Encoder();
     table.write(enc, TAG.OBJECT);
     shapes()._write(enc, ['a', 'a']);
@@ -475,11 +566,11 @@ describe('Schema any', () => {
       table.write(enc, TAG.INT);
       p.int()._write(enc, value);
     }
-    expect(p.any().decode(enc.output())).toEqual({ a: 2 });
+    expect(p.any().adaptive().decode(enc.output())).toEqual({ a: 2 });
   });
 
-  it('reads a record whose keys are out of the order an object lists them in', () => {
-    const table = tags();
+  it('reads an adaptive record whose keys are out of the order an object lists them in', () => {
+    const table = adaptiveTags();
     const enc = new Encoder();
     table.write(enc, TAG.OBJECT);
     shapes()._write(enc, ['b', '1']);
@@ -487,7 +578,7 @@ describe('Schema any', () => {
       table.write(enc, TAG.INT);
       p.int()._write(enc, value);
     }
-    expect(p.any().decode(enc.output())).toEqual({ 1: 2, b: 1 });
+    expect(p.any().adaptive().decode(enc.output())).toEqual({ 1: 2, b: 1 });
   });
 
   it('reads back a record whose key is __proto__ as an own property', () => {
@@ -511,19 +602,25 @@ describe('Schema any', () => {
     expect(New.decode(bytes)).toEqual(migrated);
   });
 
-  it('round-trips through p.lazy recursion, with nothing left over between messages', () => {
-    type Tree = { v?: AnyValue; kids: Tree[] };
-    const Tree: PNode<Tree> = p.object({ v: p.any(), kids: p.array(p.lazy(() => Tree)) });
-    const value: Tree = {
-      v: 'root',
-      kids: [
-        { v: { k: 'root' }, kids: [] },
-        { v: ['root', 1], kids: [{ v: 'root', kids: [] }] },
-      ],
-    };
-    const bytes = Tree.encode(value);
-    expect(Tree.encode(value)).toEqual(bytes);
-    expect(Tree.decode(bytes)).toEqual(value);
-    expect(Tree.decode(bytes)).toEqual(value);
-  });
+  it.each([
+    ['p.any()', () => p.any()],
+    ['p.any().adaptive()', () => p.any().adaptive()],
+  ])(
+    'round-trips %s through p.lazy recursion, with nothing left over between messages',
+    (_name, any) => {
+      type Tree = { v?: AnyValue; kids: Tree[] };
+      const Tree: PNode<Tree> = p.object({ v: any(), kids: p.array(p.lazy(() => Tree)) });
+      const value: Tree = {
+        v: 'root',
+        kids: [
+          { v: { k: 'root' }, kids: [] },
+          { v: ['root', 1], kids: [{ v: 'root', kids: [] }] },
+        ],
+      };
+      const bytes = Tree.encode(value);
+      expect(Tree.encode(value)).toEqual(bytes);
+      expect(Tree.decode(bytes)).toEqual(value);
+      expect(Tree.decode(bytes)).toEqual(value);
+    }
+  );
 });

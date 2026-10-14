@@ -3,12 +3,13 @@
  * Protobuf, Avro and Polynar (text and raw bytes), averaged over 250
  * seeded random payloads per row so no single lucky value flatters anyone.
  * Other formats' cells read "plain (brotli)"; Polynar's output is already
- * entropy coded, so its schema cells read "regular (adaptive)" instead,
- * with `.adaptive()` on every node that takes it. Prints the two tables
- * from the README:
- * self-describing formats against `p.any()`, which also writes keys and
- * type tags and also gets ascii-safe text to match JSON, and schema
- * formats against the precise Polynar node.
+ * entropy coded, so its cells read "regular (adaptive)" instead: `p.any()`
+ * and `p.any().adaptive()` in the self-describing table, and the precise
+ * node without and with `.adaptive()` on every node that takes it in the
+ * schema table. Prints the two tables from the README: self-describing
+ * formats against `p.any()`, which also writes keys and type tags and also
+ * gets ascii-safe text to match JSON, and schema formats against the
+ * precise Polynar node.
  * Run with: npx tsx examples/size-comparison.ts
  */
 import { brotliCompressSync } from 'node:zlib';
@@ -378,7 +379,6 @@ const KEYS = [
   'binary',
 ] as const;
 type Key = (typeof KEYS)[number];
-const SCHEMA: ReadonlySet<Key> = new Set<Key>(['urlSafe', 'asciiSafe', 'binary']);
 const OTHER: ReadonlySet<Key> = new Set<Key>(['json', 'msgpack', 'proto', 'avro']);
 type Cells = Record<Key, string>;
 const urlSafe = { type: 'text', charset: CharSets.urlSafe } as const;
@@ -396,6 +396,7 @@ function measure({
   const Message = protobuf.parse(proto).root.lookupType(/message (\w+)/.exec(proto)![1]);
   const AvroType = avro.Type.forSchema(avroSchema);
   const any = p.any();
+  const anyAdaptive = p.any().adaptive();
   const sums = Object.fromEntries(KEYS.map((k) => [k, 0])) as Record<Key, number>;
   const learned = Object.fromEntries(KEYS.map((k) => [k, 0])) as Record<Key, number>;
   const brotli = Object.fromEntries(KEYS.map((k) => [k, 0])) as Record<Key, number>;
@@ -422,6 +423,9 @@ function measure({
         brotli[key] += brotliCompressSync(cells[key]).length;
       }
     }
+    learned.anyUrlSafe += anyAdaptive.encode(value, { ...urlSafe, ...options }).length;
+    learned.anyAsciiSafe += anyAdaptive.encode(value, { ...asciiSafe, ...options }).length;
+    learned.anyBinary += anyAdaptive.encode(value, options).length;
     const learner = adaptive ?? node;
     learned.urlSafe += learner.encode(value, { ...urlSafe, ...options }).length;
     learned.asciiSafe += learner.encode(value, { ...asciiSafe, ...options }).length;
@@ -434,9 +438,7 @@ function measure({
   const cell = (key: Key): string =>
     OTHER.has(key)
       ? `${size(sums[key])} (${size(brotli[key])})`
-      : SCHEMA.has(key)
-        ? `${size(sums[key])} (${size(learned[key])})`
-        : size(sums[key]);
+      : `${size(sums[key])} (${size(learned[key])})`;
   return Object.fromEntries(KEYS.map((k) => [k, cell(k)])) as Cells;
 }
 

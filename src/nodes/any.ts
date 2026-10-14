@@ -11,7 +11,8 @@ import { PNull } from './null';
 import { PArray } from './array';
 import { PCollection, MAP, RECORD, SET } from './collection';
 import { atPath, unlocated } from './path';
-import { AdaptiveTable } from './adaptive';
+import { AdaptiveTable, checkAdaptation, type AdaptiveOptions } from './adaptive';
+import { members, type Members } from './members';
 import { PRecall } from './recall';
 
 /**
@@ -39,7 +40,7 @@ export type AnyValue =
 // Type tags for the self-describing `any` codec: absent values, then scalars,
 // then containers, then raw bytes: an ArrayBuffer, a DataView and one tag per
 // typed-array class in TYPED_ARRAYS order. Each boolean is a tag of its own,
-// so the tag table learns them like any other tag.
+// so an adaptive tag table learns them like any other tag.
 const TAG_UNDEFINED = 0;
 const TAG_NULL = 1;
 const TAG_FALSE = 2;
@@ -95,12 +96,15 @@ export const TAG_TIERS: readonly number[] = Array.from({ length: TAG_COUNT }, (_
 );
 
 /**
- * How many observations the tag tiers count as: 7, so one observed tag is
- * worth about one common-tier unit.
+ * How many observations the tag tiers count as under `.adaptive()`: 7, so
+ * one observed tag is worth about one common-tier unit.
  */
 export const TAG_PRIOR = 7;
 
-/** How many observations the tag table holds before its learned counts halve. */
+/**
+ * How many observations the adaptive tag table holds before its learned
+ * counts halve, unless `.adaptive()` declares a window.
+ */
 export const TAG_WINDOW = 1024;
 
 /**
@@ -237,8 +241,8 @@ class AnyDataView extends PNode<DataView> {
   }
 }
 
-// The default nodes behind the scalar tags. Module singletons: `any` has no
-// configuration, so these never vary.
+// The default nodes behind the scalar tags. Module singletons: no option of
+// `any` changes them.
 const ANY_UNDEFINED = new PEnum([undefined]);
 const ANY_NULL = new PNull();
 const ANY_FALSE = new PEnum([false]);
@@ -310,11 +314,9 @@ class AnyRecord extends PNode<{ [key: string]: AnyValue }> {
 
 /**
  * Self-describing escape hatch: a type tag, then the value through the node
- * that tag stands for. Containers hold `p.any` itself. Tags, strings, record
- * keys and record key lists are priced by what the message has already
- * seen, so a value that recurs costs a fraction of its first spelling, and
- * the characters of new strings and keys learn as the message goes on.
- * Output type `AnyValue`. `p.any`.
+ * that tag stands for. Containers hold `p.any` itself. The tags take two
+ * static tiers that favour the JSON-like kinds, and a record is its entry
+ * count, then each key and value. Output type `AnyValue`. `p.any`.
  */
 export class PAny extends PNode<AnyValue> {
   readonly _kinds: readonly Kind[] = [...TAG_BY_KIND.keys(), 'boolean', 'number'];
@@ -322,27 +324,32 @@ export class PAny extends PNode<AnyValue> {
   /** The node behind each tag, in tag order. */
   private readonly _nodes: readonly PNode<any>[];
 
-  /** The tag table, learning which tags this node's message uses. */
-  private readonly _tags = new AdaptiveTable(TAG_TIERS, TAG_COUNT, TAG_PRIOR, TAG_WINDOW, 'p.any');
+  /** The tag table: static, or learning which tags this node's message uses. */
+  private readonly _tags: Pick<Members, 'write' | 'read'>;
 
-  /** The spelling of a new string value or record key, its characters learning across both. */
-  private readonly _string = new PString().adaptive();
-
-  /** String values, by recall. */
-  private readonly _text = new PRecall<string>(this._string, (s) => s, 'p.any string');
-
-  /** Record keys, by recall, apart from string values. */
-  private readonly _key = new PRecall<string>(this._string, (s) => s, 'p.any key');
-
-  /** Record key lists, by recall, a new one spelled key by key. */
-  private readonly _shape = new PRecall<string[]>(
-    new PArray(this._key),
-    (keys) => JSON.stringify(keys),
-    'p.any shape'
-  );
-
-  constructor() {
+  constructor(adaptive?: AdaptiveOptions) {
     super();
+    let text: PNode<string> = ANY_STRING;
+    let record: PNode<{ [key: string]: AnyValue }> = new PCollection(RECORD, ANY_STRING, this);
+    if (adaptive === undefined) {
+      this._tags = members(TAG_COUNT, { weights: TAG_TIERS }, 'p.any');
+    } else {
+      const options = checkAdaptation(adaptive, 'p.any');
+      const window = options.window ?? TAG_WINDOW;
+      this._tags = new AdaptiveTable(TAG_TIERS, TAG_COUNT, TAG_PRIOR, window, 'p.any');
+      // String values and record keys share one spelling, its characters
+      // learning across both, but each has a recall of its own.
+      const string = new PString().adaptive(options);
+      text = new PRecall<string>(string, (s) => s, 'p.any string');
+      const key = new PRecall<string>(string, (s) => s, 'p.any key');
+      // Whole key lists recall too, a new one spelled key by key.
+      const shape = new PRecall<string[]>(
+        new PArray(key),
+        (keys) => JSON.stringify(keys),
+        'p.any shape'
+      );
+      record = new AnyRecord(shape, this);
+    }
     this._nodes = [
       ANY_UNDEFINED,
       ANY_NULL,
@@ -351,17 +358,31 @@ export class PAny extends PNode<AnyValue> {
       ANY_INT,
       ANY_FLOAT,
       ANY_BIGINT,
-      this._text,
+      text,
       ANY_DATE,
       ANY_REGEXP,
       new PArray<AnyValue>(this),
-      new AnyRecord(this._shape, this),
+      record,
       new PCollection(MAP, this, this),
       new PCollection(SET, this),
       ANY_ARRAY_BUFFER,
       ANY_DATA_VIEW,
       ...ANY_BINARY,
     ];
+  }
+
+  /**
+   * Tags, strings, record keys and record key lists are priced by what the
+   * message has already seen, so a value that recurs costs a fraction of its
+   * first spelling and an array of same-shaped objects pays for its keys
+   * once; the characters of new strings and keys learn as the message goes
+   * on, as under `p.string().adaptive()`. `window` is how many observations
+   * each table holds before its counts halve, so the newest weigh most (1024
+   * when left out). Encoding and decoding take 5 to 40 times as long as
+   * without. Part of the wire format.
+   */
+  adaptive(options?: AdaptiveOptions): PAny {
+    return new PAny(options ?? {});
   }
 
   /** How many containers deep the value being written or read sits, this message. */
