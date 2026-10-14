@@ -282,15 +282,15 @@ A node looked up on first use, so a schema can contain itself or refer to one de
 
 ### `p.versioned(first: PNode, ...later: (PNode | [PNode, (previous) => next])[])`
 
-A schema that can change after data has been written. The first argument is the first version. Each later argument is either a plain node, when old values still fit it (a wider bound, an added optional field), or `[node, migrate]`, where `migrate` turns a value of the previous version into one of the new. Infers the newest version's type. Earlier versions stay in the list: replacing one instead of adding after it makes data written with it undecodable.
+A schema that can change after data has been written. The first argument is the first version. Each later argument is either a plain node, when old values still fit it (a wider bound, an added optional field, a removed field), or `[node, migrate]`, where `migrate` turns a value of the previous version into one of the new. Infers the newest version's type. Earlier versions stay in the list: replacing one instead of adding after it makes data written with it undecodable.
 
-Data written by any listed version decodes and is migrated step by step to the newest. The encoder always writes the newest, so decoding old data and encoding it again gives new bytes. Data from a version the schema doesn't list throws `UnknownVersionError`. The version number costs a couple of bits. The wrapper has to be there before the first data is written: data written without it carries no version, and nothing can tell its versions apart later.
+Data written by any listed version decodes and is migrated step by step to the newest. Each step's result is checked by that version's node, and the newest is read back from its own bytes, so old data comes out exactly as newest data would. A result a version can't encode throws as encoding it would, with the versions named: a bug in the schema, not bad input, so never a `CorruptInputError`. The encoder always writes the newest, so decoding old data and encoding it again gives new bytes. Data from a version the schema doesn't list throws `UnknownVersionError`. The version number costs a couple of bits. The wrapper has to be there before the first data is written: data written without it carries no version, and nothing can tell its versions apart later.
 
-| Method                       | Description                                                                                                                            |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `.walk(value, from?: PNode)` | Runs a value through the migrations to the newest version, as decoding old data does. The value is of the first version, or of `from`. |
+| Method                       | Description                                                                                                                                                                        |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.walk(value, from?: PNode)` | Upgrades a value of an older version to the newest, as decoding old data does: an object already in hand, with its version known. The value is of the first version, or of `from`. |
 
-`walk` is there for testing migrations: `User.walk({ name: 'Ada' })` gives what data written by the first version decodes to.
+`User.walk({ name: 'Ada' })` gives what data written by the first version decodes to.
 
 ### `p.any()`
 
@@ -372,7 +372,7 @@ User.decode(ascii, { charset: CharSets.printable });
 
 Input that doesn't decode — truncated, padded, or with characters outside the charset — throws a `CorruptInputError`. Without a `checksum`, damaged input that still decodes gives whatever value those bytes encode; with one it throws instead, except with probability 2^-k. Its subclass `UnknownVersionError` is thrown when `p.versioned` gets data from a version it doesn't list.
 
-A value that can't be encoded throws with its path in front and the limit it broke, like `filters[2].op: Value "gt" is not one of "eq", "lt"` or `tags: Array length 5 is above the maximum 3`. A value outside what the schema allows — a bound, step, length, list, tag, charset or nesting depth — throws a `RangeError`. A value the schema has no place for at all throws a `TypeError`: a non-integer, a non-finite number, an invalid date, a missing required field, a kind no union member takes, or a type `p.any` can't encode. An invalid schema throws a `TypeError` or `RangeError` as soon as it's defined.
+A value that can't be encoded throws with its path in front and the limit it broke, like `filters[2].op: Value "gt" is not one of "eq", "lt"` or `tags: Array length 5 is above the maximum 3`. A migration in `p.versioned` whose result doesn't fit throws the same way when old data is decoded, with the versions after the message, like `n: Value 500 is above the maximum 10, in data migrated from version 1 to 2`; a migration that throws gets `, in migrating version 1 data to version 2` appended. A value outside what the schema allows — a bound, step, length, list, tag, charset or nesting depth — throws a `RangeError`. A value the schema has no place for at all throws a `TypeError`: a non-integer, a non-finite number, an invalid date, a missing required field, a kind no union member takes, or a type `p.any` can't encode. An invalid schema throws a `TypeError` or `RangeError` as soon as it's defined.
 
 ## Types
 

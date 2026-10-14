@@ -986,11 +986,14 @@ const versionedCase = (inner: Case): Case => {
     };
   }
   const first = scalarCase();
+  // The migration yields one newest value, drawn here so every copy of the
+  // library builds the same schema.
+  const fixed = inner.gen();
   return {
-    build: (m) => m.p.versioned(first.build(m), [inner.build(m), () => undefined]),
+    build: (m) => m.p.versioned(first.build(m), [inner.build(m), () => fixed]),
     gen: inner.gen,
     migrates: true,
-    src: `p.versioned(${first.src}, [${inner.src}, () => undefined])`,
+    src: `p.versioned(${first.src}, [${inner.src}, () => fixed])`,
   };
 };
 

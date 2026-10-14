@@ -49,6 +49,29 @@ export function atPath(error: unknown, segment: string | number): unknown {
 }
 
 /**
+ * Append a note to an error's message, after whatever it says. A path a
+ * container prepends later goes in front of both.
+ */
+export function noted(error: unknown, note: string): unknown {
+  if (!(error instanceof Error)) {
+    return error;
+  }
+  const located = error as Error & Located;
+  const head = `${error.name}: ${error.message}`;
+  const info = located[PATH];
+  if (info) {
+    info.message = `${info.message}, ${note}`;
+    error.message = `${formatPath(info.segments)}: ${info.message}`;
+  } else {
+    error.message = `${error.message}, ${note}`;
+  }
+  if (error.stack?.startsWith(head)) {
+    error.stack = `${error.name}: ${error.message}${error.stack.slice(head.length)}`;
+  }
+  return error;
+}
+
+/**
  * The allowed values in an error message: each one described while they are
  * one to eight primitives, else their count, since an object prints as
  * `[object Object]`.

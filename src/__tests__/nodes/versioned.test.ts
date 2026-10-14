@@ -30,7 +30,7 @@ describe('Schema versioned', () => {
     expect(One.encode({ name: 'Ada' })).toEqual(Spelled(V1, 0, { name: 'Ada' }));
   });
 
-  it('walk runs a value through the migrations, as decode does', () => {
+  it('walk upgrades a value of an older version, as decode does', () => {
     const All = p.versioned(V1, [V2, toV2], [V3, (user: V2) => ({ ...user, active: true })]);
     expect(All.walk({ name: 'Ada' })).toEqual({ name: 'Ada', age: 0, active: true });
     expect(All.walk({ name: 'Ada', age: 36 }, V2)).toEqual({ name: 'Ada', age: 36, active: true });
@@ -149,6 +149,136 @@ describe('Schema versioned', () => {
     );
     expect(() => p.object({ user: Current }).encode({ user: { name: 'Ada', age: 200 } })).toThrow(
       'user.age: Value 200 is above the maximum 120'
+    );
+  });
+
+  const caught = (thunk: () => unknown): unknown => {
+    try {
+      thunk();
+    } catch (e) {
+      return e;
+    }
+    throw new Error('did not throw');
+  };
+
+  it('a migration result the newest version rejects throws, naming the versions', () => {
+    const W1 = p.object({ n: p.int().min(0).max(1000) });
+    const W2 = p.object({ n: p.int().min(0).max(10) });
+    const S = p.versioned(W1, [W2, (prev) => ({ n: prev.n })]);
+    const old = p.versioned(W1).encode({ n: 500 });
+    const message = 'n: Value 500 is above the maximum 10, in data migrated from version 1 to 2';
+    expect(() => S.decode(old)).toThrow(RangeError);
+    expect(() => S.decode(old)).toThrow(message);
+    expect(caught(() => S.decode(old))).not.toBeInstanceOf(CorruptInputError);
+    expect(() => S.walk({ n: 500 })).toThrow(message);
+    expect(S.decode(p.versioned(W1).encode({ n: 5 }))).toEqual({ n: 5 });
+  });
+
+  it('a bare narrower version rejects old values that no longer fit', () => {
+    const Narrow = p.versioned(p.int().min(0).max(1000), p.int().min(0).max(10));
+    const first = p.versioned(p.int().min(0).max(1000));
+    expect(() => Narrow.decode(first.encode(500))).toThrow(
+      'Value 500 is above the maximum 10, in data migrated from version 1 to 2'
+    );
+    expect(Narrow.decode(first.encode(5))).toBe(5);
+  });
+
+  it('every step is checked, not only the last', () => {
+    const small = p.int().min(0).max(10);
+    const S = p.versioned(
+      small,
+      [small, (v) => v + 100],
+      [p.int().min(0).max(1000), (v) => v - 100]
+    );
+    expect(() => S.decode(p.versioned(small).encode(5))).toThrow(
+      'Value 105 is above the maximum 10, in data migrated from version 1 to 2'
+    );
+  });
+
+  it('a migration that throws names the step', () => {
+    const Boom = p.versioned(V1, [
+      V2,
+      () => {
+        throw new Error('boom');
+      },
+    ]);
+    const old = p.versioned(V1).encode({ name: 'Ada' });
+    expect(() => Boom.decode(old)).toThrow('boom, in migrating version 1 data to version 2');
+    const e = caught(() => Boom.decode(old)) as Error;
+    expect(e).toBeInstanceOf(Error);
+    expect(e.constructor).toBe(Error);
+
+    const Plain = p.versioned(V1, [
+      V2,
+      () => {
+        throw 'boom';
+      },
+    ]);
+    expect(caught(() => Plain.decode(old))).toBe('boom');
+  });
+
+  describe('a migrated value comes out as newest data would', () => {
+    it('without removed fields', () => {
+      const S = p.versioned(p.object({ a: p.int(), b: p.string() }), p.object({ a: p.int() }));
+      const old = p.versioned(p.object({ a: p.int(), b: p.string() })).encode({ a: 1, b: 'x' });
+      const result = S.decode(old);
+      expect(result).toEqual({ a: 1 });
+      expect('b' in result).toBe(false);
+    });
+
+    it('with dates floored to the precision', () => {
+      const Day = p.date().precision('day');
+      const S = p.versioned(p.date(), Day);
+      const date = new Date('2024-05-06T13:14:15.123Z');
+      const result = S.decode(p.versioned(p.date()).encode(date));
+      expect(result).toEqual(trip(Day, date));
+      expect(result.getTime()).not.toBe(date.getTime());
+    });
+
+    it('with minus zero as zero', () => {
+      const S = p.versioned(p.int(), [p.int(), (v) => -v]);
+      expect(Object.is(S.decode(p.versioned(p.int()).encode(0)), 0)).toBe(true);
+    });
+
+    it('as fresh objects every time', () => {
+      const shared = [1];
+      const S = p.versioned(p.int(), [p.array(p.int()), () => shared]);
+      const old = p.versioned(p.int()).encode(7);
+      const a = S.decode(old);
+      const b = S.decode(old);
+      expect(a).toEqual([1]);
+      expect(a).not.toBe(shared);
+      expect(b).not.toBe(shared);
+      expect(a).not.toBe(b);
+    });
+  });
+
+  it('a migration that returns undefined for a required field throws', () => {
+    const N = p.object({ n: p.int() });
+    const S = p.versioned(N, [N, (() => ({})) as never]);
+    const old = p.versioned(N).encode({ n: 1 });
+    expect(() => S.decode(old)).toThrow(TypeError);
+    expect(() => S.decode(old)).toThrow(
+      'n: Required field is missing, in data migrated from version 1 to 2'
+    );
+  });
+
+  it('walk from the newest version returns the value as decoding does', () => {
+    const All = p.versioned(V1, [V2, toV2], [V3, (user: V2) => ({ ...user, active: true })]);
+    const value = { name: 'Ada', age: 36, active: false };
+    const result = All.walk(value, V3);
+    expect(result).toEqual(value);
+    expect(result).not.toBe(value);
+  });
+
+  it('a nested versioned node migrates inside an outer migration', () => {
+    const Inner = p.versioned(p.int().min(0).max(100), p.int().min(0).max(10));
+    const Outer = p.versioned(p.object({ x: Inner }));
+    const old = p
+      .versioned(p.object({ x: p.versioned(p.int().min(0).max(100)) }))
+      .encode({ x: 50 });
+    expect(() => Outer.decode(old)).toThrow(
+      'Value 50 is above the maximum 10, in data migrated from version 1 to 2'
     );
   });
 });

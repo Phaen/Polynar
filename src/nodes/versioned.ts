@@ -2,12 +2,13 @@ import { Encoder, Decoder, UnknownVersionError } from '../packer';
 import { PNode } from './base';
 import type { Kind } from './guards';
 import { IndexRange } from './lattice';
+import { noted } from './path';
 
 /**
  * A later version of a `p.versioned` schema: the node alone when a value of
  * the previous version already is one of the new (a widened bound, an added
- * optional field), otherwise the node with the function that turns a previous
- * value into a new one.
+ * optional field, a removed field), otherwise the node with the function that
+ * turns a previous value into a new one.
  */
 export type Step<Prev, Next> = [Prev] extends [Next]
   ? PNode<Next> | readonly [PNode<Next>, (prev: Prev) => NoInfer<Next>]
@@ -44,8 +45,11 @@ const VERSION = new IndexRange('p.versioned', 0);
  * there up to the newest, one step at a time. Data of a version the schema
  * does not know throws `UnknownVersionError`.
  *
- * Old data therefore re-encodes as the newest version: the one place where
- * decode then encode does not reproduce the bytes.
+ * Each migration's result is written with its version's node, which checks
+ * it, and the newest one is read back from its own bytes, so old data comes
+ * out exactly as newest data would. Old data therefore re-encodes as the
+ * newest version: the one place where decode then encode does not reproduce
+ * the bytes.
  */
 export class PVersioned<T, TFirst = T> extends PNode<T> {
   readonly _kinds?: readonly Kind[];
@@ -79,13 +83,14 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
         `Data was written by version ${index + 1}; this schema knows ${this._nodes.length}`
       );
     }
-    return this._upgrade(this._nodes[index]._read(dec), index);
+    const value = this._nodes[index]._read(dec);
+    return index === this._nodes.length - 1 ? value : this._upgrade(value, index);
   }
 
   /**
-   * Runs a value through the migrations to the newest version, the same way
-   * `decode` upgrades old data. The value is of the first version, or of the
-   * version whose node is passed as `from`.
+   * Upgrades a value of an older version to the newest, the same way `decode`
+   * upgrades old data. The value is of the first version, or of the version
+   * whose node is passed as `from`.
    */
   walk(value: TFirst): T;
   walk<S>(value: S, from: PNode<S>): T;
@@ -100,11 +105,34 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
     return this._upgrade(value, start);
   }
 
-  /** `index` is the version `value` is of, one of the listed versions. */
+  /**
+   * Migrates from version `index` to the newest. Every step's result is
+   * written with that version's node, so one that does not fit throws as
+   * encoding it would, with the step named. The newest is read back from the
+   * bytes it wrote, so the value comes out as decoding it would.
+   */
   private _upgrade(value: unknown, index: number): T {
-    for (let i = index; i < this._migrations.length; i++) {
-      value = this._migrations[i](value);
+    const newest = this._nodes.length - 1;
+    let enc: Encoder | undefined;
+    for (let i = index; i < newest; i++) {
+      try {
+        value = this._migrations[i](value);
+      } catch (error) {
+        throw noted(error, `in migrating version ${i + 1} data to version ${i + 2}`);
+      }
+      enc = new Encoder();
+      try {
+        this._nodes[i + 1]._write(enc, value);
+      } catch (error) {
+        throw noted(error, `in data migrated from version ${i + 1} to ${i + 2}`);
+      }
     }
-    return value as T;
+    if (enc === undefined) {
+      // Nothing to migrate: a walk from the newest version.
+      enc = new Encoder();
+      this._nodes[newest]._write(enc, value);
+    }
+    // The newest node wrote these bytes, so they decode.
+    return this._nodes[newest]._read(new Decoder(enc.output()));
   }
 }

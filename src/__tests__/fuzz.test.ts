@@ -51,7 +51,8 @@ const exactly = <T>(fn: () => T): T => {
 
 /**
  * Corrupted input either throws or decodes to a value whose canonical
- * encoding it is; under a migration only the first half holds.
+ * encoding it is. Under a migration the value re-encodes as the newest
+ * version instead, and those bytes decode to it unchanged.
  */
 const expectRejectedOrOwned = (
   { node, migrates }: { node: PNode<unknown>; migrates: boolean },
@@ -66,7 +67,9 @@ const expectRejectedOrOwned = (
       expect(e).toBeInstanceOf(Error);
       continue;
     }
-    if (!migrates) {
+    if (migrates) {
+      expect(decodeWith(node, encodeWith(node, decoded, o), o)).toEqual(decoded);
+    } else {
       expect(encodeWith(node, decoded, o)).toEqual(input);
     }
   }
@@ -82,6 +85,33 @@ describe('Property fuzz', () => {
       expect(decoded).toEqual(value);
       // Canonical closure: our own output re-encodes to itself, byte for byte.
       expect(node.encode(decoded as never)).toEqual(bytes);
+    }
+  });
+
+  it('migrates data of an older version to what the newest decodes, or throws as encoding would', () => {
+    for (let i = 0; i < runs(300); i++) {
+      const first = randomCase(1);
+      const newest = randomCase(1);
+      const fixed = newest.gen();
+      const firstNode = first.build(lib) as PNode<unknown>;
+      const old = lib.p.versioned(firstNode).encode(first.gen());
+      const New = lib.p.versioned(firstNode, [newest.build(lib) as PNode<unknown>, () => fixed]);
+      const decoded = New.decode(old);
+      expect(decoded).toEqual(fixed);
+      expect(New.encode(decoded)).toEqual(New.encode(fixed));
+
+      const Bad = lib.p.versioned(firstNode, [lib.p.int().min(0).max(9), () => 10]);
+      let error: unknown;
+      try {
+        Bad.decode(old);
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeInstanceOf(RangeError);
+      expect(error).not.toBeInstanceOf(lib.CorruptInputError);
+      expect((error as Error).message).toBe(
+        'Value 10 is above the maximum 9, in data migrated from version 1 to 2'
+      );
     }
   });
 
