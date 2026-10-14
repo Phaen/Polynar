@@ -4,15 +4,15 @@ import { PNode } from './base';
 import { PInt } from './int';
 import { PFloat } from './float';
 import { PString } from './string';
-import { PBool } from './bool';
 import { PDate } from './date';
 import { PBinary } from './binary';
 import { PEnum } from './enum';
 import { PNull } from './null';
 import { PArray } from './array';
 import { PCollection, MAP, RECORD, SET } from './collection';
-import { describe, unlocated } from './path';
-import { buildWeights, readTable, writeTable } from './weights';
+import { atPath, unlocated } from './path';
+import { AdaptiveTable } from './adaptive';
+import { PRecall } from './recall';
 
 /**
  * Every value `p.any` encodes: the JSON-like scalars plus `undefined`,
@@ -38,23 +38,25 @@ export type AnyValue =
 
 // Type tags for the self-describing `any` codec: absent values, then scalars,
 // then containers, then raw bytes: an ArrayBuffer, a DataView and one tag per
-// typed-array class in TYPED_ARRAYS order.
+// typed-array class in TYPED_ARRAYS order. Each boolean is a tag of its own,
+// so the tag table learns them like any other tag.
 const TAG_UNDEFINED = 0;
 const TAG_NULL = 1;
-const TAG_BOOLEAN = 2;
-const TAG_INT = 3;
-const TAG_FLOAT = 4;
-const TAG_BIGINT = 5;
-const TAG_STRING = 6;
-const TAG_DATE = 7;
-const TAG_REGEXP = 8;
-const TAG_ARRAY = 9;
-const TAG_OBJECT = 10;
-const TAG_MAP = 11;
-const TAG_SET = 12;
-const TAG_ARRAY_BUFFER = 13;
-const TAG_DATA_VIEW = 14;
-const TAG_TYPED = 15;
+const TAG_FALSE = 2;
+const TAG_TRUE = 3;
+const TAG_INT = 4;
+const TAG_FLOAT = 5;
+const TAG_BIGINT = 6;
+const TAG_STRING = 7;
+const TAG_DATE = 8;
+const TAG_REGEXP = 9;
+const TAG_ARRAY = 10;
+const TAG_OBJECT = 11;
+const TAG_MAP = 12;
+const TAG_SET = 13;
+const TAG_ARRAY_BUFFER = 14;
+const TAG_DATA_VIEW = 15;
+const TAG_TYPED = 16;
 
 /** The typed-array classes `p.any` encodes, each through a default `p.binary` of its class. */
 const TYPED_ARRAYS = [
@@ -75,7 +77,8 @@ const TAG_COUNT = TAG_TYPED + TYPED_ARRAYS.length;
 
 const COMMON_TAGS: ReadonlySet<number> = new Set([
   TAG_NULL,
-  TAG_BOOLEAN,
+  TAG_FALSE,
+  TAG_TRUE,
   TAG_INT,
   TAG_FLOAT,
   TAG_STRING,
@@ -83,12 +86,22 @@ const COMMON_TAGS: ReadonlySet<number> = new Set([
   TAG_OBJECT,
 ]);
 
-// Two tiers, 100 for the JSON-like kinds and 1 for the rest, so a common tag costs about 2.8 bits instead of 4.7.
-export const TAG_WEIGHTS = buildWeights(
-  Array.from({ length: TAG_COUNT }, (_, tag) => (COMMON_TAGS.has(tag) ? 100 : 1)),
-  TAG_COUNT,
-  'p.any'
+/**
+ * The declared weight of each tag: two tiers, 100 for the JSON-like kinds
+ * and 1 for the rest, so a common tag starts at about 3 bits instead of 4.8.
+ */
+export const TAG_TIERS: readonly number[] = Array.from({ length: TAG_COUNT }, (_, tag) =>
+  COMMON_TAGS.has(tag) ? 100 : 1
 );
+
+/**
+ * How many observations the tag tiers count as: 7, so one observed tag is
+ * worth about one common-tier unit.
+ */
+export const TAG_PRIOR = 7;
+
+/** How many observations the tag table holds before its learned counts halve. */
+export const TAG_WINDOW = 1024;
 
 /**
  * Whether a number travels under the int tag rather than the float tag. Both
@@ -185,18 +198,13 @@ class AnyRegExp extends PNode<RegExp> {
     const source = ANY_STRING._read(dec);
     const mask = dec.parse(2 ** REGEXP_FLAGS.length);
     const flags = [...REGEXP_FLAGS].filter((_, bit) => mask & (1 << bit)).join('');
-    let value: RegExp;
     try {
-      value = new RegExp(source, flags);
+      return new RegExp(source, flags);
     } catch (error) {
       throw new CorruptInputError(
         `Invalid RegExp /${source}/${flags}: ${(error as Error).message}`
       );
     }
-    if (value.source !== source) {
-      throw new CorruptInputError(`Non-canonical RegExp source ${describe(source)}`);
-    }
-    return value;
   }
 }
 
@@ -233,7 +241,8 @@ class AnyDataView extends PNode<DataView> {
 // configuration, so these never vary.
 const ANY_UNDEFINED = new PEnum([undefined]);
 const ANY_NULL = new PNull();
-const ANY_BOOL = new PBool();
+const ANY_FALSE = new PEnum([false]);
+const ANY_TRUE = new PEnum([true]);
 const ANY_INT = new PInt();
 const ANY_FLOAT = new PFloat();
 const ANY_BIGINT = new AnyBigInt();
@@ -245,11 +254,10 @@ const ANY_BYTES = new PBinary(Uint8Array);
 const ANY_ARRAY_BUFFER = new AnyArrayBuffer();
 const ANY_DATA_VIEW = new AnyDataView();
 
-/** The tag of each kind that has exactly one; numbers split by value. */
+/** The tag of each kind that has exactly one; booleans and numbers split by value. */
 const TAG_BY_KIND = new Map<Kind, number>([
   ['undefined', TAG_UNDEFINED],
   ['null', TAG_NULL],
-  ['boolean', TAG_BOOLEAN],
   ['bigint', TAG_BIGINT],
   ['string', TAG_STRING],
   ['date', TAG_DATE],
@@ -264,33 +272,90 @@ const TAG_BY_KIND = new Map<Kind, number>([
 ]);
 
 /**
+ * A plain object as its key list, spelled through a recall of whole key
+ * lists, then each value in that order. The key list is the object's own
+ * key order, so the empty object is the empty list.
+ */
+class AnyRecord extends PNode<{ [key: string]: AnyValue }> {
+  readonly _kinds: readonly Kind[] = ['object'];
+
+  constructor(
+    private readonly _shape: PNode<string[]>,
+    private readonly _value: PNode<AnyValue>
+  ) {
+    super();
+  }
+
+  _write(enc: Encoder, value: { [key: string]: AnyValue }): void {
+    const keys = Object.keys(value);
+    this._shape._write(enc, keys);
+    for (const key of keys) {
+      try {
+        this._value._write(enc, value[key]);
+      } catch (error) {
+        throw atPath(error, key);
+      }
+    }
+  }
+
+  _read(dec: Decoder): { [key: string]: AnyValue } {
+    const keys = this._shape._read(dec);
+    const entries = new Map<unknown, unknown>();
+    for (const key of keys) {
+      entries.set(key, this._value._read(dec));
+    }
+    return RECORD.build(entries);
+  }
+}
+
+/**
  * Self-describing escape hatch: a type tag, then the value through the node
- * that tag stands for. Containers hold `p.any` itself. Output type
- * `AnyValue`. `p.any`.
+ * that tag stands for. Containers hold `p.any` itself. Tags, strings, record
+ * keys and record key lists are priced by what the message has already
+ * seen, so a value that recurs costs a fraction of its first spelling, and
+ * the characters of new strings and keys learn as the message goes on.
+ * Output type `AnyValue`. `p.any`.
  */
 export class PAny extends PNode<AnyValue> {
-  readonly _kinds: readonly Kind[] = [...TAG_BY_KIND.keys(), 'number'];
+  readonly _kinds: readonly Kind[] = [...TAG_BY_KIND.keys(), 'boolean', 'number'];
 
   /** The node behind each tag, in tag order. */
   private readonly _nodes: readonly PNode<any>[];
 
-  /** How many containers deep the value being written or read sits. */
-  private _depth = 0;
+  /** The tag table, learning which tags this node's message uses. */
+  private readonly _tags = new AdaptiveTable(TAG_TIERS, TAG_COUNT, TAG_PRIOR, TAG_WINDOW, 'p.any');
+
+  /** The spelling of a new string value or record key, its characters learning across both. */
+  private readonly _string = new PString().adaptive();
+
+  /** String values, by recall. */
+  private readonly _text = new PRecall<string>(this._string, (s) => s, 'p.any string');
+
+  /** Record keys, by recall, apart from string values. */
+  private readonly _key = new PRecall<string>(this._string, (s) => s, 'p.any key');
+
+  /** Record key lists, by recall, a new one spelled key by key. */
+  private readonly _shape = new PRecall<string[]>(
+    new PArray(this._key),
+    (keys) => JSON.stringify(keys),
+    'p.any shape'
+  );
 
   constructor() {
     super();
     this._nodes = [
       ANY_UNDEFINED,
       ANY_NULL,
-      ANY_BOOL,
+      ANY_FALSE,
+      ANY_TRUE,
       ANY_INT,
       ANY_FLOAT,
       ANY_BIGINT,
-      ANY_STRING,
+      this._text,
       ANY_DATE,
       ANY_REGEXP,
       new PArray<AnyValue>(this),
-      new PCollection(RECORD, ANY_STRING, this),
+      new AnyRecord(this._shape, this),
       new PCollection(MAP, this, this),
       new PCollection(SET, this),
       ANY_ARRAY_BUFFER,
@@ -299,24 +364,30 @@ export class PAny extends PNode<AnyValue> {
     ];
   }
 
+  /** How many containers deep the value being written or read sits, this message. */
+  private _nesting(side: Encoder | Decoder): { depth: number } {
+    return side.state(this, () => ({ depth: 0 }));
+  }
+
   _write(enc: Encoder, value: AnyValue): void {
     const tag = this._tagOf(value);
-    writeTable(enc, TAG_WEIGHTS, tag);
+    this._tags.write(enc, tag);
     const node = this._nodes[tag];
     if (!isContainer(tag)) {
       node._write(enc, value);
       return;
     }
+    const nesting = this._nesting(enc);
     // A value that contains itself is infinitely deep, so this also stops cycles.
-    if (this._depth === MAX_DEPTH) {
+    if (nesting.depth === MAX_DEPTH) {
       // Every level would add a segment to the path, so the message leaves it out.
       throw unlocated(new RangeError(`p.any nests deeper than ${MAX_DEPTH} levels`));
     }
-    this._depth++;
+    nesting.depth++;
     try {
       node._write(enc, value);
     } finally {
-      this._depth--;
+      nesting.depth--;
     }
   }
 
@@ -324,6 +395,9 @@ export class PAny extends PNode<AnyValue> {
     const kind = kindOf(value);
     if (kind === 'number') {
       return travelsAsInt(value as number) ? TAG_INT : TAG_FLOAT;
+    }
+    if (kind === 'boolean') {
+      return value ? TAG_TRUE : TAG_FALSE;
     }
     if (kind === 'object' && !isPlainObject(value)) {
       const name = (value as object).constructor?.name ?? 'this type';
@@ -337,27 +411,20 @@ export class PAny extends PNode<AnyValue> {
   }
 
   _read(dec: Decoder): AnyValue {
-    const tag = readTable(dec, TAG_WEIGHTS);
+    const tag = this._tags.read(dec);
     if (isContainer(tag)) {
+      const nesting = this._nesting(dec);
       // The encoder never nests deeper, and deeper input could overflow the stack.
-      if (this._depth === MAX_DEPTH) {
+      if (nesting.depth === MAX_DEPTH) {
         throw new CorruptInputError(`p.any input nests deeper than ${MAX_DEPTH} levels`);
       }
-      this._depth++;
+      nesting.depth++;
       try {
         return this._nodes[tag]._read(dec);
       } finally {
-        this._depth--;
+        nesting.depth--;
       }
     }
-    const value = this._nodes[tag]._read(dec);
-    // A number under the other number tag is a second spelling of the same
-    // value, which the encoder never emits.
-    if ((tag === TAG_INT || tag === TAG_FLOAT) && (tag === TAG_INT) !== travelsAsInt(value)) {
-      throw new CorruptInputError(
-        `Non-canonical ${tag === TAG_INT ? 'int' : 'float'} tag on the number ${value}`
-      );
-    }
-    return value;
+    return this._nodes[tag]._read(dec);
   }
 }

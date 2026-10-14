@@ -3,8 +3,8 @@
  * like an array's, read back into a Map, a plain object or a Set.
  */
 
-import { p, Encoder, CorruptInputError } from '../../index';
-import { trip } from '../support';
+import { p, Encoder } from '../../index';
+import { mulberry32, trip } from '../support';
 
 /** A wire of `count`, then each of `keys` written by `write`. */
 const wire = (count: number, keys: unknown[], write: (enc: Encoder, key: any) => void) => {
@@ -95,24 +95,24 @@ describe('Schema map', () => {
     ).toThrow('[1]: Value 10 is above the maximum 9');
   });
 
-  it('rejects a repeated key, even one that takes no bits', () => {
+  it('reads a repeated key as one entry holding the last value', () => {
     const int = p.int();
-    const node = p.map(int, p.null());
-    expect(() => node.decode(wire(2, [1, 1], (enc, k) => int._write(enc, k)))).toThrow(
-      new CorruptInputError('Repeated key 1 in p.map')
+    const node = p.map(int, int);
+    let value = 0;
+    const back = node.decode(
+      wire(2, [1, 1], (enc, k) => {
+        int._write(enc, k);
+        int._write(enc, ++value);
+      })
     );
-    // A count no input could hold stops at its second entry.
-    expect(() => p.map(p.null(), p.null()).decode(wire(2 ** 40, [], () => {}))).toThrow(
-      'Repeated key null in p.map'
-    );
+    expect([...back]).toEqual([[1, 2]]);
   });
 
-  it('rejects a -0 key, which a Map holds as 0', () => {
+  it('reads a -0 key as the 0 a Map holds', () => {
     const float = p.float();
     const node = p.map(float, p.null());
-    expect(() => node.decode(wire(1, [-0], (enc, k) => float._write(enc, k)))).toThrow(
-      new CorruptInputError('Key -0 in p.map, where a Map or Set holds it as 0')
-    );
+    const back = node.decode(wire(1, [-0], (enc, k) => float._write(enc, k)));
+    expect([...back.keys()]).toEqual([0]);
   });
 });
 
@@ -148,14 +148,12 @@ describe('Schema record', () => {
     );
   });
 
-  it('rejects integer-like keys out of the order an object lists them in', () => {
+  it('reads integer-like keys in any order as the object that lists them', () => {
     const string = p.string();
     const node = p.record(p.null());
     const write = (enc: Encoder, key: string) => string._write(enc, key);
     expect(node.decode(wire(2, ['1', 'a'], write))).toEqual({ 1: null, a: null });
-    expect(() => node.decode(wire(2, ['a', '1'], write))).toThrow(
-      new CorruptInputError('Record keys are out of the order an object lists them in')
-    );
+    expect(Object.keys(node.decode(wire(2, ['a', '1'], write)))).toEqual(['1', 'a']);
   });
 
   it('has the object kind, beside other kinds in a union', () => {
@@ -185,10 +183,74 @@ describe('Schema set', () => {
     );
   });
 
-  it('rejects a repeated item', () => {
+  it('reads a repeated item once', () => {
     const string = p.string();
-    expect(() =>
-      p.set(string).decode(wire(2, ['a', 'a'], (enc, k) => string._write(enc, k)))
-    ).toThrow(new CorruptInputError('Repeated key "a" in p.set'));
+    const back = p.set(string).decode(wire(2, ['a', 'a'], (enc, k) => string._write(enc, k)));
+    expect([...back]).toEqual(['a']);
+  });
+});
+
+describe('p.set adaptive', () => {
+  const plain = p.set(p.int().min(0).max(9)).max(7);
+  const weights = Array.from({ length: 8 }, (_, i) => (i === 3 ? 29 : 1));
+  const run = (length: number, seed: number) => {
+    const rnd = mulberry32(seed);
+    return Array.from(
+      { length },
+      () => new Set(Array.from({ length: rnd() < 0.8 ? 3 : Math.floor(rnd() * 8) }, (_, i) => i))
+    );
+  };
+
+  it('round-trips a run of values, inside an array too', () => {
+    const values = run(300, 1);
+    for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 8 })]) {
+      expect(trip(p.array(node), values)).toEqual(values);
+      expect(trip(node, values[0])).toEqual(values[0]);
+    }
+  });
+
+  it('takes its weights before or after', () => {
+    const values = run(200, 2);
+    expect(p.array(plain.weights(weights).adaptive({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.adaptive({ window: 64 }).weights(weights)).encode(values)
+    );
+  });
+
+  it('learns a skew, at most a byte over the static prior of it', () => {
+    const values = run(2000, 3);
+    const size = (node: typeof plain) => p.array(node).encode(values).length;
+    expect(size(plain.adaptive())).toBeLessThan(size(plain));
+    expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
+      size(plain.weights(weights)) + 1
+    );
+  });
+
+  it('written once, spends the bytes of its static form', () => {
+    for (const value of run(20, 4)) {
+      expect(plain.adaptive().encode(value)).toEqual(plain.encode(value));
+      expect(plain.weights(weights).adaptive().encode(value)).toEqual(
+        plain.weights(weights).encode(value)
+      );
+    }
+  });
+
+  it('refuses bad options', () => {
+    expect(() => plain.adaptive({ window: 0 })).toThrow(
+      new RangeError('p.set adaptive window must be a positive integer, got 0')
+    );
+    expect(() => plain.adaptive({ window: 1.5 })).toThrow(
+      new TypeError('p.set adaptive window must be a positive integer, got 1.5')
+    );
+    expect(() => plain.weights([2 ** 45, ...Array<number>(7).fill(1)]).adaptive()).toThrow(
+      new RangeError(
+        'p.set adaptive prior 16 and window 1024 overflow with weights totalling 35184372088839'
+      )
+    );
+    expect(() => p.set(p.int()).adaptive()).toThrow(
+      new TypeError('p.set adaptive requires a max count')
+    );
+    const cdf = new TypeError('p.set adaptive takes weights, not a cdf');
+    expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
+    expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
   });
 });

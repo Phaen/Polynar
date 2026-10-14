@@ -3,8 +3,8 @@
  */
 
 /**
- * Thrown when decode input is not the canonical encoding of a value, such as
- * truncated input, trailing padding, or characters outside the charset.
+ * Thrown when input cannot be decoded: truncated input, trailing padding,
+ * characters outside the charset, or a state the encoder never writes.
  * Catching this class separates "bad input" from "bug" at an untrusted-input
  * boundary. Each class names itself, so a printed error says which it is.
  */

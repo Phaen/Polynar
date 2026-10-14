@@ -9,7 +9,6 @@ import type { Base, CodecOptions, OutputType, Radix } from './types';
 import {
   TERM_BASE,
   TERM_COUNT_RUN_DIGITS,
-  TERM_ESCAPE_MIN,
   TERM_INLINE_DIGITS,
   TERM_PAYLOAD_BASE,
   TERM_PAYLOAD_MIN_DIGITS,
@@ -28,8 +27,8 @@ import {
   type DigitChunk,
 } from './utils';
 import { BlockBound } from './bound';
+import { MessageState } from './state';
 
-const TERM_ESCAPE_MIN_BIG = BigInt(TERM_ESCAPE_MIN);
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const MAX_SAFE_BIG = BigInt(MAX_SAFE);
 const ONE = 1 as Radix;
@@ -58,6 +57,7 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
   private readonly chunk: DigitChunk;
   /** Digit index where the current block starts. */
   private blockStart = 0;
+  private readonly states = new MessageState();
 
   constructor(
     input: I,
@@ -76,6 +76,11 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
     if (sum > 0) {
       this.verifyChecksum(sum);
     }
+  }
+
+  /** Per-message state for nodes, keyed by node identity; see `MessageState`. */
+  state<S>(key: object, init: () => S): S {
+    return this.states.get(key, init);
   }
 
   /**
@@ -474,11 +479,7 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
     }
     value += BigInt(this.parseRadix(PAYLOAD_TOP_RADIX) + 1) * pow;
 
-    // The encoder escapes only above the inline range, and only emits values
-    // a double represents exactly; anything else is a corrupted input.
-    if (value < TERM_ESCAPE_MIN_BIG) {
-      throw new CorruptInputError('Non-canonical escaped term within the inline range');
-    }
+    // The encoder only emits values a double represents exactly.
     const integer = Number(value);
     if (!Number.isFinite(integer) || BigInt(integer) !== value) {
       throw new CorruptInputError('Escaped term is not an exactly representable integer');
@@ -488,31 +489,22 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
 
   /**
    * Continue a terminated base-TERM_BASE run whose first symbol the caller
-   * already consumed. `maxDigits` is the canonical cap: the encoder never
-   * emits longer runs, so exceeding it (or padding with a zero top digit)
-   * is corruption, and honoring the cap keeps the arithmetic exact.
-   * `symbol` is a slot's read, in [0, TERM_BASE + 1].
+   * already consumed. `maxDigits` caps the run: the encoder never emits a
+   * longer one, and within the cap the arithmetic stays exact. `symbol` is
+   * a slot's read, in [0, TERM_BASE + 1].
    */
   private parseRun(symbol: number, maxDigits: number): number {
     let integer = 0;
     let pow = 1;
     let count = 0;
-    let last = 0;
 
     while (symbol !== 0) {
       if (++count > maxDigits) {
-        throw new CorruptInputError('Term run is longer than its canonical maximum');
+        throw new CorruptInputError('Term run is longer than its maximum');
       }
       integer += (symbol - 1) * pow;
       pow *= TERM_BASE;
-      last = symbol;
       symbol = this.parseRadix(TERM_RUN_RADIX);
-    }
-
-    // Symbol 1 is digit zero; as the top digit it means a shorter run encodes
-    // the same value, so the encoder never emits it there.
-    if (last === 1) {
-      throw new CorruptInputError('Non-canonical zero-padded term run');
     }
 
     return integer;

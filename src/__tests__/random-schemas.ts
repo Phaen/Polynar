@@ -116,14 +116,56 @@ const randCdf = (shift: number): { fn: (v: number) => number; src: string } => {
   };
 };
 
+/**
+ * `.adaptive()` over `members` values with the default options or a window
+ * of at least `members` that is often small enough for the counts to halve
+ * within a message.
+ */
+const randAdaptive = (members: number): Step => {
+  if (rand() < 0.5) {
+    return { apply: (n) => n.adaptive(), src: '.adaptive()' };
+  }
+  const window = members + randInt(0, 64);
+  return { apply: (n) => n.adaptive({ window }), src: `.adaptive({ window: ${window} })` };
+};
+
+/**
+ * `build`'s node made adaptive over its `count` values, under random weights
+ * half the time; its window covers `floor` values, for a node whose other
+ * priors count more.
+ */
+const adaptiveCase = (
+  build: (m: Lib) => Node,
+  src: string,
+  gen: () => unknown,
+  count: number,
+  floor = count
+): Case => {
+  const w = rand() < 0.5 ? randWeights(count, 1000) : undefined;
+  const a = randAdaptive(Math.max(count, floor));
+  return {
+    build: (m) => a.apply(w ? build(m).weights(w) : build(m)),
+    gen,
+    src: `${src}${w ? `.weights(${json(w)})` : ''}${a.src}`,
+  };
+};
+
+/** Mostly one of three values `draw` picks up front, so an adaptive prior sees repeats. */
+const hotGen = <T>(draw: () => T): (() => T) => {
+  const hot = [draw(), draw(), draw()];
+  return () => (rand() < 0.8 ? pick(hot) : draw());
+};
+
 const intCase = (): Case => {
   const lo = randInt(-1000, 0);
   const hi = lo + randInt(0, rand() < 0.5 ? 300 : 2000);
   const any = (): number => (rand() < 0.2 ? pick([lo, hi]) : randInt(lo, hi));
   const base = `p.int().min(${lo}).max(${hi})`;
-  switch (randInt(0, 4)) {
+  switch (randInt(0, 5)) {
     case 0:
       return { build: (m) => m.p.int().min(lo).max(hi), gen: any, src: base };
+    case 5:
+      return adaptiveCase((m) => m.p.int().min(lo).max(hi), base, hotGen(any), hi - lo + 1);
     case 1: {
       const w = randWeights(hi - lo + 1, 1000);
       return {
@@ -238,8 +280,19 @@ const decimalCase = (): Case => {
     default: {
       const src = `p.decimal(${step}).min(${grid(kLo)}).max(${grid(kHi)})`;
       const gen = (): number => grid(randInt(kLo, kHi));
-      if (rand() < 0.5) {
+      const r = rand();
+      if (r < 1 / 3) {
         return { build: (m) => m.p.decimal(step).min(grid(kLo)).max(grid(kHi)), gen, src };
+      }
+      if (r < 2 / 3) {
+        // An adaptive prior takes at most 65536 grid points.
+        const kTop = kLo + randInt(0, 2000);
+        return adaptiveCase(
+          (m) => m.p.decimal(step).min(grid(kLo)).max(grid(kTop)),
+          `p.decimal(${step}).min(${grid(kLo)}).max(${grid(kTop)})`,
+          hotGen(() => grid(randInt(kLo, kTop))),
+          kTop - kLo + 1
+        );
       }
       const cdf = randCdf(kLo);
       return {
@@ -251,63 +304,96 @@ const decimalCase = (): Case => {
   }
 };
 
-const STRING_CHARSETS = ['digit', 'hex', 'alpha', 'printable', 'urlSafe'] as const;
+const STRING_CHARSETS = ['digit', 'hex', 'alpha', 'asciiSafe', 'urlSafe'] as const;
+
+/**
+ * The ladder's first slot, the most characters a string under it or a
+ * prose model drawn here learns over.
+ */
+const LADDER_FIRST = 131;
+
+/** `c` with its characters learning a third of the time, over `members` characters. */
+const learnsCharacters = (c: Case, members = LADDER_FIRST): Case => {
+  if (rand() >= 0.3) {
+    return c;
+  }
+  const a = randAdaptive(members);
+  return { build: (m) => a.apply(c.build(m)), gen: c.gen, src: `${c.src}${a.src}` };
+};
 
 const stringCase = (): Case => {
   switch (randInt(0, 3)) {
     case 0:
-      return { build: (m) => m.p.string(), gen: () => randString(10), src: 'p.string()' };
+      return learnsCharacters({
+        build: (m) => m.p.string(),
+        gen: () => randString(10),
+        src: 'p.string()',
+      });
     case 1: {
       // A bounded length packs as a radix slot instead of a term; a floor
       // half the time, which the prefix then counts up from.
       const max = randInt(0, 12);
       const min = rand() < 0.5 ? randInt(0, max) : 0;
-      return {
-        build: (m) => m.p.string().min(min).max(max),
-        gen: () => 'x'.repeat(min) + randString(max - min),
-        src: `p.string().min(${min}).max(${max})`,
-      };
+      const build = (m: Lib): Node => m.p.string().min(min).max(max);
+      const src = `p.string().min(${min}).max(${max})`;
+      if (rand() < 0.3) {
+        // The length and the characters learn; a few lengths recur.
+        const length = hotGen(() => randInt(min, max));
+        const gen = (): string => {
+          const n = length();
+          const s = randString(n);
+          return s + 'x'.repeat(n - s.length);
+        };
+        return adaptiveCase(build, src, gen, max - min + 1, LADDER_FIRST);
+      }
+      return { build, gen: () => 'x'.repeat(min) + randString(max - min), src };
     }
     case 2: {
       // English half the time, else a model counted from random text.
       if (rand() < 0.5) {
-        return {
+        return learnsCharacters({
           build: (m) => m.p.string().prose(),
           gen: () => (rand() < 0.5 ? randString(10) : pick(['the cat', 'Hello, world!', 'qu'])),
           src: 'p.string().prose()',
-        };
+        });
       }
       const corpus = 'q' + randString(30);
-      return {
+      return learnsCharacters({
         build: (m) => m.p.string().prose(m.buildProseModel(corpus, { minCount: 1 })),
         gen: () => randString(10),
         src: `p.string().prose(buildProseModel(${json(corpus)}, { minCount: 1 }))`,
-      };
+      });
     }
     default: {
       // Both charset kinds: an indexed alphabet and a code-unit range.
       if (rand() < 0.5) {
         const name = pick(STRING_CHARSETS);
         const alphabet = lib.CharSets[name];
-        return {
-          build: (m) => m.p.string().charset(m.CharSets[name]),
-          gen: () =>
-            Array.from({ length: randInt(0, 10) }, () =>
-              alphabet.charAt(randInt(0, alphabet.length - 1))
-            ).join(''),
-          src: `p.string().charset(CharSets.${name})`,
-        };
+        return learnsCharacters(
+          {
+            build: (m) => m.p.string().charset(m.CharSets[name]),
+            gen: () =>
+              Array.from({ length: randInt(0, 10) }, () =>
+                alphabet.charAt(randInt(0, alphabet.length - 1))
+              ).join(''),
+            src: `p.string().charset(CharSets.${name})`,
+          },
+          alphabet.length
+        );
       }
       const lo = randInt(0, 50000);
       const hi = lo + randInt(1, 5000);
-      return {
-        build: (m) => m.p.string().charset([lo, hi]),
-        gen: () =>
-          Array.from({ length: randInt(0, 10) }, () => String.fromCharCode(randInt(lo, hi))).join(
-            ''
-          ),
-        src: `p.string().charset([${lo}, ${hi}])`,
-      };
+      return learnsCharacters(
+        {
+          build: (m) => m.p.string().charset([lo, hi]),
+          gen: () =>
+            Array.from({ length: randInt(0, 10) }, () => String.fromCharCode(randInt(lo, hi))).join(
+              ''
+            ),
+          src: `p.string().charset([${lo}, ${hi}])`,
+        },
+        hi - lo + 1
+      );
     }
   }
 };
@@ -331,9 +417,18 @@ const floatCase = (): Case => {
 
 // The prior changes the wire, never the values.
 const boolCase = (): Case => {
-  switch (randInt(0, 2)) {
+  switch (randInt(0, 3)) {
     case 0:
       return { build: (m) => m.p.bool(), gen: () => rand() < 0.5, src: 'p.bool()' };
+    case 3: {
+      const p = rand();
+      return adaptiveCase(
+        (m) => m.p.bool(),
+        'p.bool()',
+        () => rand() < p,
+        2
+      );
+    }
     case 1: {
       const w = randWeights(2, 200);
       return {
@@ -358,8 +453,17 @@ const enumCase = (): Case => {
   const pool = ['aa', 'bb', 'cc', 0, 1, -17, 3.5, true, false, null];
   const members = [...pool].sort(() => rand() - 0.5).slice(0, randInt(1, 6));
   const src = `p.enum(${json(members)})`;
-  if (rand() < 0.5) {
+  const r = rand();
+  if (r < 1 / 3) {
     return { build: (m) => m.p.enum(members), gen: () => pick(members), src };
+  }
+  if (r < 2 / 3) {
+    return adaptiveCase(
+      (m) => m.p.enum(members),
+      src,
+      () => (rand() < 0.7 ? members[0] : pick(members)),
+      members.length
+    );
   }
   const w = randWeights(members.length, 1000);
   return {
@@ -395,8 +499,17 @@ const unionCase = (): Case => {
   const options = members.sort(() => rand() - 0.5).slice(0, randInt(2, 3));
   const src = `p.union([${options.map((o) => o.src).join(', ')}])`;
   const gen = (): unknown => pick(options).gen();
-  if (rand() < 0.5) {
+  const r = rand();
+  if (r < 1 / 3) {
     return { build: (m) => m.p.union(options.map((o) => o.build(m))), gen, src };
+  }
+  if (r < 2 / 3) {
+    return adaptiveCase(
+      (m) => m.p.union(options.map((o) => o.build(m))),
+      src,
+      () => (rand() < 0.7 ? options[0] : pick(options)).gen(),
+      options.length
+    );
   }
   const w = randWeights(options.length, 1000);
   return {
@@ -422,7 +535,16 @@ const binaryCase = (): Case => {
       src: `p.binary(${name}).max(${max})`,
     };
   }
-  switch (randInt(0, 2)) {
+  switch (randInt(0, 3)) {
+    case 3: {
+      const length = hotGen(() => randInt(0, max));
+      return adaptiveCase(
+        (m) => m.p.binary().max(max),
+        `p.binary().max(${max})`,
+        () => randBytes(length()),
+        max + 1
+      );
+    }
     case 0:
       return {
         build: (m) => m.p.binary(),
@@ -513,7 +635,19 @@ const dateCase = (): Case => {
       const min = randInt(-1e12, 1e12);
       const max = min + randInt(0, 1000) * ms;
       const src = `${base}.min(${min}).max(${max})`;
-      if (rand() < 0.5) {
+      const r = rand();
+      if (r < 1 / 3) {
+        // Without weights: the bucket count of a calendar unit is the node's to work out.
+        // At least the bucket count: a month or year bucket can be shorter
+        // than `ms`, by at most 28 days in 31.
+        const a = randAdaptive(Math.ceil(((max - min) / ms) * (31 / 28)) + 2);
+        return withNode(
+          (m) => a.apply(m.p.date().precision(unit, step).min(min).max(max)),
+          `${src}${a.src}`,
+          hotGen(() => randInt(min, max))
+        );
+      }
+      if (r < 2 / 3) {
         return withNode(
           (m) => m.p.date().precision(unit, step).min(min).max(max),
           src,
@@ -787,12 +921,18 @@ const countSteps = (length: number): Step[] => {
   }
   // A count prior needs a max and a free length.
   if (free && rand() < 0.5) {
-    if (rand() < 0.5) {
+    // A cdf, weights, an adaptive prior, or adaptive weights.
+    const r = randInt(0, 3);
+    if (r === 0) {
       const cdf = randCdf(0);
       add(`.cdf(${cdf.src})`, (n) => n.cdf(cdf.fn));
-    } else {
+    }
+    if (r === 1 || r === 3) {
       const w = randWeights(hi - lo + 1, 100);
       add(`.weights(${json(w)})`, (n) => n.weights(w));
+    }
+    if (r >= 2) {
+      steps.push(randAdaptive(hi - lo + 1));
     }
   }
   return steps;
@@ -892,6 +1032,7 @@ interface Field {
   c: Case;
   mode: 'plain' | 'optional' | 'nullable';
   w?: [number, number];
+  adaptive?: Step;
 }
 
 const objectCase = (depth: number): Case => {
@@ -903,18 +1044,21 @@ const objectCase = (depth: number): Case => {
       key: `f${i}`,
       c: randomCase(depth - 1),
       mode,
-      w: mode === 'optional' && rand() < 0.5 ? [randInt(1, 100), randInt(1, 100)] : undefined,
+      w: mode !== 'plain' && rand() < 0.5 ? [randInt(1, 100), randInt(1, 100)] : undefined,
+      adaptive: mode !== 'plain' && rand() < 0.3 ? randAdaptive(2) : undefined,
     });
   }
   const wrap = (m: Lib, f: Field): Node => {
     const inner = f.c.build(m);
-    if (f.mode === 'nullable') return m.p.nullable(inner);
     if (f.mode === 'plain') return inner;
-    const opt = m.p.optional(inner);
-    return f.w ? opt.weights(f.w) : opt;
+    const node = f.mode === 'nullable' ? m.p.nullable(inner) : m.p.optional(inner);
+    const weighted = f.w ? node.weights(f.w) : node;
+    return f.adaptive ? f.adaptive.apply(weighted) : weighted;
   };
   const fieldSrc = (f: Field): string =>
-    f.mode === 'plain' ? f.c.src : `p.${f.mode}(${f.c.src})${f.w ? `.weights(${json(f.w)})` : ''}`;
+    f.mode === 'plain'
+      ? f.c.src
+      : `p.${f.mode}(${f.c.src})${f.w ? `.weights(${json(f.w)})` : ''}${f.adaptive?.src ?? ''}`;
   return {
     build: (m) => m.p.object(Object.fromEntries(fields.map((f) => [f.key, wrap(m, f)]))),
     migrates: fields.some((f) => f.c.migrates),
@@ -935,9 +1079,11 @@ const taggedCase = (depth: number): Case => {
   const members: [string, Case][] = [];
   for (let i = 0, n = randInt(1, 3); i < n; i++) members.push([`m${i}`, objectCase(depth - 1)]);
   const w = rand() < 0.5 ? randWeights(members.length, 1000) : undefined;
+  const a = rand() < 0.3 ? randAdaptive(members.length) : undefined;
   const build = (m: Lib): Node => {
     const node = m.p.tagged('t', Object.fromEntries(members.map(([tag, c]) => [tag, c.build(m)])));
-    return w ? node.weights(w) : node;
+    const weighted = w ? node.weights(w) : node;
+    return a ? a.apply(weighted) : weighted;
   };
   return {
     build,
@@ -948,7 +1094,8 @@ const taggedCase = (depth: number): Case => {
     },
     src:
       `p.tagged('t', { ${members.map(([tag, c]) => `${tag}: ${c.src}`).join(', ')} })` +
-      (w ? `.weights(${json(w)})` : ''),
+      (w ? `.weights(${json(w)})` : '') +
+      (a?.src ?? ''),
   };
 };
 
@@ -1028,7 +1175,7 @@ const TEXT_CHARSETS: readonly (Charset | undefined)[] = [
   lib.CharSets.urlSafe,
   lib.CharSets.digit,
   lib.CharSets.hex,
-  lib.CharSets.printable,
+  lib.CharSets.asciiSafe,
   [0, 0xd7ff],
   [0x2800, 0x28ff],
   [0x4e00, 0x4e00 + 999],
@@ -1039,7 +1186,7 @@ const BYTE_CHARSETS: readonly (Charset | undefined)[] = [
   '012',
   [0, 127],
   [32, 126],
-  lib.CharSets.printable,
+  lib.CharSets.asciiSafe,
 ];
 const BLOCK_BITS = [undefined, undefined, 128, 256, 1000, 4096, 65536];
 

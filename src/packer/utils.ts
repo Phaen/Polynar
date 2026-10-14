@@ -153,6 +153,50 @@ export function checksumOf(
   return (h >>> 0) >>> (32 - bits);
 }
 
+const TWO_512 = 2 ** 512;
+const TWO_MINUS_512 = 2 ** -512;
+
+/**
+ * A positive ratio as `mantissa · 2^exponent`, the mantissa in [1, 2^512)
+ * and the exponent a multiple of 512, so each value has one representation
+ * and ratios compare by exponent, then mantissa. It weighs one coding's
+ * symbols against another's by their probability products rather than by
+ * summed `Math.log2` costs: `log2` is not correctly rounded, so its sums can
+ * differ between engines and a near-tie could pick different codings on
+ * each. Multiplication, division and scaling by powers of two round the same
+ * everywhere, so every engine picks the same coding.
+ */
+export class ScaledRatio {
+  private mantissa = 1;
+  private exponent = 0;
+
+  /**
+   * Scale by `num / den`, each a positive double below 2^106, as a product of
+   * two safe integers.
+   */
+  multiply(num: number, den: number): void {
+    // The step leaves the mantissa in [2^-106, 2^618), so one scaling by
+    // 2^512 brings it back to [1, 2^512); scaling by a power of two is exact.
+    const m = (this.mantissa * num) / den;
+    if (m >= TWO_512) {
+      this.mantissa = m * TWO_MINUS_512;
+      this.exponent += 512;
+    } else if (m < 1) {
+      this.mantissa = m * TWO_512;
+      this.exponent -= 512;
+    } else {
+      this.mantissa = m;
+    }
+  }
+
+  /** Whether this ratio is strictly larger than `other`. */
+  exceeds(other: ScaledRatio): boolean {
+    return this.exponent !== other.exponent
+      ? this.exponent > other.exponent
+      : this.mantissa > other.mantissa;
+  }
+}
+
 /** The highest code a string charset may reach and still find its digits in a dense table. */
 const DENSE_TOP = 4096;
 

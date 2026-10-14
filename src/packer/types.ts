@@ -41,3 +41,6 @@ export type Radix = number & { readonly [radixBrand]: true };
 
 /** A digit base: the size of an output charset, an integer in [2, 65536]. */
 export type Base = Radix & { readonly [baseBrand]: true };
+
+/** A weighted symbol's bucket: `[cum, cum + freq)` out of `total` states, as composeWeighted takes it. */
+export type Bucket = readonly [cum: number, freq: number, total: number];

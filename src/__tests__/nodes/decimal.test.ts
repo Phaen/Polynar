@@ -3,7 +3,7 @@
  */
 
 import { p, Encoder, CorruptInputError } from '../../index';
-import { trip } from '../support';
+import { mulberry32, trip } from '../support';
 import { decimalPlaces } from '../../nodes/decimal';
 
 describe('Schema decimal', () => {
@@ -191,5 +191,68 @@ describe('Digit reads', () => {
     expect(p.decimal(0.5)._fromDigit).toBeUndefined();
     expect(p.decimal(0.5).max(1)._fromDigit).toBeUndefined();
     expect(bounded.weights([1, 1, 1, 1, 1])._fromDigit).toBeUndefined();
+  });
+});
+
+describe('p.decimal adaptive', () => {
+  const plain = p.decimal(0.5).min(0).max(7.5);
+  const weights = Array.from({ length: 16 }, (_, i) => (i === 3 ? 61 : 1));
+  const run = (length: number, seed: number) => {
+    const rnd = mulberry32(seed);
+    return Array.from({ length }, () => (rnd() < 0.8 ? 1.5 : Math.floor(rnd() * 16) / 2));
+  };
+
+  it('round-trips a run of values, inside an array too', () => {
+    const values = run(300, 1);
+    for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 16 })]) {
+      expect(node._radix).toBeUndefined();
+      expect(trip(p.array(node), values)).toEqual(values);
+      expect(trip(node, values[0])).toEqual(values[0]);
+    }
+  });
+
+  it('takes its weights before or after', () => {
+    const values = run(200, 2);
+    expect(p.array(plain.weights(weights).adaptive({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.adaptive({ window: 64 }).weights(weights)).encode(values)
+    );
+  });
+
+  it('learns a skew, at most a byte over the static prior of it', () => {
+    const values = run(2000, 3);
+    const size = (node: typeof plain) => p.array(node).encode(values).length;
+    expect(size(plain.adaptive())).toBeLessThan(size(plain));
+    expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
+      size(plain.weights(weights)) + 1
+    );
+  });
+
+  it('written once, spends the bytes of its static form', () => {
+    for (const value of run(20, 4)) {
+      expect(plain.adaptive().encode(value)).toEqual(plain.encode(value));
+      expect(plain.weights(weights).adaptive().encode(value)).toEqual(
+        plain.weights(weights).encode(value)
+      );
+    }
+  });
+
+  it('refuses bad options', () => {
+    expect(() => plain.adaptive({ window: 0 })).toThrow(
+      new RangeError('p.decimal adaptive window must be a positive integer, got 0')
+    );
+    expect(() => plain.adaptive({ window: 1.5 })).toThrow(
+      new TypeError('p.decimal adaptive window must be a positive integer, got 1.5')
+    );
+    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)]).adaptive()).toThrow(
+      new RangeError(
+        'p.decimal adaptive prior 32 and window 1024 overflow with weights totalling 35184372088847'
+      )
+    );
+    expect(() => p.decimal(0.5).max(7.5).adaptive()).toThrow(
+      new TypeError('p.decimal adaptive requires both bounds')
+    );
+    const cdf = new TypeError('p.decimal adaptive takes weights, not a cdf');
+    expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
+    expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
   });
 });

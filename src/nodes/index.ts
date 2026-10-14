@@ -33,5 +33,8 @@ export type { AnyValue } from './any';
 export { p } from './p';
 export type { Infer, InferShape, InferTagged } from './infer';
 export type { Cdf } from './weights';
+export { members } from './members';
+export type { Members, MemberPrior } from './members';
+export type { AdaptiveOptions } from './adaptive';
 export { ProseModels, buildProseModel } from './prose';
 export type { ProseModel, ProseModelOptions } from './prose';

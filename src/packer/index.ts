@@ -3,7 +3,8 @@
  */
 export { Encoder } from './encoder';
 export { Decoder } from './decoder';
+export { MessageState } from './state';
 export { CorruptInputError, UnknownVersionError } from './errors';
 export { CharSets } from './constants';
-export { Alphabet, bitLength } from './utils';
-export type { Charset, CodecOptions, OutputType } from './types';
+export { Alphabet, ScaledRatio, bitLength } from './utils';
+export type { Bucket, Charset, CodecOptions, OutputType } from './types';

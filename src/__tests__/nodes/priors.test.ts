@@ -4,7 +4,7 @@
  * helpers directly.
  */
 
-import { p, Encoder, Decoder, type Cdf } from '../../index';
+import { p, Encoder, Decoder, type Cdf, type PNode } from '../../index';
 import {
   RangePrior,
   buildWeights,
@@ -311,6 +311,29 @@ describe('Schema priors', () => {
         .max(100)
         .cdf((v) => v * 1.5)
     ).toThrow('cdf must return safe integers, got 151.5 at 101');
+  });
+
+  it.each<[string, PNode<any> & { adaptive(): PNode<any> }, unknown]>([
+    ['p.bool', p.bool(), true],
+    ['p.enum', p.enum(['a', 'b']), 'b'],
+    ['p.union', p.union([p.int(), p.string()]), 'x'],
+    ['p.tagged', p.tagged('kind', { a: p.object({}) }), { kind: 'a' }],
+    ['p.optional', p.optional(p.int()), undefined],
+    ['p.nullable', p.nullable(p.int()), null],
+    ['p.int', p.int().min(0).max(9), 7],
+    ['p.decimal', p.decimal(0.5).min(0).max(2), 1.5],
+    ['p.date', p.date().min(new Date(0)).max(new Date(9)), new Date(7)],
+    ['p.string', p.string().max(3), 'ab'],
+    ['p.binary', p.binary().max(3), Uint8Array.of(1, 2)],
+    ['p.array', p.array(p.int()).max(3), [1, 2]],
+    ['p.map', p.map(p.string(), p.int()).max(3), new Map([['a', 1]])],
+    ['p.record', p.record(p.int()).max(3), { a: 1 }],
+    ['p.set', p.set(p.int()).max(3), new Set([1])],
+  ])('%s refines into an adaptive node of the same class', (_, node, value) => {
+    const adaptive = node.adaptive();
+    expect(adaptive).not.toBe(node);
+    expect(adaptive.constructor).toBe(node.constructor);
+    expect(trip(adaptive, value)).toEqual(value);
   });
 });
 

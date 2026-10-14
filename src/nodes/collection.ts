@@ -1,9 +1,10 @@
-import { Encoder, Decoder, CorruptInputError } from '../packer';
+import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
-import { atPath, describe } from './path';
+import { atPath } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
+import type { AdaptiveOptions } from './adaptive';
 
 /**
  * How one JS collection type sits on the collection wire: how many entries
@@ -50,15 +51,7 @@ export const RECORD: Layout<Record<string, any>> = {
   build: (entries) => {
     // fromEntries defines own properties, so a '__proto__' key lands as one
     // instead of replacing the prototype.
-    const value = Object.fromEntries(entries);
-    // An object lists integer-like keys first and in ascending order, however
-    // they were added, so the encoder writes them that way; any other order on
-    // the wire is a second spelling of the same object.
-    const order = [...entries.keys()];
-    if (Object.keys(value).some((key, i) => key !== order[i])) {
-      throw new CorruptInputError('Record keys are out of the order an object lists them in');
-    }
-    return value;
+    return Object.fromEntries(entries);
   },
 };
 
@@ -128,6 +121,21 @@ export class PCollection<T> extends PNode<T> {
     return this._with({ ...this._bounds, prior: w });
   }
 
+  /**
+   * Let the prior over the entry count learn from the message: the declared
+   * weights, or even ones when none are, are the starting point, and each entry
+   * count coded counts as one observation, so an entry count that keeps
+   * recurring gets cheaper as the message goes on. `window` is how many
+   * observations the counts hold before they halve, so the newest weigh most
+   * (1024 when left out, and raised to the number of values it counts when
+   * smaller). From its second value on, the node spends one bit to stay static,
+   * or a few to name the learning rate that paid off. Requires a max and takes
+   * weights, not a cdf; part of the wire format, like the weights.
+   */
+  adaptive(options?: AdaptiveOptions): PCollection<T> {
+    return this._with({ ...this._bounds, adaptive: options ?? {} });
+  }
+
   private _with(bounds: LengthBounds): PCollection<T> {
     return new PCollection<T>(this._layout, this._key, this._value, bounds);
   }
@@ -155,18 +163,7 @@ export class PCollection<T> extends PNode<T> {
     const entries = new Map<unknown, unknown>();
     for (let i = 0; i < count; i++) {
       const key = this._key._read(dec);
-      // A Map, a Set or an object holds each key once, and a Map or Set
-      // stores -0 as 0, so the encoder writes neither a repeat nor a -0. The
-      // repeat check also stops a huge count of keys that take no bits on the
-      // second entry.
-      if (entries.has(key)) {
-        throw new CorruptInputError(`Repeated key ${describe(key)} in ${this._layout.who}`);
-      }
-      if (Object.is(key, -0)) {
-        throw new CorruptInputError(
-          `Key -0 in ${this._layout.who}, where a Map or Set holds it as 0`
-        );
-      }
+      // A repeated key overwrites, as it does in an object literal.
       entries.set(key, this._value?._read(dec));
     }
     return this._layout.build(entries);

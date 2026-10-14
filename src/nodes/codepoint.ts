@@ -7,8 +7,7 @@
  * band: 17.9 bits up to U+07FF, 23.0 through the rest of the BMP, 27.0 for
  * astral code points. Surrogate code points are legal in the BMP band, so
  * lone surrogates round-trip bit-exact (WTF-8 style); a lead+trail pair
- * always encodes as one supplementary code point, and the decoder rejects
- * the split spelling as non-canonical.
+ * always encodes as one supplementary code point.
  */
 import { Encoder, Decoder } from '../packer';
 
@@ -25,9 +24,15 @@ const CODE_POINT_MAX = 0x10ffff;
 /**
  * One laddered slot per code point: values through TEXT_DIRECT_MAX ride in
  * the first slot directly, everything above pays an escape symbol plus a
- * second slot sized to exactly its band.
+ * second slot sized to exactly its band. `writeFirst` spells the first
+ * slot's symbol, an integer in `[0, TEXT_FIRST_RADIX)`, uniformly unless
+ * given.
  */
-export function composeCodePoint(enc: Encoder, code: number): void {
+export function composeCodePoint(
+  enc: Encoder,
+  code: number,
+  writeFirst: (symbol: number) => void = (symbol) => enc.compose(symbol, TEXT_FIRST_RADIX)
+): void {
   // `>>> 0` keeps exactly the integers in [0, 2^32), so one comparison
   // passes every code point and stops NaN, fractions and negatives.
   if (code >>> 0 !== code || code > CODE_POINT_MAX) {
@@ -36,23 +41,34 @@ export function composeCodePoint(enc: Encoder, code: number): void {
       : new TypeError(`Code point must be an integer, got ${code}`);
   }
   if (code <= TEXT_DIRECT_MAX) {
-    enc.compose(code, TEXT_FIRST_RADIX);
+    writeFirst(code);
     return;
   }
   // The last band ends at CODE_POINT_MAX, so the loop always finds one.
   for (let band = 0; ; band++) {
     const [min, max] = TEXT_BANDS[band];
     if (code <= max) {
-      enc.compose(TEXT_DIRECT_MAX + 1 + band, TEXT_FIRST_RADIX);
+      writeFirst(TEXT_DIRECT_MAX + 1 + band);
       enc.compose(code - min, max - min + 1);
       return;
     }
   }
 }
 
-/** Read one laddered code point; every wire state names one in 0–0x10FFFF. */
-export function parseCodePoint(dec: Decoder): number {
-  const first = dec.parse(TEXT_FIRST_RADIX);
+/**
+ * Read one laddered code point; every wire state names one in 0–0x10FFFF.
+ * `readFirst` reads the first slot's symbol as `composeCodePoint`'s
+ * `writeFirst` spelled it; a symbol outside `[0, TEXT_FIRST_RADIX)` is
+ * refused.
+ */
+export function parseCodePoint(
+  dec: Decoder,
+  readFirst: () => number = () => dec.parse(TEXT_FIRST_RADIX)
+): number {
+  const first = readFirst();
+  if (first >>> 0 !== first || first >= TEXT_FIRST_RADIX) {
+    throw new RangeError(`First slot ${first} is outside [0, ${TEXT_FIRST_RADIX})`);
+  }
   if (first <= TEXT_DIRECT_MAX) {
     return first;
   }

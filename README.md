@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 
-Polynar encodes typed data into compact bytes or strings and reads it back. You describe the shape once with a small Zod-style schema, and every value spends only the bits its constraints allow. The schema is the wire format: no field names, tags or type markers are written, so the encoder and decoder share the same schema and options. An integer you promise stays between 0 and 100 costs well under a byte, and a field that is one of three names costs a fraction of one. Custom types are one subclass away.
+Polynar encodes typed data into compact bytes or strings and reads it back. You describe the shape once with a small Zod-style schema, and every value spends only the bits its constraints allow; values that keep recurring in a message can get cheaper as it goes on. The schema is the wire format: no field names, tags or type markers are written, so the encoder and decoder share the same schema and options. An integer you promise stays between 0 and 100 costs well under a byte, and a field that is one of three names costs a fraction of one. Custom types are one subclass away.
 
 One caveat up front: this is not encryption. Anyone with the bytes can recover the data by analysis, with or without the schema. If you need secrecy, encrypt the output.
 
@@ -22,21 +22,35 @@ Under the hood, the message packs into arbitrary-precision integers, and the out
 
 ## Size in practice
 
-Seven payload shapes, mean sizes in bytes over 250 seeded random payloads each (lorem is one fixed document), with the mean after brotli compression in parentheses and the smallest number in each row in bold. Every number comes from [`examples/size-comparison.ts`](examples/size-comparison.ts), generators included — run it to reproduce the table.
+Seven payload shapes encoded as JSON, MessagePack, Protobuf, Avro and Polynar, 250 seeded random samples each; lorem is one fixed text. Every number comes from [`examples/size-comparison.ts`](examples/size-comparison.ts) — run it to reproduce.
 
-| Payload        |         JSON |  MessagePack |       Protobuf | Polynar url-safe |  Polynar binary |
-| -------------- | -----------: | -----------: | -------------: | ---------------: | --------------: |
-| User profile   |  62.8 (64.3) |  44.6 (48.4) |    20.2 (24.2) |      17.8 (21.8) | **13.7** (17.7) |
-| GPS position   |  32.0 (36.0) |  27.0 (31.0) |     9.8 (13.8) |       9.0 (13.0) |  **7.0** (11.0) |
-| Chat message   |  95.5 (89.3) |  69.1 (71.1) |    48.6 (51.1) |      38.6 (42.4) | **29.3** (33.3) |
-| Sensor reading |  53.8 (55.9) |  39.9 (43.7) |    10.6 (14.6) |       6.0 (10.0) |   **5.0** (9.0) |
-| Shopping cart  | 124.4 (67.0) |  85.1 (61.9) |    37.2 (40.8) |      17.3 (21.3) | **13.1** (17.1) |
-| Status feed    | 521.8 (63.4) | 323.8 (60.4) |   102.0 (27.8) |      10.0 (14.0) |  **7.7** (11.7) |
-| Lorem ipsum    |   1375 (641) |   1372 (631) | 1372 (**629**) |        979 (767) |       740 (744) |
+A cell is the mean size in bytes, and the smallest number in each row is bold. The number in parentheses is the same payload after brotli. The url-safe and ascii-safe columns are text output in `CharSets.urlSafe` and `CharSets.asciiSafe`, text that drops straight into a URL, cookie, header or log line; binary is the default output.
 
-JSON and MessagePack also encode the key name; Protobuf and Polynar read from a schema instead, and are both told the same decimal steps and bounds. The difference is that Protobuf rounds every field up to whole bytes and tags it, while Polynar spends fractional bits with no implicit tags.
+The first table is self-describing: keys and types travel with the data. Polynar's entry is `p.any().encode(value)`, which writes a type tag per value and the key names, like the other two.
 
-The url-safe column is `encode(value, { type: 'text', charset: CharSets.urlSafe })` — text you can drop straight into a URL, cookie or query parameter, and it still beats the other formats' _binary_ output.
+| Payload        |         JSON |    MessagePack | url-safe | ascii-safe |   binary |
+| -------------- | -----------: | -------------: | -------: | ---------: | -------: |
+| User profile   |  62.8 (64.3) |    44.6 (48.4) |     49.4 |       45.6 | **37.5** |
+| GPS position   |  32.0 (36.0) |    27.0 (31.0) |     27.4 |       25.2 | **20.8** |
+| Chat message   |  95.5 (89.3) |    69.1 (71.1) |     70.5 |       64.9 | **53.5** |
+| Sensor reading |  53.8 (55.9) |    39.9 (43.7) |     41.1 |       37.8 | **31.2** |
+| Shopping cart  | 124.4 (67.0) |    85.1 (61.9) |     46.4 |       42.7 | **35.1** |
+| Status feed    | 521.8 (63.4) |   323.8 (60.4) |     34.5 |       31.7 | **26.1** |
+| Lorem ipsum    |   1375 (641) | 1372 (**631**) |      976 |        898 |      737 |
+
+In the second table both sides share a schema and only the values are written. Protobuf and Avro get the same decimal steps as scaled integers, but only Polynar can use the bounds. Protobuf tags every field and rounds it up to whole bytes, Avro drops the tags but keeps the bytes, and Polynar spends fractional bits. Polynar's number in parentheses is `.adaptive()` on every node that takes it rather than brotli, which gains nothing on output that is already entropy coded.
+
+| Payload        |       Protobuf |         Avro |    url-safe |  ascii-safe |          binary |
+| -------------- | -------------: | -----------: | ----------: | ----------: | --------------: |
+| User profile   |    18.7 (22.7) |  17.2 (21.2) | 17.8 (17.7) | 16.7 (16.3) | 13.7 (**13.5**) |
+| GPS position   |     9.8 (13.8) |   7.8 (11.8) |   9.0 (9.0) |   8.0 (8.0) |   **7.0** (7.0) |
+| Chat message   |    48.6 (51.1) |  45.7 (48.3) | 38.6 (38.8) | 35.6 (35.7) | **29.3** (29.4) |
+| Sensor reading |    10.6 (14.6) |   7.2 (11.2) |   6.0 (6.0) |   6.0 (6.0) |   **5.0** (5.0) |
+| Shopping cart  |    37.2 (40.8) |  20.8 (24.8) | 19.4 (18.8) | 17.9 (17.4) | 14.8 (**14.4**) |
+| Status feed    |   102.0 (27.8) | 103.0 (28.1) | 27.0 (11.5) | 25.0 (10.6) |  20.0 (**8.9**) |
+| Lorem ipsum    | 1372 (**629**) |   1371 (632) |   975 (832) |   898 (765) |   737 (**629**) |
+
+On every row but lorem, Polynar's url-safe text is smaller than every text format's and rivals the binary ones, and its binary output is smaller than every binary format's, plain or compressed. On the status feed `.adaptive()` even makes it three to one.
 
 ## Install
 
@@ -70,10 +84,10 @@ type User = Infer<typeof User>;
 
 const user: User = { name: 'Ada', age: 36, active: true, role: 'admin' };
 
-const text = User.encode(user, { type: 'text', charset: CharSets.urlSafe }); // 'ChxRoLA'
+const text = User.encode(user, { type: 'text', charset: CharSets.urlSafe }); // 'N12HJ4A'
 assert.deepStrictEqual(User.decode(text, { charset: CharSets.urlSafe }), user);
 
-const bytes = User.encode(user); // Uint8Array [176, 253, 162, 98, 3]
+const bytes = User.encode(user); // Uint8Array [87, 137, 108, 94, 16]
 assert.deepStrictEqual(User.decode(bytes), user);
 ```
 
@@ -104,28 +118,31 @@ Each `p.*` factory creates a node for one type, and the node's methods narrow wh
 - [`p.any`](#pany)
 - [Priors: `.weights()`](#priors-weights)
 - [Priors as a function: `.cdf()`](#priors-as-a-function-cdf)
+- [Priors that learn: `.adaptive()`](#priors-that-learn-adaptive)
 
 ### `p.int()`
 
 An integer. Infers `number`. Non-integers, NaN and Infinity throw; `-0` is stored as `0`. Huge values are fine as long as the arithmetic stays exact: `p.int().min(0).encode(2 ** 60)` round-trips, while `p.int().min(1).encode(2 ** 53 + 6)` throws because `2 ** 53 + 5` isn't a double.
 
-| Method                            | Description                                                                                                                                                                             |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.min(n: number)`                 | Lower bound, an integer; smaller values throw.                                                                                                                                          |
-| `.max(n: number)`                 | Upper bound, an integer; larger values throw. With both bounds the value takes exactly log2(max − min + 1) bits. The range can't span more than 2^53 values, and an empty range throws. |
-| `.cdf(fn: (v: number) => number)` | Prior over the values from `min` to `max`, called with the value itself; needs both bounds.                                                                                             |
-| `.weights(w: number[])`           | Prior: one weight per value from `min` to `max`, lowest first; needs both bounds.                                                                                                       |
+| Method                                     | Description                                                                                                                                                                             |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                          | Lower bound, an integer; smaller values throw.                                                                                                                                          |
+| `.max(n: number)`                          | Upper bound, an integer; larger values throw. With both bounds the value takes exactly log2(max − min + 1) bits. The range can't span more than 2^53 values, and an empty range throws. |
+| `.cdf(fn: (v: number) => number)`          | Prior over the values from `min` to `max`, called with the value itself; needs both bounds.                                                                                             |
+| `.weights(w: number[])`                    | Prior: one weight per value from `min` to `max`, lowest first; needs both bounds.                                                                                                       |
+| `.adaptive(options?: { window?: number })` | Prior that learns from the message; see [Priors that learn](#priors-that-learn-adaptive).                                                                                               |
 
 ### `p.decimal(step: number)`
 
 A number on a fixed decimal step, like `p.decimal(0.01)` for cents. Infers `number`. The step must be an exact decimal of at most 15 places (`1 / 3` throws), and both bounds must sit on the step. Values must already sit on the step, so round first: `0.1 + 0.2` throws on step 0.1. Values are stored exactly, except that `-0` becomes `0`. NaN and Infinity throw. An integer step reaches as far as `p.int` does: `p.decimal(1000).encode(1e18)` round-trips. A fractional step keeps values below 2^53 in its last decimal place, about ±9e13 for `0.01` and `0.25` alike; past that, doubles are coarser than the grid.
 
-| Method                            | Description                                                                                                                                                                                                                  |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.min(n: number)`                 | Lower bound; smaller values throw.                                                                                                                                                                                           |
-| `.max(n: number)`                 | Upper bound; larger values throw. With both bounds the value takes a fixed number of bits: `p.decimal(0.01).min(0).max(100)` fits a price in 2 bytes. The range can't span more than 2^53 values, and an empty range throws. |
-| `.cdf(fn: (k: number) => number)` | Prior over the grid, called with `k` for the k-th multiple of the step (`value / step`); needs both bounds.                                                                                                                  |
-| `.weights(w: number[])`           | Prior: one weight per grid point from `min` to `max`, lowest first; needs both bounds.                                                                                                                                       |
+| Method                                     | Description                                                                                                                                                                                                                  |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                          | Lower bound; smaller values throw.                                                                                                                                                                                           |
+| `.max(n: number)`                          | Upper bound; larger values throw. With both bounds the value takes a fixed number of bits: `p.decimal(0.01).min(0).max(100)` fits a price in 2 bytes. The range can't span more than 2^53 values, and an empty range throws. |
+| `.cdf(fn: (k: number) => number)`          | Prior over the grid, called with `k` for the k-th multiple of the step (`value / step`); needs both bounds.                                                                                                                  |
+| `.weights(w: number[])`                    | Prior: one weight per grid point from `min` to `max`, lowest first; needs both bounds.                                                                                                                                       |
+| `.adaptive(options?: { window?: number })` | Prior that learns from the message; see [Priors that learn](#priors-that-learn-adaptive).                                                                                                                                    |
 
 ### `p.float()`
 
@@ -139,15 +156,16 @@ Any double, `-0`, NaN, `Infinity` and `-Infinity` included. Infers `number`. Eve
 
 Any text, stored with its length; about 7 bits per ASCII character. Infers `string`. Any JS string round-trips bit-exact, lone surrogates included — where UTF-8-based formats substitute U+FFFD, Polynar returns what went in. Lengths count UTF-16 code units, as `.length` does.
 
-| Method                            | Description                                                                                                                                                                                                                                                                |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.min(n: number)`                 | Lower bound on the length; shorter strings throw.                                                                                                                                                                                                                          |
-| `.max(n: number)`                 | Upper bound on the length; longer strings throw. With both bounds the length takes a fixed number of bits.                                                                                                                                                                 |
-| `.length(n: number)`              | Fixed length, the same as `.min(n).max(n)`; costs zero bits.                                                                                                                                                                                                               |
-| `.cdf(fn: (n: number) => number)` | Prior over the length, called with the length; needs `.max`.                                                                                                                                                                                                               |
-| `.weights(w: number[])`           | Prior: one weight per length from `min` (or 0) to `max`, lowest first; needs `.max`.                                                                                                                                                                                       |
-| `.charset(c: Charset)`            | Limits the alphabet, so each character costs fewer bits: a string of unique characters or a `[min, max]` range of character codes, down to a single character or a one-code range. Other characters throw. Can't be combined with `.prose()`, since both set the alphabet. |
-| `.prose(model?: ProseModel)`      | Weighted for natural language, about 4 bits per character; English by default, or a model of your own. Every string still encodes.                                                                                                                                         |
+| Method                                     | Description                                                                                                                                                                                                                                                                |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                          | Lower bound on the length; shorter strings throw.                                                                                                                                                                                                                          |
+| `.max(n: number)`                          | Upper bound on the length; longer strings throw. With both bounds the length takes a fixed number of bits.                                                                                                                                                                 |
+| `.length(n: number)`                       | Fixed length, the same as `.min(n).max(n)`; costs zero bits.                                                                                                                                                                                                               |
+| `.cdf(fn: (n: number) => number)`          | Prior over the length, called with the length; needs `.max`.                                                                                                                                                                                                               |
+| `.weights(w: number[])`                    | Prior: one weight per length from `min` (or 0) to `max`, lowest first; needs `.max`.                                                                                                                                                                                       |
+| `.adaptive(options?: { window?: number })` | Lets the characters learn from the message, and the length too when there is a `.max`; with `.prose()` the model's rows learn. See [Priors that learn](#priors-that-learn-adaptive).                                                                                       |
+| `.charset(c: Charset)`                     | Limits the alphabet, so each character costs fewer bits: a string of unique characters or a `[min, max]` range of character codes, down to a single character or a one-code range. Other characters throw. Can't be combined with `.prose()`, since both set the alphabet. |
+| `.prose(model?: ProseModel)`               | Weighted for natural language, about 4 bits per character; English by default, or a model of your own. Every string still encodes.                                                                                                                                         |
 
 `.prose()` prices each character by the one before it: common characters drop to 2–5 bits, and `u` after `q` to under one. Characters outside the model, such as other scripts or emoji, cost a little extra.
 
@@ -157,41 +175,45 @@ The built-in model is English (`ProseModels.english`). Any other is a matrix: `{
 
 A typed array: a `Uint8Array` by default, or any typed array class, like `p.binary(Int16Array)`. Infers that class and decodes to a new array of it. Elements are stored as their raw bytes, plus the element count, so floats keep NaN payloads and `-0`.
 
-| Method                            | Description                                                                                                     |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `.min(n: number)`                 | Lower bound on the element count; shorter arrays throw.                                                         |
-| `.max(n: number)`                 | Upper bound on the element count; longer arrays throw. With both bounds the count takes a fixed number of bits. |
-| `.length(n: number)`              | Fixed element count, the same as `.min(n).max(n)`; costs zero bits.                                             |
-| `.cdf(fn: (n: number) => number)` | Prior over the element count, called with the count; needs `.max`.                                              |
-| `.weights(w: number[])`           | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                             |
+| Method                                     | Description                                                                                                      |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                          | Lower bound on the element count; shorter arrays throw.                                                          |
+| `.max(n: number)`                          | Upper bound on the element count; longer arrays throw. With both bounds the count takes a fixed number of bits.  |
+| `.length(n: number)`                       | Fixed element count, the same as `.min(n).max(n)`; costs zero bits.                                              |
+| `.cdf(fn: (n: number) => number)`          | Prior over the element count, called with the count; needs `.max`.                                               |
+| `.weights(w: number[])`                    | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                              |
+| `.adaptive(options?: { window?: number })` | Prior over the element count that learns from the message; see [Priors that learn](#priors-that-learn-adaptive). |
 
 ### `p.bool()`
 
 A boolean, one bit. Infers `boolean`.
 
-| Method                  | Description                                      |
-| ----------------------- | ------------------------------------------------ |
-| `.weights(w: number[])` | Prior: one weight per value, as `[true, false]`. |
+| Method                                     | Description                                                                               |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `.weights(w: number[])`                    | Prior: one weight per value, as `[true, false]`.                                          |
+| `.adaptive(options?: { window?: number })` | Prior that learns from the message; see [Priors that learn](#priors-that-learn-adaptive). |
 
 ### `p.enum(list: readonly unknown[])`
 
 One value out of a fixed list: `p.enum(['red', 'green', 'blue'])` costs log2(3) ≈ 1.58 bits. Infers the union of the members' types. Members can be anything — strings, numbers, objects, functions — matched by identity (`===`), and decode returns the listed reference itself. The list must be non-empty with unique members, and NaN can't be one. A value outside the list throws. The order of the list is part of the encoding, so reordering it breaks old data unless the schema is wrapped in `p.versioned`.
 
-| Method                  | Description                                  |
-| ----------------------- | -------------------------------------------- |
-| `.weights(w: number[])` | Prior: one weight per member, in list order. |
+| Method                                     | Description                                                                               |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `.weights(w: number[])`                    | Prior: one weight per member, in list order.                                              |
+| `.adaptive(options?: { window?: number })` | Prior that learns from the message; see [Priors that learn](#priors-that-learn-adaptive). |
 
 ### `p.date()`
 
 A `Date`, lossless to the millisecond by default. Infers `Date`. An invalid date throws.
 
-| Method                                 | Description                                                                                                                                                                                    |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.min(d: Date \| number)`              | Lower bound, as a `Date` or an integer timestamp a `Date` can hold; earlier dates throw.                                                                                                       |
-| `.max(d: Date \| number)`              | Upper bound; later dates throw. With both bounds the date takes a fixed number of bits. The range can't span more than 2^53 buckets, and a min above the max throws.                           |
-| `.precision(unit: DateUnit, step = 1)` | Rounds each date down to the start of its UTC bucket: smaller, but lossy. Weeks start on Monday, months and years follow the calendar, and `step` groups units, so `('month', 3)` is quarters. |
-| `.cdf(fn: (b: number) => number)`      | Prior over the buckets, called with the bucket number, counting from the bucket that holds 1970-01-01 as 0; needs both bounds.                                                                 |
-| `.weights(w: number[])`                | Prior: one weight per bucket from `min` to `max`, earliest first; needs both bounds.                                                                                                           |
+| Method                                     | Description                                                                                                                                                                                    |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.min(d: Date \| number)`                  | Lower bound, as a `Date` or an integer timestamp a `Date` can hold; earlier dates throw.                                                                                                       |
+| `.max(d: Date \| number)`                  | Upper bound; later dates throw. With both bounds the date takes a fixed number of bits. The range can't span more than 2^53 buckets, and a min above the max throws.                           |
+| `.precision(unit: DateUnit, step = 1)`     | Rounds each date down to the start of its UTC bucket: smaller, but lossy. Weeks start on Monday, months and years follow the calendar, and `step` groups units, so `('month', 3)` is quarters. |
+| `.cdf(fn: (b: number) => number)`          | Prior over the buckets, called with the bucket number, counting from the bucket that holds 1970-01-01 as 0; needs both bounds.                                                                 |
+| `.weights(w: number[])`                    | Prior: one weight per bucket from `min` to `max`, earliest first; needs both bounds.                                                                                                           |
+| `.adaptive(options?: { window?: number })` | Prior that learns from the message; see [Priors that learn](#priors-that-learn-adaptive).                                                                                                      |
 
 `DateUnit` is `'millisecond' | 'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'`. Bounds compare buckets, so a `min` in the middle of a bucket allows that whole bucket, and a date can decode to a time before `min`.
 
@@ -207,25 +229,27 @@ An object with a fixed shape: `p.object({ x: p.int(), label: p.optional(p.string
 
 An array of one item type, stored with its length. Infers an array of the item's type. Arrays nest.
 
-| Method                            | Description                                                                                                  |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `.min(n: number)`                 | Lower bound on the item count; shorter arrays throw.                                                         |
-| `.max(n: number)`                 | Upper bound on the item count; longer arrays throw. With both bounds the count takes a fixed number of bits. |
-| `.length(n: number)`              | Fixed item count, the same as `.min(n).max(n)`; costs zero bits.                                             |
-| `.cdf(fn: (n: number) => number)` | Prior over the item count, called with the count; needs `.max`.                                              |
-| `.weights(w: number[])`           | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                          |
+| Method                                     | Description                                                                                                   |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                          | Lower bound on the item count; shorter arrays throw.                                                          |
+| `.max(n: number)`                          | Upper bound on the item count; longer arrays throw. With both bounds the count takes a fixed number of bits.  |
+| `.length(n: number)`                       | Fixed item count, the same as `.min(n).max(n)`; costs zero bits.                                              |
+| `.cdf(fn: (n: number) => number)`          | Prior over the item count, called with the count; needs `.max`.                                               |
+| `.weights(w: number[])`                    | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                           |
+| `.adaptive(options?: { window?: number })` | Prior over the item count that learns from the message; see [Priors that learn](#priors-that-learn-adaptive). |
 
 ### `p.map(key: PNode, value: PNode)`
 
 A `Map` from one key type to one value type: `p.map(p.string(), p.int())` is `Map<string, number>`. Keys can be any node, and entries are stored with their count, in insertion order.
 
-| Method                            | Description                                                                                                 |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `.min(n: number)`                 | Lower bound on the entry count; smaller maps throw.                                                         |
-| `.max(n: number)`                 | Upper bound on the entry count; larger maps throw. With both bounds the count takes a fixed number of bits. |
-| `.length(n: number)`              | Fixed entry count, the same as `.min(n).max(n)`; costs zero bits.                                           |
-| `.cdf(fn: (n: number) => number)` | Prior over the entry count, called with the count; needs `.max`.                                            |
-| `.weights(w: number[])`           | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                         |
+| Method                                     | Description                                                                                                    |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                          | Lower bound on the entry count; smaller maps throw.                                                            |
+| `.max(n: number)`                          | Upper bound on the entry count; larger maps throw. With both bounds the count takes a fixed number of bits.    |
+| `.length(n: number)`                       | Fixed entry count, the same as `.min(n).max(n)`; costs zero bits.                                              |
+| `.cdf(fn: (n: number) => number)`          | Prior over the entry count, called with the count; needs `.max`.                                               |
+| `.weights(w: number[])`                    | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                            |
+| `.adaptive(options?: { window?: number })` | Prior over the entry count that learns from the message; see [Priors that learn](#priors-that-learn-adaptive). |
 
 ### `p.record(value: PNode)`
 
@@ -239,25 +263,28 @@ A `Set` of one item type: `p.set(p.string())` is `Set<string>`. Items are stored
 
 A value or `undefined`, at the cost of one bit: `p.optional(p.int())` is `number | undefined`. As an object field it can be left out: it infers an optional key, and a missing key and an `undefined` value both decode with the key left out. Only `undefined` means absent; `null` is a value and goes to the inner node. Wrapping twice is the same as once.
 
-| Method                          | Description                                |
-| ------------------------------- | ------------------------------------------ |
-| `.weights(w: [number, number])` | Prior on presence, as `[present, absent]`. |
+| Method                                     | Description                                                                                           |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `.weights(w: [number, number])`            | Prior on presence, as `[present, absent]`.                                                            |
+| `.adaptive(options?: { window?: number })` | Prior on presence that learns from the message; see [Priors that learn](#priors-that-learn-adaptive). |
 
 ### `p.nullable(node: PNode)`
 
 A value or `null`: `p.nullable(p.string())` is `string | null`, written the same as `p.union([p.string(), p.null()])`. Unlike a union it takes any node, `p.lazy` and `p.any()` included. Wrapping twice is the same as once.
 
-| Method                  | Description                                     |
-| ----------------------- | ----------------------------------------------- |
-| `.weights(w: number[])` | Prior: one weight per side, as `[value, null]`. |
+| Method                                     | Description                                                                               |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `.weights(w: number[])`                    | Prior: one weight per side, as `[value, null]`.                                           |
+| `.adaptive(options?: { window?: number })` | Prior that learns from the message; see [Priors that learn](#priors-that-learn-adaptive). |
 
 ### `p.union(members: PNode[])`
 
 One of several members: `p.union([p.string(), p.int(), p.array(p.string())])` is `string | number | string[]`. The member is picked by the value's kind: string, number, bigint, boolean, null, undefined, date, regular expression, array, map, set, object, ArrayBuffer, DataView, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. Members must know their kinds, so `p.lazy` and custom nodes without `_kinds` can't be members. `p.any()` takes nearly every kind, so it overlaps with almost any other member. A value whose kind has no member throws. Recording which member was used costs log2(members) bits.
 
-| Method                  | Description                                  |
-| ----------------------- | -------------------------------------------- |
-| `.weights(w: number[])` | Prior: one weight per member, in list order. |
+| Method                                     | Description                                                                               |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `.weights(w: number[])`                    | Prior: one weight per member, in list order.                                              |
+| `.adaptive(options?: { window?: number })` | Prior that learns from the message; see [Priors that learn](#priors-that-learn-adaptive). |
 
 ### `p.tagged(key: string, members: Record<string, PObject>)`
 
@@ -272,9 +299,10 @@ p.tagged('type', {
 
 The tag costs log2(members) bits and is never written as text. The order of the members is part of the encoding, so reordering them breaks old data unless the schema is wrapped in `p.versioned`. The tag key belongs to the tagged union, so a member shape that also declares it throws, and so does a value whose tag isn't listed. Tags can't be numbers like `'2'`, because JS would list them before the others. A tagged union counts as an object, so it can sit next to other kinds in `p.union`.
 
-| Method                  | Description                                 |
-| ----------------------- | ------------------------------------------- |
-| `.weights(w: number[])` | Prior: one weight per member, in key order. |
+| Method                                     | Description                                                                               |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `.weights(w: number[])`                    | Prior: one weight per member, in key order.                                               |
+| `.adaptive(options?: { window?: number })` | Prior that learns from the message; see [Priors that learn](#priors-that-learn-adaptive). |
 
 ### `p.lazy(resolve: () => PNode)`
 
@@ -294,7 +322,7 @@ Data written by any listed version decodes and is migrated step by step to the n
 
 ### `p.any()`
 
-Self-describing escape hatch: numbers, bigints, strings, booleans, dates, regular expressions, null, undefined, ArrayBuffers, DataViews, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values; an object typed with an interface needs an index signature to count as one. Numbers round-trip as they do through `p.float`, everything else bit-exact, and a typed array decodes as the same class. A regular expression keeps its source and flags but not its `lastIndex`, and a DataView decodes over a new buffer of just its bytes. Shared references and holes in sparse arrays aren't kept: an object that appears twice comes back as two separate copies, and a hole comes back as `undefined`. A subclass of any of these, such as a `Buffer` or a class extending `RegExp` or `Map`, decodes as the built-in class. Any other class instance throws a `TypeError`, and so do errors and boxed primitives like `new Number(1)`. Nesting containers more than 512 levels deep, which includes a value that contains itself, throws a `RangeError` without the path in front. Costs more than a precise node. No methods.
+Self-describing escape hatch: numbers, bigints, strings, booleans, dates, regular expressions, null, undefined, ArrayBuffers, DataViews, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values; an object typed with an interface needs an index signature to count as one. Numbers round-trip as they do through `p.float`, everything else bit-exact, and a typed array decodes as the same class. A regular expression keeps its source and flags but not its `lastIndex`, and a DataView decodes over a new buffer of just its bytes. Shared references and holes in sparse arrays aren't kept: an object that appears twice comes back as two separate copies, and a hole comes back as `undefined`. A subclass of any of these, such as a `Buffer` or a class extending `RegExp` or `Map`, decodes as the built-in class. Any other class instance throws a `TypeError`, and so do errors and boxed primitives like `new Number(1)`. Nesting containers more than 512 levels deep, which includes a value that contains itself, throws a `RangeError` without the path in front. Type tags, strings, object keys and whole key lists are priced by what the message has already seen, so the status feed's hundred strings from a set of three average 26 bytes, and an array of same-shaped objects pays for its keys once. The characters of new strings and keys learn as well, so lorem costs about what `.prose()` does. Nothing to configure. Costs more than a precise node. No methods.
 
 ### Priors: `.weights()`
 
@@ -321,6 +349,22 @@ What `i` is depends on the node: the value itself on `p.int`, the step count (`v
 - Encoder and decoder must get identical numbers from it, so stick to BigInt or plain `+ - * /`; `Math.exp` and friends round differently per engine.
 - Keep the total small. On top of what the weights predict, every block of the message (2048 bits by default) can take up to log2(total) + 1 extra bits.
 
+### Priors that learn: `.adaptive()`
+
+`.adaptive()` makes a prior learn from the message. The weights, or one per value when none are given, are where it starts; every value the node then writes counts as one observation, so values that keep recurring get cheaper as the message goes on. The encoder tries a few learning rates per message and says which one it used, so there is nothing to tune.
+
+```typescript
+p.array(p.enum(['ok', 'warn', 'error']).adaptive()).length(100); // a feed that is mostly 'ok': about 9 bytes instead of 20
+p.array(p.int().min(0).max(1000).adaptive()).max(500); // readings that keep coming back
+p.array(p.object({ id: p.int(), note: p.optional(p.string()).adaptive() })); // notes that are mostly absent
+```
+
+- `window` is how many observations the counts hold before they halve, so the newest weigh most. It is 1024 when left out, and a node with more values than the window raises it to that number.
+
+Every value one node writes in a message goes through one table, so array items, record values and recursion learn from each other. The same node placed in two fields shares its table; two separate nodes don't. From its second value on, a node spends one bit to stay static, a few more to pick a learning rate, so a message too short to learn from costs about one bit more, and a node written once per message costs nothing extra. It pays when many values go through one node in one message; one value per message gains nothing.
+
+It works with weights but not with `.cdf()`, since a function can't count, and over a range of at most 65536 values.
+
 ## Encoding and decoding
 
 Every node has these two methods, where `T` is the type it infers.
@@ -340,7 +384,7 @@ User.decode(link, { charset: CharSets.urlSafe });
 
 `decode` can tell bytes from text by the input itself, so `type` is optional there and only checked by TypeScript.
 
-Each value has one encoding, so decoding a message and encoding the result gives back the same bytes, except when `p.versioned` upgrades old data.
+Decoding gives back the value that was encoded. Encoding a decoded message again usually gives the same bytes, but not always, so checking integrity is the job of `checksum`. A value's bytes can depend on what the same node wrote earlier in the message.
 
 `blockBits` is the size of the blocks a message is packed in, from 128 to 65536 bits and 2048 by default. Bigger blocks save a little space, and smaller ones are faster.
 
@@ -349,8 +393,8 @@ Each value has one encoding, so decoding a message and encoding the result gives
 A charset is the set of symbols a message is written in, and it works for both text and binary output. It is a string of at least two different characters, or a `[min, max]` range of character codes. Charsets hold characters from the Basic Multilingual Plane only, so no emoji. Text defaults to Base64, whose `+` and `/` don't survive URLs; `CharSets.urlSafe` does. Binary output defaults to every byte value and writes each symbol as its character code, so its charset can only hold codes from 0 to 255. That keeps bytes inside a smaller set, such as printable ASCII:
 
 ```typescript
-const ascii = User.encode(user, { charset: CharSets.printable }); // every byte is printable ASCII
-User.decode(ascii, { charset: CharSets.printable });
+const ascii = User.encode(user, { charset: CharSets.asciiSafe }); // every byte is printable ASCII
+User.decode(ascii, { charset: CharSets.asciiSafe });
 ```
 
 `p.string().charset()` takes the same charsets, and also a single character.
@@ -363,7 +407,7 @@ User.decode(ascii, { charset: CharSets.printable });
 | `CharSets.hialpha`      | `A`–`Z`                         |
 | `CharSets.alpha`        | all letters                     |
 | `CharSets.alphanumeric` | letters and digits              |
-| `CharSets.printable`    | printable ASCII                 |
+| `CharSets.asciiSafe`    | printable ASCII                 |
 | `CharSets.htmlSafe`     | printable ASCII without `"&'<>` |
 | `CharSets.base64`       | standard Base64                 |
 | `CharSets.urlSafe`      | letters, digits and `-._~`      |
@@ -380,6 +424,10 @@ A value that can't be encoded throws with its path in front and the limit it bro
 - `InferShape<S>`, `InferTagged<K, M>` — the types `p.object` and `p.tagged` infer, from a shape or a member map.
 - `AnyValue` — the values `p.any` encodes and decodes.
 - `Cdf` — `(v: number) => number`, the function `.cdf()` takes.
+- `AdaptiveOptions` — `{ window?: number }`, what `.adaptive()` takes.
+- `MemberPrior` — `{ weights?: readonly number[]; adaptive?: AdaptiveOptions }`, the prior `members` takes.
+- `Members` — what `members` returns: its `count`, its `radix` when every member is equally likely, `write(enc, pos)` and `read(dec)`.
+- `Bucket` — `[cum, freq, total]`, one coding's range for a symbol, as `composeAlternatives` takes it.
 - `DateUnit` — the units `.precision()` takes.
 - `Kind` — the kinds `p.union` tells apart, and the type of `_kinds`.
 - `ProseModel`, `ProseModelOptions` — a prose matrix and the options of `buildProseModel`.
@@ -388,7 +436,7 @@ A value that can't be encoded throws with its path in front and the limit it bro
 - `OutputType` — `'binary' | 'text'`.
 - `CodecOptions` — the options of `encode` and `decode`. Without a type argument it has no `type`, so one options object works for both forms; `CodecOptions<'text'>` and `CodecOptions<'binary'>` include it.
 
-The node classes are exported too (`PNode`, `PInt`, `PString`, `PObject`, …), along with `ProseModels` and `buildProseModel`.
+The node classes are exported too (`PNode`, `PInt`, `PString`, `PObject`, …), along with `ProseModels`, `buildProseModel`, `members` and `MessageState`.
 
 ## Custom nodes
 
@@ -413,19 +461,54 @@ const Theme = p.object({ name: p.string().max(20), accent: new PColor() });
 
 `_write` and `_read` work with these:
 
-| Method                                                                                                                                                                                                   | Description                                                                                                                                                                                                                                                        |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `new Encoder()`                                                                                                                                                                                          | An empty message.                                                                                                                                                                                                                                                  |
-| `enc.compose(integer: number, radix: number)`                                                                                                                                                            | One digit in a fixed radix: `integer` in `[0, radix)`, `radix` a positive safe integer; anything else throws.                                                                                                                                                      |
-| `enc.composeTerm(integer: number)`                                                                                                                                                                       | Any non-negative integer, no bound needed.                                                                                                                                                                                                                         |
-| `enc.composeWeighted(cum: number, freq: number, total: number, position?: { index: number; count: number })`                                                                                             | Writes a weighted value: the range `[cum, cum + freq)` out of `total`. Costs log2(total / freq) bits. `position` gives the value's `index` among the node's `count` values; with it, the last value in a message costs no more than picking one of `count` values. |
-| `enc.output(options?: CodecOptions)`                                                                                                                                                                     | The message as bytes, or as text when `type` is `'text'`, with the same options as `encode`.                                                                                                                                                                       |
-| `new Decoder(input: Uint8Array \| string, options?: CodecOptions)`                                                                                                                                       | Reads bytes or text made with the same options.                                                                                                                                                                                                                    |
-| `dec.parse(radix: number)`                                                                                                                                                                               | Reads what `compose` wrote.                                                                                                                                                                                                                                        |
-| `dec.parseMany(radix: number, count: number)`                                                                                                                                                            | Reads `count` digits that `compose` wrote with the same radix, as one array. Faster than calling `parse` that many times.                                                                                                                                          |
-| `dec.parseTerm()`                                                                                                                                                                                        | Reads what `composeTerm` wrote.                                                                                                                                                                                                                                    |
-| `dec.parseWeighted<T>(total: number, locate: (residual: number) => [symbol: T, cum: number, freq: number], position?: { count: number; at: (index: number) => [symbol: T, cum: number, freq: number] })` | Reads what `composeWeighted` wrote. `locate` gets a number below `total` and returns the symbol whose range holds it, with that range's `cum` and `freq`; `position.at` returns the same for the value at an index. Pass `position` when the writer passed one.    |
-| `dec.finalize()`                                                                                                                                                                                         | Throws `CorruptInputError` unless the input was consumed exactly; `decode` calls it for you.                                                                                                                                                                       |
+| Method                                                                                                                                                                                                   | Description                                                                                                                                                                                                                                                                                                                               |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `new Encoder()`                                                                                                                                                                                          | An empty message.                                                                                                                                                                                                                                                                                                                         |
+| `enc.compose(integer: number, radix: number)`                                                                                                                                                            | One digit in a fixed radix: `integer` in `[0, radix)`, `radix` a positive safe integer; anything else throws.                                                                                                                                                                                                                             |
+| `enc.composeTerm(integer: number)`                                                                                                                                                                       | Any non-negative integer, no bound needed.                                                                                                                                                                                                                                                                                                |
+| `enc.composeWeighted(cum: number, freq: number, total: number, position?: { index: number; count: number })`                                                                                             | Writes a weighted value: the range `[cum, cum + freq)` out of `total`. Costs log2(total / freq) bits. `position` gives the value's `index` among the node's `count` values; with it, the last value in a message costs no more than picking one of `count` values.                                                                        |
+| `enc.state<S>(key: object, init: () => S)`                                                                                                                                                               | A slot of per-message state keyed by an object, usually the node itself: `init` creates it on the message's first call, and later calls return it.                                                                                                                                                                                        |
+| `enc.composeSelector(group: object, choices: readonly Bucket[])`                                                                                                                                         | Opens a choice among codings of the same symbols for `group`, once, before its first symbol. `choices[i]` is the `Bucket` the choice is written as under coding i, all out of one total. The encoder keeps the coding whose choice and symbols cost the fewest bits and writes its bucket here; the decoder reads it as a weighted value. |
+| `enc.composeAlternatives(group: object, buckets: readonly Bucket[], position?: { index: number; count: number })`                                                                                        | One symbol of `group`, as the `Bucket` each coding gives it: `buckets[i]` is the symbol under coding i. `position` works as for `composeWeighted`.                                                                                                                                                                                        |
+| `enc.output(options?: CodecOptions)`                                                                                                                                                                     | The message as bytes, or as text when `type` is `'text'`, with the same options as `encode`.                                                                                                                                                                                                                                              |
+| `new Decoder(input: Uint8Array \| string, options?: CodecOptions)`                                                                                                                                       | Reads bytes or text made with the same options.                                                                                                                                                                                                                                                                                           |
+| `dec.parse(radix: number)`                                                                                                                                                                               | Reads what `compose` wrote.                                                                                                                                                                                                                                                                                                               |
+| `dec.parseMany(radix: number, count: number)`                                                                                                                                                            | Reads `count` digits that `compose` wrote with the same radix, as one array. Faster than calling `parse` that many times.                                                                                                                                                                                                                 |
+| `dec.parseTerm()`                                                                                                                                                                                        | Reads what `composeTerm` wrote.                                                                                                                                                                                                                                                                                                           |
+| `dec.parseWeighted<T>(total: number, locate: (residual: number) => [symbol: T, cum: number, freq: number], position?: { count: number; at: (index: number) => [symbol: T, cum: number, freq: number] })` | Reads what `composeWeighted` wrote. `locate` gets a number below `total` and returns the symbol whose range holds it, with that range's `cum` and `freq`; `position.at` returns the same for the value at an index. Pass `position` when the writer passed one.                                                                           |
+| `dec.state<S>(key: object, init: () => S)`                                                                                                                                                               | The decoder's slot for `key`, as `enc.state`.                                                                                                                                                                                                                                                                                             |
+| `dec.finalize()`                                                                                                                                                                                         | Throws `CorruptInputError` unless the input was consumed exactly; `decode` calls it for you.                                                                                                                                                                                                                                              |
+
+A node that picks one of a fixed number of members can spell it through `members(count: number, prior: MemberPrior | undefined, who: string)`, which returns a `Members`: the same object every built-in uses for its enums, booleans and tags. Its `write(enc, pos)` and `read(dec)` are uniform without a prior, weighted like `.weights()` with `{ weights }`, and learning like `.adaptive()` with `{ adaptive: options }`; `who` names the node in errors. One `Members` is one table, so the three channels below learn from each other, and three separate ones would keep them apart.
+
+```typescript
+import { p, PNode, Encoder, Decoder, members } from 'polynar';
+import type { AdaptiveOptions, MemberPrior, Members } from 'polynar';
+
+class PColor extends PNode<{ r: number; g: number; b: number }> {
+  private readonly channel: Members;
+
+  constructor(private readonly prior: MemberPrior = {}) {
+    super();
+    this.channel = members(256, prior, 'PColor');
+  }
+
+  adaptive(options?: AdaptiveOptions): PColor {
+    return new PColor({ ...this.prior, adaptive: options ?? {} });
+  }
+
+  _write(enc: Encoder, c: { r: number; g: number; b: number }): void {
+    this.channel.write(enc, c.r);
+    this.channel.write(enc, c.g);
+    this.channel.write(enc, c.b);
+  }
+  _read(dec: Decoder): { r: number; g: number; b: number } {
+    return { r: this.channel.read(dec), g: this.channel.read(dec), b: this.channel.read(dec) };
+  }
+}
+
+const Palette = p.array(new PColor().adaptive()).max(64);
+```
 
 ## Examples
 
@@ -539,7 +622,7 @@ Coverage has to stay at 100%, and the build fails if it drops. So for every bran
 
 Write each function so it works for every value its parameter types allow. Handle the value, narrow the type to what the function really accepts, or reject the value with a clear error. Test functions at module level on their own, including the edges of their types, and test private methods through their class.
 
-Each node has its own test file, and shared code is tested in the file named after it. A new node lives in `src/nodes/`, gets its factory in `p.ts`, its export in `src/index.ts`, a section in the API part of this README, and a case in `src/__tests__/random-schemas.ts`, which both fuzz suites draw from.
+Each node has its own test file, and shared code is tested in the file named after it. A new node lives in `src/nodes/`, gets its factory in `p.ts`, its export in `src/index.ts`, a section in the API part of this README, and a case in `src/__tests__/random-schemas.ts`, which both fuzz suites draw from. A node with a prior also gets an adaptive case there.
 
 `fuzz.test.ts` checks round trips and corrupt input over random schemas. Before you change the encoder or decoder, run `npm run fuzz:diff -- HEAD`: it compares the wire format of your working tree with the last commit, and without a ref it compares with the latest release. CI runs that comparison against the latest release on every pull request and only warns, because some changes to the wire format are deliberate.
 

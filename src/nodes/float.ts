@@ -400,9 +400,9 @@ export function canonicalSignificand(value: number, weights: readonly number[]):
  * Round a positive num/den, rescaled by a power of two, to the nearest point
  * of the significand grid [2^52, 2^53), a tie going down; the power of two
  * itself is dropped. A value that rounds up to 2^53 carries into that power
- * and lands on 2^52. A tie never decodes: the halfway point lies on the edge
- * of both neighbours' open rounding windows, so no encoder form names it,
- * and the canonical recompute rejects it whichever way it rounds.
+ * and lands on 2^52. The encoder never names a halfway point, which lies on
+ * the edge of both neighbours' open rounding windows; read from the wire it
+ * rounds down like any tie.
  */
 export function roundToSignificand(num: bigint, den: bigint): bigint {
   if (num <= 0n || den <= 0n) {
@@ -568,9 +568,6 @@ export class PFloat extends PNode<number> {
       return sign === 0n ? Infinity : -Infinity;
     }
     if (zigzag === ZIGZAG_NAN) {
-      if (sign !== 0n) {
-        throw new CorruptInputError('Non-canonical negative NaN');
-      }
       return NaN;
     }
     // A term is open-ended where a radix is not: anything past NaN's slot is
@@ -596,7 +593,7 @@ export class PFloat extends PNode<number> {
       if (sel === SIG_DYADIC5) {
         f = unzigNonzero(dec.parseTerm());
         if (Math.abs(f) > FIVE_SHIFT_MAX) {
-          throw new CorruptInputError('Five-realm shift is outside the canonical range');
+          throw new CorruptInputError('Five-realm shift is outside the range of doubles');
         }
       }
 
@@ -617,27 +614,12 @@ export class PFloat extends PNode<number> {
           }
           q = 1n << BigInt(j);
         }
-        const states =
-          (f === 0 ? 1n : termRunStates(BigInt(zigNonzero(f)))) * denominatorStates(sel, q) * q;
-        if (
-          states * BigInt(this._formWeights[SIG_FLAT]) >=
-          SIGNIFICAND_ONE * BigInt(this._formWeights[sel])
-        ) {
-          throw new CorruptInputError('Significand spelling is dearer than the flat mantissa');
-        }
         p = q + BigInt(dec.parse(Number(q)));
         // Rebuild the named significand in exact arithmetic: the name is
         // p/q shifted by 5^f, rounded onto the significand grid.
         const scale = 5n ** BigInt(Math.abs(f));
         mantissa =
           roundToSignificand(f >= 0 ? p * scale : p, f >= 0 ? q : q * scale) - SIGNIFICAND_ONE;
-      }
-
-      // One spelling per value: whatever branch the wire took must be the
-      // spelling the encoder would have chosen for the decoded significand.
-      const form = canonicalSignificand(doubleFrom(exponent, mantissa), this._formWeights);
-      if (form.sel !== sel || form.f !== f || form.p !== p || form.q !== q) {
-        throw new CorruptInputError('Significand spelling is not the canonical form');
       }
     }
 

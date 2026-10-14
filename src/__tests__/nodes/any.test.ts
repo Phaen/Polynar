@@ -3,9 +3,20 @@
  */
 
 import { p, Encoder, CorruptInputError, type AnyValue, type PNode } from '../../index';
-import { MAX_DEPTH, TAG_WEIGHTS } from '../../nodes/any';
-import { writeTable } from '../../nodes/weights';
-import { trip } from '../support';
+import { MAX_DEPTH, TAG_PRIOR, TAG_TIERS, TAG_WINDOW } from '../../nodes/any';
+import { AdaptiveTable } from '../../nodes/adaptive';
+import { PRecall } from '../../nodes/recall';
+import { mulberry32, trip } from '../support';
+
+/**
+ * A tag table like the one inside a `p.any`. Its counts live on the encoder,
+ * so every tag written through one table bumps them as the decoding node's
+ * reads do, and a hand-built message matches.
+ */
+const tags = () => new AdaptiveTable(TAG_TIERS, TAG_TIERS.length, TAG_PRIOR, TAG_WINDOW, 'p.any');
+
+/** The tags of the kinds the hand-built messages use. */
+const TAG = { INT: 4, FLOAT: 5, BIGINT: 6, REGEXP: 9, OBJECT: 11, FLOAT64_ARRAY: 24 };
 
 describe('Schema any', () => {
   it('copies shared references', () => {
@@ -21,12 +32,23 @@ describe('Schema any', () => {
     expect(1 in back).toBe(true);
   });
 
-  const wrappers: [string, (inner: AnyValue) => AnyValue, PNode<any>, number][] = [
-    ['array', (inner) => [inner], p.array(p.any()), 9],
-    ['record', (inner) => ({ k: inner }), p.record(p.any()), 10],
-    ['map', (inner) => new Map([['k', inner]]), p.map(p.any(), p.any()), 11],
-    ['set', (inner) => new Set([inner]), p.set(p.any()), 12],
+  const wrappers: [string, (inner: AnyValue) => AnyValue][] = [
+    ['array', (inner) => [inner]],
+    ['record', (inner) => ({ k: inner })],
+    ['map', (inner) => new Map([['k', inner]])],
+    ['set', (inner) => new Set([inner])],
   ];
+
+  /**
+   * A message one level deeper than the encoder writes: the node's depth for
+   * the message starts a level below zero, so the limit lets one more through.
+   */
+  const tooDeep = (node: PNode<AnyValue>, value: AnyValue): Uint8Array => {
+    const enc = new Encoder();
+    enc.state(node, () => ({ depth: -1 }));
+    node._write(enc, value);
+    return enc.output();
+  };
   const nest = (wrap: (inner: AnyValue) => AnyValue, levels: number, leaf: AnyValue = 0) => {
     let value: AnyValue = leaf;
     for (let i = 0; i < levels; i++) value = wrap(value);
@@ -67,37 +89,88 @@ describe('Schema any', () => {
     expect(() => p.any().encode(set)).toThrow(message);
   });
 
-  it.each(wrappers)(
-    'rejects input with %s nesting deeper than MAX_DEPTH',
-    (_kind, wrap, container, tag) => {
-      // A container's tag, then that container around MAX_DEPTH more levels:
-      // one level past what the encoder writes.
-      const enc = new Encoder();
-      writeTable(enc, TAG_WEIGHTS, tag);
-      container._write(enc, nest(wrap, MAX_DEPTH + 1));
-      expect(() => p.any().decode(enc.output())).toThrow(
-        new CorruptInputError(`p.any input nests deeper than ${MAX_DEPTH} levels`)
-      );
-    }
-  );
+  it.each(wrappers)('rejects input with %s nesting deeper than MAX_DEPTH', (_kind, wrap) => {
+    const node = p.any();
+    expect(() => node.decode(tooDeep(node, nest(wrap, MAX_DEPTH + 1)))).toThrow(
+      new CorruptInputError(`p.any input nests deeper than ${MAX_DEPTH} levels`)
+    );
+  });
 
   it('packs a JSON-like value into fewer bytes than a uniform tag would', () => {
     // A uniform tag costs 4.7 bits per value and took 25 bytes here.
     const value = { name: 'Ada', age: 36, tags: ['a', 'b'] };
     expect(trip(p.any(), value)).toEqual(value);
-    expect(p.any().encode(value)).toHaveLength(24);
+    expect(p.any().encode(value)).toHaveLength(23);
   });
 
-  it('unwinds its depth after a write or read that threw, so the node works again', () => {
+  it('works again after a write or read that threw', () => {
     const node = p.any();
     const wrap = (inner: AnyValue) => [inner];
     expect(() => node.encode(nest(wrap, MAX_DEPTH, Symbol('s') as never))).toThrow('symbol');
-    const enc = new Encoder();
-    writeTable(enc, TAG_WEIGHTS, 9);
-    p.array(p.any())._write(enc, [nest(wrap, MAX_DEPTH)]);
-    expect(() => node.decode(enc.output())).toThrow(CorruptInputError);
+    expect(() => node.decode(tooDeep(node, nest(wrap, MAX_DEPTH + 1)))).toThrow(CorruptInputError);
     const value = nest(wrap, MAX_DEPTH);
     expect(trip(node, value)).toEqual(value);
+  });
+
+  it('counts its depth per message, so a value at the limit encodes twice in a row', () => {
+    const node = p.any();
+    const value = nest((inner) => ({ k: inner }), MAX_DEPTH);
+    const bytes = node.encode(value);
+    expect(node.encode(value)).toEqual(bytes);
+    expect(node.decode(bytes)).toEqual(value);
+    expect(node.decode(bytes)).toEqual(value);
+  });
+
+  it('names the key of a record value it cannot encode', () => {
+    expect(() => p.any().encode({ a: [Symbol('s') as never] })).toThrow(
+      'a[0]: p.any cannot encode symbol values'
+    );
+  });
+
+  it('packs 100 strings drawn from 3 into at most 30 bytes', () => {
+    const rand = mulberry32(1);
+    const statuses = Array.from({ length: 100 }, () => {
+      const r = rand();
+      return r < 0.9 ? 'ok' : r < 0.99 ? 'warn' : 'error';
+    });
+    expect(new Set(statuses).size).toBe(3);
+    expect(trip(p.any(), statuses)).toEqual(statuses);
+    expect(p.any().encode(statuses).length).toBeLessThanOrEqual(30);
+  });
+
+  it('spends about a byte per object on keys when the objects share a shape', () => {
+    const objects = Array.from({ length: 20 }, (_, i) => ({ id: i, name: 'x', ok: i % 2 === 0 }));
+    const tuples = objects.map(({ id, name, ok }) => [id, name, ok]);
+    expect(trip(p.any(), objects)).toEqual(objects);
+    expect(p.any().encode(objects).length).toBeLessThanOrEqual(
+      p.any().encode(tuples).length + objects.length
+    );
+  });
+
+  it('spends under a bit on each boolean of a long run', () => {
+    const flags = Array.from({ length: 200 }, (_, i) => i % 7 !== 0);
+    expect(trip(p.any(), flags)).toEqual(flags);
+    expect(p.any().encode(flags).length).toBeLessThan(flags.length / 8);
+  });
+
+  it('learns per node, so two nodes in one object each spell a string anew', () => {
+    const value = { a: 'hello', b: 'hello' };
+    const shared = p.any();
+    const together = p.object({ a: shared, b: shared });
+    const apart = p.object({ a: p.any(), b: p.any() });
+    expect(trip(together, value)).toEqual(value);
+    expect(trip(apart, value)).toEqual(value);
+    expect(together.encode(value).length).toBeLessThan(apart.encode(value).length);
+  });
+
+  it('recalls a Map key among string values, and a record key apart from them', () => {
+    const recalled = p.any().encode(new Map([['hello', 'hello']]));
+    expect(recalled.length).toBeLessThan(p.any().encode(new Map([['hello', 'world']])).length);
+    // Keys and values share what their characters learn, which depends on
+    // the counts alone, so only recall could tell these two apart.
+    expect(p.any().encode({ hello: 'hello' }).length).toBe(
+      p.any().encode({ hello: 'olleh' }).length
+    );
   });
 
   it('round-trips Maps and Sets of any values, keys included', () => {
@@ -191,7 +264,7 @@ describe('Schema any', () => {
   it.each([Infinity, -Infinity, NaN])('round-trips %p under the float tag', (value) => {
     expect(trip(p.any(), value)).toBe(value);
     const enc = new Encoder();
-    writeTable(enc, TAG_WEIGHTS, 4);
+    tags().write(enc, TAG.FLOAT);
     p.float()._write(enc, value);
     expect(p.any().encode(value)).toEqual(enc.output());
   });
@@ -240,7 +313,7 @@ describe('Schema any', () => {
 
   it('rejects a bigint bit count that outruns the input', () => {
     const enc = new Encoder();
-    writeTable(enc, TAG_WEIGHTS, 5);
+    tags().write(enc, TAG.BIGINT);
     enc.composeTerm(1000);
     expect(() => p.any().decode(enc.output())).toThrow(CorruptInputError);
   });
@@ -311,7 +384,7 @@ describe('Schema any', () => {
   /** The RegExp tag, then a source and a flag mask as the encoder lays them out. */
   const regexpWire = (source: string, mask: number): Uint8Array => {
     const enc = new Encoder();
-    writeTable(enc, TAG_WEIGHTS, 8);
+    tags().write(enc, TAG.REGEXP);
     p.string()._write(enc, source);
     enc.compose(mask, 256);
     return enc.output();
@@ -321,11 +394,9 @@ describe('Schema any', () => {
     expect((p.any().decode(regexpWire('a', 0b10000010)) as RegExp).flags).toBe('gy');
   });
 
-  it('rejects a source the engine would rewrite, which the encoder never writes', () => {
-    expect(() => p.any().decode(regexpWire('/', 0))).toThrow(
-      new CorruptInputError('Non-canonical RegExp source "/"')
-    );
-    expect(() => p.any().decode(regexpWire('', 0))).toThrow(CorruptInputError);
+  it('reads a source the engine rewrites, which the encoder never writes, as the engine does', () => {
+    expect((p.any().decode(regexpWire('/', 0)) as RegExp).source).toBe('\\/');
+    expect((p.any().decode(regexpWire('', 0)) as RegExp).source).toBe('(?:)');
   });
 
   it.each([
@@ -353,40 +424,96 @@ describe('Schema any', () => {
   });
 
   it.each([
-    [4, p.float(), 42, 'Non-canonical float tag on the number 42'],
-    [4, p.float(), 2 ** 53 - 1, 'Non-canonical float tag on the number 9007199254740991'],
-    [3, p.int(), 2 ** 53, 'Non-canonical int tag on the number 9007199254740992'],
-    [3, p.int(), 1e300, 'Non-canonical int tag on the number 1e+300'],
-  ] as [number, PNode<number>, number, string][])(
-    'rejects tag %p on a number the other tag carries',
-    (tag, node, value, message) => {
+    [TAG.FLOAT, p.float(), 42],
+    [TAG.FLOAT, p.float(), 2 ** 53 - 1],
+    [TAG.INT, p.int(), 2 ** 53],
+    [TAG.INT, p.int(), 1e300],
+  ] as [number, PNode<number>, number][])(
+    'reads tag %p on a number the other tag carries as that number',
+    (tag, node, value) => {
       const enc = new Encoder();
-      writeTable(enc, TAG_WEIGHTS, tag);
+      tags().write(enc, tag);
       node._write(enc, value);
-      expect(() => p.any().decode(enc.output())).toThrow(new CorruptInputError(message));
+      expect(p.any().decode(enc.output())).toBe(value);
     }
   );
 
   it('rejects a typed-array length too large for any buffer', () => {
     // The Float64Array tag, then a count whose byte size is past 2^53.
     const enc = new Encoder();
-    writeTable(enc, TAG_WEIGHTS, 23);
+    tags().write(enc, TAG.FLOAT64_ARRAY);
     enc.composeTerm(2 ** 1021);
     expect(() => p.any().decode(enc.output())).toThrow(
       new CorruptInputError(`Binary length ${2 ** 1021} is above the largest possible buffer`)
     );
   });
 
-  it('rejects a record whose wire form repeats a key', () => {
-    // The object tag, then a two-entry count, then the same key twice: a
-    // shape the encoder never produces.
+  /** The key-list recall a record's shape goes through, fresh for one message. */
+  const shapes = () =>
+    new PRecall<string[]>(
+      p.array(new PRecall<string>(p.string().adaptive(), (key) => key, 'p.any key')),
+      (keys) => JSON.stringify(keys),
+      'p.any shape'
+    );
+
+  it('reads a record whose key list repeats a key, the last value winning', () => {
+    const table = tags();
     const enc = new Encoder();
-    writeTable(enc, TAG_WEIGHTS, 10);
-    enc.composeTerm(2);
-    p.string()._write(enc, 'a');
-    p.any()._write(enc, 1);
-    p.string()._write(enc, 'a');
-    p.any()._write(enc, 2);
-    expect(() => p.any().decode(enc.output())).toThrow('Repeated key "a" in p.record');
+    table.write(enc, TAG.OBJECT);
+    shapes()._write(enc, ['a', 'a']);
+    for (const value of [1, 2]) {
+      table.write(enc, TAG.INT);
+      p.int()._write(enc, value);
+    }
+    expect(p.any().decode(enc.output())).toEqual({ a: 2 });
+  });
+
+  it('reads a record whose keys are out of the order an object lists them in', () => {
+    const table = tags();
+    const enc = new Encoder();
+    table.write(enc, TAG.OBJECT);
+    shapes()._write(enc, ['b', '1']);
+    for (const value of [1, 2]) {
+      table.write(enc, TAG.INT);
+      p.int()._write(enc, value);
+    }
+    expect(p.any().decode(enc.output())).toEqual({ 1: 2, b: 1 });
+  });
+
+  it('reads back a record whose key is __proto__ as an own property', () => {
+    const value = JSON.parse('{"__proto__": 1, "a": 2}') as AnyValue;
+    const back = trip(p.any(), value) as object;
+    expect(Object.keys(back)).toEqual(['__proto__', 'a']);
+    expect(Object.getPrototypeOf(back)).toBe(Object.prototype);
+  });
+  it('round-trips inside p.versioned, migrated, with nothing left over between messages', () => {
+    const value = { name: 'Ada', tags: ['a', 'b', 'a'], n: [1, 1, 2] };
+    const Old = p.versioned(p.any());
+    const New = p.versioned(p.any(), [
+      p.any(),
+      (v: AnyValue) => ({ old: v, keys: ['a', 'b', 'a'] }) as AnyValue,
+    ]);
+    const migrated = New.decode(Old.encode(value));
+    expect(migrated).toEqual({ old: value, keys: ['a', 'b', 'a'] });
+    const bytes = New.encode(migrated);
+    expect(New.encode(migrated)).toEqual(bytes);
+    expect(New.decode(bytes)).toEqual(migrated);
+    expect(New.decode(bytes)).toEqual(migrated);
+  });
+
+  it('round-trips through p.lazy recursion, with nothing left over between messages', () => {
+    type Tree = { v?: AnyValue; kids: Tree[] };
+    const Tree: PNode<Tree> = p.object({ v: p.any(), kids: p.array(p.lazy(() => Tree)) });
+    const value: Tree = {
+      v: 'root',
+      kids: [
+        { v: { k: 'root' }, kids: [] },
+        { v: ['root', 1], kids: [{ v: 'root', kids: [] }] },
+      ],
+    };
+    const bytes = Tree.encode(value);
+    expect(Tree.encode(value)).toEqual(bytes);
+    expect(Tree.decode(bytes)).toEqual(value);
+    expect(Tree.decode(bytes)).toEqual(value);
   });
 });

@@ -14,10 +14,11 @@
  * `p.array` and `p.optional` like any built-in; declaring `_kinds` makes it
  * a valid `p.union` member too.
  */
-import { Encoder, Decoder, CorruptInputError } from '../packer';
+import { Encoder, Decoder } from '../packer';
 import type { CodecOptions, OutputType } from '../packer';
 import type { Kind } from './guards';
-import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
+import type { AdaptiveOptions } from './adaptive';
+import { members, type MemberPrior, type Members } from './members';
 
 /** Base class for every schema node. `_t` is a phantom carrying the output type. */
 export abstract class PNode<TOut> {
@@ -92,20 +93,21 @@ export class POptional<TOut> extends PNode<TOut | undefined> {
    */
   declare readonly _kinds?: readonly Kind[];
 
-  /** A prior as `[present, absent]` weights; undefined means one bit. */
-  private readonly _weights?: WeightTable;
+  /** The prior as declared, `[present, absent]`, for the rebuilds. */
+  private readonly _prior?: MemberPrior;
+  /** Member 0 is present, as the weights list it first. */
+  private readonly _members: Members;
 
   constructor(
     readonly inner: PNode<TOut>,
-    weights?: readonly [number, number]
+    prior?: MemberPrior
   ) {
     super();
     if (inner._kinds !== undefined) {
       this._kinds = [...new Set<Kind>([...inner._kinds, 'undefined'])];
     }
-    if (weights !== undefined) {
-      this._weights = buildWeights(weights, 2, 'p.optional');
-    }
+    this._prior = prior;
+    this._members = members(2, prior, 'p.optional');
   }
 
   _takesUndefined(): boolean {
@@ -118,35 +120,37 @@ export class POptional<TOut> extends PNode<TOut | undefined> {
    * A prior, not a constraint, and part of the wire format.
    */
   weights(w: readonly [number, number]): POptional<TOut> {
-    return new POptional<TOut>(this.inner, w);
+    return new POptional<TOut>(this.inner, { ...this._prior, weights: w });
+  }
+
+  /**
+   * Let the prior learn from the message: the declared weights, or even ones
+   * when none are, are the starting point, and each value or absence coded
+   * counts as one observation, so whichever keeps recurring gets cheaper as the
+   * message goes on. `window` is how many observations the counts hold before
+   * they halve, so the newest weigh most (1024 when left out, and raised to the
+   * number of values it counts when smaller). From its second value on, the
+   * node spends one bit to stay static, or a few to name the learning rate that
+   * paid off. Part of the wire format, like the weights.
+   */
+  adaptive(options?: AdaptiveOptions): POptional<TOut> {
+    return new POptional<TOut>(this.inner, {
+      ...this._prior,
+      adaptive: options ?? {},
+    });
   }
 
   _write(enc: Encoder, value: TOut | undefined): void {
-    if (this._weights === undefined) {
-      // The plain bit is 1 for present, 0 for absent.
-      enc.compose(value === undefined ? 0 : 1, 2);
-    } else {
-      writeTable(enc, this._weights, value === undefined ? 1 : 0);
-    }
+    this._members.write(enc, value === undefined ? 1 : 0);
     if (value !== undefined) {
       this.inner._write(enc, value);
     }
   }
 
   _read(dec: Decoder): TOut | undefined {
-    const there =
-      this._weights === undefined ? dec.parse(2) === 1 : readTable(dec, this._weights) === 0;
-    if (!there) {
+    if (this._members.read(dec) === 1) {
       return undefined;
     }
-    const value = this.inner._read(dec);
-    // `undefined` is spelled by the absent bit, so a present value decoding
-    // to it (an inner `any`'s undefined tag) has no canonical encoding.
-    if (value === undefined) {
-      throw new CorruptInputError(
-        'Present optional value decoded as undefined, which is not encodable'
-      );
-    }
-    return value;
+    return this.inner._read(dec);
   }
 }

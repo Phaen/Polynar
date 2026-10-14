@@ -184,13 +184,11 @@ describe('Schema float', () => {
     }
   });
 
-  it('rejects a NaN with the sign bit set, which the encoder never writes', () => {
+  it('reads a NaN with the sign bit set, which the encoder never writes, as NaN', () => {
     const enc = new Encoder();
     enc.compose(1, 2);
     enc.composeTerm(2048);
-    expect(() => p.float().decode(enc.output())).toThrow(
-      new CorruptInputError('Non-canonical negative NaN')
-    );
+    expect(p.float().decode(enc.output())).toBeNaN();
   });
 
   it('rejects an exponent past NaN', () => {
@@ -204,39 +202,45 @@ describe('Schema float', () => {
 
   it.each([
     [
-      'a reducible fraction: 6/4 names the same value as 3/2',
+      'a reducible fraction: 6/4',
       SIG_FRACTION,
       (enc: Encoder) => {
         enc.composeTerm(3); // denominator 4
         enc.compose(2, 4); // numerator 6
       },
-      'not the canonical form',
     ],
     [
-      'a flat mantissa for 1.5, whose canonical form is the dyadic 3/2',
+      'a flat mantissa',
       SIG_FLAT,
       (enc: Encoder) => {
         enc.compose(2 ** 51, 2 ** 52);
       },
-      'not the canonical form',
     ],
     [
-      'a fraction 3/2 for 1.5, whose canonical form is the dyadic 3/2',
+      'a fraction 3/2',
       SIG_FRACTION,
       (enc: Encoder) => {
         enc.composeTerm(1); // denominator 2
         enc.compose(1, 2); // numerator 3
       },
-      'not the canonical form',
     ],
     [
-      'a fraction denominator whose term outweighs the flat mantissa',
-      SIG_FRACTION,
+      'a five-realm spelling: 15/8 · 5^-1',
+      SIG_DYADIC5,
       (enc: Encoder) => {
-        enc.composeTerm(3 ** 20);
+        enc.composeTerm(1); // shift -1
+        enc.composeTerm(3); // denominator 8
+        enc.compose(7, 8); // numerator 15
       },
-      'dearer than the flat mantissa',
     ],
+  ])(
+    'reads 1.5 spelled as %s, which the encoder writes as the dyadic 3/2',
+    (_name, sel, significand) => {
+      expect(p.float().decode(spelled(sel, significand))).toBe(1.5);
+    }
+  );
+
+  it.each([
     [
       'a fraction denominator past the mantissa grid',
       SIG_FRACTION,
@@ -254,33 +258,17 @@ describe('Schema float', () => {
       'Dyadic denominator is past the mantissa grid',
     ],
     [
-      'a dyadic denominator whose term outweighs the flat mantissa',
-      SIG_DYADIC,
-      (enc: Encoder) => {
-        enc.composeTerm(52);
-      },
-      'dearer than the flat mantissa',
-    ],
-    [
-      'a five-realm spelling of a plain dyadic: 15/8 · 5^-1 names 1.5',
-      SIG_DYADIC5,
-      (enc: Encoder) => {
-        enc.composeTerm(1); // shift -1
-        enc.composeTerm(3); // denominator 8
-        enc.compose(7, 8); // numerator 15
-      },
-      'not the canonical form',
-    ],
-    [
-      'a shift past the range any shortest-decimal form produces',
+      'a shift past the range any double needs',
       SIG_DYADIC5,
       (enc: Encoder) => {
         enc.composeTerm(2 * 501);
       },
-      'outside the canonical range',
+      'Five-realm shift is outside the range of doubles',
     ],
   ])('rejects %s', (_name, sel, significand, message) => {
-    expect(() => p.float().decode(spelled(sel, significand))).toThrow(message);
+    expect(() => p.float().decode(spelled(sel, significand))).toThrow(
+      new CorruptInputError(message)
+    );
   });
 });
 

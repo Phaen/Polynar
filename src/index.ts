@@ -31,8 +31,9 @@ export {
   PTagged,
   PVersioned,
 } from './nodes';
-export { ProseModels, buildProseModel } from './nodes';
+export { ProseModels, buildProseModel, members } from './nodes';
 export type {
+  AdaptiveOptions,
   AnyValue,
   Infer,
   InferShape,
@@ -41,11 +42,20 @@ export type {
   DateUnit,
   FloatWeights,
   Kind,
+  MemberPrior,
+  Members,
   ProseModel,
   ProseModelOptions,
   TypedArray,
   TypedArrayClass,
 } from './nodes';
 
-export { Encoder, Decoder, CorruptInputError, UnknownVersionError, CharSets } from './packer';
-export type { Charset, CodecOptions, OutputType } from './packer';
+export {
+  Encoder,
+  Decoder,
+  MessageState,
+  CorruptInputError,
+  UnknownVersionError,
+  CharSets,
+} from './packer';
+export type { Bucket, Charset, CodecOptions, OutputType } from './packer';

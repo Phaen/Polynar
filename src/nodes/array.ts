@@ -4,6 +4,7 @@ import { atPath } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
+import type { AdaptiveOptions } from './adaptive';
 
 const MAX_ARRAY_LENGTH = 2 ** 32 - 1;
 
@@ -65,6 +66,24 @@ export class PArray<TItem> extends PNode<TItem[]> {
    */
   weights(w: readonly number[]): PArray<TItem> {
     return new PArray<TItem>(this._item, { ...this._bounds, prior: w });
+  }
+
+  /**
+   * Let the prior over the count learn from the message: the declared weights,
+   * or even ones when none are, are the starting point, and each count coded
+   * counts as one observation, so a count that keeps recurring gets cheaper as
+   * the message goes on. `window` is how many observations the counts hold
+   * before they halve, so the newest weigh most (1024 when left out, and raised
+   * to the number of values it counts when smaller). From its second value on,
+   * the node spends one bit to stay static, or a few to name the learning rate
+   * that paid off. Requires a max and takes weights, not a cdf; part of the
+   * wire format, like the weights.
+   */
+  adaptive(options?: AdaptiveOptions): PArray<TItem> {
+    return new PArray<TItem>(this._item, {
+      ...this._bounds,
+      adaptive: options ?? {},
+    });
   }
 
   _write(enc: Encoder, value: TItem[]): void {

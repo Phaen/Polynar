@@ -1,5 +1,11 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { RangePrior, checkIndex, checkRange, priorKind, type Prior } from './weights';
+import {
+  AdaptivePrior,
+  checkAdaptation,
+  checkAdaptiveMembers,
+  type AdaptiveOptions,
+} from './adaptive';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 /**
@@ -22,15 +28,29 @@ const SPLIT_LOW = 2 ** 27;
  * here, so their layouts can never drift apart. The range is validated once
  * here, and `write`/`read` check the bounds and pack the index, uniformly or
  * weighted. `show` spells an index as the value it stands for in an error.
+ * Adaptive options turn the prior adaptive: the declared weights, ones when
+ * none are, with the values a message writes learned on top.
  */
 export class IndexRange {
   readonly lo?: number;
   readonly hi?: number;
+  /**
+   * The prior as given, in every mode (static, cdf or adaptive), so a node
+   * rebuilding the range after a bound change passes it on.
+   */
+  readonly declared?: Prior;
   readonly prior?: RangePrior;
-  /** The one radix an index packs in: both bounds, no prior, fewer than 2^53 values. */
+  /**
+   * The adaptive options as given, set when the prior adapts; the weights
+   * then live in the learner, not `prior`.
+   */
+  readonly adaptive?: AdaptiveOptions;
+  /** The one radix an index packs in: both bounds, no prior or adaptive options, fewer than 2^53 values. */
   readonly radix?: number;
   /** Set with `radix`: the index `digit` steps above min, as a digit read in `radix` stands for. */
   readonly fromDigit?: (digit: number) => number;
+  /** The adaptive prior and the min its member 0 stands for. */
+  private readonly learner?: { readonly prior: AdaptivePrior; readonly lo: number };
   private readonly show: (index: number) => string;
 
   constructor(
@@ -38,20 +58,41 @@ export class IndexRange {
     lo?: number,
     hi?: number,
     prior?: Prior,
+    adaptive?: AdaptiveOptions,
     show: (index: number) => string = String
   ) {
     checkRange(who, lo, hi, show);
-    if (prior !== undefined) {
+    if (adaptive !== undefined) {
+      const adaptation = checkAdaptation(adaptive, who);
+      if (lo === undefined || hi === undefined) {
+        throw new TypeError(`${who} adaptive requires both bounds`);
+      }
+      if (typeof prior === 'function') {
+        throw new TypeError(`${who} adaptive takes weights, not a cdf`);
+      }
+      const n = hi - lo + 1;
+      checkAdaptiveMembers(n, who);
+      const weights = prior ?? new Array<number>(n).fill(1);
+      this.adaptive = adaptive;
+      this.learner = { prior: new AdaptivePrior([weights], n, adaptation.window, who), lo };
+    } else if (prior !== undefined) {
       if (lo === undefined || hi === undefined) {
         throw new TypeError(`${who} ${priorKind(prior)} requires both bounds`);
       }
       this.prior = new RangePrior(prior, lo, hi, who, show);
     }
+    this.declared = prior;
     this.lo = lo;
     // A max of -0 reads back as max - 0, itself -0; stored as 0, no index
     // decodes as -0.
     this.hi = hi === undefined ? undefined : hi + 0;
-    if (lo !== undefined && hi !== undefined && prior === undefined && hi - lo < MAX_SAFE) {
+    if (
+      lo !== undefined &&
+      hi !== undefined &&
+      prior === undefined &&
+      adaptive === undefined &&
+      hi - lo < MAX_SAFE
+    ) {
       this.radix = hi - lo + 1;
       this.fromDigit = (digit) => lo + digit;
     }
@@ -69,10 +110,17 @@ export class IndexRange {
       return;
     }
     checkIndex(index, this.lo, this.hi, subject, this.show);
+    if (this.learner !== undefined) {
+      this.learner.prior.write(enc, index - this.learner.lo);
+      return;
+    }
     this.writeIndex(enc, index);
   }
 
   read(dec: Decoder): number {
+    if (this.learner !== undefined) {
+      return this.learner.lo + this.learner.prior.read(dec);
+    }
     return this.prior === undefined ? this.readIndex(dec) : this.prior.read(dec);
   }
 
@@ -143,12 +191,8 @@ export class IndexRange {
     }
     const negative = dec.parse(2) === 1;
     const magnitude = dec.parseTerm();
-    // The encoder never signs a zero, so a signed zero is a corrupted input,
-    // not a value.
-    if (negative && magnitude === 0) {
-      throw new CorruptInputError('Non-canonical negative zero in input');
-    }
-    return negative ? -magnitude : magnitude;
+    // A signed zero reads as 0; negating zero is the only way -0 could arise.
+    return negative && magnitude !== 0 ? -magnitude : magnitude;
   }
 }
 
@@ -157,6 +201,7 @@ export interface LengthBounds {
   readonly min?: number;
   readonly max?: number;
   readonly prior?: Prior;
+  readonly adaptive?: AdaptiveOptions;
 }
 
 /** A length or count bound: a non-negative integer, checked at definition. */
@@ -185,11 +230,14 @@ export const lengthBound = (
 export function lengthRange(bounds: LengthBounds, who: string, noun: string): IndexRange {
   const min = lengthBound(bounds.min, who, 'min');
   const max = lengthBound(bounds.max, who, 'max');
-  const { prior } = bounds;
+  const { prior, adaptive } = bounds;
   if (prior !== undefined && max === undefined) {
     throw new TypeError(`${who} ${priorKind(prior)} requires a max ${noun}`);
   }
-  return new IndexRange(who, min ?? 0, max, prior);
+  if (adaptive !== undefined && max === undefined) {
+    throw new TypeError(`${who} adaptive requires a max ${noun}`);
+  }
+  return new IndexRange(who, min ?? 0, max, prior, adaptive);
 }
 
 /** Refuses a second `min` or `max` on one node: a bound is set once. */

@@ -3,7 +3,7 @@
  */
 
 import { p, PNode, Encoder, Decoder } from '../../index';
-import { trip } from '../support';
+import { mulberry32, trip } from '../support';
 
 describe('Schema union', () => {
   it('routes a value to the member that owns its kind', () => {
@@ -104,6 +104,65 @@ describe('Schema union', () => {
     // p.any already claims undefined, so a second optional member overlaps.
     expect(() => p.union([p.optional(p.int()), p.optional(p.any())])).toThrow(
       'overlap on kind "undefined"'
+    );
+  });
+});
+
+describe('p.union adaptive', () => {
+  const plain = p.union([p.int().min(0).max(3), p.string().max(3)]);
+  const weights = [9, 1];
+  const run = (length: number, seed: number) => {
+    const rnd = mulberry32(seed);
+    return Array.from({ length }, () => (rnd() < 0.9 ? Math.floor(rnd() * 4) : 'x'));
+  };
+
+  it('round-trips a run of values, inside an array too', () => {
+    const values = run(300, 1);
+    for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 8 })]) {
+      expect(trip(p.array(node), values)).toEqual(values);
+      expect(trip(node, values[0])).toEqual(values[0]);
+    }
+  });
+
+  it('takes its weights before or after', () => {
+    const values = run(200, 2);
+    expect(p.array(plain.weights(weights).adaptive({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.adaptive({ window: 64 }).weights(weights)).encode(values)
+    );
+  });
+
+  it('learns a skew, at most a byte over the static prior of it', () => {
+    const values = run(2000, 3);
+    const size = (node: typeof plain) => p.array(node).encode(values).length;
+    expect(size(plain.adaptive())).toBeLessThan(size(plain));
+    expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
+      size(plain.weights(weights)) + 1
+    );
+  });
+
+  it('written once, spends the bytes of its static form', () => {
+    for (const value of run(20, 4)) {
+      expect(plain.adaptive().encode(value)).toEqual(plain.encode(value));
+      expect(plain.weights(weights).adaptive().encode(value)).toEqual(
+        plain.weights(weights).encode(value)
+      );
+    }
+  });
+
+  it('refuses bad options', () => {
+    expect(() => plain.adaptive({ window: 0 })).toThrow(
+      new RangeError('p.union adaptive window must be a positive integer, got 0')
+    );
+    expect(() => plain.adaptive({ window: 1.5 })).toThrow(
+      new TypeError('p.union adaptive window must be a positive integer, got 1.5')
+    );
+    expect(() => plain.weights([2 ** 45, 2 ** 45]).adaptive()).toThrow(
+      new RangeError(
+        'p.union adaptive prior 4 and window 1024 overflow with weights totalling 70368744177664'
+      )
+    );
+    expect(() => plain.adaptive().weights([1])).toThrow(
+      new TypeError('p.union weights must list one weight per value: expected 2, got 1')
     );
   });
 });

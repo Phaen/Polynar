@@ -2,7 +2,8 @@ import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import { kindOf, type Kind } from './guards';
 import { oneOf, describe } from './path';
-import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
+import type { AdaptiveOptions } from './adaptive';
+import { members, type MemberPrior, type Members } from './members';
 
 /**
  * Enum: a fixed list of values, packed as a sub-byte index. `p.enum`.
@@ -14,11 +15,12 @@ import { buildWeights, writeTable, readTable, type WeightTable } from './weights
 export class PEnum<T> extends PNode<T> {
   readonly _kinds: readonly Kind[];
   private readonly _list: readonly T[];
-  /** A prior over the members; undefined means uniform. */
-  private readonly _weights?: WeightTable;
+  /** The prior as declared, for the rebuilds. */
+  private readonly _prior?: MemberPrior;
+  private readonly _members: Members;
   declare readonly _radix?: number;
 
-  constructor(list: readonly T[], weights?: readonly number[]) {
+  constructor(list: readonly T[], prior?: MemberPrior) {
     super();
     if (list.length === 0) {
       throw new TypeError('p.enum requires a non-empty list');
@@ -37,11 +39,9 @@ export class PEnum<T> extends PNode<T> {
     }
     this._list = [...list]; // copy so later caller mutation can't change the node
     this._kinds = [...new Set(this._list.map(kindOf))];
-    if (weights !== undefined) {
-      this._weights = buildWeights(weights, this._list.length, 'p.enum');
-    } else {
-      this._radix = this._list.length;
-    }
+    this._prior = prior;
+    this._members = members(this._list.length, prior, 'p.enum');
+    this._radix = this._members.radix;
   }
 
   /**
@@ -50,7 +50,24 @@ export class PEnum<T> extends PNode<T> {
    * of the wire format.
    */
   weights(w: readonly number[]): PEnum<T> {
-    return new PEnum<T>(this._list, w);
+    return new PEnum<T>(this._list, { ...this._prior, weights: w });
+  }
+
+  /**
+   * Let the prior learn from the message: the declared weights, or even ones
+   * when none are, are the starting point, and each member coded counts as one
+   * observation, so a member that keeps recurring gets cheaper as the message
+   * goes on. `window` is how many observations the counts hold before they
+   * halve, so the newest weigh most (1024 when left out, and raised to the
+   * number of values it counts when smaller). From its second value on, the
+   * node spends one bit to stay static, or a few to name the learning rate that
+   * paid off. Part of the wire format, like the weights.
+   */
+  adaptive(options?: AdaptiveOptions): PEnum<T> {
+    return new PEnum<T>(this._list, {
+      ...this._prior,
+      adaptive: options ?? {},
+    });
   }
 
   _write(enc: Encoder, value: T): void {
@@ -58,18 +75,11 @@ export class PEnum<T> extends PNode<T> {
     if (pos === -1) {
       throw new RangeError(`Value ${describe(value)} is not ${oneOf(this._list)}`);
     }
-    if (this._weights === undefined) {
-      enc.compose(pos, this._list.length);
-    } else {
-      writeTable(enc, this._weights, pos);
-    }
+    this._members.write(enc, pos);
   }
 
   _read(dec: Decoder): T {
-    if (this._weights === undefined) {
-      return this._list[dec.parse(this._list.length)];
-    }
-    return this._list[readTable(dec, this._weights)];
+    return this._list[this._members.read(dec)];
   }
 
   /** `digit` lies in `[0, _radix)`, as a digit read in `_radix` does. */

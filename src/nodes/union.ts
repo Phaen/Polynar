@@ -2,7 +2,8 @@ import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import { kindOf, type Kind } from './guards';
 import { describe, oneOf } from './path';
-import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
+import type { AdaptiveOptions } from './adaptive';
+import { members, type MemberPrior, type Members } from './members';
 
 /**
  * Union: one of several member nodes, picked by the value's JS kind
@@ -16,15 +17,17 @@ export class PUnion<T> extends PNode<T> {
   readonly _kinds: readonly Kind[];
   private readonly _members: readonly PNode<any>[];
   private readonly _byKind = new Map<Kind, number>();
-  /** A prior over the members; undefined means uniform. */
-  private readonly _weights?: WeightTable;
+  /** The prior as declared, for the rebuilds. */
+  private readonly _prior?: MemberPrior;
+  /** How the member a value goes to is spelled. */
+  private readonly _pick: Members;
 
-  constructor(members: readonly PNode<any>[], weights?: readonly number[]) {
+  constructor(nodes: readonly PNode<any>[], prior?: MemberPrior) {
     super();
-    if (members.length === 0) {
+    if (nodes.length === 0) {
       throw new TypeError('p.union requires at least one member');
     }
-    this._members = [...members]; // copy so later caller mutation can't change the node
+    this._members = [...nodes]; // copy so later caller mutation can't change the node
     this._members.forEach((member, i) => {
       if (member._kinds === undefined) {
         throw new TypeError(
@@ -41,9 +44,8 @@ export class PUnion<T> extends PNode<T> {
       }
     });
     this._kinds = [...this._byKind.keys()];
-    if (weights !== undefined) {
-      this._weights = buildWeights(weights, this._members.length, 'p.union');
-    }
+    this._prior = prior;
+    this._pick = members(this._members.length, prior, 'p.union');
   }
 
   /**
@@ -52,7 +54,24 @@ export class PUnion<T> extends PNode<T> {
    * of the wire format.
    */
   weights(w: readonly number[]): PUnion<T> {
-    return new PUnion<T>(this._members, w);
+    return new PUnion<T>(this._members, { ...this._prior, weights: w });
+  }
+
+  /**
+   * Let the prior learn from the message: the declared weights, or even ones
+   * when none are, are the starting point, and each member coded counts as one
+   * observation, so a member that keeps recurring gets cheaper as the message
+   * goes on. `window` is how many observations the counts hold before they
+   * halve, so the newest weigh most (1024 when left out, and raised to the
+   * number of values it counts when smaller). From its second value on, the
+   * node spends one bit to stay static, or a few to name the learning rate that
+   * paid off. Part of the wire format, like the weights.
+   */
+  adaptive(options?: AdaptiveOptions): PUnion<T> {
+    return new PUnion<T>(this._members, {
+      ...this._prior,
+      adaptive: options ?? {},
+    });
   }
 
   _write(enc: Encoder, value: T): void {
@@ -61,17 +80,11 @@ export class PUnion<T> extends PNode<T> {
     if (pos === undefined) {
       throw new TypeError(`Kind ${describe(kind)} is not ${oneOf(this._kinds)}`);
     }
-    if (this._weights === undefined) {
-      enc.compose(pos, this._members.length);
-    } else {
-      writeTable(enc, this._weights, pos);
-    }
+    this._pick.write(enc, pos);
     this._members[pos]._write(enc, value);
   }
 
   _read(dec: Decoder): T {
-    const pos =
-      this._weights === undefined ? dec.parse(this._members.length) : readTable(dec, this._weights);
-    return this._members[pos]._read(dec);
+    return this._members[this._pick.read(dec)]._read(dec);
   }
 }

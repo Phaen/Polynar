@@ -11,8 +11,13 @@ import { Encoder, Decoder, CorruptInputError, p } from '../index';
 import * as root from '../index';
 import type { CodecOptions, OutputType } from '../index';
 import { emitDigits } from '../packer/encoder';
+import { MessageState } from '../packer/state';
+import * as packer from '../packer';
+import type { Bucket } from '../packer';
 import type { Radix } from '../packer/types';
 import { digitChunk } from '../packer/utils';
+import { members } from '../nodes/members';
+import { buildWeights, writeTable } from '../nodes/weights';
 import { mulberry32 } from './support';
 
 const rand = mulberry32(0xa15eed);
@@ -42,6 +47,7 @@ describe('Public entrypoint', () => {
     expect(root.Encoder).toBe(Encoder);
     expect(root.Decoder).toBe(Decoder);
     expect(root.p).toBe(p);
+    expect(root.members).toBe(members);
   });
 });
 
@@ -463,18 +469,20 @@ describe('composeTerm / parseTerm', () => {
     );
   });
 
-  it('rejects a run padded with a zero top digit', () => {
+  it('reads a run padded with a zero top digit as the same value', () => {
     // Digit symbols are d+1, so symbol 1 is a zero digit; on top of a run it
-    // adds nothing but length, and the encoder never emits it there.
+    // adds nothing but length. The encoder never emits it there, and the
+    // decoder reads the value it names.
     const encoder = new Encoder();
     encoder.compose(2, 5); // first slot: digit 1
     encoder.compose(1, 4); // zero digit on top
     encoder.compose(0, 4); // terminator
-    expect(() => new Decoder(encoder.output()).parseTerm()).toThrow(CorruptInputError);
+    expect(new Decoder(encoder.output()).parseTerm()).toBe(1);
   });
 
-  it('rejects a run longer than any canonical value needs', () => {
-    // Inline runs hold at most 21 digits (values below 3^21).
+  it('rejects a run longer than its maximum', () => {
+    // Inline runs hold at most 21 digits (values below 3^21); past that the
+    // arithmetic would stop being exact.
     const encoder = new Encoder();
     encoder.compose(2, 5);
     for (let i = 0; i < 21; i++) {
@@ -482,13 +490,13 @@ describe('composeTerm / parseTerm', () => {
     }
     encoder.compose(0, 4);
     expect(() => new Decoder(encoder.output()).parseTerm()).toThrow(
-      'longer than its canonical maximum'
+      'Term run is longer than its maximum'
     );
   });
 
-  it('rejects an escaped term that belongs in the inline range', () => {
-    // The escape exists for values >= 3^21; a small value behind it is a
-    // second spelling of an inline-encodable number.
+  it('reads an escaped term inside the inline range as its value', () => {
+    // The encoder escapes only values >= 3^21; a smaller value behind the
+    // escape still names that value.
     const encoder = new Encoder();
     encoder.compose(4, 5); // escape symbol
     encoder.compose(0, 4); // digit count: the minimum, 12
@@ -496,7 +504,7 @@ describe('composeTerm / parseTerm', () => {
       encoder.compose(0, 8);
     }
     encoder.compose(0, 7); // top digit 1 -> value 8^11, below 3^21
-    expect(() => new Decoder(encoder.output()).parseTerm()).toThrow('within the inline range');
+    expect(new Decoder(encoder.output()).parseTerm()).toBe(8 ** 11);
   });
 });
 
@@ -1116,5 +1124,546 @@ describe('emitDigits', () => {
     expect(() => emit(1.5, 2, 10)).toThrow(new TypeError('Value must be an integer, got 1.5'));
     expect(() => emit(NaN, 2, 10)).toThrow(TypeError);
     expect(() => emit(Infinity, 2, 10)).toThrow(TypeError);
+  });
+});
+
+describe('MessageState / state', () => {
+  it('keeps one slot per key for the whole message, created once', () => {
+    const state = new MessageState();
+    const a = {};
+    const b = (): void => {};
+    let runs = 0;
+    const init = () => {
+      runs++;
+      return { count: runs };
+    };
+    const slot = state.get(a, init);
+    expect(state.get(a, init)).toBe(slot);
+    expect(state.get(b, init)).not.toBe(slot);
+    expect(state.get(b, init)).toEqual({ count: 2 });
+    expect(runs).toBe(2);
+    expect(new MessageState().get(a, init)).toEqual({ count: 3 });
+  });
+
+  it('gives each Encoder and Decoder slots of its own', () => {
+    const key = {};
+    for (const make of [() => new Encoder(), () => new Decoder(new Uint8Array(0))]) {
+      const first = make();
+      const slot = first.state(key, () => [] as number[]);
+      slot.push(1);
+      expect(first.state(key, () => [] as number[])).toEqual([1]);
+      expect(first.state({}, () => [] as number[])).toEqual([]);
+      expect(make().state(key, () => [] as number[])).toEqual([]);
+    }
+  });
+
+  it('rejects a key that is no object', () => {
+    const state = new MessageState();
+    const init = () => 0;
+    for (const [key, kind] of [
+      [null, 'null'],
+      [3, 'number'],
+      ['x', 'string'],
+    ] as const) {
+      const error = new TypeError(`State key must be an object, got ${kind}`);
+      expect(() => state.get(key as unknown as object, init)).toThrow(error);
+      expect(() => new Encoder().state(key as unknown as object, init)).toThrow(error);
+      expect(() => new Decoder(new Uint8Array(0)).state(key as unknown as object, init)).toThrow(
+        error
+      );
+    }
+  });
+
+  it('is reachable from the packer barrel along with Bucket', () => {
+    expect(packer.MessageState).toBe(MessageState);
+    const bucket: Bucket = [0, 1, 2];
+    expect(bucket).toHaveLength(3);
+  });
+});
+
+describe('composeSelector / composeAlternatives', () => {
+  /** A uniform digit, a group's selector, or one of a group's symbols. */
+  type Step =
+    | ['u', number, number]
+    | ['s', object, readonly Bucket[]]
+    | ['a', object, readonly Bucket[], { index: number; count: number }?];
+
+  /** The script written through selectors and alternatives. */
+  const adaptive = (script: readonly Step[]): Encoder => {
+    const enc = new Encoder();
+    for (const step of script) {
+      if (step[0] === 'u') {
+        enc.compose(step[1], step[2]);
+      } else if (step[0] === 's') {
+        enc.composeSelector(step[1], step[2]);
+      } else {
+        enc.composeAlternatives(step[1], step[2], step[3]);
+      }
+    }
+    return enc;
+  };
+
+  /** The script spelled directly in each group's `chosen` coding. */
+  const plain = (script: readonly Step[], chosen: Map<object, number>): Encoder => {
+    const enc = new Encoder();
+    for (const step of script) {
+      if (step[0] === 'u') {
+        enc.compose(step[1], step[2]);
+      } else if (step[0] === 's') {
+        const index = chosen.get(step[1]) ?? 0;
+        const [cum, freq, total] = step[2][index];
+        enc.composeWeighted(cum, freq, total, { index, count: step[2].length });
+      } else {
+        const [cum, freq, total] = step[2][chosen.get(step[1]) ?? 0];
+        enc.composeWeighted(cum, freq, total, step[3]);
+      }
+    }
+    return enc;
+  };
+
+  /**
+   * Reads the script back: the selector as a weighted symbol over its
+   * choices, which partition their total, each symbol in its
+   * group's coding. A symbol with a position lies among equal-width members.
+   */
+  const read = (input: Uint8Array | string, script: readonly Step[], o: Options): void => {
+    const dec = new Decoder(input, o);
+    const chosen = new Map<object, number>();
+    for (const step of script) {
+      if (step[0] === 'u') {
+        expect(dec.parse(step[2])).toBe(step[1]);
+      } else if (step[0] === 's') {
+        const choices = step[2];
+        const at = (i: number) => [i, choices[i][0], choices[i][1]] as const;
+        const locate = (r: number) => at(choices.findIndex(([c, f]) => c <= r && r < c + f));
+        chosen.set(
+          step[1],
+          dec.parseWeighted(choices[0][2], locate, { count: choices.length, at })
+        );
+      } else {
+        const [cum, freq, total] = step[2][chosen.get(step[1]) ?? 0];
+        const position = step[3];
+        if (position === undefined) {
+          const symbol = dec.parseWeighted(total, (r) =>
+            r < cum
+              ? (['below', 0, cum] as const)
+              : r < cum + freq
+                ? (['hit', cum, freq] as const)
+                : (['above', cum + freq, total - cum - freq] as const)
+          );
+          expect(symbol).toBe('hit');
+        } else {
+          const member = (i: number) => [i, i * freq, freq] as const;
+          const symbol = dec.parseWeighted(total, (r) => member(Math.floor(r / freq)), {
+            count: position.count,
+            at: member,
+          });
+          expect(symbol).toBe(position.index);
+        }
+      }
+    }
+    dec.finalize();
+  };
+
+  /** Expects the script to equal its plain spelling in `chosen`, byte for byte, in every layout. */
+  const check = (script: readonly Step[], chosen: Map<object, number>): void => {
+    for (const o of LAYOUTS) {
+      const out = adaptive(script).output(o);
+      expect(out).toEqual(plain(script, chosen).output(o));
+      read(out, script, o);
+    }
+  };
+
+  const g = {};
+  const h = {};
+
+  /** A selector over `count` equally likely codings. */
+  const uniform = (count: number): Bucket[] =>
+    Array.from({ length: count }, (_, i): Bucket => [i, 1, count]);
+
+  /** The script with `symbols` of group `g` between two uniform digits. */
+  const framed = (count: number, symbols: (readonly Bucket[])[]): Step[] => [
+    ['u', 3, 10],
+    ['s', g, uniform(count)],
+    ...symbols.map((buckets): Step => ['a', g, buckets]),
+    ['u', 4, 10],
+  ];
+
+  it('keeps the coding whose symbols cost the fewest bits', () => {
+    // Three bits a symbol under coding 0, under half a bit under coding 1.
+    const symbols = [0, 1, 2, 3, 4].map((i): readonly Bucket[] => [
+      [i, 1, 8],
+      [i % 2, 7, 8],
+    ]);
+    check(framed(2, symbols), new Map([[g, 1]]));
+  });
+
+  it('keeps the lowest coding on a tie', () => {
+    const symbols = [0, 1, 2].map((i): readonly Bucket[] => [
+      [i, 1, 4],
+      [3 - i, 1, 4],
+    ]);
+    check(framed(2, symbols), new Map([[g, 0]]));
+  });
+
+  it('weighs the whole message, not each symbol', () => {
+    // Coding 1 wins two symbols of three, yet costs 5.83 bits to coding 0's 5.
+    const symbols: (readonly Bucket[])[] = [
+      [
+        [0, 1, 2],
+        [0, 1, 32],
+      ],
+      [
+        [0, 1, 4],
+        [0, 3, 4],
+      ],
+      [
+        [1, 1, 4],
+        [1, 3, 4],
+      ],
+    ];
+    check(framed(2, symbols), new Map([[g, 0]]));
+  });
+
+  it('chooses among three codings', () => {
+    const symbols = [0, 1, 2, 3].map((i): readonly Bucket[] => [
+      [i, 1, 6],
+      [i, 3, 9],
+      [i, 2, 7],
+    ]);
+    check(framed(3, symbols), new Map([[g, 1]]));
+  });
+
+  it('tells apart codings a hair apart per symbol over many symbols', () => {
+    // 1001 against 1000 of 2000 states: each symbol differs by a factor of
+    // 1.001, and 10000 of them by about e^10.
+    for (const [freq, choice] of [
+      [1001, 1],
+      [999, 0],
+      [1000, 0],
+    ] as const) {
+      const symbols = Array.from({ length: 10000 }, (): readonly Bucket[] => [
+        [0, 1000, 2000],
+        [0, freq, 2000],
+      ]);
+      const out = adaptive(framed(2, symbols)).output();
+      expect(out).toEqual(plain(framed(2, symbols), new Map([[g, choice]])).output());
+      read(out, framed(2, symbols), {});
+    }
+  });
+
+  it('compares ratios past the double range', () => {
+    // Per symbol, coding 0 holds one state of 1024; the others `a` and `b`.
+    const likelier = (n: number, a: number, b: number): (readonly Bucket[])[] =>
+      Array.from({ length: n }, (): readonly Bucket[] => [
+        [0, 1, 1024],
+        [0, a, 1024],
+        [0, b, 1024],
+      ]);
+    // 1023^120 and 1022^120 both lie in [2^1024, 2^1536): the mantissas decide.
+    check(framed(3, likelier(120, 1023, 1022)), new Map([[g, 1]]));
+    check(framed(3, likelier(120, 1022, 1023)), new Map([[g, 2]]));
+    // 511^53 lies below 2^512 and 1023^53 above it: the exponents decide.
+    check(framed(3, likelier(53, 511, 1023)), new Map([[g, 2]]));
+    check(framed(3, likelier(53, 1023, 511)), new Map([[g, 1]]));
+    // 1/1023^120 lies far below coding 0's 1.
+    const unlikelier = likelier(120, 1023, 1023).map((b): readonly Bucket[] => [b[1], b[0], b[0]]);
+    check(framed(3, unlikelier), new Map([[g, 0]]));
+  });
+
+  it('writes nothing for the selector of a single coding', () => {
+    const script = framed(1, [[[2, 3, 10]], [[0, 1, 10]]]);
+    check(script, new Map([[g, 0]]));
+  });
+
+  it('writes the last symbol as the plain spelling would, as an index or a bucket', () => {
+    // The first symbol settles the coding; the last needs 42 bits as a coding
+    // 0 bucket and 4 as a coding 1 bucket, 2 as an index in either.
+    for (const [first, choice] of [
+      [[0, 1, 8], 1],
+      [[0, 7, 8], 0],
+    ] as const) {
+      const opening: readonly Bucket[] = choice === 1 ? [first, [0, 7, 8]] : [first, [0, 1, 8]];
+      const last: readonly Bucket[] = [
+        [2e12, 1e12, 4e12],
+        [8, 4, 16],
+      ];
+      for (const position of [undefined, { index: 2, count: 4 }, { index: 2, count: 40 }]) {
+        const script: Step[] = [
+          ['u', 3, 10],
+          ['s', g, uniform(2)],
+          ['a', g, opening],
+          ['a', g, last, position],
+        ];
+        check(script, new Map([[g, choice]]));
+      }
+    }
+  });
+
+  it('writes a selector that ends the message as coding 0', () => {
+    for (const count of [1, 2, 300]) {
+      check(
+        [
+          ['u', 3, 10],
+          ['s', g, uniform(count)],
+        ],
+        new Map()
+      );
+    }
+  });
+
+  it('settles interleaved groups each on their own', () => {
+    const script: Step[] = [
+      ['s', g, uniform(2)],
+      ['s', h, uniform(2)],
+      [
+        'a',
+        g,
+        [
+          [0, 1, 8],
+          [0, 7, 8],
+        ],
+      ],
+      ['u', 5, 7],
+      [
+        'a',
+        h,
+        [
+          [0, 7, 8],
+          [0, 1, 8],
+        ],
+      ],
+      [
+        'a',
+        g,
+        [
+          [1, 1, 8],
+          [1, 7, 8],
+        ],
+      ],
+      [
+        'a',
+        h,
+        [
+          [1, 7, 8],
+          [1, 1, 8],
+        ],
+      ],
+    ];
+    check(
+      script,
+      new Map([
+        [g, 1],
+        [h, 0],
+      ])
+    );
+  });
+
+  it('gives the same bytes when output twice', () => {
+    const enc = adaptive(
+      framed(2, [
+        [
+          [0, 1, 8],
+          [0, 7, 8],
+        ],
+      ])
+    );
+    const first = enc.output();
+    expect(enc.output()).toEqual(first);
+    expect(enc.output({ type: 'text' })).toBe(
+      plain(
+        framed(2, [
+          [
+            [0, 1, 8],
+            [0, 7, 8],
+          ],
+        ]),
+        new Map([[g, 1]])
+      ).output({ type: 'text' })
+    );
+  });
+
+  it('weighs the selector with the symbols', () => {
+    // The symbols tie, so the selector's own bucket decides.
+    const tied = [0, 1].map((i): readonly Bucket[] => [
+      [i, 1, 4],
+      [i, 1, 4],
+    ]);
+    const favouring = (choices: Bucket[]): Step[] => [
+      ['s', g, choices],
+      ...tied.map((b): Step => ['a', g, b]),
+    ];
+    check(
+      favouring([
+        [0, 1, 4],
+        [1, 3, 4],
+      ]),
+      new Map([[g, 1]])
+    );
+    check(
+      favouring([
+        [0, 3, 4],
+        [3, 1, 4],
+      ]),
+      new Map([[g, 0]])
+    );
+    // Coding 1 saves two bits over two symbols; its selector costs 1.6 bits
+    // more under one table and 2.8 under the other.
+    const close = [0, 1].map((i): readonly Bucket[] => [
+      [i, 1, 4],
+      [i, 1, 2],
+    ]);
+    const racing = (choices: Bucket[]): Step[] => [
+      ['s', g, choices],
+      ...close.map((b): Step => ['a', g, b]),
+    ];
+    check(
+      racing([
+        [0, 3, 4],
+        [3, 1, 4],
+      ]),
+      new Map([[g, 1]])
+    );
+    check(
+      racing([
+        [0, 7, 8],
+        [7, 1, 8],
+      ]),
+      new Map([[g, 0]])
+    );
+  });
+
+  it('spells a weighted selector as writeTable spells the same table', () => {
+    const table = buildWeights([3, 1, 1, 1], 4, 'w');
+    const choices = table.cums.map((cum, i): Bucket => [cum, table.freqs[i], table.total]);
+    const skewed = [0, 1, 2].map((i): readonly Bucket[] => [
+      [i, 1, 8],
+      [i, 1, 8],
+      [0, 7, 8],
+      [i, 2, 8],
+    ]);
+    const enc = adaptive([['s', g, choices], ...skewed.map((b): Step => ['a', g, b])]);
+    const direct = new Encoder();
+    writeTable(direct, table, 2);
+    for (const [cum, freq, total] of skewed.map((b) => b[2])) {
+      direct.composeWeighted(cum, freq, total);
+    }
+    expect(enc.output()).toEqual(direct.output());
+  });
+
+  it('writes a weighted selector that ends the message as the index of coding 0', () => {
+    for (const choices of [
+      [
+        [0, 3, 6],
+        [3, 1, 6],
+        [4, 2, 6],
+      ],
+      [[0, 1, 3]],
+      [
+        [0, 2e12, 3e12],
+        [2e12, 1e12, 3e12],
+      ],
+    ] as Bucket[][]) {
+      check(
+        [
+          ['u', 3, 10],
+          ['s', g, choices],
+        ],
+        new Map()
+      );
+    }
+  });
+
+  it('rejects an invalid selector', () => {
+    const enc = new Encoder();
+    expect(() => enc.composeSelector(null as unknown as object, uniform(2))).toThrow(
+      new TypeError('Group must be an object, got null')
+    );
+    expect(() => enc.composeSelector(7 as unknown as object, uniform(2))).toThrow(
+      new TypeError('Group must be an object, got number')
+    );
+    expect(() => enc.composeSelector({}, [])).toThrow(
+      new RangeError('Selector needs at least one coding')
+    );
+    expect(() => enc.composeSelector({}, [[0, 1.5, 4]])).toThrow(
+      new TypeError('Bucket must be integers, got cum 0, freq 1.5, total 4')
+    );
+    expect(() => enc.composeSelector({}, [[0, 1, 2 ** 53]])).toThrow(
+      new RangeError(`Total ${2 ** 53} is not a positive safe integer`)
+    );
+    expect(() =>
+      enc.composeSelector({}, [
+        [0, 1, 4],
+        [1, 1, 5],
+      ])
+    ).toThrow(new RangeError('Selector buckets share one total, got 5 after 4'));
+    expect(() =>
+      enc.composeSelector({}, [
+        [0, 4, 4],
+        [0, 1, 4],
+      ])
+    ).toThrow(new RangeError('Selector bucket [0, 4) holds every state'));
+    const group = {};
+    enc.composeSelector(group, uniform(2));
+    expect(() => enc.composeSelector(group, uniform(2))).toThrow(
+      new TypeError('Group already has a selector')
+    );
+    const single = {};
+    enc.composeSelector(single, uniform(1));
+    expect(() => enc.composeSelector(single, uniform(1))).toThrow(
+      new TypeError('Group already has a selector')
+    );
+    // A selector that failed its checks leaves the group unopened.
+    const failed = {};
+    expect(() => enc.composeSelector(failed, [])).toThrow(RangeError);
+    expect(() => enc.composeAlternatives(failed, [])).toThrow(
+      new TypeError('Group has no selector')
+    );
+  });
+
+  it('rejects invalid alternatives', () => {
+    const error = (name: string, message: string) => expect.objectContaining({ name, message });
+    const enc = new Encoder();
+    enc.composeSelector(g, uniform(2));
+    const ok: Bucket = [0, 1, 4];
+    expect(() => enc.composeAlternatives({}, [ok, ok])).toThrow(
+      error('TypeError', 'Group has no selector')
+    );
+    expect(() => enc.composeAlternatives(g, [ok])).toThrow(
+      error('TypeError', 'Group has 2 codings, got 1 alternative buckets')
+    );
+    expect(() => enc.composeAlternatives(g, [ok, ok, ok])).toThrow(
+      error('TypeError', 'Group has 2 codings, got 3 alternative buckets')
+    );
+    for (const [bucket, name, message] of [
+      [[0, 1.5, 4], 'TypeError', 'Bucket must be integers, got cum 0, freq 1.5, total 4'],
+      [[0, 1, 0], 'RangeError', 'Total 0 is not a positive safe integer'],
+      [[0, 1, 2 ** 53], 'RangeError', `Total ${2 ** 53} is not a positive safe integer`],
+      [[0, 0, 4], 'RangeError', 'Frequency 0 is not positive'],
+      [[3, 2, 4], 'RangeError', 'Bucket [3, 5) is outside [0, 4)'],
+      [[-1, 2, 4], 'RangeError', 'Bucket [-1, 1) is outside [0, 4)'],
+      [[0, 4, 4], 'RangeError', 'Alternative bucket [0, 4) holds every state'],
+    ] as const) {
+      expect(() => enc.composeAlternatives(g, [ok, bucket])).toThrow(error(name, message));
+      expect(() => enc.composeAlternatives(g, [bucket, ok])).toThrow(error(name, message));
+    }
+    expect(() => enc.composeAlternatives(g, [ok, [0, 1, 8]], { index: 0.5, count: 4 })).toThrow(
+      error('TypeError', 'Symbol position must be integers, got index 0.5, count 4')
+    );
+    expect(() => enc.composeAlternatives(g, [ok, [0, 1, 8]], { index: 0, count: 0 })).toThrow(
+      error('TypeError', 'Symbol position must be integers, got index 0, count 0')
+    );
+    // Six members fill coding 0's four states, which leaves the index unchecked
+    // there, but not coding 1's eight.
+    for (const buckets of [
+      [ok, [0, 1, 8]],
+      [[0, 1, 8], ok],
+    ] as const) {
+      expect(() => enc.composeAlternatives(g, buckets, { index: 7, count: 6 })).toThrow(
+        error('RangeError', 'Index 7 is outside [0, 6)')
+      );
+    }
+    // Nothing failed was recorded: the message is the selector alone.
+    expect(enc.output()).toEqual(plain([['s', g, uniform(2)]], new Map()).output());
   });
 });

@@ -3,6 +3,7 @@ import { PNode } from './base';
 import { typedArrayKind, type Kind, type TypedArray } from './guards';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
+import type { AdaptiveOptions } from './adaptive';
 
 /**
  * A typed-array class: its element width and a way to build it on a buffer.
@@ -78,6 +79,24 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    */
   weights(w: readonly number[]): PBinary<A> {
     return new PBinary(this._type, { ...this._bounds, prior: w });
+  }
+
+  /**
+   * Let the prior over the element count learn from the message: the declared
+   * weights, or even ones when none are, are the starting point, and each
+   * element count coded counts as one observation, so an element count that
+   * keeps recurring gets cheaper as the message goes on. `window` is how many
+   * observations the counts hold before they halve, so the newest weigh most
+   * (1024 when left out, and raised to the number of values it counts when
+   * smaller). From its second value on, the node spends one bit to stay static,
+   * or a few to name the learning rate that paid off. Requires a max and takes
+   * weights, not a cdf; part of the wire format, like the weights.
+   */
+  adaptive(options?: AdaptiveOptions): PBinary<A> {
+    return new PBinary(this._type, {
+      ...this._bounds,
+      adaptive: options ?? {},
+    });
   }
 
   _write(enc: Encoder, value: A): void {

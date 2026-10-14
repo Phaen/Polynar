@@ -1,23 +1,24 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import type { Kind } from './guards';
-import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
+import type { AdaptiveOptions } from './adaptive';
+import { members, type MemberPrior, type Members } from './members';
 
 /** Boolean. `p.bool`. */
 export class PBool extends PNode<boolean> {
   readonly _kinds: readonly Kind[] = ['boolean'];
 
-  /** A prior as `[true, false]` weights; undefined means one bit each way. */
-  private readonly _weights?: WeightTable;
+  /** The prior as declared, `[true, false]`, for the rebuilds. */
+  private readonly _prior?: MemberPrior;
+  /** Member 0 is true, as the weights list it first. */
+  private readonly _members: Members;
   declare readonly _radix?: number;
 
-  constructor(weights?: readonly number[]) {
+  constructor(prior?: MemberPrior) {
     super();
-    if (weights !== undefined) {
-      this._weights = buildWeights(weights, 2, 'p.bool');
-    } else {
-      this._radix = 2;
-    }
+    this._prior = prior;
+    this._members = members(2, prior, 'p.bool');
+    this._radix = this._members.radix;
   }
 
   /**
@@ -25,26 +26,33 @@ export class PBool extends PNode<boolean> {
    * constraint, and part of the wire format.
    */
   weights(w: readonly number[]): PBool {
-    return new PBool(w);
+    return new PBool({ ...this._prior, weights: w });
+  }
+
+  /**
+   * Let the prior learn from the message: the declared weights, or even ones
+   * when none are, are the starting point, and each value coded counts as one
+   * observation, so a value that keeps recurring gets cheaper as the message
+   * goes on. `window` is how many observations the counts hold before they
+   * halve, so the newest weigh most (1024 when left out, and raised to the
+   * number of values it counts when smaller). From its second value on, the
+   * node spends one bit to stay static, or a few to name the learning rate that
+   * paid off. Part of the wire format, like the weights.
+   */
+  adaptive(options?: AdaptiveOptions): PBool {
+    return new PBool({ ...this._prior, adaptive: options ?? {} });
   }
 
   _write(enc: Encoder, value: boolean): void {
-    if (this._weights === undefined) {
-      enc.compose(value ? 1 : 0, 2);
-    } else {
-      writeTable(enc, this._weights, value ? 0 : 1);
-    }
+    this._members.write(enc, value ? 0 : 1);
   }
 
   _read(dec: Decoder): boolean {
-    if (this._weights === undefined) {
-      return Boolean(dec.parse(2));
-    }
-    return readTable(dec, this._weights) === 0;
+    return this._members.read(dec) === 0;
   }
 
   /** `digit` lies in `[0, _radix)`, as a digit read in `_radix` does. */
   _fromDigit(digit: number): boolean {
-    return digit === 1;
+    return digit === 0;
   }
 }

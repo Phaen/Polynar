@@ -109,19 +109,18 @@ describe('CorruptInputError', () => {
   });
 
   it.each([
-    ['p.int', p.int()],
-    ['p.decimal', p.decimal(0.01)],
-    ['p.date', p.date()],
-  ] as [string, PNode<unknown>][])(
-    '%s rejects a negative zero the encoder never emits',
-    (_, node) => {
-      // A set sign bit with a zero magnitude is a representable digit pattern
-      // but not a canonical encoding. p.float is exempt: IEEE -0 is a real,
-      // distinct double there.
+    ['p.int', p.int(), 0],
+    ['p.decimal', p.decimal(0.01), 0],
+    ['p.date', p.date(), new Date(0)],
+  ] as [string, PNode<unknown>, unknown][])(
+    '%s reads a signed zero, which the encoder never emits, as zero',
+    (_, node, zero) => {
       const enc = new Encoder();
       enc.compose(1, 2);
       enc.composeTerm(0);
-      expect(() => node.decode(enc.output())).toThrow('Non-canonical negative zero');
+      const back = node.decode(enc.output());
+      expect(back).toEqual(zero);
+      expect(Object.is(back, -0)).toBe(false);
     }
   );
 });

@@ -1,8 +1,8 @@
 /**
  * Property fuzz over randomly generated schemas and values: round-trip
  * identity (decode(encode(v)) equals v), canonical closure (bytes that decode
- * at all re-encode to exactly themselves, so no value has a second wire
- * spelling), and agreement of the block bound's fast regimes with its exact
+ * at all re-encode to exactly themselves, but for a migration or an adaptive
+ * prior's selector, which re-encode to bytes of the same value), and agreement of the block bound's fast regimes with its exact
  * one (the same bytes when every block is bounded with exact arithmetic from
  * its first symbol). Checked over bytes and text in charsets of unusual
  * sizes and at several block sizes, and against corrupted inputs (truncation,
@@ -23,10 +23,15 @@ const runs = (n: number): number => Math.max(1, Math.round(n * SCALE));
 
 useRng(mulberry32(0x5eed));
 
+interface Fuzzed {
+  node: PNode<unknown>;
+  gen: () => unknown;
+}
+
 /** A random schema built against the working tree, with values for it. */
-const randomNode = (): { node: PNode<unknown>; gen: () => unknown; migrates: boolean } => {
+const randomNode = (): Fuzzed => {
   const c = randomCase(2);
-  return { node: c.build(lib), gen: c.gen, migrates: c.migrates ?? false };
+  return { node: c.build(lib), gen: c.gen };
 };
 
 const encodeWith = (node: PNode<unknown>, value: unknown, o: Opts): Uint8Array | string =>
@@ -50,15 +55,11 @@ const exactly = <T>(fn: () => T): T => {
 };
 
 /**
- * Corrupted input either throws or decodes to a value whose canonical
- * encoding it is. Under a migration the value re-encodes as the newest
- * version instead, and those bytes decode to it unchanged.
+ * Corrupted input either throws or decodes to a value the schema can
+ * encode: the value's own bytes decode to it unchanged. A second spelling
+ * of a value is read as that value, so the bytes themselves need not match.
  */
-const expectRejectedOrOwned = (
-  { node, migrates }: { node: PNode<unknown>; migrates: boolean },
-  encoded: Uint8Array | string,
-  o: Opts
-) => {
+const expectRejectedOrOwned = ({ node }: Fuzzed, encoded: Uint8Array | string, o: Opts) => {
   for (const { input } of corruptions(encoded, o)) {
     let decoded: unknown;
     try {
@@ -67,11 +68,7 @@ const expectRejectedOrOwned = (
       expect(e).toBeInstanceOf(Error);
       continue;
     }
-    if (migrates) {
-      expect(decodeWith(node, encodeWith(node, decoded, o), o)).toEqual(decoded);
-    } else {
-      expect(encodeWith(node, decoded, o)).toEqual(input);
-    }
+    expect(decodeWith(node, encodeWith(node, decoded, o), o)).toEqual(decoded);
   }
 };
 

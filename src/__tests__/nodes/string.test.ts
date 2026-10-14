@@ -99,16 +99,16 @@ describe('Schema string', () => {
     expect(trip(p.string().charset([0x400, 0x4ff]), cyrillic)).toBe(cyrillic);
   });
 
-  it('rejects a surrogate pair split into two code points', () => {
-    // The encoder merges an adjacent lead+trail into one astral code point,
-    // so the two-slot spelling would be a second wire form of the same string.
+  it('reads a surrogate pair split into two code points as the pair', () => {
+    // The encoder merges an adjacent lead+trail into one astral code point;
+    // the two-slot spelling reads back as the same string.
     const enc = new Encoder();
     enc.composeTerm(2);
     for (const code of [0xd800, 0xdc00]) {
       enc.compose(TEXT_DIRECT_MAX + 2, TEXT_FIRST_RADIX);
       enc.compose(code - 0x800, 0xffff - 0x800 + 1);
     }
-    expect(() => p.string().decode(enc.output())).toThrow('Non-canonical split surrogate pair');
+    expect(p.string().decode(enc.output())).toBe('\u{10000}');
   });
 
   it('rejects an astral code point past the length prefix', () => {
@@ -196,17 +196,127 @@ describe('Schema string prose', () => {
     expect(() => p.string().prose(model)).toThrow(message);
   });
 
-  it('rejects a modeled character behind the escape', () => {
-    // 'e' has its own bucket, so its escaped form would be a second wire
-    // spelling of the same string.
+  it('reads a modeled character behind the escape as that character', () => {
+    // 'e' has its own bucket; its escaped form reads back as the same string.
     const table = compileProse(ProseModels.english);
     const start = table.rows[table.start];
     const enc = new Encoder();
     enc.composeTerm(1);
     enc.composeWeighted(start.cums[table.escape], start.freqs[table.escape], start.total);
     enc.compose('e'.charCodeAt(0), TEXT_FIRST_RADIX);
-    expect(() => p.string().prose().decode(enc.output())).toThrow(
-      'Non-canonical escape of a modeled character'
+    expect(p.string().prose().decode(enc.output())).toBe('e');
+  });
+});
+
+describe('p.string adaptive', () => {
+  const plain = p.string().max(7);
+  const weights = Array.from({ length: 8 }, (_, i) => (i === 3 ? 29 : 1));
+  const run = (length: number, seed: number) => {
+    const rnd = mulberry32(seed);
+    return Array.from({ length }, () => (rnd() < 0.8 ? 'abc' : 'x'.repeat(Math.floor(rnd() * 8))));
+  };
+
+  it('round-trips a run of values, inside an array too', () => {
+    const values = run(300, 1);
+    for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 256 })]) {
+      expect(trip(p.array(node), values)).toEqual(values);
+      expect(trip(node, values[0])).toEqual(values[0]);
+    }
+  });
+
+  it('takes its weights before or after', () => {
+    const values = run(200, 2);
+    expect(p.array(plain.weights(weights).adaptive({ window: 256 })).encode(values)).toEqual(
+      p.array(plain.adaptive({ window: 256 }).weights(weights)).encode(values)
     );
+  });
+
+  it('learns a skew, at most a byte over the static prior of it', () => {
+    const values = run(2000, 3);
+    const size = (node: typeof plain) => p.array(node).encode(values).length;
+    expect(size(plain.adaptive())).toBeLessThan(size(plain));
+    expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
+      size(plain.weights(weights)) + 1
+    );
+  });
+
+  it('written once with at most one character, spends the bytes of its static form', () => {
+    for (const value of ['', 'a', '\u00e9', '👋']) {
+      expect(plain.adaptive().encode(value)).toEqual(plain.encode(value));
+      expect(plain.weights(weights).adaptive().encode(value)).toEqual(
+        plain.weights(weights).encode(value)
+      );
+      expect(p.string().prose().adaptive().encode(value)).toEqual(p.string().prose().encode(value));
+    }
+  });
+
+  it('learns its characters without a max, the length staying a term', () => {
+    const text = 'abababababababababababababababababababab';
+    const learner = p.string().adaptive();
+    expect(trip(learner, text)).toBe(text);
+    expect(learner.encode(text).length).toBeLessThan(p.string().encode(text).length / 2);
+    // With a max, the length learns too: an array of one recurring length.
+    const lengths = Array.from({ length: 200 }, () => 'q');
+    const size = (node: typeof plain) => p.array(node).encode(lengths).length;
+    expect(size(p.string().max(40).adaptive())).toBeLessThan(size(p.string().adaptive()));
+  });
+
+  it.each([
+    [
+      'the ladder',
+      p.string(),
+      ['héllo wörld', '👋 hi 👋', 'plain ascii', '\uD800 lone', '中文字符'],
+    ],
+    ['a charset', p.string().charset('abcdefgh'), ['abcabc', 'hhhhhhhh', '', 'gfedcba']],
+    ['a range charset', p.string().charset([0x61, 0x7a]), ['zzz', 'abcxyz', 'q']],
+    ['prose', p.string().prose(), ['The quick brown fox.', 'Ünïcödé — and 👋', 'qqq', '']],
+  ])('round-trips arrays of strings under %s, characters learning', (_name, node, seeds) => {
+    const rnd = mulberry32(seeds.length);
+    const values = Array.from({ length: 120 }, () => seeds[Math.floor(rnd() * seeds.length)]);
+    const learner = p.array(node.adaptive());
+    expect(trip(learner, values)).toEqual(values);
+    expect(learner.encode(values).length).toBeLessThanOrEqual(
+      p.array(node).encode(values).length + 1
+    );
+  });
+
+  it('learns prose that strays from the model below its static cost', () => {
+    const text = 'zqx zqx zqx zqx zqx zqx zqx zqx zqx zqx zqx zqx zqx zqx zqx zqx zqx zqx';
+    const learner = p.string().prose().adaptive();
+    expect(trip(learner, text)).toBe(text);
+    expect(learner.encode(text).length).toBeLessThan(p.string().prose().encode(text).length);
+  });
+
+  it('raises a window below the characters it counts to their number', () => {
+    expect(trip(plain.adaptive({ window: 64 }), 'abcdefg')).toBe('abcdefg');
+    // 400 characters halve a window of 64 or 131 several times, and one of
+    // 1024 never; the characters' table holds 131.
+    const text = 'abracadabra '.repeat(34);
+    const encode = (window?: number) => p.string().adaptive({ window }).encode(text);
+    expect(encode(64)).toEqual(encode(TEXT_FIRST_RADIX));
+    expect(encode(64)).not.toEqual(encode(1024));
+    expect(trip(p.string().adaptive({ window: 64 }), text)).toBe(text);
+  });
+
+  it('refuses bad options', () => {
+    expect(() => plain.adaptive({ window: 0 })).toThrow(
+      new RangeError('p.string adaptive window must be a positive integer, got 0')
+    );
+    expect(() => plain.adaptive({ window: 1.5 })).toThrow(
+      new TypeError('p.string adaptive window must be a positive integer, got 1.5')
+    );
+    expect(() => p.string().adaptive({ window: 1.5 })).toThrow(
+      new TypeError('p.string adaptive window must be a positive integer, got 1.5')
+    );
+    expect(() => plain.weights([2 ** 45, ...Array<number>(7).fill(1)]).adaptive()).toThrow(
+      new RangeError(
+        'p.string adaptive prior 16 and window 1024 overflow with weights totalling 35184372088839'
+      )
+    );
+    expect(() => p.string().charset('abc').adaptive({ window: 3 })).not.toThrow();
+    expect(() => p.string().charset([0, 0xd7ff]).adaptive()).not.toThrow();
+    const cdf = new TypeError('p.string adaptive takes weights, not a cdf');
+    expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
+    expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
   });
 });

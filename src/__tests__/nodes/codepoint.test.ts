@@ -73,3 +73,35 @@ describe('parseCodePoint', () => {
     expect(codes).toEqual([...direct, 0x80, 0x800, 0x10000]);
   });
 });
+
+describe('first-slot callbacks', () => {
+  it('hand the first slot to writeFirst and readFirst, the band slot staying uniform', () => {
+    const firsts: number[] = [];
+    const enc = new Encoder();
+    for (const code of BAND_EDGES) {
+      composeCodePoint(enc, code, (symbol) => {
+        firsts.push(symbol);
+        enc.compose(symbol, TEXT_FIRST_RADIX);
+      });
+    }
+    expect(firsts).toEqual([0, 0x7f, 0x80, 0x80, 0x81, 0x81, 0x81, 0x81, 0x82, 0x82]);
+    const plain = new Encoder();
+    for (const code of BAND_EDGES) {
+      composeCodePoint(plain, code);
+    }
+    expect(enc.output()).toEqual(plain.output());
+    const dec = new Decoder(enc.output());
+    expect(BAND_EDGES.map(() => parseCodePoint(dec, () => dec.parse(TEXT_FIRST_RADIX)))).toEqual(
+      BAND_EDGES
+    );
+  });
+
+  it.each([-1, TEXT_FIRST_RADIX, 0.5, NaN])(
+    'refuses a first slot of %p from readFirst',
+    (first) => {
+      expect(() => parseCodePoint(new Decoder(new Encoder().output()), () => first)).toThrow(
+        new RangeError(`First slot ${first} is outside [0, ${TEXT_FIRST_RADIX})`)
+      );
+    }
+  );
+});

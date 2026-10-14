@@ -11,8 +11,9 @@ import { PNode } from './base';
 import { describe } from './path';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
+import { AdaptivePrior, checkAdaptation, type AdaptiveOptions } from './adaptive';
 import type { Kind } from './guards';
-import { composeCodePoint, parseCodePoint } from './codepoint';
+import { TEXT_FIRST_RADIX, composeCodePoint, parseCodePoint } from './codepoint';
 import {
   ProseModels,
   compileProse,
@@ -33,11 +34,20 @@ export class PString extends PNode<string> {
   /** Prose model replacing the flat ladder, as given and compiled. */
   private readonly _prose?: ProseModel;
   private readonly _table?: ProseTable;
+  /**
+   * Set under `.adaptive()`: the prior the characters learn, over the prose
+   * model's symbols in a row per context, the charset's characters, or the
+   * ladder's first slot.
+   */
+  private readonly _chars?: AdaptivePrior;
 
   constructor(bounds: LengthBounds = {}, charset?: Charset, prose?: ProseModel) {
     super();
     this._bounds = bounds;
-    this._length = lengthRange(bounds, 'p.string', 'length');
+    // Without a max the length has no range to learn over; the characters
+    // learn alone.
+    const { adaptive, ...fixed } = bounds;
+    this._length = lengthRange(bounds.max === undefined ? fixed : bounds, 'p.string', 'length');
     if (prose !== undefined) {
       this._prose = prose;
       this._table = compileProse(prose);
@@ -50,6 +60,21 @@ export class PString extends PNode<string> {
       // of the array can't change the node. One character is a legal
       // alphabet: each character then costs nothing.
       this._alphabet = new Alphabet(charset, 1);
+    }
+    if (adaptive !== undefined) {
+      const { window } = checkAdaptation(adaptive, 'p.string');
+      if (prose !== undefined) {
+        const { escape } = compileProse(prose);
+        this._chars = new AdaptivePrior(prose.weights, escape + 1, window, 'p.string');
+      } else {
+        const size = this._alphabet?.size ?? TEXT_FIRST_RADIX;
+        this._chars = new AdaptivePrior(
+          [new Array<number>(size).fill(1)],
+          size,
+          window,
+          'p.string'
+        );
+      }
     }
   }
 
@@ -92,6 +117,26 @@ export class PString extends PNode<string> {
     return new PString({ ...this._bounds, prior: w }, this._alphabet?.charset, this._prose);
   }
 
+  /**
+   * Let every prior the node has learn from the message: the length's when it
+   * has a max, and the characters' always. The declared weights, or even ones
+   * when none are, are the starting point (the prose model's rows for
+   * `.prose()`), and each length or character coded counts as one observation,
+   * so one that keeps recurring gets cheaper as the message goes on. `window`
+   * is how many observations the counts hold before they halve, so the newest
+   * weigh most (1024 when left out, and raised to the number of values they
+   * count when smaller). From its second value on, each prior spends one bit to
+   * stay static, or a few to name the learning rate that paid off. The length
+   * takes weights, not a cdf; part of the wire format, like the weights.
+   */
+  adaptive(options?: AdaptiveOptions): PString {
+    return new PString(
+      { ...this._bounds, adaptive: options ?? {} },
+      this._alphabet?.charset,
+      this._prose
+    );
+  }
+
   charset(c: Charset): PString {
     return new PString(this._bounds, c, this._prose);
   }
@@ -114,12 +159,14 @@ export class PString extends PNode<string> {
 
     const alphabet = this._alphabet;
     if (alphabet === undefined) {
-      // Every adjacent lead+trail pair merges into one code point, so the
-      // split spelling the decoder rejects as non-canonical is unreachable
-      // here; lone surrogates fall through as their own code points. The
+      // Every adjacent lead+trail pair merges into one code point; lone
+      // surrogates fall through as their own code points. The
       // pairing reads code units: V8's optimized `codePointAt` merges a
       // sliced string's final lead with the trail beyond the slice.
       const table = this._table;
+      const chars = this._chars;
+      const writeFirst =
+        chars === undefined ? undefined : (symbol: number) => chars.write(enc, symbol);
       let ctx = table?.start ?? 0;
       for (let i = 0; i < value.length; ) {
         const unit = value.charCodeAt(i);
@@ -128,11 +175,19 @@ export class PString extends PNode<string> {
           unit >= 0xd800 && unit <= 0xdbff && next >= 0xdc00 && next <= 0xdfff
             ? (unit - 0xd800) * 0x400 + (next - 0xdc00) + 0x10000
             : unit;
-        if (table !== undefined) {
+        if (table === undefined) {
+          composeCodePoint(enc, code, writeFirst);
+        } else if (chars === undefined) {
           composeProsePoint(enc, table, code, ctx);
-          ctx = proseContext(table, code);
         } else {
-          composeCodePoint(enc, code);
+          const sym = table.index.get(code) ?? table.escape;
+          chars.write(enc, sym, ctx);
+          if (sym === table.escape) {
+            composeCodePoint(enc, code);
+          }
+        }
+        if (table !== undefined) {
+          ctx = proseContext(table, code);
         }
         i += code > 0xffff ? 2 : 1;
       }
@@ -150,7 +205,11 @@ export class PString extends PNode<string> {
             : `Character ${describe(value.charAt(i))} (code ${code}) at ${i} is outside the range ${charset[0]}–${charset[1]}`
         );
       }
-      enc.compose(digit, alphabet.size);
+      if (this._chars === undefined) {
+        enc.compose(digit, alphabet.size);
+      } else {
+        this._chars.write(enc, digit);
+      }
     }
   }
 
@@ -161,21 +220,23 @@ export class PString extends PNode<string> {
     const alphabet = this._alphabet;
     if (alphabet === undefined) {
       let units = 0;
-      let lead = false;
       const table = this._table;
+      const chars = this._chars;
+      const readFirst = chars === undefined ? undefined : () => chars.read(dec);
       let ctx = table?.start ?? 0;
       while (units < length) {
-        const code = table !== undefined ? parseProsePoint(dec, table, ctx) : parseCodePoint(dec);
+        let code: number;
+        if (table === undefined) {
+          code = parseCodePoint(dec, readFirst);
+        } else if (chars === undefined) {
+          code = parseProsePoint(dec, table, ctx);
+        } else {
+          const sym = chars.read(dec, ctx);
+          code = sym === table.escape ? parseCodePoint(dec) : table.codes[sym];
+        }
         if (table !== undefined) {
           ctx = proseContext(table, code);
         }
-        // A trail directly after a lone lead spells a surrogate pair as two
-        // code points; the encoder always merges the pair, so the split form
-        // only appears in corrupt input.
-        if (lead && code >= 0xdc00 && code <= 0xdfff) {
-          throw new CorruptInputError('Non-canonical split surrogate pair');
-        }
-        lead = code >= 0xd800 && code <= 0xdbff;
         value += String.fromCodePoint(code);
         units += code > 0xffff ? 2 : 1;
       }
@@ -187,6 +248,13 @@ export class PString extends PNode<string> {
       return value;
     }
 
+    const chars = this._chars;
+    if (chars !== undefined) {
+      for (let i = 0; i < length; i++) {
+        value += alphabet.charAt(chars.read(dec));
+      }
+      return value;
+    }
     for (const digit of dec.parseMany(alphabet.size, length)) {
       value += alphabet.charAt(digit);
     }

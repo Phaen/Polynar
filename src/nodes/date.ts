@@ -4,6 +4,7 @@ import { PNode } from './base';
 import { describe } from './path';
 import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
+import type { AdaptiveOptions } from './adaptive';
 
 export type DateUnit =
   | 'millisecond'
@@ -142,7 +143,8 @@ export class PDate extends PNode<Date> {
     max?: number | Date,
     unit: DateUnit = 'millisecond',
     step = 1,
-    prior?: Prior
+    prior?: Prior,
+    adaptive?: AdaptiveOptions
   ) {
     super();
     this._min = isDate(min) ? min.getTime() : min;
@@ -172,7 +174,9 @@ export class PDate extends PNode<Date> {
     // included, encodes again.
     const lo = this._min === undefined ? undefined : this._calendar.index(this._min);
     const hi = this._max === undefined ? undefined : this._calendar.index(this._max);
-    this._range = new IndexRange('p.date', lo, hi, prior, (b) => iso(this._calendar.start(b)));
+    this._range = new IndexRange('p.date', lo, hi, prior, adaptive, (b) =>
+      iso(this._calendar.start(b))
+    );
     // Bucket starts rise with the index and none starts after its bound,
     // which lies within the Date range, so when the first bucket starts
     // within it every bucket does, and reading a digit cannot fail. Only a
@@ -222,6 +226,21 @@ export class PDate extends PNode<Date> {
     return this._with({ prior: w });
   }
 
+  /**
+   * Let the prior over the bounded range learn from the message: the declared
+   * weights, or even ones when none are, are the starting point, and each
+   * bucket coded counts as one observation, so a bucket that keeps recurring
+   * gets cheaper as the message goes on. `window` is how many observations the
+   * counts hold before they halve, so the newest weigh most (1024 when left
+   * out, and raised to the number of values it counts when smaller). From its
+   * second value on, the node spends one bit to stay static, or a few to name
+   * the learning rate that paid off. Takes weights, not a cdf; part of the wire
+   * format, like the weights.
+   */
+  adaptive(options?: AdaptiveOptions): PDate {
+    return this._with({ adaptive: options ?? {} });
+  }
+
   _write(enc: Encoder, value: Date): void {
     if (isNaN(value.getTime())) {
       throw new TypeError(`p.date expected a valid Date, got ${describe(value)}`);
@@ -255,13 +274,15 @@ export class PDate extends PNode<Date> {
     unit?: DateUnit;
     step?: number;
     prior?: Prior;
+    adaptive?: AdaptiveOptions;
   }): PDate {
     return new PDate(
       change.min ?? this._min,
       change.max ?? this._max,
       change.unit ?? this._unit,
       change.step ?? this._step,
-      change.prior ?? this._range.prior?.declared
+      change.prior ?? this._range.declared,
+      change.adaptive ?? this._range.adaptive
     );
   }
 }

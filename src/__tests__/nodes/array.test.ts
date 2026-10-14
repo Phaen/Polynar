@@ -143,3 +143,67 @@ describe('Schema array of single-digit items', () => {
     );
   });
 });
+
+describe('p.array adaptive', () => {
+  const plain = p.array(p.int().min(0).max(3)).max(7);
+  const weights = Array.from({ length: 8 }, (_, i) => (i === 3 ? 29 : 1));
+  const run = (length: number, seed: number) => {
+    const rnd = mulberry32(seed);
+    return Array.from({ length }, () =>
+      Array<number>(rnd() < 0.8 ? 3 : Math.floor(rnd() * 8)).fill(1)
+    );
+  };
+
+  it('round-trips a run of values, inside an array too', () => {
+    const values = run(300, 1);
+    for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 8 })]) {
+      expect(trip(p.array(node), values)).toEqual(values);
+      expect(trip(node, values[0])).toEqual(values[0]);
+    }
+  });
+
+  it('takes its weights before or after', () => {
+    const values = run(200, 2);
+    expect(p.array(plain.weights(weights).adaptive({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.adaptive({ window: 64 }).weights(weights)).encode(values)
+    );
+  });
+
+  it('learns a skew, at most a byte over the static prior of it', () => {
+    const values = run(2000, 3);
+    const size = (node: typeof plain) => p.array(node).encode(values).length;
+    expect(size(plain.adaptive())).toBeLessThan(size(plain));
+    expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
+      size(plain.weights(weights)) + 1
+    );
+  });
+
+  it('written once, spends the bytes of its static form', () => {
+    for (const value of run(20, 4)) {
+      expect(plain.adaptive().encode(value)).toEqual(plain.encode(value));
+      expect(plain.weights(weights).adaptive().encode(value)).toEqual(
+        plain.weights(weights).encode(value)
+      );
+    }
+  });
+
+  it('refuses bad options', () => {
+    expect(() => plain.adaptive({ window: 0 })).toThrow(
+      new RangeError('p.array adaptive window must be a positive integer, got 0')
+    );
+    expect(() => plain.adaptive({ window: 1.5 })).toThrow(
+      new TypeError('p.array adaptive window must be a positive integer, got 1.5')
+    );
+    expect(() => plain.weights([2 ** 45, ...Array<number>(7).fill(1)]).adaptive()).toThrow(
+      new RangeError(
+        'p.array adaptive prior 16 and window 1024 overflow with weights totalling 35184372088839'
+      )
+    );
+    expect(() => p.array(p.int()).adaptive()).toThrow(
+      new TypeError('p.array adaptive requires a max count')
+    );
+    const cdf = new TypeError('p.array adaptive takes weights, not a cdf');
+    expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
+    expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
+  });
+});

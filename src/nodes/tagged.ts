@@ -4,7 +4,8 @@ import type { Kind } from './guards';
 import type { InferTagged } from './infer';
 import type { PObject } from './object';
 import { atPath, oneOf, describe } from './path';
-import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
+import type { AdaptiveOptions } from './adaptive';
+import { members, type MemberPrior, type Members } from './members';
 
 /**
  * Tagged union: object shapes picked by the value's tag field. `p.tagged`.
@@ -22,13 +23,15 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
   private readonly _members: M;
   private readonly _tags: readonly string[];
   private readonly _index = new Map<string, number>();
-  /** A prior over the members; undefined means uniform. */
-  private readonly _weights?: WeightTable;
+  /** The prior as declared, for the rebuilds. */
+  private readonly _prior?: MemberPrior;
+  /** How the tag is spelled. */
+  private readonly _pick: Members;
 
-  constructor(key: K, members: M, weights?: readonly number[]) {
+  constructor(key: K, shapes: M, prior?: MemberPrior) {
     super();
     this._key = key;
-    this._members = { ...members }; // copy so later caller mutation can't change the node
+    this._members = { ...shapes }; // copy so later caller mutation can't change the node
     this._tags = Object.keys(this._members);
     if (this._tags.length === 0) {
       throw new TypeError('p.tagged requires at least one member');
@@ -49,9 +52,8 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
       }
       this._index.set(tag, i);
     });
-    if (weights !== undefined) {
-      this._weights = buildWeights(weights, this._tags.length, 'p.tagged');
-    }
+    this._prior = prior;
+    this._pick = members(this._tags.length, prior, 'p.tagged');
   }
 
   /**
@@ -60,7 +62,24 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
    * of the wire format.
    */
   weights(w: readonly number[]): PTagged<K, M> {
-    return new PTagged<K, M>(this._key, this._members, w);
+    return new PTagged<K, M>(this._key, this._members, { ...this._prior, weights: w });
+  }
+
+  /**
+   * Let the prior learn from the message: the declared weights, or even ones
+   * when none are, are the starting point, and each tag coded counts as one
+   * observation, so a tag that keeps recurring gets cheaper as the message goes
+   * on. `window` is how many observations the counts hold before they halve, so
+   * the newest weigh most (1024 when left out, and raised to the number of
+   * values it counts when smaller). From its second value on, the node spends
+   * one bit to stay static, or a few to name the learning rate that paid off.
+   * Part of the wire format, like the weights.
+   */
+  adaptive(options?: AdaptiveOptions): PTagged<K, M> {
+    return new PTagged<K, M>(this._key, this._members, {
+      ...this._prior,
+      adaptive: options ?? {},
+    });
   }
 
   _write(enc: Encoder, value: InferTagged<K, M>): void {
@@ -69,19 +88,13 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
     if (pos === undefined) {
       throw atPath(new RangeError(`Value ${describe(tag)} is not ${oneOf(this._tags)}`), this._key);
     }
-    if (this._weights === undefined) {
-      enc.compose(pos, this._tags.length);
-    } else {
-      writeTable(enc, this._weights, pos);
-    }
+    this._pick.write(enc, pos);
     // The member ignores the tag key as it ignores any key outside its shape.
     this._members[this._tags[pos]]._write(enc, value);
   }
 
   _read(dec: Decoder): InferTagged<K, M> {
-    const pos =
-      this._weights === undefined ? dec.parse(this._tags.length) : readTable(dec, this._weights);
-    const tag = this._tags[pos];
+    const tag = this._tags[this._pick.read(dec)];
     return { [this._key]: tag, ...this._members[tag]._read(dec) } as InferTagged<K, M>;
   }
 }

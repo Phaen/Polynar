@@ -12,7 +12,7 @@
  * plain multiply-add, which is mixed-radix arithmetic.
  */
 
-import type { Base, CodecOptions, OutputType, Radix } from './types';
+import type { Base, Bucket, CodecOptions, OutputType, Radix } from './types';
 import {
   TERM_BASE,
   TERM_ESCAPE_MIN,
@@ -20,6 +20,7 @@ import {
   TERM_PAYLOAD_MIN_DIGITS,
 } from './constants';
 import {
+  ScaledRatio,
   outputAlphabet,
   validateBlockBits,
   validateChecksum,
@@ -29,6 +30,7 @@ import {
   type DigitChunk,
 } from './utils';
 import { BlockBound } from './bound';
+import { MessageState, checkKey } from './state';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const TWO_53 = 2 ** 53;
@@ -92,6 +94,50 @@ export function emitDigits(
   }
 }
 
+/** Rejects a bucket `[cum, cum + freq)` that does not lie in `[0, total)` or is empty. */
+function checkBucket(cum: number, freq: number, total: number): void {
+  if (!Number.isInteger(total) || !Number.isInteger(freq) || !Number.isInteger(cum)) {
+    throw new TypeError(`Bucket must be integers, got cum ${cum}, freq ${freq}, total ${total}`);
+  }
+  if (total < 1 || total > Number.MAX_SAFE_INTEGER) {
+    throw new RangeError(`Total ${total} is not a positive safe integer`);
+  }
+  if (freq < 1) {
+    throw new RangeError(`Frequency ${freq} is not positive`);
+  }
+  if (cum < 0 || cum + freq > total) {
+    throw new RangeError(`Bucket [${cum}, ${cum + freq}) is outside [0, ${total})`);
+  }
+}
+
+/**
+ * The member count a symbol `position` gives a bucket of `total` states,
+ * which is at most `total`; rejects a position whose index lies outside it.
+ */
+function membersOf(position: { index: number; count: number }, total: number): number {
+  const { index, count } = position;
+  if (!Number.isInteger(index) || !Number.isInteger(count) || count < 1) {
+    throw new TypeError(`Symbol position must be integers, got index ${index}, count ${count}`);
+  }
+  // A node with at least as many members as states gains nothing from an
+  // index, so its symbols stay buckets and the index goes unused; the
+  // decoder clamps identically.
+  const members = Math.min(count, total);
+  if (members < total && (index < 0 || index >= members)) {
+    throw new RangeError(`Index ${index} is outside [0, ${members})`);
+  }
+  return members;
+}
+
+/** A symbol written as one of its group's alternative buckets, waiting for the group's choice. */
+interface Alternative {
+  /** The symbol's slot in the buffer. */
+  at: number;
+  group: object;
+  buckets: readonly Bucket[];
+  position?: { index: number; count: number };
+}
+
 export class Encoder {
   private cums: number[] = [];
   private freqs: Radix[] = [];
@@ -104,6 +150,20 @@ export class Encoder {
   private lastIndex = 0;
   /** The last recorded symbol's count: a uniform slot's radix, or a weighted node's member count. */
   private lastCount = ONE;
+  private readonly states = new MessageState();
+  /**
+   * The groups opened by `composeSelector`: the selector's slot in the
+   * buffer, -1 when it carries nothing (a single coding whose bucket holds
+   * every state), and the selector's bucket under each coding.
+   */
+  private readonly groups = new Map<object, { at: number; choices: readonly Bucket[] }>();
+  /** The alternative symbols written since the last `output`, in buffer order. */
+  private pending: Alternative[] = [];
+
+  /** Per-message state for nodes, keyed by node identity; see `MessageState`. */
+  state<S>(key: object, init: () => S): S {
+    return this.states.get(key, init);
+  }
 
   /** Push one value in a fixed radix: `integer` must lie in `[0, radix)`. */
   compose(integer: number, radix: number): void {
@@ -156,33 +216,12 @@ export class Encoder {
     total: number,
     position?: { index: number; count: number }
   ): void {
-    if (!Number.isInteger(total) || !Number.isInteger(freq) || !Number.isInteger(cum)) {
-      throw new TypeError(`Bucket must be integers, got cum ${cum}, freq ${freq}, total ${total}`);
-    }
-    if (total < 1 || total > Number.MAX_SAFE_INTEGER) {
-      throw new RangeError(`Total ${total} is not a positive safe integer`);
-    }
-    if (freq < 1) {
-      throw new RangeError(`Frequency ${freq} is not positive`);
-    }
-    if (cum < 0 || cum + freq > total) {
-      throw new RangeError(`Bucket [${cum}, ${cum + freq}) is outside [0, ${total})`);
-    }
+    checkBucket(cum, freq, total);
     let index = 0;
     let members = total;
     if (position !== undefined) {
-      const count = position.count;
       index = position.index;
-      if (!Number.isInteger(index) || !Number.isInteger(count) || count < 1) {
-        throw new TypeError(`Symbol position must be integers, got index ${index}, count ${count}`);
-      }
-      // A node with at least as many members as states gains nothing from an
-      // index, so its symbols stay buckets and the index goes unused; the
-      // decoder clamps identically.
-      members = Math.min(count, total);
-      if (members < total && (index < 0 || index >= members)) {
-        throw new RangeError(`Index ${index} is outside [0, ${members})`);
-      }
+      members = membersOf(position, total);
     }
     // A bucket holding every state carries nothing, like a radix-1 digit.
     if (freq === total) {
@@ -195,6 +234,162 @@ export class Encoder {
     this.totals.push(total as Radix);
     this.lastIndex = members < total ? index : 0;
     this.lastCount = members as Radix;
+  }
+
+  /**
+   * Open a choice among codings for `group`, the node that spells its
+   * symbols more than one way (a static prior and an adaptive one, say).
+   * `choices[i]` is the bucket the selector is written as under coding i;
+   * the buckets share one total, and coding i is member i among
+   * `choices.length` for the index form. The node writes the selector once,
+   * before the group's first symbol, then each symbol through
+   * `composeAlternatives` as the bucket every coding gives it. At `output`
+   * the encoder keeps the coding whose selector and symbols cost the fewest
+   * bits, the lowest index on a tie, and writes its bucket as the selector.
+   * The decoder reads the selector as the weighted symbol it is, and then
+   * knows how to read the rest. A group is opened at most once per message.
+   */
+  composeSelector(group: object, choices: readonly Bucket[]): void {
+    checkKey(group, 'Group');
+    if (this.groups.has(group)) {
+      throw new TypeError('Group already has a selector');
+    }
+    const count = choices.length;
+    if (count === 0) {
+      throw new RangeError('Selector needs at least one coding');
+    }
+    const total = choices[0][2];
+    for (const [cum, freq, t] of choices) {
+      checkBucket(cum, freq, t);
+      if (t !== total) {
+        throw new RangeError(`Selector buckets share one total, got ${t} after ${total}`);
+      }
+      if (count > 1 && freq === t) {
+        throw new RangeError(`Selector bucket [${cum}, ${cum + freq}) holds every state`);
+      }
+    }
+    // The placeholder is the selector for coding 0; `resolve` patches in the
+    // choice. A lone coding whose bucket holds every state records nothing,
+    // like any radix-1 digit.
+    // Coding i is index i of `count`, inside the members its index form
+    // counts, so the selector needs no position check.
+    const before = this.totals.length;
+    const [cum, freq] = choices[0];
+    this.composeWeighted(cum, freq, total, { index: 0, count });
+    this.groups.set(group, { at: this.totals.length > before ? before : -1, choices });
+  }
+
+  /**
+   * Push one symbol of the group opened by `composeSelector`, as the bucket
+   * each coding gives it: `buckets[i]` is the symbol under coding i. Every
+   * bucket carries information, so the symbol takes a slot whichever coding
+   * wins. `position` places the symbol among its node's members, as for
+   * `composeWeighted`, under every coding.
+   */
+  composeAlternatives(
+    group: object,
+    buckets: readonly Bucket[],
+    position?: { index: number; count: number }
+  ): void {
+    const opened = this.groups.get(group);
+    if (opened === undefined) {
+      throw new TypeError('Group has no selector');
+    }
+    if (buckets.length !== opened.choices.length) {
+      throw new TypeError(
+        `Group has ${opened.choices.length} codings, got ${buckets.length} alternative buckets`
+      );
+    }
+    for (const [cum, freq, total] of buckets) {
+      checkBucket(cum, freq, total);
+      if (freq === total) {
+        throw new RangeError(`Alternative bucket [${cum}, ${cum + freq}) holds every state`);
+      }
+      if (position !== undefined) {
+        membersOf(position, total);
+      }
+    }
+
+    // The placeholder carries coding 0's bucket until `resolve` patches in the choice.
+    const [cum, freq, total] = buckets[0];
+    this.cums.push(cum);
+    this.freqs.push(freq as Radix);
+    this.totals.push(total as Radix);
+    this.pending.push({ at: this.totals.length - 1, group, buckets, position });
+  }
+
+  /**
+   * Settle every group with alternatives pending: pick its cheapest coding,
+   * patch the choice into its selector and its symbols' slots, and give the
+   * message's last symbol, when it is one of them, the index form the
+   * chosen spelling would have given it. Groups without alternatives keep
+   * coding 0, which their selector already holds.
+   */
+  private resolve(): void {
+    const symbols = new Map<object, Alternative[]>();
+    for (const alternative of this.pending) {
+      const list = symbols.get(alternative.group);
+      if (list === undefined) {
+        symbols.set(alternative.group, [alternative]);
+      } else {
+        list.push(alternative);
+      }
+    }
+    const last = this.totals.length - 1;
+    for (const [group, { at, choices }] of this.groups) {
+      const list = symbols.get(group);
+      if (list === undefined) {
+        continue;
+      }
+      // ratios[i] is coding i's probability product over coding 0's, its
+      // selector included; the largest ratio costs the fewest bits. Coding
+      // 0's own ratio is 1.
+      const count = choices.length;
+      const ratios = Array.from({ length: count }, () => new ScaledRatio());
+      for (let i = 1; i < count; i++) {
+        ratios[i].multiply(choices[i][1], choices[0][1]);
+      }
+      for (const { buckets } of list) {
+        const [, freq0, total0] = buckets[0];
+        for (let i = 1; i < count; i++) {
+          const [, freq, total] = buckets[i];
+          ratios[i].multiply(freq * total0, total * freq0);
+        }
+      }
+      let chosen = 0;
+      for (let i = 1; i < count; i++) {
+        if (ratios[i].exceeds(ratios[chosen])) {
+          chosen = i;
+        }
+      }
+
+      // The group's symbols follow its selector, so the selector is never
+      // the message's last symbol here; a selector that is keeps coding 0,
+      // whose index form `composeSelector` already recorded.
+      if (at >= 0) {
+        const [cum, freq, total] = choices[chosen];
+        this.cums[at] = cum;
+        this.freqs[at] = freq as Radix;
+        this.totals[at] = total as Radix;
+      }
+      for (const { at: slot, buckets, position } of list) {
+        const [cum, freq, total] = buckets[chosen];
+        this.cums[slot] = cum;
+        this.freqs[slot] = freq as Radix;
+        this.totals[slot] = total as Radix;
+        if (slot === last) {
+          let index = 0;
+          let members = total;
+          if (position !== undefined) {
+            index = position.index;
+            members = Math.min(position.count, total);
+          }
+          this.lastIndex = members < total ? index : 0;
+          this.lastCount = members as Radix;
+        }
+      }
+    }
+    this.pending = [];
   }
 
   /** Push one unbounded non-negative integer. */
@@ -451,6 +646,7 @@ export class Encoder {
   output(options: CodecOptions<OutputType> = {}): Uint8Array | string {
     const type = options.type ?? 'binary';
     const alphabet = outputAlphabet(type, options.charset);
+    this.resolve();
     const digits = this.toDigits(
       alphabet.size,
       validateBlockBits(options.blockBits),

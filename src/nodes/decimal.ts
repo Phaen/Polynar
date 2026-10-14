@@ -4,6 +4,7 @@ import { describe } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
+import type { AdaptiveOptions } from './adaptive';
 
 const valueSubject = (value: number): string => `Value ${value}`;
 
@@ -54,7 +55,7 @@ export class PDecimal extends PNode<number> {
   private readonly _range: IndexRange;
   declare readonly _radix?: number;
 
-  constructor(step: number, min?: number, max?: number, prior?: Prior) {
+  constructor(step: number, min?: number, max?: number, prior?: Prior, adaptive?: AdaptiveOptions) {
     super();
     if (!(step > 0) || step === Infinity) {
       throw new TypeError(`p.decimal step must be a positive finite number, got ${step}`);
@@ -77,7 +78,9 @@ export class PDecimal extends PNode<number> {
     // Bounds sit on the step exactly, like the values they admit.
     const kMin = min === undefined ? undefined : this._bound(min, 'min');
     const kMax = max === undefined ? undefined : this._bound(max, 'max');
-    this._range = new IndexRange('p.decimal', kMin, kMax, prior, (k) => String(this._valueAt(k)));
+    this._range = new IndexRange('p.decimal', kMin, kMax, prior, adaptive, (k) =>
+      String(this._valueAt(k))
+    );
     this._radix = this._range.radix;
     const fromDigit = this._range.fromDigit;
     if (fromDigit !== undefined) {
@@ -87,12 +90,12 @@ export class PDecimal extends PNode<number> {
 
   min(n: number): PDecimal {
     checkUnset(this._minRaw, 'p.decimal', 'min');
-    return new PDecimal(this._step, n, this._maxRaw, this._range.prior?.declared);
+    return new PDecimal(this._step, n, this._maxRaw, this._range.declared, this._range.adaptive);
   }
 
   max(n: number): PDecimal {
     checkUnset(this._maxRaw, 'p.decimal', 'max');
-    return new PDecimal(this._step, this._minRaw, n, this._range.prior?.declared);
+    return new PDecimal(this._step, this._minRaw, n, this._range.declared, this._range.adaptive);
   }
 
   /**
@@ -103,7 +106,7 @@ export class PDecimal extends PNode<number> {
    * encode.
    */
   cdf(fn: Cdf): PDecimal {
-    return new PDecimal(this._step, this._minRaw, this._maxRaw, fn);
+    return new PDecimal(this._step, this._minRaw, this._maxRaw, fn, this._range.adaptive);
   }
 
   /**
@@ -111,7 +114,28 @@ export class PDecimal extends PNode<number> {
    * prior as `.cdf()`, given as the histogram instead of its running total.
    */
   weights(w: readonly number[]): PDecimal {
-    return new PDecimal(this._step, this._minRaw, this._maxRaw, w);
+    return new PDecimal(this._step, this._minRaw, this._maxRaw, w, this._range.adaptive);
+  }
+
+  /**
+   * Let the prior over the bounded range learn from the message: the declared
+   * weights, or even ones when none are, are the starting point, and each grid
+   * point coded counts as one observation, so a grid point that keeps recurring
+   * gets cheaper as the message goes on. `window` is how many observations the
+   * counts hold before they halve, so the newest weigh most (1024 when left
+   * out, and raised to the number of values it counts when smaller). From its
+   * second value on, the node spends one bit to stay static, or a few to name
+   * the learning rate that paid off. Takes weights, not a cdf; part of the wire
+   * format, like the weights.
+   */
+  adaptive(options?: AdaptiveOptions): PDecimal {
+    return new PDecimal(
+      this._step,
+      this._minRaw,
+      this._maxRaw,
+      this._range.declared,
+      options ?? {}
+    );
   }
 
   _write(enc: Encoder, value: number): void {

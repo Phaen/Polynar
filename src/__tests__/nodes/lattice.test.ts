@@ -8,8 +8,12 @@
 
 import { p, Encoder, Decoder, CorruptInputError } from '../../index';
 import { IndexRange, checkUnset, lengthBound, lengthRange } from '../../nodes/lattice';
+import { AdaptivePrior, MAX_ADAPTIVE_MEMBERS } from '../../nodes/adaptive';
 import type { PNode } from '../../nodes/base';
-import { trip } from '../support';
+import { mulberry32, trip } from '../support';
+import { buildWeights, readTable } from '../../nodes/weights';
+
+const adaptation = { window: 1024 };
 
 const day = new Date('2020-01-01Z');
 
@@ -208,7 +212,7 @@ describe('IndexRange', () => {
   });
 
   it('refuses an empty or too wide range, spelled through show', () => {
-    expect(() => new IndexRange('r', 3, 2, undefined, (i) => `#${i}`)).toThrow(
+    expect(() => new IndexRange('r', 3, 2, undefined, undefined, (i) => `#${i}`)).toThrow(
       new RangeError('r range is empty: min #3 exceeds max #2')
     );
     expect(() => new IndexRange('r', -1, Number.MAX_SAFE_INTEGER)).toThrow(
@@ -254,6 +258,7 @@ describe('IndexRange', () => {
       new IndexRange('r', undefined, 0),
       new IndexRange('r', 0, 3, [1, 1, 1, 1]),
       new IndexRange('r', 0, Number.MAX_SAFE_INTEGER),
+      new IndexRange('r', 0, 3, undefined, adaptation),
     ]) {
       expect(other.radix).toBeUndefined();
       expect(other.fromDigit).toBeUndefined();
@@ -272,6 +277,9 @@ describe('IndexRange', () => {
     ['no bounds', new IndexRange('r'), [0, -1, 1, -(2 ** 53), 2 ** 53]],
     ['a weight prior', new IndexRange('r', 1, 3, [1, 2, 5]), [1, 2, 3, 3]],
     ['a cdf prior', new IndexRange('r', 0, 9, (v) => v * v), [9, 1, 5]],
+    ['adaptation', new IndexRange('r', -2, 5, undefined, adaptation), [-2, 5, 0, 0, 0]],
+    ['adaptive weights', new IndexRange('r', 1, 3, [1, 2, 5], adaptation), [1, 2, 3, 3]],
+    ['a lone adaptive value', new IndexRange('r', 4, 4, undefined, adaptation), [4, 4]],
   ])('round-trips indices under %s', (_name, range, indices) => {
     expect(roundTrip(range, indices)).toEqual(indices);
   });
@@ -290,6 +298,7 @@ describe('IndexRange', () => {
     ['no bounds', new IndexRange('r')],
     ['both bounds', new IndexRange('r', 0, 9)],
     ['a prior', new IndexRange('r', 0, 2, [1, 1, 1])],
+    ['adaptation', new IndexRange('r', 0, 2, undefined, adaptation)],
   ])('refuses a non-integer index under %s', (_name, range) => {
     for (const index of [0.5, NaN, Infinity, -Infinity]) {
       expect(() => range.write(new Encoder(), index)).toThrow(
@@ -301,8 +310,9 @@ describe('IndexRange', () => {
   it('refuses an index outside the bounds, named by subject and spelled by show', () => {
     const show = (i: number) => `#${i}`;
     for (const range of [
-      new IndexRange('r', 1, 3, undefined, show),
-      new IndexRange('r', 1, 3, [1, 1, 1], show),
+      new IndexRange('r', 1, 3, undefined, undefined, show),
+      new IndexRange('r', 1, 3, [1, 1, 1], undefined, show),
+      new IndexRange('r', 1, 3, undefined, adaptation, show),
     ]) {
       expect(() => range.write(new Encoder(), 0, () => 'Item')).toThrow(
         new RangeError('Item is below the minimum #1')
@@ -317,6 +327,103 @@ describe('IndexRange', () => {
     expect(() => new IndexRange('r', undefined, 1).write(new Encoder(), 5)).toThrow(
       'Value 5 is above the maximum 1'
     );
+  });
+
+  it('takes an adaptation only between two bounds, with weights and a limited span', () => {
+    expect(() => new IndexRange('r', 0, undefined, undefined, adaptation)).toThrow(
+      new TypeError('r adaptive requires both bounds')
+    );
+    expect(() => new IndexRange('r', undefined, 0, [1], adaptation)).toThrow(
+      new TypeError('r adaptive requires both bounds')
+    );
+    expect(() => new IndexRange('r', 0, 3, (v) => v, adaptation)).toThrow(
+      new TypeError('r adaptive takes weights, not a cdf')
+    );
+    expect(() => new IndexRange('r', 1, MAX_ADAPTIVE_MEMBERS + 1, undefined, adaptation)).toThrow(
+      new RangeError('r adaptive prior spans 65537 values, above the limit 65536')
+    );
+    expect(() => new IndexRange('r', 0, 2 ** 40, undefined, adaptation)).toThrow(
+      `r adaptive prior spans ${2 ** 40 + 1} values, above the limit 65536`
+    );
+    const widest = new IndexRange('r', 1, MAX_ADAPTIVE_MEMBERS, undefined, {});
+    expect(widest.adaptive).toEqual({});
+    expect(widest.prior).toBeUndefined();
+    expect(roundTrip(widest, [1, MAX_ADAPTIVE_MEMBERS])).toEqual([1, MAX_ADAPTIVE_MEMBERS]);
+    expect(() => new IndexRange('r', 0, 2, [1, 1], adaptation)).toThrow(
+      new TypeError('r weights must list one weight per value: expected 3, got 2')
+    );
+    expect(() => new IndexRange('r', 0, 1, [2 ** 50, 1], adaptation)).toThrow(
+      new RangeError(
+        `r adaptive prior 4 and window 1024 overflow with weights totalling ${2 ** 50 + 1}`
+      )
+    );
+    expect(new IndexRange('r', 0, 1).adaptive).toBeUndefined();
+    expect(() => new IndexRange('r', 0, 1, undefined, { window: 1.5 })).toThrow(
+      new TypeError('r adaptive window must be a positive integer, got 1.5')
+    );
+    expect(() => lengthRange({ max: 1, adaptive: { window: 0 } }, 'w', 'count')).toThrow(
+      new RangeError('w adaptive window must be a positive integer, got 0')
+    );
+    expect(roundTrip(new IndexRange('r', 0, 1, undefined, {}), [1, 1, 0])).toEqual([1, 1, 0]);
+  });
+
+  it('reports the declared prior in every mode', () => {
+    const weights = [1, 2, 3];
+    const cdf = (v: number) => v;
+    expect(new IndexRange('r', 0, 2, weights, adaptation).declared).toBe(weights);
+    expect(new IndexRange('r', 0, 2, undefined, adaptation).declared).toBeUndefined();
+    expect(new IndexRange('r', 0, 2, weights).declared).toBe(weights);
+    expect(new IndexRange('r', 0, 2, cdf).declared).toBe(cdf);
+    expect(new IndexRange('r', 0, 2).declared).toBeUndefined();
+  });
+
+  it('writes an adaptive range as the same AdaptivePrior over its offsets', () => {
+    const random = mulberry32(11);
+    const weights = [3, 1, 1, 1, 2, 1, 1, 1, 1, 4];
+    const indices = Array.from({ length: 400 }, () =>
+      random() < 0.7 ? -3 : -5 + Math.floor(random() * 10)
+    );
+    const range = new IndexRange('r', -5, 4, weights, adaptation);
+    const model = new AdaptivePrior([weights], weights.length, adaptation.window, 'r');
+    const enc = new Encoder();
+    for (const index of indices) {
+      model.write(enc, index + 5);
+    }
+    const bytes = enc.output();
+    const ranged = new Encoder();
+    for (const index of indices) {
+      range.write(ranged, index);
+    }
+    expect(ranged.output()).toEqual(bytes);
+    // The skew makes the adaptive spelling the cheaper one; its selector
+    // follows the first, static, value.
+    const dec = new Decoder(bytes);
+    expect(readTable(dec, model.bases[0])).toBe(indices[0] + 5);
+    const rungs = model.rungs.length;
+    expect(
+      readTable(dec, buildWeights([rungs, ...Array<number>(rungs).fill(1)], 1 + rungs, 'w'))
+    ).toBeGreaterThan(0);
+    expect(roundTrip(range, indices)).toEqual(indices);
+  });
+
+  it('learns over the widest adaptive range', () => {
+    const random = mulberry32(12);
+    const indices = Array.from({ length: 500 }, () =>
+      random() < 0.9 ? 40000 + Math.floor(random() * 4) : Math.floor(random() * 65536)
+    );
+    const range = new IndexRange('r', 0, MAX_ADAPTIVE_MEMBERS - 1, undefined, {});
+    const plain = new IndexRange('r', 0, MAX_ADAPTIVE_MEMBERS - 1);
+    const write = (into: IndexRange): Uint8Array => {
+      const enc = new Encoder();
+      for (const index of indices) {
+        into.write(enc, index);
+      }
+      return enc.output();
+    };
+    // 500 uniform values of 16 bits take 1000 bytes.
+    expect(write(plain)).toHaveLength(1000);
+    expect(write(range).length).toBeLessThan(750);
+    expect(roundTrip(range, indices)).toEqual(indices);
   });
 
   it('refuses an index too far from a lone max', () => {
@@ -364,6 +471,27 @@ describe('lengthRange', () => {
       new TypeError('w cdf requires a max length')
     );
     expect(lengthRange({ max: 1, prior: [1, 3] }, 'w', 'count').prior?.declared).toEqual([1, 3]);
+  });
+
+  it('takes an adaptation only with a max, passing it through', () => {
+    expect(() => lengthRange({ min: 1, adaptive: adaptation }, 'w', 'length')).toThrow(
+      new TypeError('w adaptive requires a max length')
+    );
+    expect(() => lengthRange({ prior: [1], adaptive: adaptation }, 'w', 'count')).toThrow(
+      new TypeError('w weights requires a max count')
+    );
+    const range = lengthRange(
+      { min: 1, max: 3, prior: [1, 2, 3], adaptive: adaptation },
+      'w',
+      'count'
+    );
+    expect([range.lo, range.hi, range.radix, range.adaptive]).toEqual([
+      1,
+      3,
+      undefined,
+      adaptation,
+    ]);
+    expect(roundTrip(range, [3, 3, 1, 2])).toEqual([3, 3, 1, 2]);
   });
 
   it('refuses an empty range', () => {

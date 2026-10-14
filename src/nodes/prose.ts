@@ -8,7 +8,7 @@
  * more. The English model below is built from base weights, bigram boosts
  * and context rules; together they ARE its wire format.
  */
-import { Encoder, Decoder, CorruptInputError } from '../packer';
+import { Encoder, Decoder } from '../packer';
 import { composeCodePoint, parseCodePoint } from './codepoint';
 import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
 
@@ -422,11 +422,5 @@ export function parseProsePoint(dec: Decoder, table: ProseTable, ctx: number): n
   if (sym !== table.escape) {
     return table.codes[sym];
   }
-  const code = parseCodePoint(dec);
-  // A modeled character has its own bucket, so its escaped form would be a
-  // second wire spelling of the same string.
-  if (table.index.has(code)) {
-    throw new CorruptInputError('Non-canonical escape of a modeled character');
-  }
-  return code;
+  return parseCodePoint(dec);
 }
