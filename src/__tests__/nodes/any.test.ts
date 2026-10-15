@@ -45,8 +45,9 @@ const LEARNING_VALUE = {
   big: -12n,
 };
 const LEARNING_BYTES = [
-  21, 87, 84, 250, 242, 20, 7, 118, 10, 125, 145, 28, 56, 86, 88, 234, 181, 195, 58, 234, 162, 212,
-  47, 194, 152, 120, 185, 68, 158, 251, 129, 29, 15, 184, 62, 50, 30, 101, 238, 118, 142, 192, 245,
+  21, 87, 84, 250, 207, 77, 131, 211, 245, 101, 5, 182, 122, 243, 129, 65, 38, 226, 221, 119, 91,
+  114, 91, 83, 141, 179, 136, 100, 98, 23, 241, 203, 70, 22, 46, 240, 110, 233, 110, 57, 233, 142,
+  14,
 ];
 
 /** The tags of the kinds the hand-built messages use. */
@@ -869,5 +870,24 @@ describe('p.any().adaptive() key cap', () => {
     expect(children.size).toBe(MAX_KEYS);
     expect(overflow).toBeDefined();
     expect(trip(node, value)).toEqual(value);
+  });
+
+  it('drops the codecs a rolled-back write built, the shared one included', () => {
+    const node = p.any().adaptive();
+    const many = Object.fromEntries(Array.from({ length: MAX_KEYS + 2 }, (_, i) => [`k${i}`, i]));
+    const tried = new Encoder();
+    const mark = tried.mark();
+    node._write(tried, many);
+    tried.rollback(mark);
+    const state = tried.state(node, () => ({ children: new Map(), overflow: undefined })) as {
+      children: Map<string, unknown>;
+      overflow?: unknown;
+    };
+    expect(state.children.size).toBe(0);
+    expect(state.overflow).toBeUndefined();
+    node._write(tried, { a: 1 });
+    const plain = new Encoder();
+    node._write(plain, { a: 1 });
+    expect(tried.output()).toEqual(plain.output());
   });
 });

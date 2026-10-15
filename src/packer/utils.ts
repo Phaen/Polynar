@@ -171,7 +171,24 @@ export class ScaledRatio {
    * 2^-512 brings it back to [1, 2^512).
    */
   times(other: ScaledRatio): ScaledRatio {
-    return ScaledRatio.of(this.mantissa * other.mantissa, this.exponent + other.exponent);
+    return new ScaledRatio().product(this, other);
+  }
+
+  /** Sets this ratio to 1, and returns it. */
+  reset(): ScaledRatio {
+    this.mantissa = 1;
+    this.exponent = 0;
+    return this;
+  }
+
+  /** Sets this ratio to `a` times `b`, as `times` gives it, and returns it. */
+  product(a: ScaledRatio, b: ScaledRatio): ScaledRatio {
+    return this.set(a.mantissa * b.mantissa, a.exponent + b.exponent);
+  }
+
+  /** Sets this ratio to `a` over `b`, as `over` gives it, and returns it. */
+  quotient(a: ScaledRatio, b: ScaledRatio): ScaledRatio {
+    return this.set(a.mantissa / b.mantissa, a.exponent - b.exponent);
   }
 
   /**
@@ -180,23 +197,22 @@ export class ScaledRatio {
    * (2^-512, 2^512), and one scaling by 2^512 brings it back to [1, 2^512).
    */
   over(other: ScaledRatio): ScaledRatio {
-    return ScaledRatio.of(this.mantissa / other.mantissa, this.exponent - other.exponent);
+    return new ScaledRatio().quotient(this, other);
   }
 
-  /** The ratio `m · 2^exponent`, `m` in (2^-512, 2^1024), renormalised. */
-  private static of(m: number, exponent: number): ScaledRatio {
-    const ratio = new ScaledRatio();
+  /** Sets this ratio to `m · 2^exponent`, `m` in (2^-512, 2^1024), renormalised, and returns it. */
+  private set(m: number, exponent: number): ScaledRatio {
     if (m >= TWO_512) {
-      ratio.mantissa = m * TWO_MINUS_512;
-      ratio.exponent = exponent + 512;
+      this.mantissa = m * TWO_MINUS_512;
+      this.exponent = exponent + 512;
     } else if (m < 1) {
-      ratio.mantissa = m * TWO_512;
-      ratio.exponent = exponent - 512;
+      this.mantissa = m * TWO_512;
+      this.exponent = exponent - 512;
     } else {
-      ratio.mantissa = m;
-      ratio.exponent = exponent;
+      this.mantissa = m;
+      this.exponent = exponent;
     }
-    return ratio;
+    return this;
   }
 
   /** Whether this ratio is strictly larger than `other`. */
@@ -205,6 +221,37 @@ export class ScaledRatio {
       ? this.exponent > other.exponent
       : this.mantissa > other.mantissa;
   }
+}
+
+/** The units costs are counted in, per bit: costs are whole numbers of units of 2^-20 bit, so sums are exact integers in any order. */
+export const COST_UNITS = 2 ** 20;
+
+/** `log2(i)` in `COST_UNITS`, rounded, for `i` in [1, 4096). */
+const LOG_UNITS = new Int32Array(4096);
+for (let i = 1; i < LOG_UNITS.length; i++) {
+  LOG_UNITS[i] = Math.round(Math.log2(i) * COST_UNITS);
+}
+
+/**
+ * `log2(n)` in `COST_UNITS` for a positive safe integer `n`. From 4096 up it
+ * rounds the log2 of `n`'s top 12 bits and adds the bits below them, off by
+ * under log2(1 + 2^-11) bits; past 2^32 it is `Math.log2` rounded.
+ */
+export function log2Units(n: number): number {
+  if (n < 4096) {
+    return LOG_UNITS[n];
+  }
+  if (n < 2 ** 32) {
+    // `n` has 32 - clz bits, so the shift leaves its top 12, in [2048, 4096).
+    const shift = 20 - Math.clz32(n);
+    return LOG_UNITS[n >>> shift] + shift * COST_UNITS;
+  }
+  return Math.round(Math.log2(n) * COST_UNITS);
+}
+
+/** The cost, in `COST_UNITS`, of a symbol owning `freq` of `total` states. */
+export function costUnits(freq: number, total: number): number {
+  return log2Units(total) - log2Units(freq);
 }
 
 /** The highest code a string charset may reach and still find its digits in a dense table. */

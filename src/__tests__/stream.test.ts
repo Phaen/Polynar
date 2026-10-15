@@ -1,20 +1,20 @@
 /**
  * The streaming coder under the Encoder and Decoder, driven directly: exact
- * round trips over every short message of a small alphabet, the window
- * condition on L, the output bases, the edges of the safe totals, and the
- * small-state map that ends a message. Seeded, so failures reproduce.
+ * round trips over every short message of a small alphabet under any window
+ * L, the output bases, the edges of the safe totals and the switch between
+ * double and BigInt states, and the small-state map that ends a message.
+ * Seeded, so failures reproduce.
  */
 
 import { StreamReader, StreamWriter } from '../packer/stream';
 import { rankOf, residualAt, spreadOf } from '../packer/spread';
-import { RANS_L } from '../packer/constants';
 import { mulberry32 } from './support';
 
 const rand = mulberry32(0x57ea4);
 const randInt = (lo: number, hi: number): number => lo + Math.floor(rand() * (hi - lo + 1));
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
-const BASES = [2, 3, 10, 64, 85, 256];
+const BASES = [2, 3, 10, 64, 85, 256, 65536];
 
 /** One symbol: the bucket `[cum, cum + freq)` of `total` states, uniform or weighted. */
 type Event = readonly [cum: number, freq: number, total: number, weighted: boolean];
@@ -32,8 +32,17 @@ const around =
         ? [cum, cum, freq]
         : [cum + freq, cum + freq, total - cum - freq];
 
-const write = (events: readonly Event[], size: number, L?: bigint): number[] => {
-  const writer = new StreamWriter(size, L);
+const writerOf = (events: readonly Event[], size: number, L?: number, head = 0): StreamWriter =>
+  new StreamWriter(
+    size,
+    events.map(([, , total]) => total),
+    events.map(([, freq]) => freq),
+    head,
+    L
+  );
+
+const write = (events: readonly Event[], size: number, L?: number): number[] => {
+  const writer = writerOf(events, size, L);
   for (let i = events.length - 1; i >= 0; i--) {
     writer.push(...events[i]);
   }
@@ -41,7 +50,7 @@ const write = (events: readonly Event[], size: number, L?: bigint): number[] => 
 };
 
 /** What reading `events` back returns, and where the reader ends. */
-const read = (digits: readonly number[], events: readonly Event[], size: number, L?: bigint) => {
+const read = (digits: readonly number[], events: readonly Event[], size: number, L?: number) => {
   const reader = new StreamReader((i) => digits[i], digits.length, size, L);
   const symbols = events.map((event) =>
     event[3] ? reader.weighted(event[2], around(event)) : reader.uniform(event[2])
@@ -50,7 +59,7 @@ const read = (digits: readonly number[], events: readonly Event[], size: number,
 };
 
 /** Writes `events`, expects them back with every digit read and the state at 0, and returns the digits. */
-const expectTrip = (events: readonly Event[], size: number, L?: bigint): number[] => {
+const expectTrip = (events: readonly Event[], size: number, L?: number): number[] => {
   const digits = write(events, size, L);
   expect(digits.every((d) => Number.isInteger(d) && d >= 0 && d < size)).toBe(true);
   expect(read(digits, events, size, L)).toEqual({
@@ -170,7 +179,7 @@ describe('StreamWriter / StreamReader', () => {
       expect(reader.uniform(1000)).toBe(0);
       expect(reader.weighted(10, around([3, 4, 10, true]))).toBe(0);
       expect(reader.uniform(MAX_SAFE)).toBe(0);
-      expect([reader.state, reader.position]).toEqual([0n, 0]);
+      expect([reader.state, reader.position, reader.drained]).toEqual([0n, 0, true]);
     }
   });
 
@@ -192,46 +201,71 @@ describe('StreamWriter / StreamReader', () => {
     }
   });
 
+  it('reads a head slot first, folded last after the windows counted it', () => {
+    const events: Event[] = [
+      [3, 4, 10, true],
+      [MAX_SAFE - 1, 1, MAX_SAFE, false],
+      [7, 1, 9, false],
+    ];
+    for (const size of BASES) {
+      for (const head of [2, 2 ** 32, MAX_SAFE]) {
+        const writer = writerOf(events, size, undefined, head);
+        for (let i = events.length - 1; i >= 0; i--) {
+          writer.push(...events[i]);
+        }
+        writer.push(head - 1, 1, head, false);
+        const digits = writer.digits();
+        const reader = new StreamReader((i) => digits[i], digits.length, size);
+        expect(reader.uniform(head)).toBe(head - 1);
+        expect(
+          events.map((e) => (e[3] ? reader.weighted(e[2], around(e)) : reader.uniform(e[2])))
+        ).toEqual(events.map(([cum]) => cum));
+        expect([reader.state, reader.position]).toEqual([0n, digits.length]);
+      }
+    }
+  });
+
   it('round-trips every message of up to three symbols over a small alphabet', () => {
-    // Totals up to 5, so L = 25 meets L ≥ T·T′ for every adjacent pair.
+    // Totals up to 5: L = 25 meets L ≥ T·T′ for every adjacent pair, and
+    // L = 1 and 7 leave it to the windows' ceiling term.
     const events = alphabet(5);
-    for (const size of [2, 3]) {
+    for (const [size, L] of [
+      [2, 25],
+      [3, 1],
+      [2, 7],
+    ]) {
       for (const a of events) {
-        expectTrip([a], size, 25n);
+        expectTrip([a], size, L);
         for (const b of events) {
-          expectTrip([a, b], size, 25n);
+          expectTrip([a, b], size, L);
           for (const c of events) {
-            expectTrip([a, b, c], size, 25n);
+            expectTrip([a, b, c], size, L);
           }
         }
       }
     }
   });
 
-  it('round-trips random messages under a narrow window that meets the condition', () => {
+  it('round-trips random messages under any window, narrow or wide', () => {
     for (let run = 0; run < 2000; run++) {
       const top = randInt(2, 40);
       const events = Array.from({ length: randInt(1, 30) }, () => randomEvent(top));
-      expectTrip(events, BASES[run % BASES.length], BigInt(top * top + randInt(0, 50)));
+      const L = rand() < 0.5 ? randInt(1, top * top) : top * top + randInt(0, 50);
+      expectTrip(events, BASES[run % BASES.length], L);
     }
   });
 
-  it("breaks the proof's minimal counterexample below T·T′ and keeps it at or above", () => {
-    // L = 7, base 2: the first bucket's lower bound ⌊7/6⌋·5 = 5 tops the next
-    // window ⌊7/4⌋·4 = 4, and the state after the later symbols lands at 4,
-    // in the gap, so the decoder reads past where the encoder stopped.
+  it("keeps the proof's minimal counterexample to a plain ⌊L/T⌋ window exact", () => {
+    // L = 7, base 2: the first bucket's lower bound ⌊7/6⌋·5 = 5 tops the
+    // window ⌊7/4⌋·4 = 4 of the next, where the state can land at 4. The
+    // next window is widened to ⌈5/4⌉·4 = 8 instead.
     const events: Event[] = [
       [0, 5, 6, true],
       [0, 1, 4, true],
       [2, 1, 3, false],
     ];
-    const digits = write(events, 2, 7n);
-    expect(read(digits, events, 2, 7n)).not.toEqual({
-      symbols: [0, 0, 2],
-      state: 0n,
-      position: digits.length,
-    });
-    expectTrip(events, 2, 24n);
+    expectTrip(events, 2, 7);
+    expectTrip(events, 2, 24);
     expectTrip(events, 2);
   });
 
@@ -239,12 +273,65 @@ describe('StreamWriter / StreamReader', () => {
     for (const size of BASES) {
       for (const top of [256, 2 ** 32, MAX_SAFE]) {
         const events = Array.from({ length: 1500 }, () => randomEvent(top));
-        const writer = new StreamWriter(size);
+        const writer = writerOf(events, size);
         for (let i = events.length - 1; i >= 0; i--) {
           writer.push(...events[i]);
-          expect(writer.state).toBeLessThan(BigInt(size) * RANS_L);
+          // Totals of 2^8 keep every window within L, and the state a double.
+          if (top === 256) {
+            expect(writer.state).toBeLessThan(2n ** 53n);
+          }
         }
         expect(writer.digits()).toEqual(expectTrip(events, size));
+      }
+    }
+  });
+
+  it('round-trips the switches between double and BigInt states, past 2^53 included', () => {
+    const near = [MAX_SAFE, MAX_SAFE - 1, 2 ** 52 + 1, 2 ** 52, 3 * 2 ** 50];
+    const small: Event[] = [
+      [0, 1, 2, false],
+      [5, 3, 10, true],
+      [200, 1, 256, false],
+      [1, 1000, 2 ** 20, true],
+    ];
+    for (const size of BASES) {
+      // Weighted totals near 2^53 with their widest buckets, each just below
+      // B of the one before: B grows to 2·(2^53 − 4), then 3·(2^53 − 6), and
+      // k of the slot of 2 after them passes 2^53 too, before the small
+      // totals take the window back to ⌊L/T⌋.
+      const past: Event[] = [
+        [0, MAX_SAFE - 1, MAX_SAFE, true],
+        [1, MAX_SAFE - 3, MAX_SAFE - 2, true],
+        [0, MAX_SAFE - 5, MAX_SAFE - 4, true],
+        [1, 1, 2, false],
+        ...small,
+        ...small,
+      ];
+      // The state leaves the doubles at the large totals, once the bytes
+      // after them have filled it past their windows, and comes back.
+      const bytes = Array.from({ length: 20 }, (): Event => [200, 1, 256, false]);
+      const message = [...small, ...past, ...bytes];
+      const writer = writerOf(message, size);
+      const states: bigint[] = [];
+      for (let i = message.length - 1; i >= 0; i--) {
+        writer.push(...message[i]);
+        states.push(writer.state);
+      }
+      expect(states.some((state) => state > 2n ** 53n)).toBe(true);
+      expect(states[states.length - 1]).toBeLessThan(2n ** 53n);
+      expect(writer.digits()).toEqual(expectTrip(message, size));
+      expectTrip(past, size);
+      for (const total of near) {
+        for (const big of [
+          [total - 1, 1, total, false],
+          [0, total - 1, total, true],
+          [1, total - 1, total, true],
+          [12345, 2 ** 40, total, true],
+        ] as Event[]) {
+          expectTrip([big, ...small], size);
+          expectTrip([...small, big], size);
+          expectTrip([...small, big, big, ...small, big], size);
+        }
       }
     }
   });
@@ -278,6 +365,14 @@ describe('StreamWriter / StreamReader', () => {
     expect(reader.uniform(10)).toBe(3);
     expect(reader.weighted(10, full)).toBe('all');
     expect([reader.state, reader.position]).toEqual([0n, digits.length]);
+    // The same around a total whose window takes a BigInt state.
+    const wide = write([[3, 1, MAX_SAFE, false]], 10);
+    const all = (): readonly [string, number, number] => ['all', 0, MAX_SAFE];
+    const big = new StreamReader((i) => wide[i], wide.length, 10);
+    expect(big.weighted(MAX_SAFE, all)).toBe('all');
+    expect(big.position).toBe(0);
+    expect(big.uniform(MAX_SAFE)).toBe(3);
+    expect([big.state, big.position]).toEqual([0n, wide.length]);
   });
 
   it('reads a symbol whose cdf hands the full width to one end only', () => {

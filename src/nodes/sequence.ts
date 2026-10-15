@@ -11,7 +11,15 @@
  * adaptive). The alphabet decides what the items are and how they map to
  * symbols; the engine decides how the symbols are spelled.
  */
-import { Encoder, Decoder, CorruptInputError, ScaledRatio } from '../packer';
+import {
+  Encoder,
+  Decoder,
+  CorruptInputError,
+  SlotCache,
+  COST_UNITS,
+  costUnits,
+  log2Units,
+} from '../packer';
 import {
   AdaptivePrior,
   DEFAULT_ADAPTIVE_WINDOW,
@@ -136,8 +144,21 @@ interface Message {
   readonly reps: number[];
 }
 
+/** Spelling with repeats, 1, before without, 0: the order of a tie, and of tries that start with repeats. */
+const WITH_FIRST: readonly number[] = [1, 0];
+/** The tries starting without repeats. */
+const WITH_LAST: readonly number[] = [0, 1];
+
 /** The distances cached before a message's first match. */
 const FIRST_REPS: readonly number[] = [1, 2, 3, 4];
+
+/**
+ * The cost at or under which a literal right after a hit in the
+ * highest-order context is spelled without searching for a match: a tenth
+ * of a bit, in `COST_UNITS`. Measured to keep sizes level or better while
+ * saving the search where the model already predicts well.
+ */
+const CHEAP_LITERAL = COST_UNITS / 10;
 
 /**
  * The cache after `match`: a rep moves its distance to the front, a new
@@ -173,10 +194,14 @@ const decodable = (at: number, limit: number): boolean =>
   at >= 1 && limit >= MIN_MATCH && limit <= MAX_REPEAT_BOUND;
 
 /** `history` with `sym` as its newest symbol. */
-const advance = (history: readonly number[], sym: number): number[] => [
-  sym,
-  ...history.slice(0, MAX_ORDER - 1),
-];
+function advance(history: readonly number[], sym: number): number[] {
+  const next = new Array<number>(MAX_ORDER);
+  next[0] = sym;
+  for (let k = 1; k < MAX_ORDER; k++) {
+    next[k] = history[k - 1];
+  }
+  return next;
+}
 
 /** The row of the item after `lead`, the start a value shares with the one before it: the start row when it shares none. */
 const rowAfter = <T>(symbols: Symbols<T>, lead: readonly number[]): number =>
@@ -198,8 +223,8 @@ function opening<T>(symbols: Symbols<T>, lead: readonly number[]): [number, numb
  * How one symbol of a sequence is spelled, given the row it is priced in
  * and the previous symbols, newest first, with `except`, when given, ruled
  * out: `ContextModel` under adaptive, `StaticLiterals` otherwise. `price`
- * multiplies into `into` the probability `write` would give the symbol
- * now, learning nothing; `hitTop` is whether the last symbol coded was a
+ * is the cost, in `COST_UNITS`, `write` would give the symbol now,
+ * learning nothing; `hitTop` is whether the last symbol coded was a
  * hit in the highest-order context.
  */
 interface Literals {
@@ -211,9 +236,8 @@ interface Literals {
     sym: number,
     row: number,
     history: readonly number[],
-    into: ScaledRatio,
     except?: number
-  ): void;
+  ): number;
   hitTop(side: Encoder | Decoder): boolean;
 }
 
@@ -278,11 +302,10 @@ export class StaticLiterals implements Literals {
     sym: number,
     row: number,
     _history: readonly number[],
-    into: ScaledRatio,
     except?: number
-  ): void {
+  ): number {
     const [, freq, total] = excludedBucket(this.table(row), this.ruling(except), sym);
-    into.multiply(freq, total);
+    return costUnits(freq, total);
   }
 
   hitTop(): boolean {
@@ -361,6 +384,14 @@ class Spelled<T> implements Body {
  * share the symbol, and nothing is ruled out.
  */
 class Engine<T> implements Body {
+  /**
+   * Whether the engine's last value that could hold a repeat took them,
+   * which only orders the next value's tries, the way it took tried first.
+   */
+  private used = true;
+  /** The costs `search` works in, reused from one search to the next. */
+  private readonly costs: number[] = [];
+
   constructor(
     private readonly symbols: Symbols<T>,
     private readonly model: Literals,
@@ -368,14 +399,17 @@ class Engine<T> implements Body {
     private readonly gate: number
   ) {}
 
+  /** Each message's items. */
+  private readonly messages = new SlotCache<Message, Encoder | Decoder>(this, () => ({
+    items: [],
+    next: 0,
+    copied: 0,
+    reps: [...FIRST_REPS],
+  }));
+
   /** This message's items on `side`. */
   private message(side: Encoder | Decoder): Message {
-    return side.state<Message>(this, () => ({
-      items: [],
-      next: 0,
-      copied: 0,
-      reps: [...FIRST_REPS],
-    }));
+    return this.messages.get(side);
   }
 
   /**
@@ -406,78 +440,51 @@ class Engine<T> implements Body {
   }
 
   /**
-   * Multiplies into `into` the probability of spelling `items` after
-   * `lead` as literals, as the model stands, learning nothing: the
-   * encoder's price of a value for choosing how to spell it. Repeats are
-   * left out, as finding them is the write's own search.
+   * Writes the items of a value of `span` units after `lead`. Where the
+   * value can hold a repeat, the encoder decides between spelling it with
+   * repeats and without, a tie going to repeats, trying first the way the
+   * engine's previous such value took. A value spelled without repeats
+   * still registers its positions with the finder: the next value would
+   * register the same ones in the same order, and a try with repeats that
+   * is rolled back registering them again for every value would take time
+   * quadratic in a run of values without repeats.
    */
-  price(enc: Encoder, items: readonly number[], lead: readonly number[], into: ScaledRatio): void {
-    const walk = this.walk(items, 0, lead, 0);
-    for (let k = 0; k < items.length; k++) {
-      this.priceLiteral(enc, walk, items[k], k, into);
+  write(enc: Encoder, items: readonly number[], span: number, lead: readonly number[]): void {
+    const state = this.message(enc);
+    const all = state.items;
+    const base = all.length;
+    for (const item of items) {
+      all.push(item);
+    }
+    if (enc.journal.active) {
+      enc.journal.truncate(all, base);
+    }
+    const walk = this.walk(items, span, lead, base);
+    if (!possible(base, span, this.gate)) {
+      this.spell(enc, state, walk, items, false);
+      return;
+    }
+    const used =
+      enc.decide(WITH_FIRST, this.used ? WITH_LAST : WITH_FIRST, (choice) => {
+        this.repeats.writeUsed(enc, choice === 1);
+        this.spell(enc, state, walk, items, choice === 1);
+      }) === 1;
+    this.used = used;
+    if (!used) {
+      this.register(enc, state, Infinity);
     }
   }
 
-  /** Writes the items of a value of `span` units after `lead`. */
-  write(enc: Encoder, items: readonly number[], span: number, lead: readonly number[]): void {
+  /** Spells the items of `walk`, with repeats where they are decodable when `used`. */
+  private spell(
+    enc: Encoder,
+    state: Message,
+    walk: Walk,
+    items: readonly number[],
+    used: boolean
+  ): void {
     const { model, repeats } = this;
-    const state = this.message(enc);
-    const base = state.items.length;
-    for (const item of items) {
-      state.items.push(item);
-    }
-    const walk = this.walk(items, span, lead, base);
-    const { syms, rows, histories, before } = walk;
-    let used = false;
-    if (possible(base, span, this.gate)) {
-      // The pre-scan weighs the value with repeats against the value
-      // without, every flag included, priced by the model and the cached
-      // distances as they stand before the value: close for a short value,
-      // and for a long one the matches found early carry the choice. Its
-      // flags go in context 2 right after a match and 0 elsewhere, as no
-      // literal of the value is coded yet. The write pass decides each
-      // match afresh.
-      const on = new ScaledRatio();
-      const off = new ScaledRatio();
-      const next = state.next;
-      let context: FlagContext = 0;
-      let except: number | undefined;
-      for (let k = 0; k < items.length; ) {
-        const at = base + k;
-        const limit = span - before[k];
-        if (decodable(at, limit)) {
-          const match = this.choose(enc, state, walk, k, context, except);
-          if (match !== undefined) {
-            repeats.priceMatch(enc, match, at, limit, context, on);
-            for (let j = k; j < k + match.length; j++) {
-              this.priceLiteral(enc, walk, items[j], j, off);
-            }
-            k += match.length;
-            context = 2;
-            except = this.continuation(state.items, base + k, match, k < items.length);
-            continue;
-          }
-          repeats.priceFlag(enc, false, context, on);
-        }
-        this.priceLiteral(enc, walk, items[k], k, on, except);
-        this.priceLiteral(enc, walk, items[k], k, off);
-        context = 0;
-        except = undefined;
-        k++;
-      }
-      used = on.exceeds(off);
-      // The write pass searches the chains as they stood before the value:
-      // left in, the pre-scan's later positions sit at the head of every
-      // chain the write pass walks. A value without repeats has no write
-      // pass search, and keeps them: the next value would register the same
-      // positions in the same order, and registering them again for every
-      // value takes time quadratic in a run of such values.
-      if (used) {
-        state.finder?.rewind(state.items, next);
-        state.next = next;
-      }
-      repeats.writeUsed(enc, used);
-    }
+    const { base, span, syms, rows, histories, before } = walk;
     let context: FlagContext = 0;
     let except: number | undefined;
     for (let k = 0; k < items.length; ) {
@@ -488,7 +495,7 @@ class Engine<T> implements Body {
         repeats.writeFlag(enc, match !== undefined, context);
         if (match !== undefined) {
           repeats.writeMatch(enc, match, at, limit);
-          cache(state.reps, match);
+          this.cache(enc, state, match);
           if (LEARN_MATCHED) {
             for (let j = k; j < k + match.length; j++) {
               model.learn(enc, syms[j], rows[j], histories[j]);
@@ -506,6 +513,46 @@ class Engine<T> implements Body {
       except = undefined;
       k++;
     }
+  }
+
+  /** Caches the distance of `match`, taken on `enc`. */
+  private cache(enc: Encoder, state: Message, match: Match): void {
+    const { reps } = state;
+    // The cache keeps its length, so setting each distance back restores it.
+    if (enc.journal.active) {
+      for (let k = 0; k < reps.length; k++) {
+        enc.journal.set(reps, k, reps[k]);
+      }
+    }
+    cache(reps, match);
+  }
+
+  /**
+   * Registers with the finder, built on its first use, every position
+   * before `at` not yet registered whose `MIN_MATCH` items the message
+   * holds.
+   */
+  private register(enc: Encoder, state: Message, at: number): Finder {
+    const { journal } = enc;
+    let finder = state.finder;
+    if (finder === undefined) {
+      finder = new Finder(journal);
+      state.finder = finder;
+      if (journal.active) {
+        journal.call(() => {
+          state.finder = undefined;
+        });
+      }
+    }
+    const all = state.items;
+    const from = state.next;
+    while (state.next < at && state.next + MIN_MATCH <= all.length) {
+      finder.insert(all, state.next++);
+    }
+    if (journal.active && state.next !== from) {
+      journal.set(state, 'next', from);
+    }
+    return finder;
   }
 
   /**
@@ -526,20 +573,15 @@ class Engine<T> implements Body {
   }
 
   /**
-   * Multiplies into `into` the probability of spelling `item`, item `j` of
-   * the value, under `except`: its symbol as the model stands, then its tail.
+   * The cost, in `COST_UNITS`, of spelling `item`, item `j` of the value,
+   * under `except`: its symbol as the model stands, then its tail.
    */
-  private priceLiteral(
-    enc: Encoder,
-    walk: Walk,
-    item: number,
-    j: number,
-    into: ScaledRatio,
-    except?: number
-  ): void {
+  private priceLiteral(enc: Encoder, walk: Walk, item: number, j: number, except?: number): number {
     const sym = walk.syms[j];
-    this.model.price(enc, sym, walk.rows[j], walk.histories[j], into, except);
-    into.multiply(1, this.symbols.tails(item, sym));
+    return (
+      this.model.price(enc, sym, walk.rows[j], walk.histories[j], except) +
+      log2Units(this.symbols.tails(item, sym))
+    );
   }
 
   /**
@@ -548,10 +590,12 @@ class Engine<T> implements Body {
    * `except`. The candidates are the longest earlier match that fits the
    * units left, then the run at each cached distance no further back than
    * the message reaches, from `REP_MIN` items up to the value's end; each
-   * saves the ratio of its copy's probability to that of spelling its items,
-   * flag included, both priced by the model as it stands. The candidate
+   * saves the cost, in `COST_UNITS`, of spelling its items, flag included,
+   * less that of its copy, both priced by the model as it stands. The candidate
    * saving most is taken when it saves anything, a tie going to the
-   * earlier. Positions before it register with the finder first.
+   * earlier. After a hit in the highest-order context (`context` 1), a
+   * literal costing at most `CHEAP_LITERAL` is taken without a search.
+   * Positions before it register with the finder first.
    */
   private choose(
     enc: Encoder,
@@ -561,16 +605,47 @@ class Engine<T> implements Body {
     context: FlagContext,
     except: number | undefined
   ): Match | undefined {
+    // Positions register once, in order; one whose `MIN_MATCH` items run
+    // past the message so far waits for a later value.
+    const finder = this.register(enc, state, walk.base + k);
+    // A spelling written again takes the match its try chose.
+    const noted = enc.note(() => {
+      const match = this.search(enc, state, walk, k, context, except, finder);
+      if (match === undefined) {
+        return [];
+      }
+      return match.rep === undefined
+        ? [match.distance, match.length]
+        : [match.distance, match.length, match.rep];
+    });
+    if (noted.length === 0) {
+      return undefined;
+    }
+    const [distance, length, cached] = noted;
+    return cached === undefined ? { distance, length } : { distance, length, rep: cached };
+  }
+
+  /** The match `choose` takes at item `k`, searched for with `finder`. */
+  private search(
+    enc: Encoder,
+    state: Message,
+    walk: Walk,
+    k: number,
+    context: FlagContext,
+    except: number | undefined,
+    finder: Finder
+  ): Match | undefined {
     const { repeats } = this;
     const { base, span, before } = walk;
     const all = state.items;
     const at = base + k;
     const limit = span - before[k];
-    const finder = (state.finder ??= new Finder());
-    // Positions register once, in order; one whose `MIN_MATCH` items run
-    // past the message so far waits for a later value.
-    while (state.next < at && state.next + MIN_MATCH <= all.length) {
-      finder.insert(all, state.next++);
+    let first = -1;
+    if (context === 1) {
+      first = this.priceLiteral(enc, walk, all[at], k, except);
+      if (first <= CHEAP_LITERAL) {
+        return undefined;
+      }
     }
     // The items left in the value add up to exactly `limit` units, so a
     // match, which the finder ends within the value, always fits them.
@@ -594,24 +669,24 @@ class Engine<T> implements Body {
     if (candidates.length === 0) {
       return undefined;
     }
-    // The probability of spelling the first `l` items, flag included, for
-    // every `l` up to the longest candidate.
-    const longest = Math.max(...candidates.map((c) => c.length));
-    const flag = new ScaledRatio();
-    repeats.priceFlag(enc, false, context, flag);
-    const literal = [flag];
-    for (let j = k; j < k + longest; j++) {
-      const item = new ScaledRatio();
-      this.priceLiteral(enc, walk, all[base + j], j, item, j === k ? except : undefined);
-      literal.push(literal[literal.length - 1].times(item));
+    // The cost of spelling the first `l` items, flag included, for every `l`
+    // up to the longest candidate.
+    let longest = 0;
+    for (const candidate of candidates) {
+      longest = Math.max(longest, candidate.length);
+    }
+    const { costs } = this;
+    costs[0] = repeats.priceFlag(enc, false, context);
+    costs[1] = costs[0] + (first >= 0 ? first : this.priceLiteral(enc, walk, all[at], k, except));
+    for (let j = k + 1; j < k + longest; j++) {
+      costs[j - k + 1] = costs[j - k] + this.priceLiteral(enc, walk, all[base + j], j);
     }
     let best: Match | undefined;
-    let saved = new ScaledRatio();
+    let saved = 0;
     for (const candidate of candidates) {
-      const copy = new ScaledRatio();
-      repeats.priceMatch(enc, candidate, at, limit, context, copy);
-      const saving = copy.over(literal[candidate.length]);
-      if (saving.exceeds(saved)) {
+      const saving =
+        costs[candidate.length] - repeats.priceMatch(enc, candidate, at, limit, context);
+      if (saving > saved) {
         best = candidate;
         saved = saving;
       }
@@ -822,7 +897,7 @@ export class Sequence<T> {
       const shared = new LearnedMagnitude(false, adaptive, who);
       this.shared = shared;
       if (spelling.delta === undefined) {
-        const methods = [this.plain(engine), this.delta(engine, shared)];
+        const methods = [this.plain(engine), this.delta(shared)];
         this.choice = new ModeChoice(methods, adaptive, who);
       }
     }
@@ -838,10 +913,6 @@ export class Sequence<T> {
   private plain(engine: Engine<T>): Method<number[]> {
     return {
       available: () => true,
-      price: (enc, items, into) => {
-        engine.price(enc, items, NONE, into);
-        return true;
-      },
       write: (enc, items) => engine.write(enc, items, this.track(enc).span, NONE),
       read: (dec) => this.readBody(dec, this.track(dec).span, NONE),
       learn: () => {},
@@ -849,17 +920,9 @@ export class Sequence<T> {
   }
 
   /** The delta as a mode, once the node has a previous value: its shared start learns every value. */
-  private delta(engine: Engine<T>, scale: LearnedMagnitude): Method<number[]> {
+  private delta(scale: LearnedMagnitude): Method<number[]> {
     return {
       available: (side) => this.track(side).prev !== undefined,
-      price: (enc, items, into) => {
-        const prev = this.previous(enc);
-        const bound = this.reach(prev, this.track(enc).span);
-        const shared = this.sharing(items, prev, bound);
-        scale.price(enc, shared, 0, 0, bound, into);
-        engine.price(enc, items.slice(shared), prev.slice(0, shared), into);
-        return true;
-      },
       write: (enc, items) => this.writeDelta(enc, items, this.track(enc).span, this.previous(enc)),
       read: (dec) => this.readDelta(dec, this.track(dec).span, this.previous(dec)),
       learn: (side, items) => {
@@ -873,6 +936,19 @@ export class Sequence<T> {
   /** This message's track of the node on `side`. */
   private track(side: Encoder | Decoder): Track {
     return side.state<Track>(this, () => ({ span: 0 }));
+  }
+
+  /** This message's track of the node on `enc`, about to change: a transaction open restores it as it stands. */
+  private retrack(enc: Encoder): Track {
+    const track = this.track(enc);
+    if (enc.journal.active) {
+      const { prev, span } = track;
+      enc.journal.call(() => {
+        track.prev = prev;
+        track.span = span;
+      });
+    }
+    return track;
   }
 
   /** The items of the node's previous value on `side`, which the delta, available only once there is one, reads. */
@@ -960,7 +1036,7 @@ export class Sequence<T> {
     const symbols = this.symbols;
     const key = symbols.identity?.(value) ?? symbols.items(value).join();
     if (recall.write(enc, key, () => this.spell(enc, value)) && this.tracks) {
-      this.track(enc).prev = symbols.items(value);
+      this.retrack(enc).prev = symbols.items(value);
     }
   }
 
@@ -997,7 +1073,7 @@ export class Sequence<T> {
       this.body.write(enc, items, span, NONE);
       return;
     }
-    const track = this.track(enc);
+    const track = this.retrack(enc);
     track.span = span;
     if (this.choice !== undefined) {
       this.choice.write(enc, items);

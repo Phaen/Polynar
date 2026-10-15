@@ -2,9 +2,13 @@
  * Packer barrel exports
  */
 export { Encoder } from './encoder';
+export type { EncoderOptions, EventLog, Mark } from './encoder';
+export { ReplayDecoder } from './replay';
+export { Journal } from './journal';
+export type { Undoable } from './journal';
 export { Decoder } from './decoder';
-export { MessageState } from './state';
+export { MessageState, SlotCache } from './state';
 export { CorruptInputError, UnknownVersionError } from './errors';
 export { CharSets } from './constants';
-export { Alphabet, ScaledRatio, bitLength } from './utils';
+export { Alphabet, COST_UNITS, ScaledRatio, bitLength, costUnits, log2Units } from './utils';
 export type { Bucket, Charset, CodecOptions, DecodeOptions, OutputType } from './types';

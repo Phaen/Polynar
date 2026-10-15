@@ -13,15 +13,21 @@ import { Fenwick } from './fenwick';
 import { readLive, writeLive } from './adaptive';
 
 /**
- * The identity a value is recalled under: the text of a fresh message
- * holding only the value, as `write` spells it. Values with the same
- * spelling decode the same, so recalling one for the other changes
- * nothing the decoder sees. Throws whatever `write` throws.
+ * The identity a value is recalled under: the symbols a fresh message
+ * holding only the value logs as `write` spells it, each its bucket and
+ * total. Values with the same spelling decode the same, so recalling one
+ * for the other changes nothing the decoder sees. Throws whatever `write`
+ * throws.
  */
 export function identity(write: (enc: Encoder) => void): string {
   const enc = new Encoder();
   write(enc);
-  return enc.output({ type: 'text' });
+  const { cums, freqs, totals, weighted } = enc.events();
+  let key = '';
+  for (let i = 0; i < totals.length; i++) {
+    key += weighted[i] ? `${cums[i]}+${freqs[i]}/${totals[i]},` : `${cums[i]}/${totals[i]},`;
+  }
+  return key;
 }
 
 /**
@@ -120,7 +126,7 @@ export class Recall<T> {
   private writing(enc: Encoder): Writing {
     return enc.state(this, () => ({
       index: new Map(),
-      counts: this.learned ? new Fenwick([1]) : undefined,
+      counts: this.learned ? new Fenwick([1], enc.journal) : undefined,
     }));
   }
 
@@ -152,6 +158,9 @@ export class Recall<T> {
     spell();
     counts?.push(1);
     index.set(key, seen + 1);
+    if (enc.journal.active) {
+      enc.journal.drop(index, key);
+    }
     return false;
   }
 

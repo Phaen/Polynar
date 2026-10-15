@@ -15,9 +15,11 @@
  * young context escapes at the rate its kind has escaped in the message.
  */
 
-import type { Encoder, Decoder, ScaledRatio } from '../packer';
+import { SlotCache } from '../packer';
+import { costUnits, type Encoder, type Decoder, type Journal, type Undoable } from '../packer';
 import type { AdaptivePrior } from './adaptive';
-import { Exclusion, excludedBucket, readExcluded, writeExcluded, type Table } from './excluded';
+import { Exclusion, type Table } from './excluded';
+import { KeyMap } from './keymap';
 
 /** The longest history a context keys on. */
 export const MAX_ORDER = 3;
@@ -38,6 +40,10 @@ export const CONTEXT_LIMIT = 1024;
 /** The hit and escape count sum past which a cell halves both. */
 export const CELL_LIMIT = 4096;
 
+/** The ops a context takes back: a symbol recurring, and a symbol entering. */
+const RECUR = 0;
+const ENTER = 1;
+
 /** The hit and escape counts a cell starts at. */
 const CELL_START: readonly [number, number] = [4, 2];
 
@@ -55,13 +61,16 @@ export function cellKey(index: number, n: number, sum: number): number {
   return index * 100 + d * 10 + r;
 }
 
-/** Refuses a symbol that is not an integer in `[0, end)`, or `[0, end]` when `inclusive`. */
-function checkSymbol(sym: number, end: number, subject: string, inclusive = false): void {
+/**
+ * Refuses a symbol that is not an integer in `[0, end)`, or `[0, end]` when
+ * `inclusive`, naming it `who` and `what`: `p.string symbol`.
+ */
+function checkSymbol(sym: number, end: number, who: string, what: string, inclusive = false): void {
   if (!Number.isInteger(sym)) {
-    throw new TypeError(`${subject} ${sym} is not an integer`);
+    throw new TypeError(`${who} ${what} ${sym} is not an integer`);
   }
   if (sym < 0 || (inclusive ? sym > end : sym >= end)) {
-    throw new RangeError(`${subject} ${sym} is outside [0, ${end}${inclusive ? ']' : ')'}`);
+    throw new RangeError(`${who} ${what} ${sym} is outside [0, ${end}${inclusive ? ']' : ')'}`);
   }
 }
 
@@ -70,9 +79,9 @@ function checkSymbol(sym: number, end: number, subject: string, inclusive = fals
  * symbol enters at a count of 1 and gains 2 each time it recurs; once the
  * counts sum past `CONTEXT_LIMIT` every count halves, rounding up, so the
  * context follows the message's recent symbols. A symbol never seen owns
- * no states.
+ * no states. Every change records its undo in `journal`, an encoder's.
  */
-export class Context implements Table {
+export class Context implements Table, Undoable {
   /** The symbols seen, ascending. */
   readonly syms: number[] = [];
   /** The count of each symbol in `syms`, in the same order. */
@@ -81,7 +90,10 @@ export class Context implements Table {
   private sum = 0;
 
   /** Over `symbols` symbols, a positive integer. */
-  constructor(private readonly symbols: number) {
+  constructor(
+    private readonly symbols: number,
+    private readonly journal?: Journal
+  ) {
     if (!Number.isInteger(symbols)) {
       throw new TypeError(`Context size must be an integer, got ${symbols}`);
     }
@@ -102,7 +114,7 @@ export class Context implements Table {
 
   /** Where member `pos`'s bucket starts, `pos` an integer in `[0, size)`: the counts of the symbols below it. */
   cum(pos: number): number {
-    checkSymbol(pos, this.size, 'Context member');
+    checkSymbol(pos, this.size, 'Context', 'member');
     let cum = 0;
     for (let i = 0; i < this.syms.length && this.syms[i] < pos; i++) {
       cum += this.counts[i];
@@ -112,14 +124,27 @@ export class Context implements Table {
 
   /** The width of member `pos`'s bucket, `pos` an integer in `[0, size)`: 0 for a symbol never seen. */
   freq(pos: number): number {
-    checkSymbol(pos, this.size, 'Context member');
-    const i = this.syms.indexOf(pos);
-    return i < 0 ? 0 : this.counts[i];
+    checkSymbol(pos, this.size, 'Context', 'member');
+    const i = this.find(pos);
+    return this.syms[i] === pos ? this.counts[i] : 0;
   }
 
   /** Whether the context has seen `sym`. */
   has(sym: number): boolean {
-    return this.syms.includes(sym);
+    return this.syms[this.find(sym)] === sym;
+  }
+
+  /** The index of the first symbol seen at or above `sym`, by bisection: `syms`' length when none is. */
+  private find(sym: number): number {
+    const syms = this.syms;
+    let lo = 0;
+    let hi = syms.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (syms[mid] < sym) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
   }
 
   /**
@@ -128,26 +153,52 @@ export class Context implements Table {
    * `CONTEXT_LIMIT`.
    */
   update(sym: number): void {
-    checkSymbol(sym, this.symbols, 'Context symbol');
-    let i = 0;
-    while (i < this.syms.length && this.syms[i] < sym) {
-      i++;
-    }
+    checkSymbol(sym, this.symbols, 'Context', 'symbol');
+    const i = this.find(sym);
+    const journal = this.journal;
     if (this.syms[i] === sym) {
       this.counts[i] += 2;
       this.sum += 2;
+      if (journal?.active === true) {
+        journal.own(this, RECUR, i);
+      }
     } else {
       this.syms.splice(i, 0, sym);
       this.counts.splice(i, 0, 1);
       this.sum += 1;
+      if (journal?.active === true) {
+        journal.own(this, ENTER, i);
+      }
     }
     if (this.sum > CONTEXT_LIMIT) {
+      if (journal?.active === true) {
+        const { counts, sum } = this;
+        const saved = counts.slice();
+        journal.call(() => {
+          for (let j = 0; j < saved.length; j++) {
+            counts[j] = saved[j];
+          }
+          this.sum = sum;
+        });
+      }
       let sum = 0;
       for (let j = 0; j < this.counts.length; j++) {
         this.counts[j] = (this.counts[j] + 1) >> 1;
         sum += this.counts[j];
       }
       this.sum = sum;
+    }
+  }
+
+  /** Takes back the count a symbol gained at index `i`: its recurrence (`RECUR`) or its entry (`ENTER`). */
+  undo(op: number, i: number): void {
+    if (op === RECUR) {
+      this.counts[i] -= 2;
+      this.sum -= 2;
+    } else {
+      this.syms.splice(i, 1);
+      this.counts.splice(i, 1);
+      this.sum -= 1;
     }
   }
 }
@@ -158,22 +209,62 @@ export class Context implements Table {
  * exclusion each symbol reuses.
  */
 interface Contexts {
-  readonly tables: readonly Map<number, Context>[];
+  readonly tables: readonly KeyMap<Context>[];
   /** Each cell's `[hit, escape]` counts. */
-  readonly cells: Map<number, [number, number]>;
+  readonly cells: ([number, number] | undefined)[];
   readonly exclusion: Exclusion;
   /** The symbols coded or learned so far. */
   coded: number;
   /** Whether the last symbol coded was a hit in the highest-order context. */
   top: boolean;
+  /** The encoder's journal, which every change to its contexts records its undo in; none on a decoder. */
+  readonly journal?: Journal;
 }
 
-/** The bucket of a hit, member 0, or an escape, member 1, in a cell. */
-const decision = (cell: readonly [number, number], escaped: boolean): readonly number[] =>
-  escaped ? [cell[0], cell[1], cell[0] + cell[1]] : [0, cell[0], cell[0] + cell[1]];
+/**
+ * A context under an exclusion: the symbols it has `left`, their counts'
+ * `sum`, and a symbol's bucket among them, `[below, below + width)`, of
+ * width 0 when the symbol is not among them, and whether the context has
+ * seen the symbol at all.
+ */
+interface Scan {
+  left: number;
+  sum: number;
+  below: number;
+  width: number;
+  found: boolean;
+}
 
-/** A cell learns a hit or an escape: 2 more on its side, both halving, rounding up, past `CELL_LIMIT`. */
-function learnCell(cell: [number, number], escaped: boolean): void {
+/**
+ * Reads a symbol of `context` written under the exclusion, whose symbols
+ * left sum to `sum`: the one whose bucket among them holds the residual.
+ */
+function readLeft(dec: Decoder, context: Context, exclusion: Exclusion, sum: number): number {
+  const { syms, counts } = context;
+  return dec.parseWeighted(sum, (residual) => {
+    let cum = 0;
+    for (let j = 0; ; j++) {
+      const s = syms[j];
+      if (!exclusion.has(s)) {
+        const count = counts[j];
+        if (residual < cum + count) {
+          return [s, cum, count];
+        }
+        cum += count;
+      }
+    }
+  });
+}
+
+/**
+ * A cell learns a hit or an escape: 2 more on its side, both halving,
+ * rounding up, past `CELL_LIMIT`. The change records its undo in
+ * `journal`, an encoder's.
+ */
+function learnCell(cell: [number, number], escaped: boolean, journal?: Journal): void {
+  if (journal?.active === true) {
+    journal.pair(cell, cell[0], cell[1]);
+  }
   cell[escaped ? 1 : 0] += 2;
   if (cell[0] + cell[1] > CELL_LIMIT) {
     cell[0] = (cell[0] + 1) >> 1;
@@ -194,6 +285,19 @@ export class ContextModel {
   readonly size: number;
   /** The context orders, highest first. */
   private readonly orders: readonly number[];
+  /** Each message's contexts. */
+  private readonly messages = new SlotCache<Contexts, Encoder | Decoder>(this, (side) => ({
+    tables: this.orders.map(() => new KeyMap<Context>()),
+    cells: [],
+    exclusion: new Exclusion(this.size),
+    coded: 0,
+    top: false,
+    journal: side.journal,
+  }));
+  /** What `visit` returns, its contexts written over by the next visit. */
+  private readonly visited: Context[] = [];
+  /** What `scan` returns. */
+  private readonly scratch: Scan = { left: 0, sum: 0, below: 0, width: 0, found: false };
 
   constructor(
     private readonly prior: AdaptivePrior,
@@ -234,15 +338,18 @@ export class ContextModel {
       const context = pricing[i];
       // A context that has seen `sym` still has it left: the symbols ruled
       // out are `except` and those of contexts that had not seen it.
-      const has = context.has(sym);
-      const cell = this.cell(state, i, context, exclusion);
+      const scan = this.scan(context, exclusion, sym);
+      const has = scan.found;
+      const cell = this.cell(state, i, scan);
       if (cell !== undefined) {
-        const [cum, freq, total] = decision(cell, !has);
-        enc.composeWeighted(cum, freq, total);
+        const total = cell[0] + cell[1];
         if (has) {
-          writeExcluded(enc, context, exclusion, sym);
+          enc.composeWeighted(0, cell[0], total);
+          enc.composeWeighted(scan.below, scan.width, scan.sum);
+        } else {
+          enc.composeWeighted(cell[0], cell[1], total);
         }
-        learnCell(cell, !has);
+        learnCell(cell, !has, enc.journal);
       }
       if (has) {
         hit = i;
@@ -250,7 +357,7 @@ export class ContextModel {
       }
       this.exclude(exclusion, context);
     }
-    state.top = hit === 0;
+    this.setTop(state, hit === 0);
     if (hit >= 0) {
       this.prior.learn(enc, sym, row);
     } else {
@@ -272,22 +379,22 @@ export class ContextModel {
     const pricing = this.pricing(state, contexts);
     for (let i = 0; i < pricing.length; i++) {
       const context = pricing[i];
-      const cell = this.cell(state, i, context, exclusion);
+      const scan = this.scan(context, exclusion, -1);
+      const cell = this.cell(state, i, scan);
       if (cell !== undefined) {
-        const escaped = dec.parseWeighted(cell[0] + cell[1], (r) => {
-          const [cum, freq] = decision(cell, r >= cell[0]);
-          return [r >= cell[0], cum, freq];
-        });
-        learnCell(cell, escaped);
+        const escaped = dec.parseWeighted(cell[0] + cell[1], (r) =>
+          r >= cell[0] ? [true, cell[0], cell[1]] : [false, 0, cell[0]]
+        );
+        learnCell(cell, escaped, dec.journal);
         if (!escaped) {
-          sym = readExcluded(dec, context, exclusion);
+          sym = readLeft(dec, context, exclusion, scan.sum);
           hit = i;
           break;
         }
       }
       this.exclude(exclusion, context);
     }
-    state.top = hit === 0;
+    this.setTop(state, hit === 0);
     if (hit >= 0) {
       this.prior.learn(dec, sym, row);
     } else {
@@ -305,7 +412,7 @@ export class ContextModel {
     this.check(sym, row, history);
     const state = this.message(side);
     this.teach(state, this.visit(side, history), sym);
-    state.top = false;
+    this.setTop(state, false);
     this.prior.learn(side, sym, row);
   }
 
@@ -318,8 +425,8 @@ export class ContextModel {
   }
 
   /**
-   * Multiplies into `into` the probability the model on the encoder, as it
-   * stands, gives `sym` here under `except`: each context's escape
+   * The cost, in `COST_UNITS`, the model on the encoder, as it stands,
+   * gives `sym` here under `except`: each context's escape
    * decision and, on its hit, the symbol's bucket, or the prior's as its
    * `estimate` gives it. Nothing learns, and a context not yet visited,
    * which holds nothing, is left unbuilt.
@@ -329,38 +436,39 @@ export class ContextModel {
     sym: number,
     row: number,
     history: readonly number[],
-    into: ScaledRatio,
     except?: number
-  ): void {
+  ): number {
     this.check(sym, row, history);
+    let cost = 0;
     const state = this.message(enc);
     const { tables, exclusion } = state;
     this.open(exclusion, except);
-    const multiply = ([, freq, total]: readonly number[]): void => into.multiply(freq, total);
     for (let i = 0; i < this.orders.length && state.coded >= WARMUP; i++) {
       const context = tables[i].get(this.key(history, this.orders[i]));
       if (context === undefined) {
         continue;
       }
-      const has = context.has(sym);
-      const cell = this.cell(state, i, context, exclusion);
+      const scan = this.scan(context, exclusion, sym);
+      const has = scan.found;
+      const cell = this.cell(state, i, scan);
       if (cell !== undefined) {
-        multiply(decision(cell, !has));
+        cost += costUnits(has ? cell[0] : cell[1], cell[0] + cell[1]);
       }
       if (has) {
-        multiply(excludedBucket(context, exclusion, sym));
-        return;
+        cost += costUnits(scan.width, scan.sum);
+        return cost;
       }
       this.exclude(exclusion, context);
     }
-    multiply(this.prior.estimate(enc, sym, row, exclusion));
+    const [, freq, total] = this.prior.estimate(enc, sym, row, exclusion);
+    return cost + costUnits(freq, total);
   }
 
   /** Clears the exclusion, then rules out `except`, a symbol in `[0, size)`, when given. */
   private open(exclusion: Exclusion, except: number | undefined): void {
     exclusion.clear();
     if (except !== undefined) {
-      checkSymbol(except, this.size, `${this.who} excluded symbol`);
+      checkSymbol(except, this.size, this.who, 'excluded symbol');
       exclusion.add(except);
     }
   }
@@ -370,41 +478,66 @@ export class ContextModel {
    * the exclusion: undefined when it has no symbols left, else the cell its
    * symbols left and their counts key, built at `CELL_START` on first use.
    */
-  private cell(
-    state: Contexts,
-    index: number,
-    context: Context,
-    exclusion: Exclusion
-  ): [number, number] | undefined {
-    let n = 0;
-    let sum = 0;
-    for (let j = 0; j < context.syms.length; j++) {
-      if (!exclusion.has(context.syms[j])) {
-        n++;
-        sum += context.counts[j];
-      }
-    }
-    if (n === 0) {
+  private cell(state: Contexts, index: number, scan: Scan): [number, number] | undefined {
+    const { left, sum } = scan;
+    if (left === 0) {
       return undefined;
     }
-    const key = cellKey(index, n, sum);
-    let cell = state.cells.get(key);
+    const key = cellKey(index, left, sum);
+    const { cells } = state;
+    let cell = cells[key];
     if (cell === undefined) {
       cell = [CELL_START[0], CELL_START[1]];
-      state.cells.set(key, cell);
+      cells[key] = cell;
+      if (state.journal?.active === true) {
+        state.journal.call(() => {
+          cells[key] = undefined;
+        });
+      }
     }
     return cell;
   }
 
+  /**
+   * `context` under the exclusion, in one pass over its symbols: how many
+   * it has left and their counts' sum, and `sym`'s bucket among them. The
+   * result is a scratch object the next scan overwrites.
+   */
+  private scan(context: Context, exclusion: Exclusion, sym: number): Scan {
+    const { syms, counts } = context;
+    const scan = this.scratch;
+    let left = 0;
+    let sum = 0;
+    let below = 0;
+    let width = 0;
+    let found = false;
+    for (let j = 0; j < syms.length; j++) {
+      const s = syms[j];
+      if (s === sym) {
+        found = true;
+      }
+      if (!exclusion.has(s)) {
+        const count = counts[j];
+        left++;
+        sum += count;
+        if (s < sym) {
+          below += count;
+        } else if (s === sym) {
+          width = count;
+        }
+      }
+    }
+    scan.left = left;
+    scan.sum = sum;
+    scan.below = below;
+    scan.width = width;
+    scan.found = found;
+    return scan;
+  }
+
   /** This message's contexts on `side`. */
   private message(side: Encoder | Decoder): Contexts {
-    return side.state<Contexts>(this, () => ({
-      tables: this.orders.map(() => new Map<number, Context>()),
-      cells: new Map<number, [number, number]>(),
-      exclusion: new Exclusion(this.size),
-      coded: 0,
-      top: false,
-    }));
+    return this.messages.get(side);
   }
 
   /** The contexts that price the next symbol: none until the warm-up is over. */
@@ -418,20 +551,38 @@ export class ContextModel {
       context.update(sym);
     }
     state.coded++;
+    if (state.journal?.active === true) {
+      state.journal.set(state, 'coded', state.coded - 1);
+    }
+  }
+
+  /** Records whether the last symbol coded was a hit in the highest-order context. */
+  private setTop(state: Contexts, top: boolean): void {
+    if (state.top !== top) {
+      state.top = top;
+      if (state.journal?.active === true) {
+        state.journal.flag(state, 'top', !top);
+      }
+    }
   }
 
   /** The contexts of `history`, highest order first, each built on its first visit. */
   private visit(side: Encoder | Decoder, history: readonly number[]): Context[] {
-    const { tables } = this.message(side);
-    return this.orders.map((k, i) => {
-      const key = this.key(history, k);
+    const { tables, journal } = this.message(side);
+    const { orders, visited } = this;
+    for (let i = 0; i < orders.length; i++) {
+      const key = this.key(history, orders[i]);
       let context = tables[i].get(key);
       if (context === undefined) {
-        context = new Context(this.size);
+        context = new Context(this.size, journal);
         tables[i].set(key, context);
+        if (journal?.active === true) {
+          journal.drop(tables[i], key);
+        }
       }
-      return context;
-    });
+      visited[i] = context;
+    }
+    return visited;
   }
 
   /**
@@ -460,7 +611,7 @@ export class ContextModel {
 
   private check(sym: number, row: number, history: readonly number[]): void {
     this.checkRow(row);
-    checkSymbol(sym, this.size, `${this.who} symbol`);
+    checkSymbol(sym, this.size, this.who, 'symbol');
     this.checkHistory(history);
   }
 
@@ -478,8 +629,12 @@ export class ContextModel {
         `${this.who} history must hold ${MAX_ORDER} symbols, got ${history.length}`
       );
     }
-    for (const h of history) {
-      checkSymbol(h, this.size, `${this.who} history symbol`, true);
+    for (let k = 0; k < MAX_ORDER; k++) {
+      const h = history[k];
+      // A whole number in [0, 2^32) passes the shift unchanged.
+      if (h >>> 0 !== h || h > this.size) {
+        checkSymbol(h, this.size, this.who, 'history symbol', true);
+      }
     }
   }
 }

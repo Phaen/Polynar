@@ -1,4 +1,4 @@
-import { Encoder, Decoder, UnknownVersionError } from '../packer';
+import { Encoder, ReplayDecoder, UnknownVersionError, type Decoder } from '../packer';
 import { PNode } from './base';
 import type { Kind } from './guards';
 import { IndexRange } from './lattice';
@@ -109,7 +109,7 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
    * Migrates from version `index` to the newest. Every step's result is
    * written with that version's node, so one that does not fit throws as
    * encoding it would, with the step named. The newest is read back from the
-   * bytes it wrote, so the value comes out as decoding it would.
+   * symbols it wrote, so the value comes out as decoding it would.
    */
   private _upgrade(value: unknown, index: number): T {
     const newest = this._nodes.length - 1;
@@ -132,7 +132,7 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
       enc = new Encoder();
       this._nodes[newest]._write(enc, value);
     }
-    // The newest node wrote these bytes, so they decode.
-    return this._nodes[newest]._read(new Decoder(enc.output()));
+    // The newest node wrote these symbols, so they read back.
+    return this._nodes[newest]._read(new ReplayDecoder(enc));
   }
 }

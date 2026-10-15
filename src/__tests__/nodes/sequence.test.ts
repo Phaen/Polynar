@@ -8,13 +8,14 @@
 import { Encoder, Decoder, CorruptInputError } from '../../index';
 import { Sequence, StaticLiterals, withRepeats, type Symbols } from '../../nodes/sequence';
 import { buildWeights, writeTable } from '../../nodes/weights';
-import { ScaledRatio } from '../../packer';
+import { costUnits } from '../../packer';
 import type { LengthBounds } from '../../nodes/lattice';
 import { AdaptivePrior } from '../../nodes/adaptive';
 import { ContextModel } from '../../nodes/contexts';
 import { Repeats, type Match } from '../../nodes/repeats';
 import { LearnedMagnitude } from '../../nodes/magnitude';
 import { mulberry32 } from '../support';
+import { rolledBack } from '../rolled-back';
 
 /**
  * Items 0–12 over four symbols: 0–2 are their own symbol, 3 and above share
@@ -255,15 +256,23 @@ describe('Sequence', () => {
       ...stretch.slice(0, 6),
     ];
 
-    /** The writes `Repeats` makes while `run` runs: each value's branch, and each match with its bounds. */
+    /**
+     * The writes `Repeats` makes while `run` runs that reach the message,
+     * past the tries rolled back: each value's branch, and each match with
+     * its bounds.
+     */
     const spy = (run: () => void): { used: boolean[]; matches: [Match, number, number][] } => {
       const used = jest.spyOn(Repeats.prototype, 'writeUsed');
       const match = jest.spyOn(Repeats.prototype, 'writeMatch');
       try {
-        run();
+        const tried = rolledBack(run);
         return {
-          used: used.mock.calls.map(([, u]) => u),
-          matches: match.mock.calls.map(([, m, d, l]) => [m, d, l]),
+          used: used.mock.calls
+            .filter((_, i) => !tried(used.mock.invocationCallOrder[i]))
+            .map(([, u]) => u),
+          matches: match.mock.calls
+            .filter((_, i) => !tried(match.mock.invocationCallOrder[i]))
+            .map(([, m, d, l]) => [m, d, l]),
         };
       } finally {
         used.mockRestore();
@@ -317,10 +326,10 @@ describe('Sequence', () => {
 
     it('copies items wider than one unit, the bounds counting units', () => {
       const sequence = new Sequence(toy(), { adaptive: {} });
-      const wide = Array<number>(40).fill(1);
+      const wide = Array<number>(400).fill(1);
       const { matches } = spy(() => encode(sequence, wide));
-      // After the first item, 78 units are left for the 39 items that follow.
-      expect(matches).toEqual([[{ distance: 1, length: 39 }, 1, 78]]);
+      // After the first item, 798 units are left for the 399 items that follow.
+      expect(matches).toEqual([[{ distance: 1, length: 399 }, 1, 798]]);
       expect(roundTrip(sequence, [wide, wide])).toEqual([wide, wide]);
     });
 
@@ -454,14 +463,14 @@ describe('Sequence', () => {
       | { kind: 'literal'; sym: number; except: number | undefined }
       | { kind: 'top'; top: boolean };
 
-    /** The flags, matches and literals `run` writes, in order. */
+    /** The flags, matches and literals `run` writes that reach the message, in order. */
     const record = (run: () => void): Event[] => {
       const flag = jest.spyOn(Repeats.prototype, 'writeFlag');
       const match = jest.spyOn(Repeats.prototype, 'writeMatch');
       const literal = jest.spyOn(ContextModel.prototype, 'write');
       const top = jest.spyOn(ContextModel.prototype, 'hitTop');
       try {
-        run();
+        const tried = rolledBack(run);
         const events: [number, Event][] = [
           ...flag.mock.calls.map(([, m, context], i): [number, Event] => [
             flag.mock.invocationCallOrder[i],
@@ -480,7 +489,10 @@ describe('Sequence', () => {
             { kind: 'top', top: value as boolean },
           ]),
         ];
-        return events.sort((a, b) => a[0] - b[0]).map(([, event]) => event);
+        return events
+          .filter(([order]) => !tried(order))
+          .sort((a, b) => a[0] - b[0])
+          .map(([, event]) => event);
       } finally {
         flag.mockRestore();
         match.mockRestore();
@@ -804,15 +816,19 @@ describe('Sequence methods', () => {
     const b = [...a.slice(0, 27), 0, 0, 0];
     const c = Array<number>(30).fill(12);
 
-    /** The shared starts `run` writes and learns, as value, origin and bounds. */
+    /** The shared starts `run` writes and learns past the tries rolled back, as value, origin and bounds. */
     const scale = (run: () => void): { written: number[][]; learned: number[][] } => {
       const write = jest.spyOn(LearnedMagnitude.prototype, 'write');
       const learn = jest.spyOn(LearnedMagnitude.prototype, 'learn');
       try {
-        run();
+        const tried = rolledBack(run);
         return {
-          written: write.mock.calls.map(([, ...rest]) => rest),
-          learned: learn.mock.calls.map(([, ...rest]) => rest),
+          written: write.mock.calls
+            .filter((_, i) => !tried(write.mock.invocationCallOrder[i]))
+            .map(([, ...rest]) => rest),
+          learned: learn.mock.calls
+            .filter((_, i) => !tried(learn.mock.invocationCallOrder[i]))
+            .map(([, ...rest]) => rest),
         };
       } finally {
         write.mockRestore();
@@ -1052,11 +1068,7 @@ describe('StaticLiterals', () => {
     const dec = new Decoder(enc.output());
     expect([literals.read(dec, 0, history, 1), literals.read(dec, 1, history)]).toEqual([2, 2]);
     dec.finalize();
-    const priced = new ScaledRatio();
-    literals.price(enc, 2, 0, history, priced, 1);
-    const odds = new ScaledRatio();
-    odds.multiply(1, 3);
-    expect(priced.exceeds(odds) || odds.exceeds(priced)).toBe(false);
+    expect(literals.price(enc, 2, 0, history, 1)).toBe(costUnits(1, 3));
   });
 
   it('learns nothing and never hits a context', () => {

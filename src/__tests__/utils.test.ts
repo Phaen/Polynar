@@ -9,6 +9,9 @@ import {
   bigRadix,
   bitLength,
   checksumOf,
+  COST_UNITS,
+  costUnits,
+  log2Units,
   outputAlphabet,
   radixOf,
   stringAlphabet,
@@ -374,6 +377,29 @@ describe('ScaledRatio', () => {
     expect(same(b, ratio(5, 2))).toBe(true);
   });
 
+  it('resets, multiplies and divides in place as times and over do', () => {
+    const random = mulberry32(5);
+    const into = ratio(7, 3);
+    expect(into.reset()).toBe(into);
+    expect(same(into, new ScaledRatio())).toBe(true);
+    for (let i = 0; i < 200; i++) {
+      const a = ratio(
+        1 + Math.floor(random() * 2 ** 40),
+        1 + Math.floor(random() * 2 ** 40),
+        i % 30
+      );
+      const b = ratio(
+        1 + Math.floor(random() * 2 ** 40),
+        1 + Math.floor(random() * 2 ** 40),
+        i % 7
+      );
+      expect(into.product(a, b)).toBe(into);
+      expect(same(into, a.times(b))).toBe(true);
+      expect(into.quotient(a, b)).toBe(into);
+      expect(same(into, a.over(b))).toBe(true);
+    }
+  });
+
   it('multiplies and divides past the double range', () => {
     // Mantissas just under 2^512 multiply to just under 2^1024, still finite.
     const near = ratio(2 ** 52 - 1, 2 ** 52, 1)
@@ -404,5 +430,51 @@ describe('ScaledRatio', () => {
       expect(same(a.times(b).over(b), a)).toBe(true);
       expect(same(b.times(a).over(a), b)).toBe(true);
     }
+  });
+});
+
+describe('log2Units / costUnits', () => {
+  const exact = (n: number): number => Math.round(Math.log2(n) * COST_UNITS);
+
+  it('is log2 rounded to whole units below 4096', () => {
+    for (let n = 1; n < 4096; n++) {
+      expect(log2Units(n)).toBe(exact(n));
+    }
+  });
+
+  it('reads the top 12 bits and counts the bits below them from 4096 to 2^32', () => {
+    expect(log2Units(4096)).toBe(12 * COST_UNITS);
+    expect(log2Units(4097)).toBe(log2Units(4096));
+    expect(log2Units(6144)).toBe(log2Units(3072) + COST_UNITS);
+    expect(log2Units(2 ** 31)).toBe(31 * COST_UNITS);
+    expect(log2Units(2 ** 32 - 1)).toBe(log2Units(4095) + 20 * COST_UNITS);
+  });
+
+  it('stays within log2(1 + 2^-11) bits of the exact value', () => {
+    const random = mulberry32(23);
+    const slack = Math.log2(1 + 2 ** -11) * COST_UNITS + 1;
+    for (let i = 0; i < 2000; i++) {
+      // Spread over every magnitude, not only the largest.
+      const n = Math.max(4096, Math.floor(2 ** (12 + random() * 20)));
+      expect(Math.abs(log2Units(n) - Math.log2(n) * COST_UNITS)).toBeLessThanOrEqual(slack);
+    }
+  });
+
+  it('is log2 rounded to whole units from 2^32', () => {
+    expect(log2Units(2 ** 32)).toBe(32 * COST_UNITS);
+    expect(log2Units(2 ** 40)).toBe(40 * COST_UNITS);
+    expect(log2Units(MAX_SAFE)).toBe(exact(MAX_SAFE));
+  });
+
+  it('never decreases across the boundaries', () => {
+    expect(log2Units(4096)).toBeGreaterThanOrEqual(log2Units(4095));
+    expect(log2Units(2 ** 32)).toBeGreaterThanOrEqual(log2Units(2 ** 32 - 1));
+  });
+
+  it('costs a symbol owning all the states nothing and one of two a bit', () => {
+    for (const n of [1, 7, 4096, 2 ** 32 + 5]) {
+      expect(costUnits(n, n)).toBe(0);
+    }
+    expect(costUnits(1, 2)).toBe(COST_UNITS);
   });
 });

@@ -7,7 +7,14 @@
  * and start over with the next message.
  */
 
-import { Encoder, type Decoder, type Bucket } from '../packer';
+import {
+  Encoder,
+  SlotCache,
+  type Decoder,
+  type Bucket,
+  type Journal,
+  type Undoable,
+} from '../packer';
 import {
   type Exclusion,
   type Table,
@@ -145,18 +152,23 @@ export function readLive(dec: Decoder, table: LiveTable): number {
  * the weights' total. Integer throughout: member `pos` weighs
  * `weight(pos)·prior + learned(pos)·T` out of `T·(prior + observations)`,
  * which is the declared ratio blended with the observed frequencies. The
- * learned counts halve whenever they exceed `window`.
+ * learned counts halve whenever they exceed `window`. The counts record
+ * their changes in `journal`, an encoder's. Given `learned`, another
+ * table's learned counts, the table shares them, and learning in either
+ * learns in both.
  */
 export class LiveCounts implements LiveTable {
   /** The observations of each member, halved past the window. */
   readonly learned: Fenwick;
 
   constructor(
-    private readonly base: WeightTable,
-    private readonly prior: number,
-    private readonly window: number
+    readonly base: WeightTable,
+    readonly prior: number,
+    private readonly window: number,
+    journal?: Journal,
+    learned?: Fenwick
   ) {
-    this.learned = Fenwick.zeros(base.freqs.length);
+    this.learned = learned ?? Fenwick.zeros(base.freqs.length, journal);
   }
 
   get size(): number {
@@ -251,9 +263,15 @@ export class AdaptiveTable {
     checkOverflow(this.base.total, prior, this.window, who);
   }
 
+  /** Each message's live table. */
+  private readonly lives = new SlotCache<LiveCounts, Encoder | Decoder>(
+    this,
+    (side) => new LiveCounts(this.base, this.prior, this.window, side.journal)
+  );
+
   /** This message's live table on `side`, with nothing learned yet. */
   live(side: Encoder | Decoder): LiveCounts {
-    return side.state(this, () => new LiveCounts(this.base, this.prior, this.window));
+    return this.lives.get(side);
   }
 
   /** The bucket of member `pos` in this message's live table. */
@@ -340,17 +358,19 @@ export class Lineage {
  * prior's own observations are learned on top, each worth that table's
  * total, halving past `window`. Learning a value teaches the gathered
  * table too. The own observations are kept by member, only for members
- * seen, as a node built per key sees few.
+ * seen, as a node built per key sees few. Changes record their undo in
+ * `journal`, an encoder's, the gathered table's through its own.
  */
-class Blend implements Table {
+class Blend implements Table, Undoable {
   /** The own observations of each member seen, none kept at 0. */
-  private readonly learned = new Map<number, number>();
+  private learned = new Map<number, number>();
   /** The own observations of all members. */
   private count = 0;
 
   constructor(
     private readonly gathered: LiveCounts,
-    private readonly window: number
+    private readonly window: number,
+    private readonly journal?: Journal
   ) {}
 
   get size(): number {
@@ -377,9 +397,22 @@ class Blend implements Table {
   }
 
   learn(pos: number): void {
-    this.learned.set(pos, (this.learned.get(pos) ?? 0) + 1);
+    const journal = this.journal;
+    const own = this.learned.get(pos);
+    this.learned.set(pos, (own ?? 0) + 1);
     this.count++;
+    if (journal?.active === true) {
+      journal.own(this, 0, pos, own ?? 0);
+    }
     if (this.count > this.window) {
+      if (journal?.active === true) {
+        const { learned, count } = this;
+        this.learned = new Map(learned);
+        journal.call(() => {
+          this.learned = learned;
+          this.count = count;
+        });
+      }
       this.count = 0;
       for (const [member, count] of this.learned) {
         const half = Math.floor(count / 2);
@@ -393,6 +426,62 @@ class Blend implements Table {
     }
     this.gathered.learn(pos);
   }
+
+  /** Takes back a `learn` of `pos`, which had `own` observations before it. */
+  undo(_op: number, pos: number, own: number): void {
+    if (own === 0) {
+      this.learned.delete(pos);
+    } else {
+      this.learned.set(pos, own);
+    }
+    this.count--;
+  }
+}
+
+/**
+ * Member `pos`'s bucket under `excluded`, as `excludedBucket` gives it, in
+ * the static table `base` and then in each of `lives`, live tables over
+ * `base` that share their learned counts: from one pass over the excluded
+ * members, as each bucket splits into its weights' part and its learned
+ * part, and the parts are integers that sum exactly. `pos` is never
+ * excluded.
+ */
+function rungBuckets(
+  base: WeightTable,
+  lives: readonly LiveCounts[],
+  excluded: Exclusion | undefined,
+  pos: number
+): Bucket[] {
+  const learned = lives[0].learned;
+  let weightsBelow = 0;
+  let weightsOut = 0;
+  let learnedBelow = 0;
+  let learnedOut = 0;
+  for (let i = 0; i < (excluded?.count ?? 0); i++) {
+    const member = (excluded as Exclusion).member(i);
+    const weight = base.freqs[member];
+    const count = learned.freq(member);
+    weightsOut += weight;
+    learnedOut += count;
+    if (member < pos) {
+      weightsBelow += weight;
+      learnedBelow += count;
+    }
+  }
+  const weightsCum = base.cums[pos] - weightsBelow;
+  const weightsFreq = base.freqs[pos];
+  const learnedCum = learned.cum(pos) - learnedBelow;
+  const learnedFreq = learned.freq(pos);
+  const scale = base.total;
+  const buckets: Bucket[] = [[weightsCum, weightsFreq, scale - weightsOut]];
+  for (const { prior } of lives) {
+    buckets.push([
+      weightsCum * prior + learnedCum * scale,
+      weightsFreq * prior + learnedFreq * scale,
+      scale * (prior + learned.total) - (weightsOut * prior + learnedOut * scale),
+    ]);
+  }
+  return buckets;
 }
 
 /** The priors of an adaptive prior over `members` members: `LADDER` scaled, at least 1 each, in ladder order without repeats. */
@@ -412,6 +501,8 @@ interface Writing {
   /** Whether the live tables exist; the pending values are replayed when they are first built. */
   live: boolean;
   readonly lives: (LiveCounts[] | undefined)[];
+  /** The encoder's journal, which every change to the view records its undo in. */
+  readonly journal: Journal;
 }
 
 /**
@@ -465,6 +556,21 @@ export class AdaptivePrior {
   private readonly gathering = {};
   /** The key of the prior's blended tables in a message's state, when it has a parent. */
   private readonly blending = {};
+  /** Each message's view on an encoder. */
+  private readonly writings = new SlotCache<Writing, Encoder>(this, (enc) => ({
+    written: 0,
+    pending: [],
+    live: false,
+    lives: [],
+    journal: enc.journal,
+  }));
+  /** Each message's view on a decoder. */
+  private readonly readings = new SlotCache<Reading, Decoder>(this, () => ({
+    read: 0,
+    pending: [],
+    coding: 0,
+    lives: [],
+  }));
 
   constructor(
     rows: readonly (readonly number[])[],
@@ -516,14 +622,37 @@ export class AdaptivePrior {
    * nodes learned.
    */
   private gathered(side: Encoder | Decoder, row: number): LiveCounts {
-    const tables = side.state<LiveCounts[]>(this.gathering, () => []);
-    return (tables[row] ??= new LiveCounts(this.bases[row], this.rungs[1], this.window));
+    const tables = side.state<(LiveCounts | undefined)[]>(this.gathering, () => []);
+    return (tables[row] ??= this.built(
+      side,
+      tables,
+      row,
+      new LiveCounts(this.bases[row], this.rungs[1], this.window, side.journal)
+    ));
+  }
+
+  /**
+   * `table`, just built as row `row` of `tables` on `side`, which drops it
+   * again when a transaction open now rolls back.
+   */
+  private built<T>(side: Encoder | Decoder, tables: (T | undefined)[], row: number, table: T): T {
+    if (side.journal?.active === true) {
+      side.journal.call(() => {
+        tables[row] = undefined;
+      });
+    }
+    return table;
   }
 
   /** This message's blended table of `row` on `side`, from the parent's gathered one. */
   private blend(side: Encoder | Decoder, parent: AdaptivePrior, row: number): Blend {
-    const tables = side.state<Blend[]>(this.blending, () => []);
-    return (tables[row] ??= new Blend(parent.gathered(side, row), this.window));
+    const tables = side.state<(Blend | undefined)[]>(this.blending, () => []);
+    return (tables[row] ??= this.built(
+      side,
+      tables,
+      row,
+      new Blend(parent.gathered(side, row), this.window, side.journal)
+    ));
   }
 
   /** The static table of `row`, which must be one of the rows. */
@@ -575,10 +704,13 @@ export class AdaptivePrior {
         }
         enc.composeAlternatives(
           this,
-          [table, ...this.rowLives(state, base, row)].map((t) => excludedBucket(t, excluded, pos))
+          rungBuckets(base, this.rowLives(state, base, row), excluded, pos)
         );
       }
       state.written++;
+      if (state.journal.active) {
+        state.journal.set(state, 'written', state.written - 1);
+      }
     }
     this.teach(state, pos, row);
   }
@@ -596,7 +728,7 @@ export class AdaptivePrior {
     }
     // The slowest rung, twice the members, is above the fastest, at most
     // half of them, so there are always at least two.
-    return excludedBucket(this.rowLives(this.writing(enc), base, row)[1], excluded, pos);
+    return rungBuckets(base, [this.rowLives(this.writing(enc), base, row)[1]], excluded, pos)[1];
   }
 
   /** Reads a member written by `write` in context `row` under the same exclusion. */
@@ -666,45 +798,66 @@ export class AdaptivePrior {
   }
 
   private writing(enc: Encoder): Writing {
-    return enc.state<Writing>(this, () => ({ written: 0, pending: [], live: false, lives: [] }));
+    return this.writings.get(enc);
   }
 
   private reading(dec: Decoder): Reading {
-    return dec.state<Reading>(this, () => ({ read: 0, pending: [], coding: 0, lives: [] }));
+    return this.readings.get(dec);
   }
 
-  /** The encoder's live tables of `row`, one per rung, built on first use. */
   /**
    * The encoder's live tables of `row`, one per rung. The first request
    * builds the tables of every row learned so far from the pending values;
    * from then on the values learn directly and a new row starts empty.
    */
   private rowLives(state: Writing, base: WeightTable, row: number): LiveCounts[] {
+    const { journal, lives } = state;
     if (!state.live) {
       state.live = true;
       const learned = state.pending.splice(0);
+      if (journal.active) {
+        journal.call(() => {
+          state.live = false;
+          for (const n of learned) {
+            state.pending.push(n);
+          }
+        });
+      }
       for (let i = 0; i < learned.length; i += 2) {
         this.teach(state, learned[i], learned[i + 1]);
       }
     }
-    return (state.lives[row] ??= this.rungs.map(
-      (prior) => new LiveCounts(base, prior, this.window)
-    ));
+    let tables = lives[row];
+    if (tables === undefined) {
+      // Every rung learns the same values under the same window, so their
+      // learned counts are one table, which the first rung learns into.
+      const first = new LiveCounts(base, this.rungs[0], this.window, journal);
+      tables = this.rungs.map((prior, i) =>
+        i === 0 ? first : new LiveCounts(base, prior, this.window, journal, first.learned)
+      );
+      lives[row] = tables;
+      if (journal.active) {
+        journal.call(() => {
+          lives[row] = undefined;
+        });
+      }
+    }
+    return tables;
   }
 
-  /** Every rung's live table learns `pos`. */
   /**
    * The encoder learns `pos` in `row`: queued while no live table exists,
-   * else into every rung's table of the row.
+   * else into the learned counts every rung's table of the row shares.
    */
   private teach(state: Writing, pos: number, row: number): void {
     if (!state.live) {
       state.pending.push(pos, row);
+      if (state.journal.active) {
+        state.journal.truncate(state.pending, state.pending.length - 2);
+      }
       return;
     }
-    for (const live of this.rowLives(state, this.bases[row], row)) {
-      live.learn(pos);
-    }
+    this.rowLives(state, this.bases[row], row)[0].learn(pos);
   }
 
   /**

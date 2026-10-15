@@ -9,8 +9,18 @@
  * the bucket.
  */
 
-import { CorruptInputError, type Encoder, type Decoder, type ScaledRatio } from '../packer';
+import {
+  CorruptInputError,
+  type Encoder,
+  type Decoder,
+  type Journal,
+  COST_UNITS,
+  costUnits,
+  log2Units,
+  type Undoable,
+} from '../packer';
 import { AdaptiveTable, readLive, writeLive, type LiveCounts, type LiveTable } from './adaptive';
+import { KeyMap } from './keymap';
 
 /** The shortest match at a new distance. */
 export const MIN_MATCH = 3;
@@ -72,14 +82,22 @@ function hashAt(items: readonly number[], at: number): number {
   return h;
 }
 
-/** The encoder's finder over one message's items: hash chains over `MIN_MATCH` items. */
-export class Finder {
+/**
+ * The encoder's finder over one message's items: hash chains over
+ * `MIN_MATCH` items. A registration records its undo in `journal`.
+ */
+export class Finder implements Undoable {
   /** The newest registered position of each hash. */
-  private readonly head = new Map<number, number>();
-  /** The previous registered position with the same hash, -1 for none. */
-  private readonly prev: number[] = [];
+  private readonly head = new KeyMap<number>();
+  /** The previous registered position with the same hash, -1 for none, by position. */
+  private prev = new Int32Array(64);
   /** The last registered position, -1 before the first. */
   private last = -1;
+
+  /** The items the last position registered is in, which its undo rewinds over. */
+  private items: readonly number[] = [];
+
+  constructor(private readonly journal?: Journal) {}
 
   /**
    * Registers position `at` of `items`, which holds at least `MIN_MATCH`
@@ -89,9 +107,23 @@ export class Finder {
   insert(items: readonly number[], at: number): void {
     checkInteger(at, this.last + 1, items.length - MIN_MATCH, 'Position');
     const h = hashAt(items, at);
+    if (at >= this.prev.length) {
+      const prev = new Int32Array(Math.max(2 * this.prev.length, at + 1));
+      prev.set(this.prev);
+      this.prev = prev;
+    }
     this.prev[at] = this.head.get(h) ?? -1;
     this.head.set(h, at);
     this.last = at;
+    if (this.journal?.active === true) {
+      this.items = items;
+      this.journal.own(this, 0, at);
+    }
+  }
+
+  /** Takes back the registration of position `at`. */
+  undo(_op: number, at: number): void {
+    this.rewind(this.items, at);
   }
 
   /**
@@ -131,6 +163,10 @@ export class Finder {
         continue;
       }
       depth++;
+      // A candidate differing at the best length so far cannot beat it.
+      if (items[cand + length] !== items[at + length]) {
+        continue;
+      }
       let l = 0;
       while (l < most && items[cand + l] === items[at + l]) {
         l++;
@@ -209,19 +245,17 @@ export function readBucketed(dec: Decoder, table: AdaptiveTable, max: number): n
   return 2 ** b + dec.parse(widthOf(b, max));
 }
 
-/** Multiplies the probability `writeBucketed` would give `v` now into `into`, learning nothing. */
+/** The cost, in `COST_UNITS`, `writeBucketed` would give `v` now, learning nothing. */
 function priceBucketed(
   side: Encoder | Decoder,
   table: AdaptiveTable,
   v: number,
-  max: number,
-  into: ScaledRatio
-): void {
+  max: number
+): number {
   const live = table.live(side);
   const b = bucketOf(v);
   const top = bucketOf(max);
-  into.multiply(live.freq(b), live.cum(top) + live.freq(top));
-  into.multiply(1, widthOf(b, max));
+  return costUnits(live.freq(b), live.cum(top) + live.freq(top)) + log2Units(widthOf(b, max));
 }
 
 /** Refuses the bounds of a match position: `maxDistance` at least 1, `maxLength` at least `MIN_MATCH`. */
@@ -249,7 +283,7 @@ function checkMatch(match: Match, maxDistance: number, maxLength: number): void 
 /**
  * How a sequence spells its repeats: whether a value spells any, the match
  * flag at each position a repeat is decodable at, and each match. `price*`
- * multiply into `into` the probability the matching `write*` would give its
+ * are the cost, in `COST_UNITS`, the matching `write*` would give its
  * symbols now, learning nothing.
  */
 export interface RepeatCoding {
@@ -257,10 +291,9 @@ export interface RepeatCoding {
   readonly cached: boolean;
   writeUsed(enc: Encoder, used: boolean): void;
   readUsed(dec: Decoder): boolean;
-  priceUsed(side: Encoder | Decoder, used: boolean, into: ScaledRatio): void;
   writeFlag(enc: Encoder, match: boolean, context: FlagContext): void;
   readFlag(dec: Decoder, context: FlagContext): boolean;
-  priceFlag(side: Encoder | Decoder, match: boolean, context: FlagContext, into: ScaledRatio): void;
+  priceFlag(side: Encoder | Decoder, match: boolean, context: FlagContext): number;
   writeMatch(enc: Encoder, match: Match, maxDistance: number, maxLength: number): void;
   readMatch(dec: Decoder, maxDistance: number, maxLength: number, reps: readonly number[]): Match;
   priceMatch(
@@ -268,9 +301,8 @@ export interface RepeatCoding {
     match: Match,
     maxDistance: number,
     maxLength: number,
-    context: FlagContext,
-    into: ScaledRatio
-  ): void;
+    context: FlagContext
+  ): number;
 }
 
 /**
@@ -311,12 +343,6 @@ export class Repeats implements RepeatCoding {
   /** Reads the branch written by `writeUsed`. */
   readUsed(dec: Decoder): boolean {
     return this.used.read(dec) === 1;
-  }
-
-  /** Multiplies the probability the branch would be written with now into `into`, learning nothing. */
-  priceUsed(side: Encoder | Decoder, used: boolean, into: ScaledRatio): void {
-    const [, freq, total] = this.used.bucket(side, used ? 1 : 0);
-    into.multiply(freq, total);
   }
 
   /** Writes whether a match starts at this position, through the flag table of `context`. */
@@ -374,20 +400,15 @@ export class Repeats implements RepeatCoding {
     return { distance, length };
   }
 
-  /** Multiplies the probability the flag would be written with now in `context` into `into`, learning nothing. */
-  priceFlag(
-    side: Encoder | Decoder,
-    match: boolean,
-    context: FlagContext,
-    into: ScaledRatio
-  ): void {
+  /** The cost, in `COST_UNITS`, the flag would be written with now in `context`, learning nothing. */
+  priceFlag(side: Encoder | Decoder, match: boolean, context: FlagContext): number {
     const [, freq, total] = this.flag(context).bucket(side, match ? 1 : 0);
-    into.multiply(freq, total);
+    return costUnits(freq, total);
   }
 
   /**
-   * Multiplies the probability a match would be written with now, its flag
-   * in `context`, into `into`, learning nothing: its flag, its kind, then
+   * The cost, in `COST_UNITS`, a match would be written with now, its flag
+   * in `context`, learning nothing: its flag, its kind, then
    * for a rep its length's bucket and offset, and for a new distance the
    * distance's bucket and offset and the length's.
    */
@@ -396,26 +417,23 @@ export class Repeats implements RepeatCoding {
     match: Match,
     maxDistance: number,
     maxLength: number,
-    context: FlagContext,
-    into: ScaledRatio
-  ): void {
+    context: FlagContext
+  ): number {
     checkMatch(match, maxDistance, maxLength);
-    this.priceFlag(side, true, context, into);
     const { rep } = match;
     const [, freq, total] = this.kind.bucket(side, rep ?? REPS);
-    into.multiply(freq, total);
+    const head = this.priceFlag(side, true, context) + costUnits(freq, total);
     if (rep !== undefined) {
-      priceBucketed(
-        side,
-        this.repLength,
-        match.length - REP_MIN + 1,
-        maxLength - REP_MIN + 1,
-        into
+      return (
+        head +
+        priceBucketed(side, this.repLength, match.length - REP_MIN + 1, maxLength - REP_MIN + 1)
       );
-      return;
     }
-    priceBucketed(side, this.distance, match.distance, maxDistance, into);
-    priceBucketed(side, this.length, match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1, into);
+    return (
+      head +
+      priceBucketed(side, this.distance, match.distance, maxDistance) +
+      priceBucketed(side, this.length, match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1)
+    );
   }
 }
 
@@ -435,10 +453,9 @@ function readEven(dec: Decoder, max: number): number {
   return 2 ** b + dec.parse(widthOf(b, max));
 }
 
-/** Multiplies the probability `writeEven` gives `v` into `into`. */
-function priceEven(v: number, max: number, into: ScaledRatio): void {
-  into.multiply(1, bucketOf(max) + 1);
-  into.multiply(1, widthOf(bucketOf(v), max));
+/** The cost, in `COST_UNITS`, `writeEven` gives `v`. */
+function priceEven(v: number, max: number): number {
+  return log2Units(bucketOf(max) + 1) + log2Units(widthOf(bucketOf(v), max));
 }
 
 /** Refuses a match naming a cached distance, which fixed-odds repeats never do. */
@@ -467,10 +484,6 @@ export const EVEN_REPEATS: RepeatCoding = {
     return dec.parse(2) === 1;
   },
 
-  priceUsed(_side, _used, into) {
-    into.multiply(1, 2);
-  },
-
   writeFlag(enc, match) {
     enc.compose(match ? 1 : 0, 2);
   },
@@ -479,8 +492,8 @@ export const EVEN_REPEATS: RepeatCoding = {
     return dec.parse(2) === 1;
   },
 
-  priceFlag(_side, _match, _context, into) {
-    into.multiply(1, 2);
+  priceFlag() {
+    return COST_UNITS;
   },
 
   writeMatch(enc, match, maxDistance, maxLength) {
@@ -496,10 +509,12 @@ export const EVEN_REPEATS: RepeatCoding = {
     return { distance, length };
   },
 
-  priceMatch(_side, match, maxDistance, maxLength, _context, into) {
+  priceMatch(_side, match, maxDistance, maxLength) {
     checkNew(match, maxDistance, maxLength);
-    into.multiply(1, 2);
-    priceEven(match.distance, maxDistance, into);
-    priceEven(match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1, into);
+    return (
+      COST_UNITS +
+      priceEven(match.distance, maxDistance) +
+      priceEven(match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1)
+    );
   },
 };

@@ -11,6 +11,12 @@
  * plain multiply-add, which is mixed-radix arithmetic. The log keeps each
  * symbol's bucket and whether it is uniform or weighted, which is all the
  * fold needs; until `output`, a slot can still be patched.
+ *
+ * Writes can be tried: `mark` opens a transaction, `bitsSince` prices what
+ * was written since, and `rollback` takes it all back, the log and every
+ * change the writes made to the message's state, through the `journal`
+ * nodes record their changes in. `commit` keeps it. `decide` builds a
+ * choice among spellings on them.
  */
 
 import type { Bucket, CodecOptions, OutputType, Radix } from './types';
@@ -27,9 +33,11 @@ import {
   outputAlphabet,
   validateChecksum,
   checksumOf,
+  costUnits,
 } from './utils';
 import { StreamWriter } from './stream';
 import { MessageState, checkKey } from './state';
+import { Journal } from './journal';
 
 const ONE = 1 as Radix;
 const BIG_CHUNK_STATES = 2 ** BIG_CHUNK_BITS;
@@ -50,6 +58,96 @@ function checkBucket(cum: number, freq: number, total: number): void {
   }
 }
 
+/**
+ * An encoder's log, as `ReplayDecoder` and a value's identity read it:
+ * event `i` is the bucket `[cums[i], cums[i] + freqs[i])` of `totals[i]`
+ * states, a weighted symbol when `weighted[i]`, else a uniform slot with a
+ * freq of 1. A symbol of an alternatives group holds coding 0's bucket
+ * until `output` settles the group.
+ */
+export interface EventLog {
+  readonly cums: readonly number[];
+  readonly freqs: readonly number[];
+  readonly totals: readonly number[];
+  readonly weighted: readonly boolean[];
+}
+
+/** An open transaction of an encoder, as `mark` returns it. */
+export interface Mark {
+  /** The events logged before it. */
+  readonly events: number;
+  /** The alternatives pending before it. */
+  readonly pending: number;
+  /** The groups opened before it. */
+  readonly groups: number;
+  /** What each try `decide` runs around it had spent, as it stood. */
+  readonly running?: readonly number[];
+  /** Its mark in the journal. */
+  readonly journal: number;
+}
+
+/** What an encoder takes beyond the defaults. */
+export interface EncoderOptions {
+  /**
+   * Whether `decide` checks its shortcuts instead of taking them: every
+   * candidate is tried in full, with no budget to abort it, and a spelling
+   * written again decides each choice inside it afresh, throwing when one
+   * differs from the choice its try made. For tests: the message comes out
+   * as without, at the cost of every try the shortcuts save.
+   */
+  readonly checkDecisions?: boolean;
+}
+
+/**
+ * The coding an alternatives symbol or a selector is priced in by
+ * `bitsSince`, or the last when a group has fewer: the coding a group
+ * settles on is known only at `output`, and 2 is a middle learner among an
+ * adaptive prior's.
+ */
+const PRICED_CODING = 2;
+
+/**
+ * The units costs are counted in, per bit: each symbol's cost is rounded
+ * to a whole number of them, so sums are exact integers, the same in any
+ * order and never smaller for one more symbol, up to 2^33 bits.
+ */
+const UNITS = 2 ** 20;
+
+/** The cost of a symbol owning `freq` of `total` states, in `UNITS`. */
+const unitsOf = (total: number, freq: number): number => costUnits(freq, total);
+
+/** The cost of `bucket`, in `UNITS`. */
+const bucketUnits = (bucket: Bucket): number => unitsOf(bucket[2], bucket[1]);
+
+/**
+ * Thrown into the innermost try of `decide` running when a budget is
+ * passed: `level` is the try's own depth when its own budget is passed,
+ * else the outermost depth whose budget is. Not an Error, so containers
+ * pass it on as thrown.
+ */
+class Abort {
+  constructor(readonly level: number) {}
+}
+
+/** One `decide` under way. */
+interface Trial {
+  readonly priority: readonly number[];
+  readonly write: (choice: number) => void;
+  /** Its depth among the tries running: its tries' place in `running`. */
+  readonly level: number;
+  /** The cheapest candidate so far, -1 before any wrote, and its cost in `UNITS`. */
+  best: number;
+  least: number;
+  /** The choices made inside the best candidate's try. */
+  kept: number[];
+  /** Whether the best candidate's try was kept as written. */
+  done: boolean;
+  /** What each candidate that could not write threw. */
+  readonly failures: Map<number, unknown>;
+  /** Whether an outer budget stopped a candidate. */
+  stopped: boolean;
+}
+
 /** A symbol written as one of its group's alternative buckets, waiting for the group's choice. */
 interface Alternative {
   /** The symbol's slot in the buffer. */
@@ -64,19 +162,43 @@ export class Encoder {
   private totals: Radix[] = [];
   /** Whether each symbol is weighted, read by `parseWeighted`, rather than a uniform slot. */
   private weighted: boolean[] = [];
-  private readonly states = new MessageState();
+  /** Where the message's state records its changes while a transaction is open. */
+  readonly journal = new Journal();
+  private readonly states = new MessageState(this.journal);
   /**
    * The groups opened by `composeSelector`: the selector's slot in the
    * buffer, -1 when it carries nothing (a single coding whose bucket holds
    * every state), and the selector's bucket under each coding.
    */
   private readonly groups = new Map<object, { at: number; choices: readonly Bucket[] }>();
+  /** The groups in the order they were opened. */
+  private readonly opened: object[] = [];
   /** The alternative symbols written since the last `output`, in buffer order. */
   private pending: Alternative[] = [];
+  /** The choices `decide` made in the try running now, each followed by those inside it. */
+  private tape?: number[];
+  /** Set while a spelling `decide` tried is written again: its choices, and the next to take. */
+  private replay?: { readonly tape: readonly number[]; at: number };
+  private readonly checkDecisions: boolean;
+  /** The `UNITS` each try `decide` runs has spent so far, outermost first. */
+  private readonly running: number[] = [];
+  /** The budget of each such try: the cost of the best candidate before it, or none. */
+  private readonly limits: number[] = [];
+  /** Whether each such try wins a tie with its budget. */
+  private readonly ties: boolean[] = [];
+
+  constructor(options: EncoderOptions = {}) {
+    this.checkDecisions = options.checkDecisions === true;
+  }
 
   /** Per-message state for nodes, keyed by node identity; see `MessageState`. */
   state<S>(key: object, init: () => S): S {
     return this.states.get(key, init);
+  }
+
+  /** How many slots of the message state were dropped so far; see `SlotCache`. */
+  get stateEpoch(): number {
+    return this.states.epoch;
   }
 
   /** Push one value in a fixed radix: `integer` must lie in `[0, radix)`. */
@@ -108,6 +230,9 @@ export class Encoder {
     this.freqs.push(ONE);
     this.totals.push(states);
     this.weighted.push(false);
+    if (this.running.length > 0) {
+      this.charge(unitsOf(states, 1));
+    }
   }
 
   /**
@@ -150,6 +275,9 @@ export class Encoder {
     this.freqs.push(freq as Radix);
     this.totals.push(total as Radix);
     this.weighted.push(true);
+    if (this.running.length > 0) {
+      this.charge(unitsOf(total, freq));
+    }
   }
 
   /**
@@ -187,10 +315,19 @@ export class Encoder {
     // The placeholder is the selector for coding 0; `resolve` patches in the
     // choice. A lone coding whose bucket holds every state records nothing,
     // like any radix-1 digit.
-    const before = this.totals.length;
     const [cum, freq] = choices[0];
-    this.composeWeighted(cum, freq, total);
-    this.groups.set(group, { at: this.totals.length > before ? before : -1, choices });
+    const logged = freq !== total;
+    if (logged) {
+      this.cums.push(cum);
+      this.freqs.push(freq as Radix);
+      this.totals.push(total as Radix);
+      this.weighted.push(true);
+    }
+    this.groups.set(group, { at: logged ? this.totals.length - 1 : -1, choices });
+    this.opened.push(group);
+    if (logged && this.running.length > 0) {
+      this.charge(bucketUnits(choices[Math.min(PRICED_CODING, count - 1)]));
+    }
   }
 
   /**
@@ -223,6 +360,33 @@ export class Encoder {
     this.totals.push(total as Radix);
     this.weighted.push(true);
     this.pending.push({ at: this.totals.length - 1, group, buckets });
+    if (this.running.length > 0) {
+      this.charge(bucketUnits(buckets[Math.min(PRICED_CODING, buckets.length - 1)]));
+    }
+  }
+
+  /**
+   * Adds the cost of the symbol just logged, in `UNITS`, to every try
+   * `decide` runs, and aborts the innermost when a budget is passed: its
+   * own, when it can no longer win, else the outermost budget passed
+   * around it, which its `decide` weighs.
+   */
+  private charge(units: number): void {
+    const { running, limits, ties } = this;
+    let passed = -1;
+    for (let k = 0; k < running.length; k++) {
+      const spent = running[k] + units;
+      running[k] = spent;
+      if (passed < 0 && (spent > limits[k] || (spent === limits[k] && !ties[k]))) {
+        passed = k;
+      }
+    }
+    if (passed >= 0) {
+      const own = running.length - 1;
+      const spent = running[own];
+      const lost = spent > limits[own] || (spent === limits[own] && !ties[own]);
+      throw new Abort(lost ? own : passed);
+    }
   }
 
   /**
@@ -281,6 +445,345 @@ export class Encoder {
       }
     }
     this.pending = [];
+  }
+
+  /**
+   * Open a transaction: what is written from here on, and every change it
+   * makes to the message's state, can be priced with `bitsSince` and taken
+   * back with `rollback`, or kept with `commit`. Transactions nest; each
+   * closes before the one it was opened in.
+   */
+  mark(): Mark {
+    return {
+      events: this.totals.length,
+      pending: this.pending.length,
+      groups: this.opened.length,
+      running: this.running.length > 0 ? this.running.slice() : undefined,
+      journal: this.journal.mark(),
+    };
+  }
+
+  /**
+   * The cost in bits of the symbols written since `mark`: log2 of total
+   * over freq each, an alternatives symbol and a selector priced in
+   * `PRICED_CODING`, each rounded to a 2^-20th of a bit.
+   */
+  bitsSince(mark: Mark): number {
+    return this.unitsSince(mark) / UNITS;
+  }
+
+  /** `bitsSince` in `UNITS`. */
+  private unitsSince(mark: Mark): number {
+    const { freqs, totals, pending, groups, opened } = this;
+    // The log holds coding 0's buckets for alternatives and selectors until
+    // `output`, so those are priced off their buckets, in log order.
+    let alternative = mark.pending;
+    let next = alternative < pending.length ? pending[alternative].at : -1;
+    const selectors: number[] = [];
+    const codings: Bucket[] = [];
+    for (let k = mark.groups; k < opened.length; k++) {
+      const { at, choices } = groups.get(opened[k]) as { at: number; choices: readonly Bucket[] };
+      if (at >= 0) {
+        selectors.push(at);
+        codings.push(choices[Math.min(PRICED_CODING, choices.length - 1)]);
+      }
+    }
+    let selector = 0;
+    let units = 0;
+    for (let i = mark.events; i < totals.length; i++) {
+      if (i === next) {
+        const { buckets } = pending[alternative];
+        units += bucketUnits(buckets[Math.min(PRICED_CODING, buckets.length - 1)]);
+        alternative++;
+        next = alternative < pending.length ? pending[alternative].at : -1;
+      } else if (i === selectors[selector]) {
+        units += bucketUnits(codings[selector]);
+        selector++;
+      } else {
+        units += unitsOf(totals[i], freqs[i]);
+      }
+    }
+    return units;
+  }
+
+  /** Take back everything written since `mark`, the innermost open transaction, and close it. */
+  rollback(mark: Mark): void {
+    this.journal.rollback(mark.journal);
+    const at = mark.events;
+    this.cums.length = at;
+    this.freqs.length = at;
+    this.totals.length = at;
+    this.weighted.length = at;
+    this.pending.length = mark.pending;
+    const { opened, groups } = this;
+    for (let k = mark.groups; k < opened.length; k++) {
+      groups.delete(opened[k]);
+    }
+    opened.length = mark.groups;
+    const { running } = mark;
+    if (running !== undefined) {
+      for (let k = 0; k < running.length; k++) {
+        this.running[k] = running[k];
+      }
+    }
+  }
+
+  /** Keep everything written since `mark`, the innermost open transaction, and close it. */
+  commit(mark: Mark): void {
+    this.journal.release(mark.journal);
+  }
+
+  /**
+   * Writes one of the spellings `write(c)` writes for each candidate `c`,
+   * the one costing the fewest bits, and returns it. A tie goes to the
+   * candidate listed first in `priority`, which lists every candidate. A
+   * candidate whose `write` throws is passed over; when every one throws,
+   * the error of the first in `priority` is thrown.
+   *
+   * The candidates are tried in `order`, each written and rolled back but
+   * the last, which is kept when it wins; another winner is written again.
+   * Every try after a candidate that wrote runs under a budget, the cost of
+   * the best so far, and is aborted as soon as it spends more, or as much
+   * when it loses the tie; a try inside another try is aborted too when it
+   * takes the outer one past its budget. So the candidate most likely to
+   * win goes first. Costs are whole `UNITS` and only grow, so the
+   * candidate chosen is always the one trying every candidate in full
+   * would choose.
+   *
+   * The choices made inside the winner's try, by `decide` calls nested in
+   * it, are kept, and writing it again takes them instead of trying again:
+   * the state it is written in is the state it was tried in, so the tries
+   * would choose the same. A spelling written again under a choice of an
+   * enclosing `decide` takes this choice the same way.
+   */
+  decide(
+    priority: readonly number[],
+    order: readonly number[],
+    write: (choice: number) => void
+  ): number {
+    const replay = this.replay;
+    if (replay !== undefined) {
+      return this.checkDecisions
+        ? this.recheck(replay, priority, order, write)
+        : this.take(replay, write);
+    }
+    const parent = this.tape;
+    const trial: Trial = {
+      priority,
+      write,
+      level: this.running.length,
+      best: -1,
+      least: Infinity,
+      kept: [],
+      done: false,
+      failures: new Map(),
+      stopped: false,
+    };
+    try {
+      for (let k = 0; k < order.length; k++) {
+        this.attempt(trial, order[k], k === order.length - 1);
+        if (trial.done) {
+          break;
+        }
+      }
+      // A candidate an outer budget stopped had spent more than that budget
+      // had left, or as much where the tie went against it. A candidate that
+      // wrote did so within every budget, so it costs less than any stopped
+      // one spent, or as much where the tie goes to it: it wins. With none
+      // written, whichever candidate would have won passes the budget with
+      // the least left too, and that try loses.
+      if (trial.best < 0 && trial.stopped) {
+        throw new Abort(this.tightest(trial.level));
+      }
+      if (trial.best < 0) {
+        throw trial.failures.get(priority.find((c) => trial.failures.has(c)) as number);
+      }
+      if (!trial.done) {
+        this.tape = undefined;
+        this.rewrite(trial.kept, trial.best, write);
+      }
+    } finally {
+      this.tape = parent;
+    }
+    if (parent !== undefined) {
+      parent.push(trial.best);
+      for (const choice of trial.kept) {
+        parent.push(choice);
+      }
+    }
+    return trial.best;
+  }
+
+  /** Whether candidate `choice` costing `units` beats the best of `trial` so far. */
+  private beats(trial: Trial, choice: number, units: number): boolean {
+    const { priority, best, least } = trial;
+    return (
+      best < 0 ||
+      units < least ||
+      (units === least && priority.indexOf(choice) < priority.indexOf(best))
+    );
+  }
+
+  /**
+   * The depth among the first `level` tries running whose budget has the
+   * least left, one losing a tie on its budget before one winning it.
+   */
+  private tightest(level: number): number {
+    const { running, limits, ties } = this;
+    let tightest = 0;
+    let least = Infinity;
+    for (let k = 0; k < level; k++) {
+      const left = limits[k] - running[k];
+      if (left < least || (left === least && !ties[k])) {
+        tightest = k;
+        least = left;
+      }
+    }
+    return tightest;
+  }
+
+  /**
+   * Tries candidate `choice` of `trial` under its budget. A winner is kept
+   * when `last`, else rolled back.
+   */
+  private attempt(trial: Trial, choice: number, last: boolean): void {
+    const { running, limits, ties } = this;
+    const { level, priority } = trial;
+    const mark = this.mark();
+    const tape: number[] = [];
+    this.tape = tape;
+    const budgeted = trial.best >= 0 && !this.checkDecisions;
+    running.push(0);
+    limits.push(budgeted ? trial.least : Infinity);
+    ties.push(budgeted && priority.indexOf(choice) < priority.indexOf(trial.best));
+    let units: number;
+    try {
+      trial.write(choice);
+      // Every symbol logged since the mark charged its cost to the try, and a
+      // rollback inside it set the try's spending back with the log, so what
+      // it spent is what `unitsSince(mark)` would sum.
+      units = running[running.length - 1];
+    } catch (error) {
+      if (error instanceof Abort) {
+        trial.stopped ||= error.level < level;
+      } else {
+        trial.failures.set(choice, error);
+      }
+      this.rollback(mark);
+      return;
+    } finally {
+      running.pop();
+      limits.pop();
+      ties.pop();
+    }
+    if (this.beats(trial, choice, units)) {
+      trial.best = choice;
+      trial.least = units;
+      trial.kept = tape;
+      if (last) {
+        this.commit(mark);
+        trial.done = true;
+        return;
+      }
+    }
+    this.rollback(mark);
+  }
+
+  /**
+   * A choice a node makes on its own inside a spelling `decide` tries, such
+   * as which match to take, as numbers `compute` works out. A spelling
+   * written again takes the numbers its try noted instead of working them
+   * out again.
+   */
+  note(compute: () => readonly number[]): readonly number[] {
+    const replay = this.replay;
+    if (replay === undefined) {
+      const values = compute();
+      const tape = this.tape;
+      if (tape !== undefined) {
+        tape.push(values.length);
+        for (const value of values) {
+          tape.push(value);
+        }
+      }
+      return values;
+    }
+    const { tape, at } = replay;
+    const count = tape[at];
+    const values = tape.slice(at + 1, at + 1 + count);
+    replay.at = at + 1 + count;
+    if (this.checkDecisions) {
+      this.replay = undefined;
+      let fresh: readonly number[];
+      try {
+        fresh = compute();
+      } finally {
+        this.replay = replay;
+      }
+      if (fresh.length !== count || fresh.some((value, i) => value !== values[i])) {
+        throw new Error('A choice written again differs from the one its try made');
+      }
+    }
+    return values;
+  }
+
+  /** Writes `choice` again, taking the choices of `tape`, the ones its try made. */
+  private rewrite(tape: readonly number[], choice: number, write: (choice: number) => void): void {
+    const replay = { tape, at: 0 };
+    this.replay = replay;
+    try {
+      write(choice);
+    } finally {
+      this.replay = undefined;
+    }
+    if (replay.at !== tape.length) {
+      throw new Error(`Rewrite took ${replay.at} of ${tape.length} choices its try made`);
+    }
+  }
+
+  /** Writes the next choice of `replay`, the choices inside it taken from it too. */
+  private take(
+    replay: { readonly tape: readonly number[]; at: number },
+    write: (choice: number) => void
+  ): number {
+    const choice = replay.tape[replay.at++];
+    write(choice);
+    return choice;
+  }
+
+  /**
+   * Decides afresh where `replay` holds the choice, then refuses a choice,
+   * or one inside it, that differs from the one held.
+   */
+  private recheck(
+    replay: { readonly tape: readonly number[]; at: number },
+    priority: readonly number[],
+    order: readonly number[],
+    write: (choice: number) => void
+  ): number {
+    const tape: number[] = [];
+    this.replay = undefined;
+    this.tape = tape;
+    let choice: number;
+    try {
+      choice = this.decide(priority, order, write);
+    } finally {
+      this.replay = replay;
+      this.tape = undefined;
+    }
+    for (let k = 0; k < tape.length; k++) {
+      if (tape[k] !== replay.tape[replay.at + k]) {
+        throw new Error('A choice written again differs from the one its try made');
+      }
+    }
+    replay.at += tape.length;
+    return choice;
+  }
+
+  /** The log of every symbol written so far; see `EventLog`. */
+  events(): EventLog {
+    const { cums, freqs, totals, weighted } = this;
+    return { cums, freqs, totals, weighted };
   }
 
   /** Push one unbounded non-negative integer. */
@@ -354,7 +857,7 @@ export class Encoder {
    */
   private toDigits(size: number, sum: number): number[] {
     const { cums, freqs, totals, weighted } = this;
-    const writer = new StreamWriter(size);
+    const writer = new StreamWriter(size, totals, freqs, sum > 0 ? 2 ** sum : 0);
     for (let i = totals.length - 1; i >= 0; i--) {
       writer.push(cums[i], freqs[i], totals[i], weighted[i]);
     }
@@ -373,6 +876,9 @@ export class Encoder {
   output(options?: CodecOptions<'binary'>): Uint8Array;
   output(options?: CodecOptions<OutputType>): Uint8Array | string;
   output(options: CodecOptions<OutputType> = {}): Uint8Array | string {
+    if (this.journal.active) {
+      throw new TypeError('Encoder has a transaction open');
+    }
     const type = options.type ?? 'binary';
     const alphabet = outputAlphabet(type, options.charset);
     this.resolve();

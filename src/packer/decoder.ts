@@ -84,6 +84,14 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
     return this.states.get(key, init);
   }
 
+  /** How many slots of the message state were dropped so far: none, as a decoder rolls nothing back. */
+  get stateEpoch(): number {
+    return this.states.epoch;
+  }
+
+  /** No journal: a decoder never rolls back, so its models record nothing. */
+  readonly journal: undefined = undefined;
+
   /**
    * Announce `count` items about to be read, right after reading their
    * length. Items read once the input has run out read as zeros, and a
@@ -192,8 +200,8 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
     return index;
   }
 
-  /** `parse` past its radix check. */
-  private parseRadix(radix: Radix): number {
+  /** `parse` past its radix check; a `ReplayDecoder` reads it off a log instead. */
+  protected parseRadix(radix: Radix): number {
     this.read();
     // The encoder records nothing for a radix-1 digit.
     if (radix === 1) {

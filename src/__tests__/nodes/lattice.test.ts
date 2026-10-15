@@ -17,7 +17,6 @@ import {
 } from '../../nodes/lattice';
 import { LearnedMagnitude, STATIC_MAGNITUDE } from '../../nodes/magnitude';
 import { ModeChoice } from '../../nodes/methods';
-import { ScaledRatio } from '../../packer';
 import { Recall } from '../../nodes/recall';
 import { AdaptivePrior, MAX_ADAPTIVE_MEMBERS } from '../../nodes/adaptive';
 import type { PNode } from '../../nodes/base';
@@ -628,29 +627,39 @@ describe('IndexRange learned spelling', () => {
   it.each([
     ['members', new IndexRange('r', 0, 9, undefined, {}), -1, 10],
     ['offsets', new IndexRange('r', 0, 2 ** 20, undefined, {}), -1, 2 ** 20 + 1],
-  ])('prices and learns only offsets in reach, as %s', (_name, range, below, above) => {
+  ])('writes and learns only offsets in reach, as %s', (_name, range, below, above) => {
     const learned = range.learned;
     if (learned === undefined) {
       throw new Error('not learned');
     }
     const enc = new Encoder();
     expect(learned.available(enc)).toBe(true);
+    // The first value is spelled by the static weights, the later ones by
+    // what the message taught.
+    learned.write(enc, 5);
     for (const offset of [below, above, 0.5]) {
-      expect(learned.price(enc, offset, new ScaledRatio())).toBe(false);
+      const mark = enc.mark();
+      expect(() => learned.write(enc, offset)).toThrow();
+      enc.rollback(mark);
       learned.learn(enc, offset);
     }
-    const one = new ScaledRatio();
-    expect(learned.price(enc, 3, one)).toBe(true);
-    // Learning a value makes it likelier.
+    const cost = (): number => {
+      const mark = enc.mark();
+      learned.write(enc, 3);
+      const bits = enc.bitsSince(mark);
+      enc.rollback(mark);
+      return bits;
+    };
+    const one = cost();
+    // Learning a value makes it cheaper.
     for (let i = 0; i < 20; i++) {
       learned.learn(enc, 3);
     }
-    const two = new ScaledRatio();
-    learned.price(enc, 3, two);
-    expect(two.exceeds(one)).toBe(true);
+    expect(cost()).toBeLessThan(one);
     // The decoder learns too, and reads what the encoder wrote after it.
     learned.write(enc, 3);
     const dec = new Decoder(enc.output());
+    expect(learned.read(dec)).toBe(5);
     for (let i = 0; i < 20; i++) {
       learned.learn(dec, 3);
     }
@@ -765,10 +774,6 @@ describe('IndexMethods', () => {
     }
     const delta = {
       available: () => previous.offset !== undefined,
-      price: (enc: Encoder, offset: number, into: ScaledRatio) => {
-        scale.price(enc, offset, previous.offset as number, 0, 999, into);
-        return true;
-      },
       write: (enc: Encoder, offset: number) =>
         scale.write(enc, offset, previous.offset as number, 0, 999),
       read: () => 0,
@@ -928,19 +933,18 @@ describe('Delta', () => {
     expect([delta.available(enc), delta.available(dec)]).toEqual([true, false]);
   });
 
-  it('prices the static scale from the previous offset, and nothing it cannot spell', () => {
+  it('writes the static scale from the previous offset, and throws on what it cannot spell', () => {
     const delta = new Delta(STATIC_MAGNITUDE, 0, 10);
     const enc = new Encoder();
-    expect(delta.price(enc, 5, new ScaledRatio())).toBe(false);
+    expect(() => delta.write(enc, 5)).toThrow(TypeError);
     delta.follow(enc, 4);
     for (const offset of [-1, 11, 4.5]) {
-      expect(delta.price(enc, offset, new ScaledRatio())).toBe(false);
+      expect(() => delta.write(enc, offset)).toThrow();
     }
-    const ours = new ScaledRatio();
-    const model = new ScaledRatio();
-    expect(delta.price(enc, 7, ours)).toBe(true);
-    STATIC_MAGNITUDE.price(enc, 7, 4, 0, 10, model);
-    expect(ours).toEqual(model);
+    delta.write(enc, 7);
+    const model = new Encoder();
+    STATIC_MAGNITUDE.write(model, 7, 4, 0, 10);
+    expect(enc.output()).toEqual(model.output());
   });
 
   it('writes, reads and learns on the learned scale from the previous offset', () => {

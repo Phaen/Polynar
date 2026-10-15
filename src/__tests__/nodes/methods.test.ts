@@ -3,15 +3,16 @@
  * per-value mode that picks among the methods available for a value.
  */
 
-import { Encoder, Decoder, ScaledRatio } from '../../packer';
+import { Encoder, Decoder } from '../../packer';
 import { AdaptivePrior } from '../../nodes/adaptive';
 import { Exclusion } from '../../nodes/excluded';
 import { ModeChoice, withMethod, type Method } from '../../nodes/methods';
 
 /**
- * A method spelling a byte as one digit: open when `open` says so, priced
- * at 1 / `odds` (unable to spell anything when undefined), and recording
- * every value it learns with the side that learned it.
+ * A method spelling a byte as one digit after a marker of 1 in `odds`
+ * states, so it costs log2(odds) bits more than the byte (unable to spell
+ * anything when undefined): open when `open` says so, and recording every
+ * value it learns with the side that learned it.
  */
 class Toy implements Method<number> {
   readonly learned: [string, number][] = [];
@@ -25,15 +26,11 @@ class Toy implements Method<number> {
     return this.open;
   }
 
-  price(_enc: Encoder, _value: number, into: ScaledRatio): boolean {
-    if (this.odds === undefined) {
-      return false;
-    }
-    into.multiply(1, this.odds);
-    return true;
-  }
-
   write(enc: Encoder, value: number): void {
+    if (this.odds === undefined) {
+      throw new RangeError(`Toy cannot spell ${value}`);
+    }
+    enc.composeWeighted(0, 1, this.odds);
     if (value > 255) {
       throw new RangeError(`Toy byte ${value}`);
     }
@@ -41,6 +38,8 @@ class Toy implements Method<number> {
   }
 
   read(dec: Decoder): number {
+    const odds = this.odds as number;
+    dec.parseWeighted(odds, (r) => (r === 0 ? [0, 0, 1] : [1, 1, odds - 1]));
     return dec.parse(256);
   }
 
@@ -95,6 +94,7 @@ describe('ModeChoice', () => {
       [7]
     );
     const enc = new Encoder();
+    enc.composeWeighted(0, 1, 2);
     enc.compose(7, 256);
     expect(bytes).toEqual(enc.output());
     expect(read).toEqual([7]);
@@ -102,7 +102,7 @@ describe('ModeChoice', () => {
     expect(other.learned).toEqual([]);
   });
 
-  it('picks the likeliest spelling, the lower index on a tie, as one digit over the available', () => {
+  it('picks the cheapest spelling, the lower index on a tie, as one digit over the available', () => {
     const methods = [new Toy(4), new Toy(4, false), new Toy(2), new Toy(2)];
     const choice = new ModeChoice(methods, undefined, 'test');
     const enc = new Encoder();
@@ -110,6 +110,7 @@ describe('ModeChoice', () => {
     // Method 2 beats 0 and ties 3; method 1 is out, so the digit is 1 of 3.
     const model = new Encoder();
     model.compose(1, 3);
+    model.composeWeighted(0, 1, 2);
     model.compose(9, 256);
     expect(enc.output()).toEqual(model.output());
     // Every other available method learned the value, in index order.
@@ -122,13 +123,17 @@ describe('ModeChoice', () => {
     choice.write(enc, 3);
     const model = new Encoder();
     model.compose(0, 2);
+    model.composeWeighted(0, 1, 8);
     model.compose(3, 256);
     expect(enc.output()).toEqual(model.output());
   });
 
   it("throws the lowest available method's error when none can spell the value", () => {
-    const choice = new ModeChoice([new Toy(undefined), new Toy(undefined)], undefined, 'test');
-    expect(() => choice.write(new Encoder(), 300)).toThrow(new RangeError('Toy byte 300'));
+    const choice = new ModeChoice([new Toy(2), new Toy(undefined)], undefined, 'test');
+    const enc = new Encoder();
+    expect(() => choice.write(enc, 300)).toThrow(new RangeError('Toy byte 300'));
+    // Each try is taken back, so the message holds nothing.
+    expect(enc.output()).toEqual(new Encoder().output());
   });
 
   it('reads the mode back and teaches the other available methods on the decoder', () => {
@@ -182,19 +187,46 @@ describe('ModeChoice', () => {
     without2.add(2);
     values.forEach((value, i) => {
       prior.write(model, 1, 0, openings[i] ? undefined : without2);
+      model.composeWeighted(0, 1, 2);
       model.compose(value, 256);
     });
     expect(bytes).toEqual(model.output());
   });
 
-  it('prices the mode by the adaptive estimate', () => {
+  it('tries the last winner first only while it is available', () => {
+    const write = [new Toy(2), new Toy(1), new Toy(4)];
+    const read = [new Toy(2), new Toy(1), new Toy(4)];
+    const choice = new ModeChoice(write, undefined, 'test');
+    const back = new ModeChoice(read, undefined, 'test');
+    const enc = new Encoder();
+    choice.write(enc, 1);
+    write[1].open = false;
+    choice.write(enc, 2);
+    const dec = new Decoder(enc.output());
+    const values = [back.read(dec)];
+    read[1].open = false;
+    values.push(back.read(dec));
+    dec.finalize();
+    expect(values).toEqual([1, 2]);
+    // Method 1 won the first value; method 0 the second, without it.
+    expect(write.map((m) => m.learned)).toEqual([
+      [['enc', 1]],
+      [],
+      [
+        ['enc', 1],
+        ['enc', 2],
+      ],
+    ]);
+  });
+
+  it('prices the mode as the table learns it', () => {
     const winner = (warmup: number): number => {
       const methods = [new Toy(2), new Toy(2)];
       const choice = new ModeChoice(methods, {}, 'test');
       const enc = new Encoder();
       // Ties go to method 0, whose mode the table learns.
       for (let i = 0; i < warmup; i++) choice.write(enc, i);
-      methods[1].odds = 1.9;
+      methods[1].odds = 1;
       const before = methods[0].learned.length;
       choice.write(enc, 255);
       return methods[0].learned.length > before ? 1 : 0;

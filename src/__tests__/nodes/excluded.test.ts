@@ -38,6 +38,7 @@ describe('Exclusion', () => {
     exclusion.add(3);
     expect(exclusion.count).toBe(2);
     expect(exclusion.members).toEqual([3, 0]);
+    expect([exclusion.member(0), exclusion.member(1)]).toEqual([3, 0]);
     expect([0, 1, 2, 3, 4].map((pos) => exclusion.has(pos))).toEqual([
       true,
       false,

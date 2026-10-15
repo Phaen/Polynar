@@ -5,9 +5,14 @@
  * halving every count rebuilds in O(size).
  */
 
+import type { Journal, Undoable } from '../packer';
 import type { LiveTable } from './adaptive';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
+
+/** The ops a Fenwick takes back: an `add` and a `push`. */
+const ADD = 0;
+const PUSH = 1;
 
 /**
  * The lowest set bit of `i`, a positive tree position. Positions stay below
@@ -47,14 +52,19 @@ function checkTotal(total: number): void {
  * plainly and `tree` the partial sums, 1-based: `tree[j]` sums the
  * `lowbit(j)` counts ending at position `j`. As a live table, member `i`
  * owns the bucket `[prefix(i), prefix(i + 1))`, empty while its count is 0.
+ * Every change records its undo in `journal`, an encoder's; a decoder's
+ * counts have none.
  */
-export class Fenwick implements LiveTable {
-  private readonly counts: number[] = [];
+export class Fenwick implements LiveTable, Undoable {
+  private counts: number[] = [];
   private readonly tree: number[] = [0];
   private sum = 0;
 
   /** Each count a non-negative safe integer, summing to a safe integer; empty is legal. */
-  constructor(counts: readonly number[]) {
+  constructor(
+    counts: readonly number[],
+    private readonly journal?: Journal
+  ) {
     for (const count of counts) {
       checkCount(count);
       this.sum += count;
@@ -65,14 +75,14 @@ export class Fenwick implements LiveTable {
   }
 
   /** `size` counts of 0, `size` a non-negative integer. */
-  static zeros(size: number): Fenwick {
+  static zeros(size: number, journal?: Journal): Fenwick {
     if (!Number.isInteger(size)) {
       throw new TypeError(`Fenwick size must be an integer, got ${size}`);
     }
     if (size < 0) {
       throw new RangeError(`Fenwick size ${size} is negative`);
     }
-    return new Fenwick(new Array<number>(size).fill(0));
+    return new Fenwick(new Array<number>(size).fill(0), journal);
   }
 
   /** The number of counts. */
@@ -128,7 +138,15 @@ export class Fenwick implements LiveTable {
       throw new RangeError(`Fenwick count ${count} at ${i} is below the minimum 0`);
     }
     checkTotal(this.sum + delta);
-    this.counts[i] = count;
+    this.shift(i, delta);
+    if (this.journal?.active === true) {
+      this.journal.own(this, ADD, i, delta);
+    }
+  }
+
+  /** Adds `delta` to the count at `i`, past the checks. */
+  private shift(i: number, delta: number): void {
+    this.counts[i] += delta;
     this.sum += delta;
     for (let j = i + 1; j <= this.size; j += lowbit(j)) {
       this.tree[j] += delta;
@@ -169,10 +187,33 @@ export class Fenwick implements LiveTable {
     this.counts.push(count);
     this.tree.push(count + partial);
     this.sum += count;
+    if (this.journal?.active === true) {
+      this.journal.own(this, PUSH, count);
+    }
+  }
+
+  /** Takes back an `add` of `b` at `a` (`ADD`) or a `push` of `a` (`PUSH`). */
+  undo(op: number, a: number, b: number): void {
+    if (op === ADD) {
+      this.shift(a, -b);
+    } else {
+      this.counts.pop();
+      this.tree.pop();
+      this.sum -= a;
+    }
   }
 
   /** Every count becomes `floor(count / 2)`. */
   halve(): void {
+    if (this.journal?.active === true) {
+      const { counts, sum } = this;
+      this.counts = counts.slice();
+      this.journal.call(() => {
+        this.counts = counts;
+        this.sum = sum;
+        this.rebuild();
+      });
+    }
     this.sum = 0;
     for (let i = 0; i < this.counts.length; i++) {
       this.counts[i] = Math.floor(this.counts[i] / 2);

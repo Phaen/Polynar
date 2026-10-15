@@ -1,4 +1,4 @@
-import { Encoder, Decoder, CorruptInputError, type ScaledRatio } from '../packer';
+import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { RangePrior, checkIndex, checkRange, priorKind, type Prior } from './weights';
 import {
   AdaptivePrior,
@@ -36,15 +36,6 @@ class LearnedMembers implements Method<number> {
     return true;
   }
 
-  price(enc: Encoder, offset: number, into: ScaledRatio): boolean {
-    if (!within(offset, 0, this.prior.members - 1)) {
-      return false;
-    }
-    const [, freq, total] = this.prior.estimate(enc, offset);
-    into.multiply(freq, total);
-    return true;
-  }
-
   write(enc: Encoder, offset: number): void {
     this.prior.write(enc, offset);
   }
@@ -73,14 +64,6 @@ class LearnedOffsets implements Method<number> {
   ) {}
 
   available(): boolean {
-    return true;
-  }
-
-  price(enc: Encoder, offset: number, into: ScaledRatio): boolean {
-    if (!within(offset, this.low, this.high)) {
-      return false;
-    }
-    this.scale.price(enc, offset, 0, this.low, this.high, into);
     return true;
   }
 
@@ -367,20 +350,18 @@ export class Delta implements Method<number> {
 
   /** Records `offset` as the previous one on `side`, for the next value's difference. */
   follow(side: Encoder | Decoder, offset: number): void {
-    this.previous(side).offset = offset;
+    const previous = this.previous(side);
+    const before = previous.offset;
+    previous.offset = offset;
+    if (side.journal?.active === true) {
+      side.journal.call(() => {
+        previous.offset = before;
+      });
+    }
   }
 
   available(side: Encoder | Decoder): boolean {
     return this.previous(side).offset !== undefined;
-  }
-
-  price(enc: Encoder, offset: number, into: ScaledRatio): boolean {
-    const origin = this.previous(enc).offset;
-    if (origin === undefined || !within(offset, this.low, this.high)) {
-      return false;
-    }
-    this.scale.price(enc, offset, origin, this.low, this.high, into);
-    return true;
   }
 
   write(enc: Encoder, offset: number): void {

@@ -56,12 +56,22 @@ export const TERM_PAYLOAD_MIN_DIGITS = (() => {
 export const TERM_COUNT_RUN_DIGITS = 6;
 
 /**
- * The window of the streaming coder. Before a symbol of `total` states is
- * read, the decoder's state is at least ⌊RANS_L/total⌋·total, unless the
- * input has run out. The renormalisation is exact when, for every symbol and
- * the one after it in the message, RANS_L ≥ total·next total: the encoder's
- * state after emitting for a symbol then never falls below the window of the
- * next, so the decoder stops reading exactly where the encoder started
- * emitting. Totals stay below 2^53, so 2^106 meets it for every pair.
+ * The window L of the streaming coder in base `size`: 2^(52 − ⌈log2 size⌉),
+ * so size·2L is at most 2^53. Symbol i of `total` T_i and `freq` f_i has
+ * window k_i = max(1, ⌊L/T_i⌋, ⌈B_{i−1}/T_i⌉), where B_{i−1} = k_{i−1}·f_{i−1}
+ * of the coded symbol before it, 0 for the first; the decoder's state is at
+ * least A_i = k_i·T_i before symbol i is read, unless the input has run
+ * out. The renormalisation is exact when A_i ≥ B_{i−1} for every symbol:
+ * the encoder's state after emitting for a symbol then never falls below
+ * the window of the next, so the decoder stops reading exactly where the
+ * encoder started emitting. The ceiling term makes that hold by
+ * construction, for any totals. While T_{i−1}·T_i ≤ L it is never the
+ * largest, and A_i ≤ L keeps the state, below size·A_i, a safe integer.
  */
-export const RANS_L = 1n << 106n;
+export function ransWindow(size: number): number {
+  let bits = 0;
+  while (2 ** bits < size) {
+    bits++;
+  }
+  return 2 ** (52 - bits);
+}

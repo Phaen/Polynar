@@ -5,7 +5,7 @@
  * safe range.
  */
 
-import { Encoder, Decoder, ScaledRatio } from '../../packer';
+import { Encoder, Decoder } from '../../packer';
 import { AdaptivePrior } from '../../nodes/adaptive';
 import { Exclusion } from '../../nodes/excluded';
 import {
@@ -46,9 +46,6 @@ const digits = (...composes: [number, number][]): Uint8Array => {
   for (const [digit, radix] of composes) enc.compose(digit, radix);
   return enc.output();
 };
-
-/** Whether two ratios are equal: neither exceeds the other. */
-const same = (a: ScaledRatio, b: ScaledRatio): boolean => !a.exceeds(b) && !b.exceeds(a);
 
 /** Every case on small intervals around the origin: each interval, origin and value. */
 const small: Case[] = [];
@@ -103,12 +100,10 @@ describe.each([
     const scale = make();
     const enc = new Encoder();
     const dec = new Decoder(new Uint8Array(0));
-    const ratio = new ScaledRatio();
     for (const bad of [1.5, NaN, Infinity, TWO_53]) {
       expect(() => scale.write(enc, bad, 0, -5, 5)).toThrow(TypeError);
       expect(() => scale.write(enc, 0, 0, bad, 5)).toThrow(TypeError);
       expect(() => scale.read(dec, bad, -5, 5)).toThrow(TypeError);
-      expect(() => scale.price(enc, 0, 0, -5, bad, ratio)).toThrow(TypeError);
       expect(() => scale.learn(enc, 0, bad, -5, 5)).toThrow(TypeError);
     }
     expect(() => scale.write(enc, 0, 6, -5, 5)).toThrow(
@@ -183,20 +178,6 @@ describe('static magnitude', () => {
       digits([55, 56], [TWO_53 - 3, TWO_53 - 2])
     );
   });
-
-  it('prices a value as its digit and tail', () => {
-    const ratio = new ScaledRatio();
-    STATIC_MAGNITUDE.price(new Encoder(), 100, 0, -10, 100, ratio);
-    const model = new ScaledRatio();
-    model.multiply(1, 12);
-    model.multiply(1, 37);
-    expect(same(ratio, model)).toBe(true);
-    const zero = new ScaledRatio();
-    STATIC_MAGNITUDE.price(new Encoder(), 0, 0, -10, 100, zero);
-    const one = new ScaledRatio();
-    one.multiply(1, 12);
-    expect(same(zero, one)).toBe(true);
-  });
 });
 
 describe('learned magnitude', () => {
@@ -234,34 +215,6 @@ describe('learned magnitude', () => {
     prior.write(model, SIDE_SYMBOLS - 1 + 2, 0, exclusion);
     prior.write(model, 5, 0, exclusion);
     expect(bytes).toEqual(model.output());
-  });
-
-  it('prices a value by the adaptive estimate and its tail', () => {
-    const scale = new LearnedMagnitude(false, {}, 'test');
-    const enc = new Encoder();
-    for (let i = 0; i < 10; i++) scale.write(enc, 200, 0, 0, MAX);
-    const ratio = new ScaledRatio();
-    scale.price(enc, 200, 0, 0, MAX, ratio);
-
-    const prior = new AdaptivePrior([sideWeights(0)], SIDE_SYMBOLS, undefined, 'test');
-    const shadow = new Encoder();
-    for (let i = 0; i < 10; i++) prior.learn(shadow, DIRECT + 1);
-    // No safe distance from 0 reaches class 54, the last symbol.
-    const past = new Exclusion(SIDE_SYMBOLS);
-    past.add(SIDE_SYMBOLS - 1);
-    const [, freq, total] = prior.estimate(shadow, DIRECT + 1, 0, past);
-    const model = new ScaledRatio();
-    model.multiply(freq, total);
-    model.multiply(1, 128);
-    expect(same(ratio, model)).toBe(true);
-
-    // A direct distance has no tail.
-    const direct = new ScaledRatio();
-    scale.price(enc, 3, 0, 0, MAX, direct);
-    const [, f3, t3] = prior.estimate(shadow, 3, 0, past);
-    const three = new ScaledRatio();
-    three.multiply(f3, t3);
-    expect(same(direct, three)).toBe(true);
   });
 
   it('refuses an interval below the origin when unsigned', () => {

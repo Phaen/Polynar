@@ -15,7 +15,7 @@
  * floating point.
  */
 
-import type { Encoder, Decoder, ScaledRatio } from '../packer';
+import type { Encoder, Decoder } from '../packer';
 import { AdaptivePrior, checkAdaptation, lineageOf, type AdaptiveOptions } from './adaptive';
 import { Exclusion } from './excluded';
 
@@ -139,15 +139,6 @@ export interface Magnitude {
   write(enc: Encoder, value: number, origin: number, lo: number, hi: number): void;
   /** Reads a value `write` wrote under the same origin and interval, and learns it. */
   read(dec: Decoder, origin: number, lo: number, hi: number): number;
-  /** Multiplies `into` by the probability `write` would give `value` as the tables stand, learning nothing. */
-  price(
-    enc: Encoder,
-    value: number,
-    origin: number,
-    lo: number,
-    hi: number,
-    into: ScaledRatio
-  ): void;
   /** Learns `value` as though it were written; nothing for a scale that does not learn. */
   learn(side: Encoder | Decoder, value: number, origin: number, lo: number, hi: number): void;
 }
@@ -185,15 +176,6 @@ export const STATIC_MAGNITUDE: Magnitude = {
     }
     const up = digit <= ups;
     return readTail(dec, up, up ? digit : digit - ups, origin, lo, hi);
-  },
-
-  price(_enc, value, origin, lo, hi, into) {
-    check(value, origin, lo, hi);
-    const placed = place(value, origin);
-    into.multiply(1, staticRadix(origin, lo, hi));
-    if (placed.cls > 0) {
-      into.multiply(1, tailRadix(placed.up, placed.cls, origin, lo, hi));
-    }
   },
 
   learn(_side, value, origin, lo, hi) {
@@ -332,28 +314,6 @@ export class LearnedMagnitude implements Magnitude {
       return up ? origin + symbol : origin - symbol;
     }
     return readTail(dec, up, symbol - DIRECT + FIRST_CLASS, origin, lo, hi);
-  }
-
-  price(
-    enc: Encoder,
-    value: number,
-    origin: number,
-    lo: number,
-    hi: number,
-    into: ScaledRatio
-  ): void {
-    this.checkSide(value, origin, lo, hi);
-    const placed = place(value, origin);
-    const [, freq, total] = this.prior.estimate(
-      enc,
-      this.member(placed),
-      0,
-      this.exclusion(origin, lo, hi)
-    );
-    into.multiply(freq, total);
-    if (placed.cls >= FIRST_CLASS) {
-      into.multiply(1, tailRadix(placed.up, placed.cls, origin, lo, hi));
-    }
   }
 
   learn(side: Encoder | Decoder, value: number, origin: number, lo: number, hi: number): void {

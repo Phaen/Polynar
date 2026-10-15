@@ -1,4 +1,4 @@
-import { Encoder, Decoder, CorruptInputError } from '../packer';
+import { Encoder, Decoder, CorruptInputError, ReplayDecoder, type Journal } from '../packer';
 import { isPlainObject, kindOf, type Kind, type TypedArray } from './guards';
 import { PNode } from './base';
 import { PInt } from './int';
@@ -333,12 +333,14 @@ function tagNodes(
  * not JSON (undefined, a hole, -0, a non-finite number, any other class)
  * or it nests past `MAX_DEPTH`. Each container's identity is kept in
  * `memo`; a container is null there while its own is worked out, so a
- * value holding itself is null too.
+ * value holding itself is null too. Each entry made records its undo in
+ * `journal`.
  */
 export function treeKey(
   value: unknown,
   memo: WeakMap<object, string | null>,
-  depth = 0
+  depth = 0,
+  journal?: Journal
 ): string | null {
   switch (typeof value) {
     case 'string':
@@ -359,11 +361,14 @@ export function treeKey(
     return memo.get(value) ?? null;
   }
   memo.set(value, null);
+  if (journal?.active === true) {
+    journal.drop(memo, value);
+  }
   const parts: string[] = [];
   let key: string;
   if (Array.isArray(value)) {
     for (let i = 0; i < value.length; i++) {
-      const part = treeKey(value[i], memo, depth + 1);
+      const part = treeKey(value[i], memo, depth + 1, journal);
       if (part === null) {
         return null;
       }
@@ -372,7 +377,7 @@ export function treeKey(
     key = `[${parts.join()}]`;
   } else if (isPlainObject(value)) {
     for (const name of Object.keys(value)) {
-      const part = treeKey(value[name], memo, depth + 1);
+      const part = treeKey(value[name], memo, depth + 1, journal);
       if (part === null) {
         return null;
       }
@@ -415,7 +420,7 @@ class Trees {
       memo: new WeakMap(),
       index: new Map(),
       values: [],
-      counts: Fenwick.zeros(0),
+      counts: Fenwick.zeros(0, side.journal),
     }));
   }
 
@@ -425,7 +430,7 @@ class Trees {
     if (index.size === 0 || typeof value !== 'object' || value === null) {
       return undefined;
     }
-    const key = treeKey(value, memo);
+    const key = treeKey(value, memo, 0, enc.journal);
     return key === null ? undefined : index.get(key);
   }
 
@@ -438,9 +443,14 @@ class Trees {
     const member = state.counts.size;
     state.counts.push(1);
     if (side instanceof Encoder) {
-      const key = treeKey(value, state.memo);
+      const key = treeKey(value, state.memo, 0, side.journal);
+      // A container equal to a listed one is recalled, not coded in full,
+      // so its key is new to the index.
       if (key !== null) {
         state.index.set(key, member);
+        if (side.journal.active) {
+          side.journal.drop(state.index, key);
+        }
       }
     } else {
       state.values.push(value);
@@ -821,11 +831,23 @@ export class PAny extends PNode<AnyValue> {
     const { children } = message;
     let child = key === undefined ? undefined : children.get(key);
     if (child === undefined) {
+      const { journal } = side;
       if (key !== undefined && children.size < MAX_KEYS) {
         child = this._build(key);
         children.set(key, child);
+        if (journal?.active === true) {
+          journal.drop(children, key);
+        }
+      } else if (message.overflow === undefined) {
+        child = this._build(undefined);
+        message.overflow = child;
+        if (journal?.active === true) {
+          journal.call(() => {
+            message.overflow = undefined;
+          });
+        }
       } else {
-        child = message.overflow ??= this._build(undefined);
+        child = message.overflow;
       }
     }
     return child;
@@ -948,7 +970,7 @@ export class PAny extends PNode<AnyValue> {
 
   /**
    * Whether hint `i` writes `value` without throwing and reads it back
-   * unchanged, tried on an encoder and decoder of its own.
+   * unchanged, written to an encoder of its own and read back off its log.
    */
   private _takes(i: number, value: unknown): boolean {
     const form = this._forms[i];
@@ -956,7 +978,10 @@ export class PAny extends PNode<AnyValue> {
     trials.add(trial);
     try {
       form._write(trial, value);
-      return sameValue(form.decode(trial.output()), value);
+      const replay = new ReplayDecoder(trial);
+      const back: unknown = form._read(replay);
+      replay.finalize();
+      return sameValue(back, value);
     } catch {
       return false;
     }

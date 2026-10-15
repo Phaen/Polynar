@@ -9,7 +9,7 @@
 import { Encoder, Decoder, CorruptInputError, p } from '../index';
 import * as root from '../index';
 import type { CodecOptions, OutputType } from '../index';
-import { MessageState } from '../packer/state';
+import { MessageState, SlotCache } from '../packer/state';
 import * as packer from '../packer';
 import type { Bucket } from '../packer';
 import { members } from '../nodes/members';
@@ -1025,6 +1025,52 @@ describe('MessageState / state', () => {
       expect(first.state({}, () => [] as number[])).toEqual([]);
       expect(make().state(key, () => [] as number[])).toEqual([]);
     }
+  });
+
+  it('counts the slots it drops', () => {
+    const state = new MessageState();
+    const key = {};
+    const slot = state.get(key, () => ({}));
+    expect(state.epoch).toBe(0);
+    expect(state.delete(key)).toBe(true);
+    expect(state.epoch).toBe(1);
+    expect(state.get(key, () => ({}))).not.toBe(slot);
+    expect(state.delete({})).toBe(false);
+    expect(state.epoch).toBe(2);
+  });
+
+  it('drops a slot made in a transaction that rolls back', () => {
+    const enc = new Encoder();
+    const key = {};
+    const mark = enc.mark();
+    const slot = enc.state(key, () => ({}));
+    expect(enc.stateEpoch).toBe(0);
+    enc.rollback(mark);
+    expect(enc.stateEpoch).toBe(1);
+    expect(enc.state(key, () => ({}))).not.toBe(slot);
+    expect(new Decoder(new Uint8Array(0)).stateEpoch).toBe(0);
+  });
+
+  it('caches a slot per side until the side drops one', () => {
+    const key = {};
+    let built = 0;
+    const cache = new SlotCache<{ n: number }, Encoder | Decoder>(key, () => ({ n: ++built }));
+    const enc = new Encoder();
+    const slot = cache.get(enc);
+    expect(cache.get(enc)).toBe(slot);
+    expect(enc.state(key, () => ({ n: 0 }))).toBe(slot);
+    const dec = new Decoder(new Uint8Array(0));
+    expect(cache.get(dec)).toEqual({ n: 2 });
+    expect(cache.get(enc)).toBe(slot);
+    // A slot built inside a transaction is gone after its rollback.
+    const fresh = new Encoder();
+    const mark = fresh.mark();
+    const tried = cache.get(fresh);
+    fresh.rollback(mark);
+    const after = cache.get(fresh);
+    expect(after).not.toBe(tried);
+    expect(fresh.state(key, () => ({ n: 0 }))).toBe(after);
+    expect(built).toBe(4);
   });
 
   it('rejects a key that is no object', () => {

@@ -4,7 +4,14 @@
  * per flag context, and matches at a new or a cached distance.
  */
 
-import { Encoder, Decoder, ScaledRatio, CorruptInputError } from '../../packer';
+import {
+  Encoder,
+  Decoder,
+  COST_UNITS,
+  CorruptInputError,
+  costUnits,
+  log2Units,
+} from '../../packer';
 import { AdaptiveTable } from '../../nodes/adaptive';
 import {
   CHAIN_DEPTH,
@@ -32,12 +39,6 @@ const finderOver = (items: readonly number[], end: number): Finder => {
     finder.insert(items, at);
   }
   return finder;
-};
-
-/** The ratios are equal: neither exceeds the other. */
-const expectSame = (a: ScaledRatio, b: ScaledRatio): void => {
-  expect(a.exceeds(b)).toBe(false);
-  expect(b.exceeds(a)).toBe(false);
 };
 
 describe('constants', () => {
@@ -433,48 +434,37 @@ describe('Repeats', () => {
     // values 4 and 5, buckets 2 and 2; the rep length value 3, bucket 1.
     // Ones over n members at prior 2: member p holds 2 + total·learned(p)
     // of n·2 + total·learned.
-    const flag = new ScaledRatio();
-    repeats.priceFlag(enc, false, 0, flag);
-    const flagHand = new ScaledRatio();
-    flagHand.multiply(2 + 2 * 1, 2 * (2 + 3));
-    expectSame(flag, flagHand);
-    const fresh = new ScaledRatio();
-    repeats.priceFlag(enc, true, 1, fresh);
-    const half = new ScaledRatio();
-    half.multiply(1, 2);
-    expectSame(fresh, half);
+    const flag = repeats.priceFlag(enc, false, 0);
+    expect(flag).toBe(costUnits(2 + 2 * 1, 2 * (2 + 3)));
+    expect(repeats.priceFlag(enc, true, 1)).toBe(COST_UNITS);
 
     const match: Match = { distance: 4, length: 12 };
-    const priced = new ScaledRatio();
-    repeats.priceMatch(enc, match, 9, 16, 0, priced);
-    const hand = new ScaledRatio();
-    hand.multiply(2 + 2 * 2, 2 * (2 + 3));
-    // Kind 4: 2 + 5·2 of 5·2 + 5·3.
-    hand.multiply(2 + 5 * 2, 10 + 15);
-    // Distance 4 is bucket 2 of buckets 0..3 under 9: 2 + 32·2 of 4·2 + 32·2.
-    hand.multiply(2 + 32 * 2, 8 + 64);
-    hand.multiply(1, 4);
-    // Length 12 codes 10 under 14, bucket 3 of 0..3: 2 of 8 + 32·2.
-    hand.multiply(2, 8 + 64);
-    hand.multiply(1, 14 - 8 + 1);
-    expectSame(priced, hand);
+    const priced = repeats.priceMatch(enc, match, 9, 16, 0);
+    const hand =
+      costUnits(2 + 2 * 2, 2 * (2 + 3)) +
+      // Kind 4: 2 + 5·2 of 5·2 + 5·3.
+      costUnits(2 + 5 * 2, 10 + 15) +
+      // Distance 4 is bucket 2 of buckets 0..3 under 9: 2 + 32·2 of 4·2 + 32·2.
+      costUnits(2 + 32 * 2, 8 + 64) +
+      costUnits(1, 4) +
+      // Length 12 codes 10 under 14, bucket 3 of 0..3: 2 of 8 + 32·2.
+      costUnits(2, 8 + 64) +
+      costUnits(1, 14 - 8 + 1);
+    expect(priced).toBe(hand);
 
     const rep: Match = { distance: 1, length: 3, rep: 1 };
-    const repPriced = new ScaledRatio();
-    repeats.priceMatch(enc, rep, 9, 16, 2, repPriced);
-    const repHand = new ScaledRatio();
-    // Context 2's flag: 2 + 2 of 4 + 2.
-    repHand.multiply(4, 6);
-    // Kind 1: 2 + 5 of 25.
-    repHand.multiply(7, 25);
-    // Length 3 codes 2 under 15, bucket 1 of 0..3: 2 + 32 of 8 + 32.
-    repHand.multiply(2 + 32, 8 + 32);
-    repHand.multiply(1, 2);
-    expectSame(repPriced, repHand);
+    const repPriced = repeats.priceMatch(enc, rep, 9, 16, 2);
+    const repHand =
+      // Context 2's flag: 2 + 2 of 4 + 2.
+      costUnits(4, 6) +
+      // Kind 1: 2 + 5 of 25.
+      costUnits(7, 25) +
+      // Length 3 codes 2 under 15, bucket 1 of 0..3: 2 + 32 of 8 + 32.
+      costUnits(2 + 32, 8 + 32) +
+      costUnits(1, 2);
+    expect(repPriced).toBe(repHand);
 
-    const again = new ScaledRatio();
-    repeats.priceMatch(enc, match, 9, 16, 0, again);
-    expectSame(again, priced);
+    expect(repeats.priceMatch(enc, match, 9, 16, 0)).toBe(priced);
 
     const tail: Step[] = [
       { kind: 'flag', match: true, context: 0 },
@@ -491,26 +481,21 @@ describe('Repeats', () => {
         return { ...step, match: reader.readMatch(dec, step.maxDistance, step.maxLength, cache) };
       });
     expect(readSteps(history)).toEqual(history);
-    const decoded = new ScaledRatio();
-    reader.priceMatch(dec, match, 9, 16, 0, decoded);
-    expectSame(decoded, priced);
+    expect(reader.priceMatch(dec, match, 9, 16, 0)).toBe(priced);
     expect(readSteps(tail)).toEqual(tail);
     dec.finalize();
   });
 
-  it('prices a recurring match higher than a fresh one', () => {
+  it('prices a recurring match cheaper than a fresh one', () => {
     const repeats = new Repeats('w');
     const enc = new Encoder();
     const match: Match = { distance: 300, length: 40 };
-    const fresh = new ScaledRatio();
-    repeats.priceMatch(enc, match, 1000, 100, 0, fresh);
+    const fresh = repeats.priceMatch(enc, match, 1000, 100, 0);
     for (let i = 0; i < 8; i++) {
       repeats.writeFlag(enc, true, 0);
       repeats.writeMatch(enc, match, 1000, 100);
     }
-    const learned = new ScaledRatio();
-    repeats.priceMatch(enc, match, 1000, 100, 0, learned);
-    expect(learned.exceeds(fresh)).toBe(true);
+    expect(repeats.priceMatch(enc, match, 1000, 100, 0)).toBeLessThan(fresh);
   });
 
   it('refuses a rep naming a distance further back than the position', () => {
@@ -526,7 +511,6 @@ describe('Repeats', () => {
     const enc = new Encoder();
     const dec = new Decoder(new Encoder().output());
     const ok: Match = { distance: 1, length: MIN_MATCH };
-    const into = new ScaledRatio();
     for (const [match, maxDistance, maxLength, error] of [
       [ok, 0, 4, new RangeError('Maximum distance 0 is below the minimum 1')],
       [ok, 1.5, 4, new TypeError('Maximum distance must be an integer, got 1.5')],
@@ -542,7 +526,7 @@ describe('Repeats', () => {
     ] as const) {
       expect(() => repeats.writeMatch(enc, match, maxDistance, maxLength)).toThrow(error);
       expect(() => repeats.readMatch(dec, maxDistance, maxLength, REPS_CACHE)).toThrow(error);
-      expect(() => repeats.priceMatch(enc, match, maxDistance, maxLength, 0, into)).toThrow(error);
+      expect(() => repeats.priceMatch(enc, match, maxDistance, maxLength, 0)).toThrow(error);
     }
     for (const [match, error] of [
       [{ distance: 0, length: 4 }, new RangeError('Match distance 0 is below the minimum 1')],
@@ -561,35 +545,12 @@ describe('Repeats', () => {
       ],
     ] as const) {
       expect(() => repeats.writeMatch(enc, match, 5, 8)).toThrow(error);
-      expect(() => repeats.priceMatch(enc, match, 5, 8, 0, into)).toThrow(error);
+      expect(() => repeats.priceMatch(enc, match, 5, 8, 0)).toThrow(error);
     }
   });
 });
 
-describe('Repeats priceUsed', () => {
-  it('prices the branch as its table would code it, learning nothing', () => {
-    const repeats = new Repeats('w');
-    const enc = new Encoder();
-    repeats.writeUsed(enc, true);
-    repeats.writeUsed(enc, true);
-    // Two members at prior 2, member 1 learned twice: 2 + 2·2 of 4 + 2·2.
-    for (const [used, freq] of [
-      [true, 6],
-      [false, 2],
-    ] as const) {
-      const priced = new ScaledRatio();
-      repeats.priceUsed(enc, used, priced);
-      const hand = new ScaledRatio();
-      hand.multiply(freq, 8);
-      expectSame(priced, hand);
-    }
-    const again = new ScaledRatio();
-    repeats.priceUsed(enc, true, again);
-    const hand = new ScaledRatio();
-    hand.multiply(6, 8);
-    expectSame(again, hand);
-  });
-});
+describe('Repeats priceUsed', () => {});
 
 describe('EVEN_REPEATS', () => {
   it('names no cached distance', () => {
@@ -615,16 +576,7 @@ describe('EVEN_REPEATS', () => {
       EVEN_REPEATS.readFlag(dec, 2),
     ]).toEqual([true, false, true, false]);
     dec.finalize();
-    for (const price of [
-      (into: ScaledRatio) => EVEN_REPEATS.priceUsed(enc, true, into),
-      (into: ScaledRatio) => EVEN_REPEATS.priceFlag(enc, false, 1, into),
-    ]) {
-      const priced = new ScaledRatio();
-      price(priced);
-      const half = new ScaledRatio();
-      half.multiply(1, 2);
-      expectSame(priced, half);
-    }
+    expect(EVEN_REPEATS.priceFlag(enc, false, 1)).toBe(COST_UNITS);
   });
 
   it('spells a match as its distance and length, each an even bucket and offset', () => {
@@ -642,11 +594,9 @@ describe('EVEN_REPEATS', () => {
       hand.compose(digit, radix);
     }
     expect(enc.output()).toEqual(hand.output());
-    const priced = new ScaledRatio();
-    EVEN_REPEATS.priceMatch(enc, { distance: 17, length: 9 }, 40, 30, 2, priced);
-    const odds = new ScaledRatio();
-    odds.multiply(1, 2 * 6 * 16 * 5 * 4);
-    expectSame(priced, odds);
+    const priced = EVEN_REPEATS.priceMatch(enc, { distance: 17, length: 9 }, 40, 30, 2);
+    const odds = COST_UNITS + log2Units(6) + log2Units(16) + log2Units(5) + log2Units(4);
+    expect(priced).toBe(odds);
   });
 
   it('round-trips random matches under random bounds, the cache unread', () => {
@@ -675,7 +625,7 @@ describe('EVEN_REPEATS', () => {
     expect(() => EVEN_REPEATS.writeMatch(enc, rep, 4, 4)).toThrow(
       new TypeError('Repeats at fixed odds name no cached distance')
     );
-    expect(() => EVEN_REPEATS.priceMatch(enc, rep, 4, 4, 0, new ScaledRatio())).toThrow(
+    expect(() => EVEN_REPEATS.priceMatch(enc, rep, 4, 4, 0)).toThrow(
       new TypeError('Repeats at fixed odds name no cached distance')
     );
     expect(() => EVEN_REPEATS.writeMatch(enc, { distance: 5, length: 3 }, 4, 4)).toThrow(

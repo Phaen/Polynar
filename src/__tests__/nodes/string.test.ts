@@ -585,9 +585,11 @@ describe('p.string methods', () => {
     );
   });
 
-  it('refuses a truncated delta', () => {
+  it('refuses a truncated delta under a checksum', () => {
     const node = p.array(p.string().delta());
-    const bytes = node.encode(urls.slice(0, 5));
-    expect(() => node.decode(bytes.subarray(0, bytes.length - 3))).toThrow(CorruptInputError);
+    const bytes = node.encode(urls.slice(0, 5), { checksum: 16 });
+    expect(() => node.decode(bytes.subarray(0, bytes.length - 3), { checksum: 16 })).toThrow(
+      CorruptInputError
+    );
   });
 });

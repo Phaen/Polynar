@@ -4,7 +4,7 @@
  * of its history before the prior, with exclusion.
  */
 
-import { Encoder, Decoder, ScaledRatio } from '../../packer';
+import { Encoder, Decoder, costUnits } from '../../packer';
 import { AdaptivePrior } from '../../nodes/adaptive';
 import {
   CELL_LIMIT,
@@ -71,19 +71,6 @@ const decode = (
   const out = steps(symbols, order).map(({ row, history }) => model.read(dec, row, history));
   dec.finalize();
   return out;
-};
-
-/** Neither ratio exceeds the other. */
-const same = (a: ScaledRatio, b: ScaledRatio): boolean => !a.exceeds(b) && !b.exceeds(a);
-
-/** The ratios agree to a part in 10^12, for products that round differently. */
-const close = (a: ScaledRatio, b: ScaledRatio): boolean => {
-  const quotient = a.over(b);
-  const low = new ScaledRatio();
-  low.multiply(1e12 - 1, 1e12);
-  const high = new ScaledRatio();
-  high.multiply(1e12 + 1, 1e12);
-  return quotient.exceeds(low) && high.exceeds(quotient);
 };
 
 describe('Context', () => {
@@ -262,32 +249,29 @@ describe('ContextModel', () => {
   ])('prices %s as its write codes, the prior at its estimate', (_name, symbols, next) => {
     for (const order of [0, 1] as const) {
       const { model, prior, enc, step } = trained(order, symbols, next);
-      const priced = new ScaledRatio();
-      model.price(enc, step.sym, step.row, step.history, priced);
-      const coded = new ScaledRatio();
+      const priced = model.price(enc, step.sym, step.row, step.history);
+      let coded = 0;
       const compose = enc.composeWeighted.bind(enc);
       const spy = jest.spyOn(enc, 'composeWeighted').mockImplementation((cum, freq, total) => {
-        coded.multiply(freq, total);
+        coded += costUnits(freq, total);
         compose(cum, freq, total);
       });
       const estimated = jest
         .spyOn(prior, 'write')
         .mockImplementation((side, pos, row, excluded) => {
           const [, freq, total] = prior.estimate(side, pos, row, excluded);
-          coded.multiply(freq, total);
+          coded += costUnits(freq, total);
         });
       model.write(enc, step.sym, step.row, step.history);
       spy.mockRestore();
       estimated.mockRestore();
-      expect(same(priced, coded)).toBe(true);
+      expect(priced).toBe(coded);
       // Pricing learns nothing: the same price again.
-      const again = new ScaledRatio();
       const fresh = trained(order, symbols, next);
-      fresh.model.price(fresh.enc, step.sym, step.row, step.history, again);
-      fresh.model.price(fresh.enc, step.sym, step.row, step.history, new ScaledRatio());
-      const twice = new ScaledRatio();
-      fresh.model.price(fresh.enc, step.sym, step.row, step.history, twice);
-      expect(same(again, twice)).toBe(true);
+      const again = fresh.model.price(fresh.enc, step.sym, step.row, step.history);
+      fresh.model.price(fresh.enc, step.sym, step.row, step.history);
+      const twice = fresh.model.price(fresh.enc, step.sym, step.row, step.history);
+      expect(again).toBe(twice);
     }
   });
 
@@ -301,12 +285,8 @@ describe('ContextModel', () => {
     // the eight symbols learned at 12 each: 4 holds 1·3 + 64·12 of the 867
     // that 0, 1 and 4 hold, 2 and 3 ruled out.
     const { model, enc, step } = trained(0, [0, 1, 2, 0, 1, 3, 0, 1], 4);
-    const priced = new ScaledRatio();
-    model.price(enc, step.sym, step.row, step.history, priced);
-    const expected = new ScaledRatio();
-    expected.multiply(2, 6);
-    expected.multiply(771, 867);
-    expect(same(priced, expected)).toBe(true);
+    const priced = model.price(enc, step.sym, step.row, step.history);
+    expect(priced).toBe(costUnits(2, 6) + costUnits(771, 867));
     const spy = jest.spyOn(enc, 'composeWeighted');
     model.write(enc, step.sym, step.row, step.history);
     // Only the order-2 escape and the prior, still static on its first
@@ -339,11 +319,8 @@ describe('ContextModel', () => {
     };
     const hit = (hits: number, total: number): void => {
       const { model, enc } = zeros(WARMUP + hits);
-      const priced = new ScaledRatio();
-      model.price(enc, 0, 0, [0, 0, 0], priced);
-      const expected = new ScaledRatio();
-      expected.multiply(hits === 0 ? 4 : total - 2, total);
-      expect(close(priced, expected)).toBe(true);
+      const priced = model.price(enc, 0, 0, [0, 0, 0]);
+      expect(priced).toBe(costUnits(hits === 0 ? 4 : total - 2, total));
     };
     hit(0, 6);
     hit(3, 12);
@@ -351,11 +328,8 @@ describe('ContextModel', () => {
     // and one more hit to 2050 and 1, where unhalved counts would be 4098
     // and 2.
     const { model, enc } = zeros(WARMUP + 2047);
-    const priced = new ScaledRatio();
-    model.price(enc, 0, 0, [0, 0, 0], priced);
-    const expected = new ScaledRatio();
-    expected.multiply(2050, 2051);
-    expect(close(priced, expected)).toBe(true);
+    const priced = model.price(enc, 0, 0, [0, 0, 0]);
+    expect(priced).toBe(costUnits(2050, 2051));
   });
 
   it('tells whether the last symbol coded was a hit in the highest-order context', () => {
@@ -413,12 +387,11 @@ describe('ContextModel', () => {
     // 2 after 3 0 1, 3 ruled out: the order-3 context is new and skipped;
     // the order-2 one keeps only 2 of its 2 and 3.
     const { model, enc, step } = trained(0, [0, 1, 2, 0, 1, 3, 0, 1], 2);
-    const priced = new ScaledRatio();
-    model.price(enc, step.sym, step.row, step.history, priced, 3);
-    const coded = new ScaledRatio();
+    const priced = model.price(enc, step.sym, step.row, step.history, 3);
+    let coded = 0;
     const compose = enc.composeWeighted.bind(enc);
     const spy = jest.spyOn(enc, 'composeWeighted').mockImplementation((cum, freq, total) => {
-      coded.multiply(freq, total);
+      coded += costUnits(freq, total);
       compose(cum, freq, total);
     });
     model.write(enc, step.sym, step.row, step.history, 3);
@@ -429,7 +402,7 @@ describe('ContextModel', () => {
       [0, 1, 1],
     ]);
     spy.mockRestore();
-    expect(same(priced, coded)).toBe(true);
+    expect(priced).toBe(coded);
     expect(model.hitTop(enc)).toBe(false);
   });
 
@@ -467,14 +440,13 @@ describe('ContextModel', () => {
     const enc = new Encoder();
     const dec = new Decoder(new Encoder().output());
     const history = [START, START, START];
-    const ratio = new ScaledRatio();
     expect(() => model.write(enc, 5, 0, history)).toThrow(
       new RangeError('w symbol 5 is outside [0, 5)')
     );
     expect(() => model.learn(enc, -1, 0, history)).toThrow(
       new RangeError('w symbol -1 is outside [0, 5)')
     );
-    expect(() => model.price(enc, 0.5, 0, history, ratio)).toThrow(
+    expect(() => model.price(enc, 0.5, 0, history)).toThrow(
       new TypeError('w symbol 0.5 is not an integer')
     );
     expect(() => model.write(enc, 0, 0, history, 5)).toThrow(
@@ -524,12 +496,9 @@ describe('ContextModel warm-up', () => {
       // The next symbol's contexts have seen it: priced through them, not
       // at the prior's estimate.
       const { sym, row, history } = run[WARMUP];
-      const priced = new ScaledRatio();
-      model.price(withModel, sym, row, history, priced);
+      const priced = model.price(withModel, sym, row, history);
       const [, freq, total] = prior.estimate(withPrior, sym, row);
-      const alone = new ScaledRatio();
-      alone.multiply(freq, total);
-      expect(same(priced, alone)).toBe(false);
+      expect(priced).not.toBe(costUnits(freq, total));
       run.slice(WARMUP).forEach((step) => {
         model.write(withModel, step.sym, step.row, step.history);
         prior.write(withPrior, step.sym, step.row);
@@ -546,23 +515,18 @@ describe('ContextModel warm-up', () => {
     run
       .slice(0, WARMUP - 1)
       .forEach(({ sym, row, history }) => model.learn(enc, sym, row, history));
-    const priceOf = (step: (typeof run)[number]): ScaledRatio => {
-      const ratio = new ScaledRatio();
-      model.price(enc, step.sym, step.row, step.history, ratio);
-      return ratio;
-    };
+    const priceOf = (step: (typeof run)[number]): number =>
+      model.price(enc, step.sym, step.row, step.history);
     // One symbol short: the prior's estimate alone, though the contexts
     // have seen the symbol.
     const below = priceOf(run[WARMUP - 1]);
-    const estimate = (step: (typeof run)[number]): ScaledRatio => {
-      const ratio = new ScaledRatio();
+    const estimate = (step: (typeof run)[number]): number => {
       const [, freq, total] = prior.estimate(enc, step.sym, step.row);
-      ratio.multiply(freq, total);
-      return ratio;
+      return costUnits(freq, total);
     };
-    expect(same(below, estimate(run[WARMUP - 1]))).toBe(true);
+    expect(below).toBe(estimate(run[WARMUP - 1]));
     const last = run[WARMUP - 1];
     model.learn(enc, last.sym, last.row, last.history);
-    expect(same(priceOf(run[WARMUP]), estimate(run[WARMUP]))).toBe(false);
+    expect(priceOf(run[WARMUP])).not.toBe(estimate(run[WARMUP]));
   });
 });

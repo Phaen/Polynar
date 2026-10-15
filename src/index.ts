@@ -59,4 +59,11 @@ export {
   UnknownVersionError,
   CharSets,
 } from './packer';
-export type { Bucket, Charset, CodecOptions, DecodeOptions, OutputType } from './packer';
+export type {
+  Bucket,
+  Charset,
+  CodecOptions,
+  DecodeOptions,
+  EncoderOptions,
+  OutputType,
+} from './packer';

@@ -12,8 +12,9 @@ import type { WeightTable } from './weights';
 export class Exclusion {
   /** 1 for each excluded member. */
   private readonly flags: Uint8Array;
-  /** The excluded members, in the order they were added. */
-  private readonly list: number[] = [];
+  /** The excluded members, in the order they were added, in the first `count` slots. */
+  private readonly list: Int32Array;
+  private added = 0;
 
   /** Over `size` members, a non-negative integer. */
   constructor(readonly size: number) {
@@ -24,16 +25,22 @@ export class Exclusion {
       throw new RangeError(`Exclusion size ${size} is negative`);
     }
     this.flags = new Uint8Array(size);
+    this.list = new Int32Array(size);
   }
 
   /** The number of excluded members. */
   get count(): number {
-    return this.list.length;
+    return this.added;
   }
 
   /** The excluded members, in the order they were added. */
   get members(): readonly number[] {
-    return this.list;
+    return Array.from(this.list.subarray(0, this.added));
+  }
+
+  /** Excluded member `i`, `i` in `[0, count)`, in the order they were added. */
+  member(i: number): number {
+    return this.list[i];
   }
 
   /** Whether member `pos` is excluded; no position outside the members is. */
@@ -48,16 +55,17 @@ export class Exclusion {
     }
     if (this.flags[pos] === 0) {
       this.flags[pos] = 1;
-      this.list.push(pos);
+      this.list[this.added++] = pos;
     }
   }
 
   /** Readmits every member. */
   clear(): void {
-    for (const pos of this.list) {
-      this.flags[pos] = 0;
+    const { flags, list } = this;
+    for (let i = 0; i < this.added; i++) {
+      flags[list[i]] = 0;
     }
-    this.list.length = 0;
+    this.added = 0;
   }
 }
 
@@ -97,36 +105,6 @@ export function staticTable(base: WeightTable): Table {
   };
 }
 
-/** Where member `pos`'s bucket starts once the excluded members below it give up their states. */
-function excludedCum(table: Table, exclusion: Exclusion | undefined, pos: number): number {
-  let cum = table.cum(pos);
-  if (exclusion !== undefined) {
-    for (const member of exclusion.members) {
-      if (member < pos) {
-        cum -= table.freq(member);
-      }
-    }
-  }
-  return cum;
-}
-
-/** The table's total less the states of every excluded member. */
-function excludedTotal(table: Table, exclusion: Exclusion | undefined): number {
-  let total = table.total;
-  if (exclusion !== undefined) {
-    for (const member of exclusion.members) {
-      total -= table.freq(member);
-    }
-  }
-  return total;
-}
-
-/** The width of member `pos`'s bucket: none when it is excluded. */
-function excludedFreq(table: Table, exclusion: Exclusion | undefined, pos: number): number {
-  const freq = table.freq(pos);
-  return exclusion?.has(pos) ? 0 : freq;
-}
-
 /**
  * Member `pos`'s bucket in `table` with the members of `exclusion` ruled
  * out: `[cum, freq, total]`, `cum` less the excluded widths below `pos`,
@@ -137,11 +115,21 @@ export function excludedBucket(
   exclusion: Exclusion | undefined,
   pos: number
 ): Bucket {
-  return [
-    excludedCum(table, exclusion, pos),
-    excludedFreq(table, exclusion, pos),
-    excludedTotal(table, exclusion),
-  ];
+  let cum = table.cum(pos);
+  const freq = table.freq(pos);
+  let total = table.total;
+  if (exclusion === undefined) {
+    return [cum, freq, total];
+  }
+  for (let i = 0; i < exclusion.count; i++) {
+    const member = exclusion.member(i);
+    const width = table.freq(member);
+    total -= width;
+    if (member < pos) {
+      cum -= width;
+    }
+  }
+  return [cum, exclusion.has(pos) ? 0 : freq, total];
 }
 
 /**
@@ -163,18 +151,42 @@ export function writeExcluded(
  * Reads a member written by `writeExcluded`. A residual belongs to the
  * largest member whose bucket starts at or below it: the starts never fall,
  * and members with empty buckets share the start of the next one, so the
- * bisection lands past them.
+ * bisection lands past them. A start is the table's less the widths of the
+ * excluded members below it, which `shed` sums over the excluded members
+ * in ascending order.
  */
 export function readExcluded(dec: Decoder, table: Table, exclusion: Exclusion | undefined): number {
+  const count = exclusion?.count ?? 0;
+  const excluded = new Int32Array(count);
+  for (let i = 0; i < count; i++) {
+    excluded[i] = (exclusion as Exclusion).member(i);
+  }
+  excluded.sort();
+  const shed = new Float64Array(count + 1);
+  for (let i = 0; i < count; i++) {
+    shed[i + 1] = shed[i] + table.freq(excluded[i]);
+  }
+  /** The start of member `pos`'s bucket under the exclusion. */
+  const start = (pos: number): number => {
+    let lo = 0;
+    let hi = count;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (excluded[mid] < pos) lo = mid + 1;
+      else hi = mid;
+    }
+    return table.cum(pos) - shed[lo];
+  };
   const locate = (residual: number): readonly [number, number, number] => {
     let lo = 0;
     let hi = table.size - 1;
     while (lo < hi) {
       const mid = (lo + hi + 1) >> 1;
-      if (excludedCum(table, exclusion, mid) <= residual) lo = mid;
+      if (start(mid) <= residual) lo = mid;
       else hi = mid - 1;
     }
-    return [lo, excludedCum(table, exclusion, lo), excludedFreq(table, exclusion, lo)];
+    // The member found holds the residual, so it owns states: it is not excluded.
+    return [lo, start(lo), table.freq(lo)];
   };
-  return dec.parseWeighted(excludedTotal(table, exclusion), locate);
+  return dec.parseWeighted(table.total - shed[count], locate);
 }

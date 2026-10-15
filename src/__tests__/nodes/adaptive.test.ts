@@ -196,6 +196,30 @@ describe('AdaptiveTable', () => {
     expect([live.learned.count(1), live.learned.total]).toEqual([4, 4]);
   });
 
+  it('shares the learned counts of another live table when given them', () => {
+    const base = buildWeights([2, 1, 5], 3, 'w');
+    const slow = new LiveCounts(base, 6, 8);
+    const fast = new LiveCounts(base, 1, 8, undefined, slow.learned);
+    expect(fast.learned).toBe(slow.learned);
+    for (const pos of [2, 2, 0, 2, 1, 2, 2, 0, 2]) {
+      fast.learn(pos);
+    }
+    expect(slow.learned.total).toBe(4);
+    for (let pos = 0; pos < 3; pos++) {
+      const counts = slow.learned.count(pos);
+      expect(slow.bucket(pos)).toEqual([
+        base.cums[pos] * 6 + slow.learned.cum(pos) * 8,
+        base.freqs[pos] * 6 + counts * 8,
+        8 * (6 + 4),
+      ]);
+      expect(fast.bucket(pos)).toEqual([
+        base.cums[pos] + slow.learned.cum(pos) * 8,
+        base.freqs[pos] + counts * 8,
+        8 * (1 + 4),
+      ]);
+    }
+  });
+
   it('gives each member of its live table its located bucket', () => {
     const table = new AdaptiveTable([2, 1, 5], 3, 3, 100, 'w');
     const live = table.live(new Encoder());

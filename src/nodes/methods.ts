@@ -4,11 +4,11 @@
  * values so far). A declared method runs on every value; under
  * `.adaptive()` a learned mode picks, value by value, among the methods the
  * user left open. Which method a value takes is the encoder's choice alone:
- * it prices each spelling against the tables as they stand and the decoder
- * reads the mode back without checking it.
+ * it tries each spelling, keeps the cheapest, and the decoder reads the
+ * mode back without checking it.
  */
 
-import { type Encoder, type Decoder, ScaledRatio } from '../packer';
+import type { Encoder, Decoder } from '../packer';
 import { AdaptivePrior, checkAdaptation, lineageOf, type AdaptiveOptions } from './adaptive';
 import { Exclusion } from './excluded';
 
@@ -44,14 +44,7 @@ export interface Method<T> {
    * not available is left out of the mode.
    */
   available(side: Encoder | Decoder): boolean;
-  /**
-   * Multiplies `into` by the probability of the method's spelling of
-   * `value` under the tables as they stand, learning nothing: the encoder's
-   * price of the spelling. False when the method cannot spell `value`;
-   * `into` is then left in any state.
-   */
-  price(enc: Encoder, value: T, into: ScaledRatio): boolean;
-  /** Spells `value` and learns it. Called only when available. */
+  /** Spells `value` and learns it, throwing when it cannot spell it. Called only when available. */
   write(enc: Encoder, value: T): void;
   /** Reads a value `write` spelled and learns it. Called only when available. */
   read(dec: Decoder): T;
@@ -68,18 +61,20 @@ export interface Method<T> {
  * or, under `adaptive`, a table of even weights under the adaptive prior
  * with the methods not available ruled out.
  *
- * The encoder prices each available method's spelling together with its
- * mode symbol as a `ScaledRatio` against the tables as they stand, and the
- * largest wins, a tie going to the lower index, so method 0, the plain
- * spelling, wins every tie. After a value every other available method
- * learns it, on both sides, so their tables follow the message whichever
- * spelled it.
+ * The encoder decides among the available methods by trying each, the
+ * mode symbol and the method's spelling written and learned as a real
+ * write would, and keeps the cheapest, a tie going to the lower index, so
+ * method 0, the plain spelling, wins every tie. After a
+ * value every other available method learns it, on both sides, so their
+ * tables follow the message whichever spelled it.
  */
 export class ModeChoice<T> {
   /** The learned mode table under `adaptive`. */
   private readonly prior?: AdaptivePrior;
   /** The exclusion of each set of available methods, keyed by their indices, built on first use. */
   private readonly exclusions = new Map<string, Exclusion>();
+  /** The method the encoder last picked, which only orders its next tries. */
+  private last = 0;
 
   constructor(
     readonly methods: readonly Method<T>[],
@@ -127,34 +122,13 @@ export class ModeChoice<T> {
     return exclusion;
   }
 
-  /** Multiplies `into` by the probability of mode `mode` among `open`, as the table stands. */
-  private priceMode(enc: Encoder, mode: number, open: readonly number[], into: ScaledRatio): void {
+  /** Writes mode `mode` among `open`, which holds at least two methods. */
+  private writeMode(enc: Encoder, mode: number, open: readonly number[]): void {
     if (this.prior === undefined) {
-      into.multiply(1, open.length);
-      return;
+      enc.compose(open.indexOf(mode), open.length);
+    } else {
+      this.prior.write(enc, mode, 0, this.exclusion(open));
     }
-    const [, freq, total] = this.prior.estimate(enc, mode, 0, this.exclusion(open));
-    into.multiply(freq, total);
-  }
-
-  /**
-   * The mode the encoder picks for `value` among `open`: the largest priced
-   * spelling, the lower index on a tie. A method that cannot spell the
-   * value is passed over; when none can, the error is the lowest one's
-   * own, thrown by its `write`.
-   */
-  private choose(enc: Encoder, value: T, open: readonly number[]): number {
-    let best = open[0];
-    let most: ScaledRatio | undefined;
-    for (const i of open) {
-      const ratio = new ScaledRatio();
-      this.priceMode(enc, i, open, ratio);
-      if (this.methods[i].price(enc, value, ratio) && (most === undefined || ratio.exceeds(most))) {
-        best = i;
-        most = ratio;
-      }
-    }
-    return best;
   }
 
   /** Spells `value` by the method the encoder picks, then lets every other available method learn it. */
@@ -162,14 +136,19 @@ export class ModeChoice<T> {
     const open = this.available(enc);
     let mode = open[0];
     if (open.length > 1) {
-      mode = this.choose(enc, value, open);
-      if (this.prior === undefined) {
-        enc.compose(open.indexOf(mode), open.length);
-      } else {
-        this.prior.write(enc, mode, 0, this.exclusion(open));
-      }
+      // The method that won last is tried first, so the others' tries run
+      // under its cost and stop as soon as they pass it.
+      const order = open.includes(this.last)
+        ? [this.last, ...open.filter((i) => i !== this.last)]
+        : open;
+      mode = enc.decide(open, order, (i) => {
+        this.writeMode(enc, i, open);
+        this.methods[i].write(enc, value);
+      });
+      this.last = mode;
+    } else {
+      this.methods[mode].write(enc, value);
     }
-    this.methods[mode].write(enc, value);
     this.teach(enc, value, open, mode);
   }
 

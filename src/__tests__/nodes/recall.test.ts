@@ -161,10 +161,15 @@ describe('PRecall', () => {
 });
 
 describe('identity', () => {
-  it('is the text of the value spelled alone', () => {
+  it('is the symbols of the value spelled alone, each its bucket and total', () => {
+    expect(identity(() => {})).toBe('');
+    expect(identity((enc) => enc.compose(1, 3))).toBe('1/3,');
+    expect(identity((enc) => enc.composeWeighted(1, 2, 5))).toBe('1+2/5,');
     const node = p.array(p.int().min(0).max(9));
-    expect(identity((enc) => node._write(enc, [1, 2]))).toBe(node.encode([1, 2], { type: 'text' }));
-    expect(identity(() => {})).toBe(new Encoder().output({ type: 'text' }));
+    const key = (value: number[]): string => identity((enc) => node._write(enc, value));
+    expect(key([1, 2])).toBe(key([1, 2]));
+    expect(key([1, 2])).not.toBe(key([2, 1]));
+    expect(key([1, 2])).not.toBe(key([1, 2, 0]));
   });
 });
 
