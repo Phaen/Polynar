@@ -69,6 +69,30 @@ export function lineageOf(options: AdaptiveOptions | undefined): Lineage | undef
   return (options as Lineal | undefined)?.[LINEAGE];
 }
 
+/** The key of the mark `withoutRecall` sets. */
+const OWN_RECALL = Symbol('ownRecall');
+
+/** Adaptive options that may close the node's own recall. */
+interface Recalled extends AdaptiveOptions {
+  readonly [OWN_RECALL]?: false;
+}
+
+/**
+ * `options` for a node whose values its owner already recalls, as `p.any`
+ * recalls its strings, key lists and containers: under them the node opens
+ * no recall of its own unless `.recall()` declares one, through every
+ * rebuild that passes them on.
+ */
+export function withoutRecall(options: AdaptiveOptions): AdaptiveOptions {
+  const recalled: Recalled = { ...options, [OWN_RECALL]: false };
+  return recalled;
+}
+
+/** Whether `options` leave the node's own recall open, as every `.adaptive()` does. */
+export function recallOpen(options: AdaptiveOptions | undefined): boolean {
+  return options !== undefined && (options as Recalled)[OWN_RECALL] === undefined;
+}
+
 /**
  * How an adaptive prior over several rows learns, beyond its weights:
  * `pooled` rows learn into one set of counts instead of each its own;

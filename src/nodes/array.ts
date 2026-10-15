@@ -16,8 +16,8 @@ import {
 } from './ordinal';
 import { readRun, writeRun } from './runs';
 import { members, type Members } from './members';
-import { withMethod, type Spelling } from './methods';
-import { Recall, copy, identity } from './recall';
+import { recallOf, withMethod, type Spelling } from './methods';
+import { copy, identity, type Recall } from './recall';
 
 const MAX_ARRAY_LENGTH = 2 ** 32 - 1;
 
@@ -58,9 +58,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
     }
     this._order = order;
     this._spelling = spelling;
-    if (spelling.recall !== undefined) {
-      this._recall = new Recall(bounds.adaptive !== undefined, copy);
-    }
+    this._recall = recallOf(spelling, bounds.adaptive, copy);
     const { adaptive } = bounds;
     this._choice = members(2, adaptive === undefined ? undefined : { adaptive }, 'p.array');
   }
@@ -115,7 +113,9 @@ export class PArray<TItem> extends PNode<TItem[]> {
    * the node spends one bit to stay static, or a few to name the learning rate
    * that paid off. Without a max, the count learns on the magnitude scale
    * from the min instead: by its distance's bit-length class. Takes weights,
-   * not a cdf; part of the wire format, like the weights.
+   * not a cdf; part of the wire format, like the weights. Unless `.recall()`
+   * is declared, an array the node already wrote may also be recalled as
+   * under it, at learned odds, whenever that costs less than spelling it.
    */
   adaptive(options?: AdaptiveOptions): PArray<TItem> {
     return this._with({ ...this._bounds, adaptive: options ?? {} });
@@ -183,7 +183,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
     if (recall === undefined) {
       this._spell(enc, value);
     } else {
-      const key = identity((alone) => this._spell(alone, value));
+      const key = () => identity((alone) => this._spell(alone, value));
       recall.write(enc, key, () => this._spell(enc, value));
     }
   }

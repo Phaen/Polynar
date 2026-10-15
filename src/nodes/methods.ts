@@ -9,8 +9,15 @@
  */
 
 import type { Encoder, Decoder } from '../packer';
-import { AdaptivePrior, checkAdaptation, lineageOf, type AdaptiveOptions } from './adaptive';
+import {
+  AdaptivePrior,
+  checkAdaptation,
+  lineageOf,
+  recallOpen,
+  type AdaptiveOptions,
+} from './adaptive';
 import { Exclusion } from './excluded';
+import { Recall } from './recall';
 
 /**
  * The methods a node declares, carried through every rebuild so a later
@@ -29,6 +36,22 @@ export function withMethod(spelling: Spelling, method: keyof Spelling, who: stri
     throw new TypeError(`${who} ${method} is already set`);
   }
   return { ...spelling, [method]: true };
+}
+
+/**
+ * The recall of a node: pinned when `.recall()` is declared, learned under
+ * `adaptive`; else open under `adaptive`, unless the options close it;
+ * none otherwise. `copy` is the recall's.
+ */
+export function recallOf<T>(
+  spelling: Spelling,
+  adaptive: AdaptiveOptions | undefined,
+  copy?: (value: T) => T
+): Recall<T> | undefined {
+  if (spelling.recall !== undefined) {
+    return new Recall<T>(adaptive !== undefined, copy);
+  }
+  return recallOpen(adaptive) ? new Recall<T>(true, copy, true) : undefined;
 }
 
 /**

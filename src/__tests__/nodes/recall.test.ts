@@ -5,6 +5,7 @@
 
 import { p, Encoder, Decoder, type PNode } from '../../index';
 import { PRecall, Recall, copy, identity } from '../../nodes/recall';
+import { withoutRecall } from '../../nodes/adaptive';
 import { mulberry32 } from '../support';
 
 const strings = () => new PRecall<string>(p.string(), (s) => s);
@@ -22,27 +23,39 @@ const tripAll = <T>(node: PRecall<T>, values: readonly T[]): { bytes: Uint8Array
 };
 
 /**
- * The message a recall should write, from a plain list of counts: member 0
- * is "new", every later member a value in order of first appearance.
+ * The message a recall should write, from plain lists of counts: whether
+ * the value is new (0) or seen (1), out of counts starting at [1, 1],
+ * gaining 32 each and halving, rounding up, past a total of 1024; then a seen
+ * value's member among the values in order of first appearance, each
+ * counting 1 when new and 1 more per recall.
  */
 const model = (values: readonly string[]): Uint8Array => {
   const enc = new Encoder();
-  const counts = [1];
+  const fresh = [1, 1];
+  const counts: number[] = [];
   const seen: string[] = [];
-  const symbol = (member: number) => {
-    const total = counts.reduce((a, b) => a + b, 0);
-    if (counts.length > 1) {
-      const cum = counts.slice(0, member).reduce((a, b) => a + b, 0);
-      enc.composeWeighted(cum, counts[member], total);
+  const symbol = (table: number[], member: number) => {
+    if (table.length > 1) {
+      const total = table.reduce((a, b) => a + b, 0);
+      const cum = table.slice(0, member).reduce((a, b) => a + b, 0);
+      enc.composeWeighted(cum, table[member], total);
     }
-    counts[member]++;
   };
   for (const value of values) {
     const at = seen.indexOf(value);
+    if (seen.length > 0) {
+      const recalled = at >= 0 ? 1 : 0;
+      symbol(fresh, recalled);
+      fresh[recalled] += 32;
+      if (fresh[0] + fresh[1] > 1024) {
+        fresh[0] = Math.ceil(fresh[0] / 2);
+        fresh[1] = Math.ceil(fresh[1] / 2);
+      }
+    }
     if (at >= 0) {
-      symbol(at + 1);
+      symbol(counts, at);
+      counts[at]++;
     } else {
-      symbol(0);
       p.string()._write(enc, value);
       counts.push(1);
       seen.push(value);
@@ -118,18 +131,39 @@ describe('PRecall', () => {
 
   it('reads a value spelled as new when it is already recalled, as a new member', () => {
     const enc = new Encoder();
-    // Member 0 with the table at one member writes nothing.
+    // The first value writes no flag and no member.
     p.string()._write(enc, 'a');
-    // Member 0 again, now out of [1, 1], then the same text.
-    enc.composeWeighted(0, 2, 3);
+    // New, out of [new 1, seen 1], then the same text.
+    enc.composeWeighted(0, 1, 2);
     p.string()._write(enc, 'a');
-    // Member 2, the second copy, out of [new 3, a 1, a 1].
-    enc.composeWeighted(4, 1, 5);
+    // Seen, out of [new 33, seen 1]; then member 1, the second copy, out of [a 1, a 1].
+    enc.composeWeighted(33, 1, 34);
+    enc.composeWeighted(1, 1, 2);
     const node = strings();
     const dec = new Decoder(enc.output());
     expect(node._read(dec)).toBe('a');
     expect(node._read(dec)).toBe('a');
     expect(node._read(dec)).toBe('a');
+    dec.finalize();
+  });
+
+  it('learns that values never recur, so the escape costs next to nothing', () => {
+    const values = Array.from({ length: 300 }, (_, i) => `v${i}`);
+    const enc = new Encoder();
+    for (const value of values) p.string()._write(enc, value);
+    expect(tripAll(strings(), values).bytes.length - enc.output().length).toBeLessThan(10);
+  });
+
+  it('takes back what a rolled-back write learned, a halving included', () => {
+    const node = strings();
+    const enc = new Encoder();
+    for (const value of ['a', 'b', 'a']) node._write(enc, value);
+    const mark = enc.mark();
+    const tried = Array.from({ length: 40 }, (_, i) => (i % 3 ? `t${i}` : 'a'));
+    for (const value of tried) node._write(enc, value);
+    enc.rollback(mark);
+    for (const value of ['b', 'e', 'a']) node._write(enc, value);
+    expect(enc.output()).toEqual(model(['a', 'b', 'a', 'b', 'e', 'a']));
   });
 
   it('keeps a separate pool per node in one message', () => {
@@ -170,6 +204,45 @@ describe('identity', () => {
     expect(key([1, 2])).toBe(key([1, 2]));
     expect(key([1, 2])).not.toBe(key([2, 1]));
     expect(key([1, 2])).not.toBe(key([1, 2, 0]));
+  });
+
+  it('writes the key of each value through a recall inside it, or spells it when the key is computed', () => {
+    const recall = new Recall<number>(true);
+    const twice = identity((enc) => {
+      for (let i = 0; i < 2; i++) recall.write(enc, 'k', () => enc.compose(1, 3));
+    });
+    const k = `1/${Number.MAX_SAFE_INTEGER},${'k'.charCodeAt(0)}/65536,`;
+    expect(twice).toBe(k + k);
+    const asked = jest.fn(() => 'k');
+    const spelled = identity((enc) => {
+      for (let i = 0; i < 2; i++) recall.write(enc, asked, () => enc.compose(1, 3));
+    });
+    expect(spelled).toBe('1/3,1/3,');
+    expect(asked).not.toHaveBeenCalled();
+    // Outside an identity the second write is recalled.
+    const enc = new Encoder();
+    const hits = [0, 1].map(() => recall.write(enc, 'k', () => enc.compose(1, 3)));
+    expect(hits).toEqual([false, true]);
+  });
+
+  it('measures nested recalls by their keys, so a deep value is spelled once', () => {
+    let spelled = 0;
+    const leaf = new PRecall<number>(
+      {
+        _write: (enc: Encoder, v: number) => {
+          spelled++;
+          enc.compose(v, 9);
+        },
+      } as unknown as PNode<number>,
+      String
+    );
+    let node: PNode<any> = leaf;
+    for (let depth = 0; depth < 8; depth++) node = p.array(node).recall();
+    node.encode([[[[[[[[3]]]]]]]]);
+    // Each level's identity writes the leaf's key, so the leaf spells only
+    // when written; each array's own identity is measured once, by the
+    // level written, not again inside the levels around it.
+    expect(spelled).toBe(1);
   });
 });
 
@@ -291,6 +364,49 @@ describe('Recall', () => {
     expect(second).not.toBe(first);
   });
 
+  it('spells a seen value in full when open and that costs less, the decoder listing it again', () => {
+    const recall = new Recall<number>(true, undefined, true);
+    expect(recall.learned).toBe(true);
+    // After two new values the seen flag and member cost more than the spelling.
+    const { bytes, hits } = writeAll(recall, [1, 2, 3, 1]);
+    expect(hits).toEqual([false, false, false, false]);
+    const model = new Encoder();
+    model.compose(1, 9);
+    model.composeWeighted(0, 1, 2);
+    model.compose(2, 9);
+    model.composeWeighted(0, 33, 34);
+    model.compose(3, 9);
+    model.composeWeighted(0, 65, 66);
+    model.compose(1, 9);
+    expect(bytes).toEqual(model.output());
+    const dec = new Decoder(bytes);
+    const reader = new Recall<number>(true, undefined, true);
+    const back = [0, 1, 2, 3].map(() => reader.read(dec, () => dec.parse(9)));
+    dec.finalize();
+    expect(back).toEqual([1, 2, 3, 1]);
+  });
+
+  it('recalls a seen value when open and recalling costs less, by its first member', () => {
+    const recall = new Recall<number>(true, undefined, true);
+    const enc = new Encoder();
+    // A spelling dear enough that recalling wins from the start.
+    const spell = (k: number) => () => {
+      for (let i = 0; i < 8; i++) enc.compose(k, 9);
+    };
+    const hits = [5, 6, 5, 6].map((k) => recall.write(enc, String(k), spell(k)));
+    expect(hits).toEqual([false, false, true, true]);
+    const dec = new Decoder(enc.output());
+    const reader = new Recall<number>(true, undefined, true);
+    const read = () =>
+      reader.read(dec, () => {
+        const k = dec.parse(9);
+        for (let i = 1; i < 8; i++) dec.parse(9);
+        return k;
+      });
+    expect([read(), read(), read(), read()]).toEqual([5, 6, 5, 6]);
+    dec.finalize();
+  });
+
   it('spells as PRecall does when learned', () => {
     const values = ['a', 'b', 'a', 'a', 'c', 'b'];
     const recall = new Recall<string>(true);
@@ -389,7 +505,8 @@ describe('.recall()', () => {
     expect(fixed.back).toEqual(values);
     const learned = inOne(plain.adaptive().recall(), values);
     expect(learned.back).toEqual(values);
-    const spelled = plain.adaptive();
+    // The model's own node opens no recall, so the model's is the only one.
+    const spelled = plain.adaptive(withoutRecall({}));
     const model = new PRecall<number[]>(spelled, (v) => identity((enc) => spelled._write(enc, v)));
     expect(learned.bytes).toEqual(inOne(model, values).bytes);
   });
@@ -416,7 +533,7 @@ describe('.recall()', () => {
   it('learns the odds of an adaptive collection', () => {
     const node = p.set(item).max(3).adaptive().recall();
     const values = [new Set([1]), new Set([1]), new Set([1]), new Set([2])];
-    const spelled = p.set(item).max(3).adaptive();
+    const spelled = p.set(item).max(3).adaptive(withoutRecall({}));
     const model = new PRecall<Set<number>>(spelled, (v) =>
       identity((enc) => spelled._write(enc, v))
     );
@@ -451,5 +568,92 @@ describe('.recall()', () => {
   it('names the path of a value that fails, as without recall', () => {
     const node = p.array(p.object({ a: item }).recall()).recall();
     expect(() => node.encode([{ a: 1 }, { a: 300 }])).toThrow(/\[1\]\.a/);
+  });
+});
+
+describe('.adaptive() recall', () => {
+  const item = p.int().min(0).max(255);
+  const closed = withoutRecall({});
+
+  it('recalls by default under .adaptive(), at learned odds, unless declared', () => {
+    const values = ['north', 'south', 'north', 'north', 'east', 'south'];
+    const open = inOne(p.string().adaptive(), values);
+    expect(open.back).toEqual(values);
+    expect(open.bytes.length).toBeLessThan(inOne(p.string().adaptive(closed), values).bytes.length);
+    const ints = [1e9, 7, 1e9, 1e9, 7];
+    expect(inOne(p.int().adaptive(), ints).bytes.length).toBeLessThan(
+      inOne(p.int().adaptive(closed), ints).bytes.length
+    );
+    // A declared recall is pinned: a value seen is always recalled.
+    const cycle = Array.from({ length: 1000 }, (_, i) => i % 200);
+    const bytes = p.array(item.adaptive()).encode(cycle).length;
+    expect(bytes).toBeLessThanOrEqual(p.array(item.adaptive(closed)).encode(cycle).length + 1);
+    expect(p.array(item.recall().adaptive()).encode(cycle).length).toBeGreaterThan(bytes * 10);
+  });
+
+  it('costs next to nothing where values never recur', () => {
+    const distinct = Array.from({ length: 1000 }, (_, i) => `user-${i * 7919}`);
+    const ids = Array.from({ length: 1000 }, (_, i) => 1000 + i * 3);
+    const cases: [PNode<any>, PNode<any>, unknown[]][] = [
+      [p.array(p.string().adaptive()), p.array(p.string().adaptive(closed)), distinct],
+      [p.array(p.int().min(0).adaptive()), p.array(p.int().min(0).adaptive(closed)), ids],
+      [
+        p.array(p.object({ id: p.int().min(0).adaptive(closed) }).adaptive()),
+        p.array(p.object({ id: p.int().min(0).adaptive(closed) })),
+        ids.map((id) => ({ id })),
+      ],
+    ];
+    for (const [open, shut, values] of cases) {
+      expect(open.encode(values).length).toBeLessThanOrEqual(shut.encode(values).length + 1);
+    }
+  });
+
+  it('keeps the options that close it through every rebuild', () => {
+    const values = [5, 5, 5, 9];
+    const before = p.int().min(0).max(99).adaptive(closed);
+    const after = p.int().adaptive(closed).min(0).max(99);
+    expect(inOne(after, values).bytes).toEqual(inOne(before, values).bytes);
+    const open = p.int().min(0).max(99).adaptive();
+    expect(inOne(open, values).bytes).not.toEqual(inOne(before, values).bytes);
+  });
+
+  it('learns object recall under p.object().adaptive()', () => {
+    const shape = { a: item, b: p.bool() };
+    const node = p.object(shape).adaptive();
+    const one = { a: 7, b: true };
+    const values = [one, { a: 9, b: false }, one, one, one];
+    const { bytes, back } = inOne(node, values);
+    expect(back).toEqual(values);
+    // A repeat decodes as a copy.
+    expect(back[2]).not.toBe(back[0]);
+    const spelled = p.object(shape);
+    const model = new PRecall<{ a: number; b: boolean }>(spelled, (v) =>
+      identity((enc) => spelled._write(enc, v))
+    );
+    expect(bytes).toEqual(inOne(model, values).bytes);
+    expect(node.encode(one)).toEqual(spelled.encode(one));
+    // Declared, the recall is pinned and learned, in either order.
+    const pinned = inOne(p.object(shape).recall().adaptive(), values).bytes;
+    expect(inOne(p.object(shape).adaptive().recall(), values).bytes).toEqual(pinned);
+  });
+
+  it('writes record keys through an adaptive string under p.record().adaptive()', () => {
+    const records: Record<string, number>[] = [
+      { id: 1, count: 2 },
+      { id: 3, count: 4, extra: 5 },
+      { id: 1, count: 2 },
+    ];
+    const maps = records.map((record) => new Map(Object.entries(record)));
+    const adaptive = p.record(item).adaptive();
+    const { bytes, back } = inOne(adaptive, records);
+    expect(back).toEqual(records);
+    const twin = p.map(p.string().adaptive(), item).adaptive();
+    expect(bytes).toEqual(inOne(twin, maps).bytes);
+    // Without .adaptive() the keys stay plain strings.
+    expect(inOne(p.record(item), records).bytes).toEqual(
+      inOne(p.map(p.string(), item), maps).bytes
+    );
+    const unordered = p.record(item).adaptive().unordered();
+    expect(inOne(unordered, records).back).toEqual(records);
   });
 });

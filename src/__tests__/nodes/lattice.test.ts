@@ -18,12 +18,14 @@ import {
 import { LearnedMagnitude, STATIC_MAGNITUDE } from '../../nodes/magnitude';
 import { ModeChoice } from '../../nodes/methods';
 import { Recall } from '../../nodes/recall';
-import { AdaptivePrior, MAX_ADAPTIVE_MEMBERS } from '../../nodes/adaptive';
+import { AdaptivePrior, MAX_ADAPTIVE_MEMBERS, withoutRecall } from '../../nodes/adaptive';
 import type { PNode } from '../../nodes/base';
 import { mulberry32, trip } from '../support';
 import { buildWeights, readTable } from '../../nodes/weights';
 
 const adaptation = { window: 1024 };
+/** Adaptation with the node's own recall closed, for methods modelled without it. */
+const closed = withoutRecall({});
 const ones = (n: number) => new Array<number>(n).fill(1);
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 
@@ -734,7 +736,7 @@ describe('IndexMethods', () => {
   });
 
   it('spells a declared difference on the learned scale under adaptation, the first value learned plain', () => {
-    const range = new IndexRange('r', undefined, undefined, undefined, {});
+    const range = new IndexRange('r', undefined, undefined, undefined, closed);
     const methods = new IndexMethods(range, { delta: true }, 'r');
     const indices = [1000, 1001, 1003, 1002, -7];
     const model = new Encoder();
@@ -760,7 +762,7 @@ describe('IndexMethods', () => {
 
   it('picks per value between plain and the difference under adaptation, as a ModeChoice over the same methods', () => {
     const indices = walk(400, 0, 999);
-    const range = new IndexRange('r', 0, 999, undefined, {});
+    const range = new IndexRange('r', 0, 999, undefined, closed);
     const { bytes, back } = methodsTrip(new IndexMethods(range, {}, 'r'), indices);
     expect(back).toEqual(indices);
     // The same mode and methods, built by hand: plain the range's learned
@@ -812,10 +814,10 @@ describe('IndexMethods', () => {
   it.each([
     ['plain', new IndexRange('r', 0, 99), {}],
     ['a difference', new IndexRange('r'), { delta: true as const }],
-    ['wide adaptation', new IndexRange('r', 0, 2 ** 20, undefined, {}), {}],
+    ['wide adaptation', new IndexRange('r', 0, 2 ** 20, undefined, closed), {}],
     [
       'a learned difference',
-      new IndexRange('r', -50, undefined, undefined, {}),
+      new IndexRange('r', -50, undefined, undefined, closed),
       { delta: true as const },
     ],
     ['weights', new IndexRange('r', 0, 99, ones(100)), {}],

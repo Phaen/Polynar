@@ -9,7 +9,7 @@ import {
   type AdaptiveOptions,
 } from './adaptive';
 import { LearnedMagnitude, magnitude, type Magnitude } from './magnitude';
-import { ModeChoice, type Method, type Spelling } from './methods';
+import { ModeChoice, recallOf, type Method, type Spelling } from './methods';
 import { Recall } from './recall';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
@@ -415,10 +415,8 @@ export class IndexMethods {
       this.delta = new Delta(magnitude(adaptive, true, who), range.low, range.high);
       this.mode = new ModeChoice([learned, this.delta], adaptive, who);
     }
-    if (spelling.recall !== undefined) {
-      this.recall = new Recall(adaptive !== undefined);
-    }
-    this.plain = spelling.delta === undefined && spelling.recall === undefined;
+    this.recall = recallOf(spelling, adaptive);
+    this.plain = spelling.delta === undefined && this.recall === undefined;
   }
 
   /** Writes `index`; `subject` names the value in an error, as the range's `write` takes it. */

@@ -40,7 +40,7 @@ import {
 import { IndexRange, lengthRange, type LengthBounds } from './lattice';
 import { GAMMA_MAGNITUDE, LearnedMagnitude, type Magnitude } from './magnitude';
 import { members, type Members } from './members';
-import { ModeChoice, type Method, type Spelling } from './methods';
+import { ModeChoice, recallOf, type Method, type Spelling } from './methods';
 import { Recall } from './recall';
 import {
   EVEN_REPEATS,
@@ -1355,9 +1355,7 @@ export class Sequence<T> {
       }
     }
     this.tracks = spelling.delta !== undefined || adaptive !== undefined;
-    if (spelling.recall !== undefined) {
-      this.recall = new Recall<T>(adaptive !== undefined, symbols.copy?.bind(symbols));
-    }
+    this.recall = recallOf<T>(spelling, adaptive, symbols.copy?.bind(symbols));
     const { item } = symbols;
     this.overrun = `${item.charAt(0).toUpperCase()}${item.slice(1)}s overrun the ${symbols.noun} prefix`;
   }

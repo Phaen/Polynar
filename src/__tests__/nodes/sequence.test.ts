@@ -10,7 +10,7 @@ import { Sequence, StaticLiterals, withRepeats, type Symbols } from '../../nodes
 import { buildWeights, writeTable } from '../../nodes/weights';
 import { costUnits } from '../../packer';
 import type { LengthBounds } from '../../nodes/lattice';
-import { AdaptivePrior } from '../../nodes/adaptive';
+import { AdaptivePrior, withoutRecall } from '../../nodes/adaptive';
 import { ContextModel } from '../../nodes/contexts';
 import { Repeats, type Match } from '../../nodes/repeats';
 import { LearnedMagnitude } from '../../nodes/magnitude';
@@ -333,7 +333,7 @@ describe('Sequence', () => {
 
     it('writes the branch only once history plus span reaches the warm-up, and a repeat fits', () => {
       const branches = (values: number[][]): boolean[] => {
-        const sequence = new Sequence(toy(), { adaptive: {} });
+        const sequence = new Sequence(toy(), { adaptive: withoutRecall({}) });
         const enc = new Encoder();
         const { used } = spy(() => values.forEach((value) => sequence.write(enc, value)));
         const dec = new Decoder(enc.output());
@@ -413,7 +413,7 @@ describe('Sequence', () => {
       model.write(enc, 0, 0, [4, 4, 4, 4]);
       repeats.writeFlag(enc, true, 0);
       repeats.writeMatch(enc, { distance: 1, length: 2 ** 32 - 2 }, 3, 2 ** 32 - 2);
-      const sequence = new Sequence(toy(), { adaptive: {} });
+      const sequence = new Sequence(toy(), { adaptive: withoutRecall({}) });
       const dec = new Decoder(enc.output());
       expect(sequence.read(dec)).toEqual([2, 2]);
       expect(() => sequence.read(dec)).toThrow(

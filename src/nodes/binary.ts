@@ -203,7 +203,9 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * the number of values they count when smaller). From its second value
    * on, each prior spends one bit to stay static, or a few to name the
    * learning rate that paid off. The element count takes weights, not a
-   * cdf; part of the wire format, like the weights.
+   * cdf; part of the wire format, like the weights. Unless `.recall()` is
+   * declared, an array the node already wrote may be recalled as under it,
+   * at learned odds, whenever that costs less than spelling it.
    */
   adaptive(options?: SequenceAdaptiveOptions): PBinary<A> {
     return this._with({ ...this._bounds, adaptive: options ?? {} });

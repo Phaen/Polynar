@@ -150,6 +150,9 @@ export class PDecimal extends PNode<number> {
    * unless `.delta()` is declared, each value also spends a learned mode
    * symbol naming whether it is spelled plainly or as its difference from
    * the previous value, whichever the encoder prices cheaper.
+   * Unless `.recall()` is declared, a value the node already wrote may
+   * also be recalled as under it, at learned odds, whenever that costs
+   * less than spelling it.
    */
   adaptive(options?: AdaptiveOptions): PDecimal {
     return this._with({ adaptive: options ?? {} });

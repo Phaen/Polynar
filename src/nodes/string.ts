@@ -864,7 +864,9 @@ export class PString extends PNode<string> {
    * values they count when smaller). From its second value on, each prior
    * spends one bit to stay static, or a few to name the learning rate
    * that paid off. The length takes weights, not a cdf; part of the wire
-   * format, like the weights.
+   * format, like the weights. Unless `.recall()` is declared, a string the
+   * node already wrote may be recalled as under it, at learned odds,
+   * whenever that costs less than spelling it.
    */
   adaptive(options?: SequenceAdaptiveOptions): PString {
     return this._with({ ...this._bounds, adaptive: options ?? {} });

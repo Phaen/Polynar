@@ -281,3 +281,9 @@ p.binary(Uint16Array).adaptive({ separate: true, window: 64 });
 p.int().adaptive({ separate: true });
 // @ts-expect-error — nor does p.any take it
 p.any().adaptive({ separate: true });
+
+// An object learns its recall alone, so it keeps its shape and takes no options.
+const LearnedPoint = p.object({ x: p.int(), label: p.optional(p.string()) }).adaptive();
+const _learnedPoint: Equals<Infer<typeof LearnedPoint>, { x: number; label?: string }> = true;
+// @ts-expect-error — an object's recall has no window to set
+p.object({ x: p.int() }).adaptive({ window: 64 });

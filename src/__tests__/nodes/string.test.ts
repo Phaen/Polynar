@@ -402,8 +402,9 @@ describe('p.string adaptive', () => {
     const learner = p.string().adaptive();
     expect(trip(learner, text)).toBe(text);
     expect(learner.encode(text).length).toBeLessThan(p.string().encode(text).length / 2);
-    // With a max, the length learns too: an array of one recurring length.
-    const lengths = Array.from({ length: 200 }, () => 'q');
+    // With a max, the length learns too: an array of one recurring length,
+    // its strings distinct so none is recalled.
+    const lengths = Array.from({ length: 200 }, (_, i) => String.fromCharCode(0x4e00 + i));
     const size = (node: typeof plain) => p.array(node).encode(lengths).length;
     expect(size(p.string().max(40).adaptive())).toBeLessThan(size(p.string().adaptive()));
   });

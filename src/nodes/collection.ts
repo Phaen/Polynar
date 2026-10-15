@@ -14,8 +14,9 @@ import {
   type Order,
 } from './ordinal';
 import { readRun, writeRun } from './runs';
-import { withMethod, type Spelling } from './methods';
-import { Recall, copy, identity } from './recall';
+import { recallOf, withMethod, type Spelling } from './methods';
+import { copy, identity, type Recall } from './recall';
+import { PString } from './string';
 
 /** The keys of an unordered collection: distinct by construction, so a set of digits. */
 const UNORDERED: Order = { unordered: true, unique: true };
@@ -36,6 +37,11 @@ export interface Layout<T> {
   entries(value: T): Iterable<readonly [unknown, unknown]>;
   /** The collection of `entries`, whose keys are distinct and never -0. */
   build(entries: Map<unknown, unknown>): T;
+  /**
+   * The node the keys go through under `.adaptive()`, for a layout whose
+   * keys have no node of the caller's to adapt; the declared key otherwise.
+   */
+  learnedKey?(adaptive: AdaptiveOptions): PNode<any>;
 }
 
 export const MAP: Layout<Map<any, any>> = {
@@ -67,6 +73,7 @@ export const RECORD: Layout<Record<string, any>> = {
     // instead of replacing the prototype.
     return Object.fromEntries(entries);
   },
+  learnedKey: (adaptive) => new PString().adaptive(adaptive),
 };
 
 /**
@@ -79,7 +86,10 @@ export class PCollection<T> extends PNode<T> {
   readonly _kinds: readonly Kind[];
 
   private readonly _layout: Layout<T>;
+  /** The key as declared. */
   private readonly _key: PNode<any>;
+  /** The key entries are written through: the layout's learned key under `.adaptive()`, if it has one. */
+  private readonly _keys: PNode<any>;
   /** The value node; a set has none. */
   private readonly _value?: PNode<any>;
   private readonly _bounds: LengthBounds;
@@ -101,15 +111,16 @@ export class PCollection<T> extends PNode<T> {
     super();
     this._layout = layout;
     this._key = key;
+    const { adaptive } = bounds;
+    this._keys =
+      adaptive === undefined || layout.learnedKey === undefined ? key : layout.learnedKey(adaptive);
     this._value = value;
     this._bounds = bounds;
     this._count = lengthRange(bounds, layout.who, 'count');
     this._kinds = [layout.kind];
     this._unordered = unordered;
     this._spelling = spelling;
-    if (spelling.recall !== undefined) {
-      this._recall = new Recall(bounds.adaptive !== undefined, copy);
-    }
+    this._recall = recallOf(spelling, bounds.adaptive, copy);
   }
 
   /** Require at least `n` entries. A raised floor packs the count denser. */
@@ -163,7 +174,11 @@ export class PCollection<T> extends PNode<T> {
    * or a few to name the learning rate that paid off. Without a max, the count
    * learns on the magnitude scale from the min instead: by its distance's
    * bit-length class. Takes weights, not a cdf; part of the wire format, like
-   * the weights.
+   * the weights. Unless `.recall()` is declared, a collection the node
+   * already wrote may also be recalled as under it, at learned odds,
+   * whenever that costs less than spelling it. A record's keys go through
+   * `p.string().adaptive(options)`, so keys that recur are recalled and new
+   * ones learn their characters with the message's other strings.
    */
   adaptive(options?: AdaptiveOptions): PCollection<T> {
     return this._with({ ...this._bounds, adaptive: options ?? {} });
@@ -222,7 +237,7 @@ export class PCollection<T> extends PNode<T> {
     if (recall === undefined) {
       this._spell(enc, value);
     } else {
-      const key = identity((alone) => this._spell(alone, value));
+      const key = () => identity((alone) => this._spell(alone, value));
       recall.write(enc, key, () => this._spell(enc, value));
     }
   }
@@ -243,12 +258,12 @@ export class PCollection<T> extends PNode<T> {
       const segment = (j: number): string | number => this._segment(keys[j], j);
       let at: number[];
       // checkOrder accepted the key when the collection was made unordered.
-      if (ordinal(this._key)) {
-        const ordered = ordinalDigits(this._key, keys, UNORDERED, segment);
-        writeOrdinal(enc, ordered.digits, this._key._radix as number, UNORDERED);
+      if (ordinal(this._keys)) {
+        const ordered = ordinalDigits(this._keys, keys, UNORDERED, segment);
+        writeOrdinal(enc, ordered.digits, this._keys._radix as number, UNORDERED);
         at = ordered.at;
       } else {
-        at = writeRun(enc, this._key, keys, UNORDERED, segment);
+        at = writeRun(enc, this._keys, keys, UNORDERED, segment);
       }
       for (const j of at) {
         try {
@@ -262,7 +277,7 @@ export class PCollection<T> extends PNode<T> {
     let i = 0;
     for (const [key, item] of this._layout.entries(value)) {
       try {
-        this._key._write(enc, key);
+        this._keys._write(enc, key);
         this._value?._write(enc, item);
       } catch (error) {
         throw atPath(error, this._segment(key, i));
@@ -277,7 +292,7 @@ export class PCollection<T> extends PNode<T> {
     dec.charge(count);
     const entries = new Map<unknown, unknown>();
     if (this._unordered !== undefined) {
-      const keys = this._key;
+      const keys = this._keys;
       if (!ordinal(keys)) {
         for (const key of readRun(dec, keys, count, UNORDERED)) {
           entries.set(key, this._value?._read(dec));
@@ -291,7 +306,7 @@ export class PCollection<T> extends PNode<T> {
       return this._layout.build(entries);
     }
     for (let i = 0; i < count; i++) {
-      const key = this._key._read(dec);
+      const key = this._keys._read(dec);
       // A repeated key overwrites, as it does in an object literal.
       entries.set(key, this._value?._read(dec));
     }

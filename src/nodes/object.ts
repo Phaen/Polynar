@@ -3,8 +3,8 @@ import type { InferShape } from './infer';
 import { PNode } from './base';
 import { atPath } from './path';
 import type { Kind } from './guards';
-import { withMethod, type Spelling } from './methods';
-import { Recall, copy, identity } from './recall';
+import { recallOf, withMethod, type Spelling } from './methods';
+import { copy, identity, type Recall } from './recall';
 
 /**
  * Object with a fixed shape. A field whose node takes `undefined` may be
@@ -16,29 +16,44 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
   private readonly _shape: S;
   private readonly _keys: readonly string[];
   private readonly _spelling: Spelling;
-  /** Set by `.recall()`. */
+  /** Set by `.adaptive()`. */
+  private readonly _adaptive: boolean;
+  /** Set by `.recall()` or `.adaptive()`: learned under `.adaptive()`. */
   private readonly _recall?: Recall<InferShape<S>>;
 
-  constructor(shape: S, spelling: Spelling = {}) {
+  constructor(shape: S, spelling: Spelling = {}, adaptive = false) {
     super();
     this._shape = { ...shape }; // copy so later caller mutation can't change the node
     this._keys = Object.keys(this._shape);
     this._spelling = spelling;
-    if (spelling.recall !== undefined) {
-      this._recall = new Recall(false, copy);
-    }
+    this._adaptive = adaptive;
+    this._recall = recallOf(spelling, adaptive ? {} : undefined, copy);
+  }
+
+  /**
+   * Let the object learn from the message. An object this node already
+   * wrote is recalled as under `.recall()`, at learned odds: whether the
+   * object is new or seen, and for a seen one, which, by how often each
+   * came back, so objects that keep recurring cost a bit or two and ones
+   * that never do soon cost next to nothing more than their fields. The
+   * fields learn by their own `.adaptive()`. Part of the wire format.
+   */
+  adaptive(): PObject<S> {
+    return new PObject<S>(this._shape, this._spelling, true);
   }
 
   /**
    * Spell an object this node already wrote in the message by its place
    * among the distinct objects it wrote, and a new one as an escape and
-   * then in full: with n objects seen, a repeat costs log2(n + 1) bits. The
-   * message's first object costs nothing extra. Objects the schema writes
-   * the same way are the same object, and a repeat decodes as a copy of the
-   * object first decoded.
+   * then in full: with n objects seen, a repeat costs log2(n + 1) bits, or
+   * under `.adaptive()` less the more often it recurs. The message's first
+   * object costs nothing extra. Objects the schema writes the same way are
+   * the same object, and a repeat decodes as a copy of the object first
+   * decoded.
    */
   recall(): PObject<S> {
-    return new PObject<S>(this._shape, withMethod(this._spelling, 'recall', 'p.object'));
+    const spelling = withMethod(this._spelling, 'recall', 'p.object');
+    return new PObject<S>(this._shape, spelling, this._adaptive);
   }
 
   /** Whether the shape declares `key`. */
@@ -51,7 +66,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     if (recall === undefined) {
       this._spell(enc, value);
     } else {
-      const key = identity((alone) => this._spell(alone, value));
+      const key = () => identity((alone) => this._spell(alone, value));
       recall.write(enc, key, () => this._spell(enc, value));
     }
   }

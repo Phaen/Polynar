@@ -16,6 +16,7 @@ import {
   checkAdaptation,
   readLive,
   withLineage,
+  withoutRecall,
   writeLive,
   type AdaptiveOptions,
 } from './adaptive';
@@ -771,17 +772,18 @@ export class PAny extends PNode<AnyValue> {
     }
     const options = checkAdaptation(adaptive, 'p.any');
     this._forms = this._hints.map((hint) => {
-      const form = adapted(hint, options);
-      return form._kinds?.every((kind) => kind === 'string') === true
-        ? new PRecall<string>(form, same)
-        : form;
+      // Every hint declares its kinds, checked above.
+      const textual = (hint._kinds as readonly Kind[]).every((kind) => kind === 'string');
+      return textual
+        ? new PRecall<string>(adapted(hint, withoutRecall(options)), same)
+        : adapted(hint, options);
     });
     this._learning = {
       options,
       tagRoot: new Lineage(),
       roots: new Map(OWN_TAGS.map((tag) => [tag, new Lineage()])),
       tiers: [...tiers, RARE_TIER],
-      key: new PRecall<string>(new PString().adaptive(options), same),
+      key: new PRecall<string>(new PString().adaptive(withoutRecall(options)), same),
       texts: new Recall<string>(true),
       shapes: new Recall<string[]>(true),
       hints: this._forms,
@@ -869,7 +871,10 @@ export class PAny extends PNode<AnyValue> {
     const options = (root: Lineage): AdaptiveOptions =>
       withLineage(learning.options, roots ? root : new Lineage(root));
     const make = (tag: number): PNode<any> => {
-      const adaptive = options(learning.roots.get(tag) as Lineage);
+      // Strings, key lists and containers are recalled by the codec, and an
+      // int's recall saves next to nothing on top of its companion, so the
+      // nodes open no recall of their own.
+      const adaptive = withoutRecall(options(learning.roots.get(tag) as Lineage));
       switch (tag) {
         case TAG_INT:
           return new PInt().adaptive(adaptive);

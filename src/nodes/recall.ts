@@ -6,22 +6,45 @@
  * record shapes this way.
  */
 
-import { Encoder, Decoder } from '../packer';
+import { Encoder, Decoder, type Journal } from '../packer';
 import { PNode } from './base';
 import type { Kind } from './guards';
 import { Fenwick } from './fenwick';
 import { readLive, writeLive } from './adaptive';
 
 /**
+ * How many `identity` calls are running. Inside one, every recall writes
+ * its value's identity when it is given one, and spells the value
+ * otherwise, so a container's identity spells each value inside it once
+ * rather than once more per recall around it, and a string or a number
+ * costs its key rather than a trial of its learned spellings.
+ */
+let measuring = 0;
+
+/** Writes `key` so that no other key writes the same symbols: its length, then each code unit. */
+function writeKey(enc: Encoder, key: string): void {
+  enc.compose(key.length, Number.MAX_SAFE_INTEGER);
+  for (let i = 0; i < key.length; i++) {
+    enc.compose(key.charCodeAt(i), 0x10000);
+  }
+}
+
+/**
  * The identity a value is recalled under: the symbols a fresh message
  * holding only the value logs as `write` spells it, each its bucket and
- * total. Values with the same spelling decode the same, so recalling one
- * for the other changes nothing the decoder sees. Throws whatever `write`
- * throws.
+ * total, with every recall inside it writing the identity of its value in
+ * place of the value. Values with the same spelling decode the same, so
+ * recalling one for the other changes nothing the decoder sees. Throws
+ * whatever `write` throws.
  */
 export function identity(write: (enc: Encoder) => void): string {
   const enc = new Encoder();
-  write(enc);
+  measuring++;
+  try {
+    write(enc);
+  } finally {
+    measuring--;
+  }
   const { cums, freqs, totals, weighted } = enc.events();
   let key = '';
   for (let i = 0; i < totals.length; i++) {
@@ -91,77 +114,179 @@ function clone(value: unknown): unknown {
   return out;
 }
 
+/**
+ * What each value adds to its side of the new/seen counts, which start at
+ * 1 each, and the total past which they halve, rounding up. The halving
+ * makes the odds of a new value follow the rate at which new values
+ * currently come rather than their rate over the whole message, so a
+ * field that settles on a few values stops paying for the run of new ones
+ * it opened with, within a few dozen values. The side a field never takes
+ * keeps its count of 1, so a field whose values never recur pays about
+ * 1/500 of a bit per value for the escape.
+ */
+const FLAG_STEP = 32;
+const FLAG_WINDOW = 1024;
+
+/**
+ * The learned odds of one message's recall: whether the value is new or
+ * seen, by the counts above; and, for a seen value, which one, each
+ * counting 1 when first coded and 1 more each time it is recalled.
+ */
+interface Learning {
+  readonly fresh: Fenwick;
+  readonly counts: Fenwick;
+}
+
 /** What the encoder knows of one message's recall: each value's member by identity, and the live counts when learned. */
 interface Writing {
   readonly index: Map<string, number>;
-  readonly counts?: Fenwick;
+  readonly learning?: Learning;
 }
 
 /** What the decoder knows of one message's recall: the values in order of first appearance, and the live counts when learned. */
 interface Reading<T> {
   readonly values: T[];
-  readonly counts?: Fenwick;
+  readonly learning?: Learning;
 }
+
+/** Fresh learned odds, recording their changes in `journal` when given. */
+function learning(journal?: Journal): Learning {
+  return { fresh: new Fenwick([1, 1], journal), counts: Fenwick.zeros(0, journal) };
+}
+
+/** Counts one more value as new (0) or seen (1). */
+function learn(fresh: Fenwick, seen: number): void {
+  fresh.add(seen, FLAG_STEP);
+  if (fresh.total > FLAG_WINDOW) {
+    fresh.halve(true);
+  }
+}
+
+/** The two choices of an open recall for a value it has seen, recalling it winning a tie. */
+const RECALLED = 1;
+const CHOICES: readonly number[] = [RECALLED, 0];
 
 /**
  * The recall of one node: member 0 of its table is "new", every later
  * member a value the node coded in the message, in order of first
- * appearance. A recalled value costs its member, a new one member 0 and
- * then its spelling. With fixed odds every member is equally likely, so
- * with `n` values seen a member costs log2(n + 1) bits; `learned`, the
- * members are counted as the message goes on, "new" and every value
- * starting at a count of 1 and gaining 1 each time it is coded, so a value
- * that keeps coming back costs well under a bit. The message's first value
+ * appearance. With fixed odds every member is equally likely, so with `n`
+ * values seen any member costs log2(n + 1) bits, and a new value then its
+ * spelling. `learned`, a value first costs whether it is new or seen,
+ * learned as the message goes on, and a seen one then its member among
+ * the seen values by how often each was coded, so a field whose values
+ * never recur soon pays next to nothing for the escape and a value that
+ * keeps coming back costs well under a bit. The message's first value
  * meets a table of one member, which costs nothing. The encoder matches
  * values by an identity string, `identity` unless the caller has a cheaper
  * one; the decoder needs none.
+ *
+ * `open`, as `.adaptive()` leaves recall on a node that does not declare
+ * it, the recall is learned and is only one of the node's methods: the
+ * encoder spells a value it has seen in full instead when that costs less,
+ * as a new value the decoder then lists again, so a node whose own
+ * spelling already prices its repeats well loses next to nothing.
  */
 export class Recall<T> {
+  readonly learned: boolean;
+
   /** `copy` turns a recalled value into what `read` returns; the value itself when left out. */
   constructor(
-    readonly learned: boolean,
-    private readonly copy?: (value: T) => T
-  ) {}
+    learned: boolean,
+    private readonly copy?: (value: T) => T,
+    readonly open = false
+  ) {
+    this.learned = learned || open;
+  }
 
   private writing(enc: Encoder): Writing {
     return enc.state(this, () => ({
       index: new Map(),
-      counts: this.learned ? new Fenwick([1], enc.journal) : undefined,
+      learning: this.learned ? learning(enc.journal) : undefined,
     }));
   }
 
   private reading(dec: Decoder): Reading<T> {
     return dec.state(this, () => ({
       values: [],
-      counts: this.learned ? new Fenwick([1]) : undefined,
+      learning: this.learned ? learning() : undefined,
     }));
   }
 
   /**
-   * Writes the member of the value whose identity is `key`, or member 0
-   * and then `spell()` when the node has not coded it in the message.
-   * Returns whether the value was recalled.
+   * Writes the member of the value whose identity is `key`, or that `key`
+   * returns, or member 0 and then `spell()` when the node has not coded it
+   * in the message, or, when open, when spelling it costs less. Inside
+   * `identity` it writes a `key` given as a string, or else spells the
+   * value without asking `key`. Returns whether the value was recalled.
    */
-  write(enc: Encoder, key: string, spell: () => void): boolean {
-    const { index, counts } = this.writing(enc);
-    const member = index.get(key);
-    const seen = index.size;
-    if (counts === undefined) {
-      enc.compose(member ?? 0, seen + 1);
-    } else {
-      writeLive(enc, counts, member ?? 0);
-      counts.add(member ?? 0, 1);
+  write(enc: Encoder, key: string | (() => string), spell: () => void): boolean {
+    if (measuring > 0) {
+      if (typeof key === 'string') {
+        writeKey(enc, key);
+      } else {
+        spell();
+      }
+      return false;
     }
-    if (member !== undefined) {
+    const writing = this.writing(enc);
+    const id = typeof key === 'string' ? key : key();
+    const member = writing.index.get(id);
+    if (member === undefined) {
+      this.writeNew(enc, writing, id, spell);
+      return false;
+    }
+    if (!this.open) {
+      this.writeSeen(enc, writing, member);
       return true;
     }
-    spell();
-    counts?.push(1);
-    index.set(key, seen + 1);
-    if (enc.journal.active) {
-      enc.journal.drop(index, key);
+    const choice = enc.decide(CHOICES, CHOICES, (c) => {
+      if (c === RECALLED) {
+        this.writeSeen(enc, writing, member);
+      } else {
+        this.writeNew(enc, writing, id, spell);
+      }
+    });
+    return choice === RECALLED;
+  }
+
+  /** Writes `member`, a value already coded. */
+  private writeSeen(enc: Encoder, { index, learning }: Writing, member: number): void {
+    if (learning === undefined) {
+      enc.compose(member, index.size + 1);
+      return;
     }
-    return false;
+    const { fresh, counts } = learning;
+    writeLive(enc, fresh, 1);
+    learn(fresh, 1);
+    writeLive(enc, counts, member - 1);
+    counts.add(member - 1, 1);
+  }
+
+  /**
+   * Writes the escape and `spell()`, and lists the value as a new member;
+   * a value already listed keeps its first member for the encoder.
+   */
+  private writeNew(
+    enc: Encoder,
+    { index, learning }: Writing,
+    key: string,
+    spell: () => void
+  ): void {
+    const seen = learning?.counts.size ?? index.size;
+    if (learning === undefined) {
+      enc.compose(0, seen + 1);
+    } else if (seen > 0) {
+      writeLive(enc, learning.fresh, 0);
+      learn(learning.fresh, 0);
+    }
+    spell();
+    learning?.counts.push(1);
+    if (!index.has(key)) {
+      index.set(key, seen + 1);
+      if (enc.journal.active) {
+        enc.journal.drop(index, key);
+      }
+    }
   }
 
   /**
@@ -169,20 +294,25 @@ export class Recall<T> {
    * the one first decoded, or a new one read by `spell()`.
    */
   read(dec: Decoder, spell: () => T): T {
-    const { values, counts } = this.reading(dec);
-    let member: number;
-    if (counts === undefined) {
+    const { values, learning } = this.reading(dec);
+    let member = 0;
+    if (learning === undefined) {
       member = dec.parse(values.length + 1);
-    } else {
-      member = readLive(dec, counts);
-      counts.add(member, 1);
+    } else if (values.length > 0) {
+      const { fresh, counts } = learning;
+      const recalled = readLive(dec, fresh);
+      learn(fresh, recalled);
+      if (recalled === 1) {
+        member = readLive(dec, counts) + 1;
+        counts.add(member - 1, 1);
+      }
     }
     if (member > 0) {
       const value = values[member - 1];
       return this.copy === undefined ? value : this.copy(value);
     }
     const value = spell();
-    counts?.push(1);
+    learning?.counts.push(1);
     values.push(value);
     return value;
   }
