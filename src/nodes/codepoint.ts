@@ -46,6 +46,14 @@ export function codePointSymbol(code: number): number {
 }
 
 /**
+ * The code points the first slot's `symbol` leaves a tail for, first and
+ * last: its band; undefined through TEXT_DIRECT_MAX, where nothing follows.
+ */
+export function codePointBand(symbol: number): readonly [number, number] | undefined {
+  return symbol <= TEXT_DIRECT_MAX ? undefined : TEXT_BANDS[symbol - TEXT_DIRECT_MAX - 1];
+}
+
+/**
  * The radix of the slot `composeCodePointTail` writes after the first
  * slot's `symbol`: the size of its band, 1 through TEXT_DIRECT_MAX, where
  * nothing follows.

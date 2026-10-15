@@ -5,9 +5,13 @@
 import { p, CharSets, CorruptInputError, Encoder, ProseModels, buildProseModel } from '../../index';
 import type { PNode, PString } from '../../index';
 import { TEXT_DIRECT_MAX, TEXT_FIRST_RADIX } from '../../nodes/codepoint';
-import { compileProse } from '../../nodes/prose';
+import { compileProse, shiftedTable } from '../../nodes/prose';
+import { ProseText } from '../../nodes/string';
+import { COST_UNITS } from '../../packer';
+import { MIXED, SHAPE_COUNT, SHAPE_WEIGHTS, shapesOf } from '../../nodes/shape';
 import { buildWeights } from '../../nodes/weights';
 import { Repeats } from '../../nodes/repeats';
+import { MAX_ADMITTED } from '../../nodes/grown';
 import { mulberry32, trip } from '../support';
 
 /** The size comparison's lorem ipsum, from examples/size-comparison.ts. */
@@ -163,6 +167,96 @@ describe('Schema string prose', () => {
     expect(prose).toBeLessThan(flat * 0.7);
   });
 
+  it('codes the words of a string apart from their case and separators', () => {
+    const prose = p.string().prose();
+    const words = prose.encode('user not found').length;
+    for (const value of ['USER_NOT_FOUND', 'user-not-found', 'userNotFound', 'UserNotFound']) {
+      expect(trip(prose, value)).toBe(value);
+      expect(prose.encode(value).length).toBeLessThanOrEqual(words + 1);
+    }
+    expect(prose.encode('HEADING').length).toBeLessThan(p.string().encode('HEADING').length);
+  });
+
+  it.each(['The Big Lebowski', 'McDonald', 'iPhone XR', 'Hi. "Yes!" OK?', 'ÀB_c', 'x'.repeat(30)])(
+    'round-trips %j, static and adaptive',
+    (value) => {
+      expect(trip(p.string().prose(), value)).toBe(value);
+      const values = [value, value.toUpperCase(), value.toLowerCase(), value];
+      expect(trip(p.array(p.string().prose().adaptive()), values)).toEqual(values);
+      expect(trip(p.array(p.string().prose().recall().delta()), values)).toEqual(values);
+    }
+  );
+
+  it('passes over a shape whose words overrun the length bounds', () => {
+    expect(trip(p.string().prose().max(12), 'userNotFound')).toBe('userNotFound');
+    expect(trip(p.string().prose().length(6), 'aBcDeF')).toBe('aBcDeF');
+    expect(() => p.string().prose().max(11).encode('userNotFound')).toThrow(
+      'String length 12 is above the maximum 11'
+    );
+  });
+
+  it('prices each shape exactly what writing it charges', () => {
+    const rnd = mulberry32(11);
+    const alphabet = ['a', 'B', 'z', 'Q', ' ', '_', '-', '.', '7', 'é', '漢', '👋', '\ud800'];
+    for (const bounds of [{}, { max: 9 }]) {
+      const prose = new ProseText(ProseModels.english, bounds, {});
+      for (let n = 0; n < 400; n++) {
+        let value = '';
+        for (let k = Math.floor(rnd() * 12); k > 0; k--) {
+          value += alphabet[Math.floor(rnd() * alphabet.length)];
+        }
+        for (const [shape, text] of shapesOf(value)) {
+          const enc = new Encoder();
+          const mark = enc.mark();
+          let units = Infinity;
+          try {
+            prose.spell(enc, shape, text);
+            units = enc.bitsSince(mark) * COST_UNITS;
+          } catch {
+            // Out of bounds: the cost says so.
+          }
+          expect(prose.cost(shape, text)).toBe(units);
+        }
+      }
+    }
+  });
+
+  it('prices the shapes of many distinct strings', () => {
+    const values = Array.from({ length: 5000 }, (_, i) => `Item ${i}`);
+    expect(trip(p.array(p.string().prose()), values)).toEqual(values);
+  });
+
+  it('keeps capitals as shifts, and refuses a shift without its letter', () => {
+    const node = p.string().prose();
+    for (const value of ['McDonald', 'iPhone 15 Pro', 'ÀB c', 'X', 'a\ud800B']) {
+      expect(trip(node, value)).toBe(value);
+    }
+    const table = compileProse(ProseModels.english);
+    const shifted = shiftedTable(ProseModels.english);
+    const shapes = buildWeights(SHAPE_WEIGHTS, SHAPE_COUNT, 'test');
+    const spell = (symbols: number[]) => {
+      const enc = new Encoder();
+      enc.composeWeighted(shapes.cums[MIXED], shapes.freqs[MIXED], shapes.total);
+      enc.composeTerm(1);
+      let row = shifted.start;
+      for (const sym of symbols) {
+        const weights = buildWeights(shifted.rows[row], shifted.shift + 1, 'test');
+        enc.composeWeighted(weights.cums[sym], weights.freqs[sym], weights.total);
+        row = sym;
+      }
+      return enc.output();
+    };
+    const a = table.index.get(97) as number;
+    expect(node.decode(spell([shifted.shift, a]))).toBe('A');
+    const dot = table.index.get(46) as number;
+    expect(() => node.decode(spell([shifted.shift, dot]))).toThrow(
+      new CorruptInputError('A shift is not followed by a lowercase letter')
+    );
+    expect(() => node.decode(spell([shifted.shift, shifted.shift, shifted.shift]))).toThrow(
+      new CorruptInputError('More items than twice the length 1')
+    );
+  });
+
   it('cannot combine with a charset', () => {
     expect(() => p.string().prose().charset('abc')).toThrow('cannot combine prose with a charset');
     expect(() => p.string().charset('abc').prose()).toThrow(TypeError);
@@ -189,6 +283,12 @@ describe('Schema string prose', () => {
     const ab = buildProseModel('abcba', { alphabet: 'ab' });
     expect(ab.weights).toHaveLength(3);
     expect(trip(p.string().prose(ab), 'abc')).toBe('abc');
+  });
+
+  it('builds a model of the lowercase text', () => {
+    expect(buildProseModel('The Cat. THE CAT.').alphabet).toBe(' .aceht');
+    expect(buildProseModel('abab', { alphabet: 'aAbB' }).alphabet).toBe('ab');
+    expect(() => buildProseModel('AB', { alphabet: 'AB' })).toThrow('no characters to model');
   });
 
   it('leaves rare characters of a built model to the escape', () => {
@@ -224,7 +324,9 @@ describe('Schema string prose', () => {
     // 'e' has its own bucket; its escaped form reads back as the same string.
     const table = compileProse(ProseModels.english);
     const start = buildWeights(ProseModels.english.weights[table.start], table.escape + 1, 'test');
+    const shapes = buildWeights(SHAPE_WEIGHTS, SHAPE_COUNT, 'test');
     const enc = new Encoder();
+    enc.composeWeighted(shapes.cums[0], shapes.freqs[0], shapes.total);
     enc.composeTerm(1);
     enc.composeWeighted(start.cums[table.escape], start.freqs[table.escape], start.total);
     enc.compose('e'.charCodeAt(0), TEXT_FIRST_RADIX);
@@ -233,6 +335,21 @@ describe('Schema string prose', () => {
 });
 
 describe('p.string adaptive', () => {
+  it('codes English as prose and other text near the ladder', () => {
+    const english = ['See you at noon', 'USER_NOT_FOUND', 'The cat sat on the mat'];
+    const other = ['漢字かな交じり文', 'x7#Qz!@k', '漢字かな交じり文です'];
+    const size = (node: PNode<string[]>, values: string[]) => node.encode(values).length;
+    const picked = p.array(p.string().adaptive());
+    for (const values of [english, other, [...other, ...english]]) {
+      expect(trip(picked, values)).toEqual(values);
+    }
+    expect(size(picked, english)).toBeLessThan(size(p.array(p.string()), english));
+    expect(size(picked, other)).toBeLessThanOrEqual(size(p.array(p.string()), other) + 1);
+    // A declared prose model codes this text too; a charset string never uses prose.
+    expect(trip(p.array(p.string().prose().adaptive()), other)).toEqual(other);
+    expect(trip(p.array(p.string().charset('abc').adaptive()), ['ab', 'c'])).toEqual(['ab', 'c']);
+  });
+
   const plain = p.string().max(7);
   const weights = Array.from({ length: 8 }, (_, i) => (i === 3 ? 29 : 1));
   const run = (length: number, seed: number) => {
@@ -267,14 +384,16 @@ describe('p.string adaptive', () => {
   it('written once with at most one character, spends the bytes of its static form', () => {
     for (const value of ['', 'a', '\u00e9', '👋']) {
       // The static form spells a character in uniform slots and the adaptive
-      // one in equal-weight buckets, which end the message in bit-reversed
-      // order: the same states, in another order.
-      expect(plain.adaptive().encode(value)).toHaveLength(plain.encode(value).length);
-      expect(plain.weights(weights).adaptive().encode(value)).toHaveLength(
-        plain.weights(weights).encode(value).length
+      // one in equal-weight buckets: the same states, in another order. The
+      // adaptive form spells as prose, a byte more than the ladder at most.
+      expect(plain.adaptive().encode(value).length).toBeLessThanOrEqual(
+        plain.encode(value).length + 1
+      );
+      expect(plain.weights(weights).adaptive().encode(value).length).toBeLessThanOrEqual(
+        plain.weights(weights).encode(value).length + 1
       );
       const prose = p.string().prose().max(9);
-      expect(prose.adaptive().encode(value)).toEqual(prose.encode(value));
+      expect(prose.adaptive().encode(value).length).toBe(prose.encode(value).length);
     }
   });
 
@@ -353,6 +472,100 @@ describe('p.string adaptive', () => {
   });
 });
 
+describe('p.string adaptive text model', () => {
+  it('codes ids outside the prose model in fewer bytes than the ladder', () => {
+    const random = mulberry32(0x1d5);
+    const ids = Array.from({ length: 40 }, () =>
+      Array.from({ length: 32 }, () => '0123456789abcdef'[Math.floor(random() * 16)]).join('')
+    );
+    const learner = p.array(p.string().adaptive());
+    expect(trip(learner, ids)).toEqual(ids);
+    expect(learner.encode(ids).length).toBeLessThan(p.array(p.string()).encode(ids).length);
+  });
+
+  it('keeps the capitals of mixed-case strings', () => {
+    const values = ['iPhone XR', 'MEQCICUgMnbu4P+yWGs9zpkWDoZJ', 'eBay', 'McDonald', 'a1B2c3D4'];
+    expect(trip(p.array(p.string().adaptive()), values)).toEqual(values);
+  });
+
+  it('round-trips under a prose model without lowercase letters', () => {
+    // Digits and the space twice each, the punctuation once: below the minCount of 2.
+    const node = p.string().prose(buildProseModel('0123456789 0123456789 .,;')).adaptive();
+    const value = 'Abc DEF 0.1, xyz';
+    expect(trip(node, value)).toBe(value);
+    const values = [value, 'Q9 r8, S7.', '00 11 22', value];
+    expect(trip(p.array(node), values)).toEqual(values);
+  });
+
+  it('round-trips under a prose model whose alphabet holds a capital', () => {
+    const model = {
+      alphabet: ' aA',
+      weights: [
+        [1, 3, 2, 1],
+        [2, 1, 3, 1],
+        [3, 2, 1, 1],
+        [2, 2, 2, 1],
+      ],
+    };
+    const node = p.string().prose(model).adaptive();
+    for (const value of ['Aa aA AAA', 'Bb']) {
+      expect(trip(node, value)).toBe(value);
+    }
+    expect(trip(p.array(node), ['Aa aA AAA', 'Bb'])).toEqual(['Aa aA AAA', 'Bb']);
+  });
+
+  it('refers back to a stretch of escaped code points under static prose', () => {
+    const value = 'naïve café — naïve café — naïve café';
+    const node = p.string().prose().repeats();
+    expect(trip(node, value)).toBe(value);
+    expect(node.encode(value).length).toBeLessThan(p.string().prose().encode(value).length);
+  });
+
+  it('spells a code point outside the model in full only the first time', () => {
+    const random = mulberry32(0xc1c);
+    const value = Array.from({ length: 2000 }, () =>
+      String.fromCodePoint(0x430 + Math.floor(random() * 32))
+    ).join('');
+    const node = p.string().adaptive();
+    expect(trip(node, value)).toBe(value);
+    // 32 letters alike: 5 bits each, where the band offset alone takes 10.9.
+    expect(node.encode(value).length).toBeLessThan((2000 * 6) / 8);
+  });
+
+  it('learns code points across strings, shapes and methods', () => {
+    const values = [
+      '你好，世界！你好',
+      'Ünïcödé ÜBER Straße',
+      '😀 emoji 😀😀 👍🏽 Emoji',
+      'lone \ud800 and \udfff surrogates \ud800',
+      'Привет, Мир — привет',
+      '你好世界你好世界你好世界你好世界你好世界',
+      'Ünïcödé ÜBER Straße',
+      'straße_über_straße',
+      '你好，世界！你好吗',
+    ];
+    for (const node of [
+      p.string().adaptive(),
+      p.string().delta().adaptive(),
+      p.string().recall().adaptive(),
+      p.string().repeats().adaptive({ window: 16 }),
+      p.string().prose().adaptive({ separate: true }),
+    ]) {
+      expect(trip(p.array(node), values)).toEqual(values);
+    }
+    expect(trip(p.any().adaptive(), { values, again: values })).toEqual({ values, again: values });
+  });
+
+  it('spells code points past the most a message admits as they are', () => {
+    const fresh = Array.from({ length: MAX_ADMITTED + 40 }, (_, i) =>
+      String.fromCodePoint(0x4e00 + i)
+    );
+    const late = fresh.slice(-40);
+    const value = [...fresh, ...late.flatMap((c) => [c, fresh[3]])].join('');
+    expect(trip(p.string().adaptive(), value)).toBe(value);
+  });
+});
+
 describe('p.string adaptive fields', () => {
   const url = 'https://api.example.com/v1/users/12345/repositories?page=2&per_page=100';
   /** The bytes of `value` under `node`, after checking it round-trips. */
@@ -378,7 +591,6 @@ describe('p.string adaptive fields', () => {
   });
 
   it.each([
-    ['the ladder and prose', p.string(), p.string().prose()],
     [
       'two charsets',
       p.string().charset(CharSets.asciiSafe),
@@ -390,6 +602,17 @@ describe('p.string adaptive fields', () => {
     const value = { a: url, b: url };
     expect(size(pairOf(a.adaptive(), b.adaptive()), value)).toBe(
       size(pairOf(a.adaptive({ separate: true }), b.adaptive({ separate: true })), value)
+    );
+  });
+
+  it('is English prose without a model, one with .prose() and sharing with it', () => {
+    const value = 'The cat sat on the mat.';
+    expect(p.string().adaptive().encode(value)).toEqual(
+      p.string().prose().adaptive().encode(value)
+    );
+    const fields = { a: url, b: url };
+    expect(pairOf(p.string().adaptive(), p.string().prose().adaptive()).encode(fields)).toEqual(
+      pairOf(p.string().adaptive(), p.string().adaptive()).encode(fields)
     );
   });
 
@@ -440,11 +663,11 @@ describe('p.string adaptive contexts and repeats', () => {
     expect(learning.encode(text).length).toBeLessThan(fixed.encode(text).length / 2);
   });
 
-  it('spells the README lorem ipsum under prose in at most 563 bytes', () => {
+  it('spells the README lorem ipsum under prose in at most 576 bytes', () => {
     const node = p.string().prose().adaptive();
     const bytes = node.encode(LOREM_IPSUM);
     expect(node.decode(bytes)).toBe(LOREM_IPSUM);
-    expect(bytes.length).toBeLessThanOrEqual(563);
+    expect(bytes.length).toBeLessThanOrEqual(576);
   });
 
   it('copies a lone surrogate inside a repeat', () => {

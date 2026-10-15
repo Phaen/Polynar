@@ -21,7 +21,7 @@ const SIZE = 5;
 const START = SIZE;
 const WEIGHTS = [5, 3, 2, 1, 1];
 
-/** A toy prior over five symbols: one row for order 0, a row per previous symbol (or none) for order 1. */
+/** A toy prior over five symbols: one row under 0, a row per previous symbol (or none) under 1. */
 const priorOf = (order: 0 | 1): AdaptivePrior =>
   new AdaptivePrior(
     order === 0
@@ -32,9 +32,9 @@ const priorOf = (order: 0 | 1): AdaptivePrior =>
     'w'
   );
 
-const modelOf = (order: 0 | 1): ContextModel => new ContextModel(priorOf(order), SIZE, order, 'w');
+const modelOf = (order: 0 | 1): ContextModel => new ContextModel(priorOf(order), SIZE, 'w');
 
-/** Each symbol's history, newest first, and its row: the previous symbol under order 1. */
+/** Each symbol's history, newest first, and its row: the previous symbol under a row per symbol. */
 const steps = (symbols: readonly number[], order: 0 | 1) => {
   let history = [START, START, START];
   return symbols.map((sym) => {
@@ -176,18 +176,18 @@ describe('ContextModel', () => {
   });
 
   it('refuses a size its prior does not span', () => {
-    expect(() => new ContextModel(priorOf(0), 4, 0, 'w')).toThrow(
+    expect(() => new ContextModel(priorOf(0), 4, 'w')).toThrow(
       new TypeError('w contexts span 4 symbols, but their prior 5')
     );
     expect(modelOf(0).size).toBe(SIZE);
   });
 
   it.each([
-    [0, 1],
-    [0, 2],
-    [1, 3],
-    [1, 4],
-  ] as const)('round-trips a seeded sequence under order %i (seed %i)', (order, seed) => {
+    ['one prior row', 0, 1],
+    ['one prior row', 0, 2],
+    ['a prior row per previous symbol', 1, 3],
+    ['a prior row per previous symbol', 1, 4],
+  ] as const)('round-trips a seeded sequence with %s (seed %i)', (_name, order, seed) => {
     const symbols = sequence(seed, 3000);
     const bytes = encode(modelOf(order), symbols, order);
     expect(decode(modelOf(order), bytes, symbols, order)).toEqual(symbols);
@@ -229,7 +229,7 @@ describe('ContextModel', () => {
    */
   const trained = (order: 0 | 1, symbols: readonly number[], next: number) => {
     const prior = priorOf(order);
-    const model = new ContextModel(prior, SIZE, order, 'w');
+    const model = new ContextModel(prior, SIZE, 'w');
     const enc = new Encoder();
     for (let i = 0; i < WARMUP; i++) {
       model.learn(enc, 4, 0, [4, 4, 4]);
@@ -510,7 +510,7 @@ describe('ContextModel warm-up', () => {
   it('counts learned symbols toward the warm-up, and prices only the prior below it', () => {
     const run = steps(symbols, 0);
     const prior = priorOf(0);
-    const model = new ContextModel(prior, SIZE, 0, 'w');
+    const model = new ContextModel(prior, SIZE, 'w');
     const enc = new Encoder();
     run
       .slice(0, WARMUP - 1)

@@ -801,8 +801,8 @@ export class PAny extends PNode<AnyValue> {
    * appears again; an array's items sit under its key with `[]` added, and
    * values outside any record under a key of their own. A key's tables
    * start from what every key learned so far. Ints and strings each pick
-   * their plain spelling or the difference from the key's previous one;
-   * strings, key lists and whole arrays and records equal to an earlier one
+   * their plain spelling or the difference from the key's previous one, as
+   * `p.string().adaptive()` does; strings, key lists and whole arrays and records equal to an earlier one
    * are recalled, from the key's own first, then from every key's, and the
    * characters of new strings and keys learn across the whole message, as
    * under `p.string().adaptive()`. Hints are used in their own adaptive

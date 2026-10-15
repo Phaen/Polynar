@@ -17,7 +17,6 @@
 
 import { SlotCache } from '../packer';
 import { costUnits, type Encoder, type Decoder, type Journal, type Undoable } from '../packer';
-import type { AdaptivePrior } from './adaptive';
 import { Exclusion, type Table } from './excluded';
 import { KeyMap } from './keymap';
 
@@ -273,13 +272,29 @@ function learnCell(cell: [number, number], escaped: boolean, journal?: Journal):
 }
 
 /**
- * PPM contexts above an adaptive prior over `size` symbols whose rows
- * already condition on `order` previous symbols (0 or 1): learned contexts
- * for each history length in `(order, MAX_ORDER]`. `who` names the node.
+ * What the contexts escape to: a table over the symbols, by row, that codes
+ * a symbol with members ruled out and learns every symbol the contexts code.
+ * `AdaptivePrior` is one; `cost` is the cost, in `COST_UNITS`, the encoder's
+ * table as it stands gives a symbol, learning nothing.
+ */
+export interface SymbolPrior {
+  readonly members: number;
+  /** One entry per row. */
+  readonly bases: readonly unknown[];
+  write(enc: Encoder, pos: number, row: number, excluded: Exclusion): void;
+  read(dec: Decoder, row: number, excluded: Exclusion): number;
+  learn(side: Encoder | Decoder, pos: number, row: number): void;
+  cost(enc: Encoder, pos: number, row: number, excluded: Exclusion): number;
+}
+
+/**
+ * PPM contexts above a prior over `size` symbols: learned contexts for each
+ * history length from 1 to `MAX_ORDER`. `who` names the node.
  *
  * A history lists the previous symbols newest first, exactly `MAX_ORDER`
- * of them, each in `[0, size]`, where `size` stands for "before the value
- * began". A context of order `k` keys on the first `k` of them.
+ * of them, each in `[0, size]`, where a value no symbol coded takes, such
+ * as `size`, stands for "before the value began". A context of order `k`
+ * keys on the first `k` of them.
  */
 export class ContextModel {
   readonly size: number;
@@ -300,9 +315,8 @@ export class ContextModel {
   private readonly scratch: Scan = { left: 0, sum: 0, below: 0, width: 0, found: false };
 
   constructor(
-    private readonly prior: AdaptivePrior,
+    private readonly prior: SymbolPrior,
     size: number,
-    order: 0 | 1,
     private readonly who: string
   ) {
     if (size !== prior.members) {
@@ -310,7 +324,7 @@ export class ContextModel {
     }
     this.size = size;
     const orders: number[] = [];
-    for (let k = MAX_ORDER; k > order; k--) {
+    for (let k = MAX_ORDER; k > 0; k--) {
       orders.push(k);
     }
     this.orders = orders;
@@ -427,9 +441,9 @@ export class ContextModel {
   /**
    * The cost, in `COST_UNITS`, the model on the encoder, as it stands,
    * gives `sym` here under `except`: each context's escape
-   * decision and, on its hit, the symbol's bucket, or the prior's as its
-   * `estimate` gives it. Nothing learns, and a context not yet visited,
-   * which holds nothing, is left unbuilt.
+   * decision and, on its hit, the symbol's bucket, or the prior's `cost`.
+   * Nothing learns, and a context not yet visited, which holds nothing, is
+   * left unbuilt.
    */
   price(
     enc: Encoder,
@@ -460,8 +474,7 @@ export class ContextModel {
       }
       this.exclude(exclusion, context);
     }
-    const [, freq, total] = this.prior.estimate(enc, sym, row, exclusion);
-    return cost + costUnits(freq, total);
+    return cost + this.prior.cost(enc, sym, row, exclusion);
   }
 
   /** Clears the exclusion, then rules out `except`, a symbol in `[0, size)`, when given. */

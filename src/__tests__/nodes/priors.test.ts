@@ -377,6 +377,22 @@ describe('buildWeights', () => {
     expect(table.locate(8)[0]).toBe(2);
     expect(table.locate(Infinity)[0]).toBe(2);
   });
+
+  it('locates every residual of a large table, guided or too wide to guide', () => {
+    const rnd = mulberry32(5);
+    for (const top of [1, 1000, 2 ** 40, 2 ** 47]) {
+      const weights = Array.from({ length: 40 }, () => 1 + Math.floor(rnd() * top));
+      const big = buildWeights(weights, weights.length, 'w');
+      big.cums.forEach((cum, i) => {
+        const end = cum + big.freqs[i] - 1;
+        for (const r of [cum, end, cum + (end - cum) / 2]) {
+          expect(big.locate(r)).toEqual([i, cum, big.freqs[i]]);
+        }
+      });
+      expect(big.locate(-0.5)[0]).toBe(0);
+      expect(big.locate(big.total)[0]).toBe(39);
+    }
+  });
 });
 
 describe('writeTable and readTable', () => {

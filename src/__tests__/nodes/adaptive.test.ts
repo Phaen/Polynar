@@ -196,6 +196,20 @@ describe('AdaptiveTable', () => {
     expect([live.learned.count(1), live.learned.total]).toEqual([4, 4]);
   });
 
+  it('halves rounding up under keep, so a member seen keeps a count', () => {
+    const base = buildWeights([1, 1], 2, 'w');
+    const halved = (keep: boolean) => {
+      const live = new LiveCounts(base, 1, 4, undefined, undefined, keep);
+      live.learn(0);
+      for (let i = 0; i < 4; i++) {
+        live.learn(1);
+      }
+      return [live.learned.count(0), live.learned.count(1), live.learned.total];
+    };
+    expect(halved(false)).toEqual([0, 2, 2]);
+    expect(halved(true)).toEqual([1, 2, 3]);
+  });
+
   it('shares the learned counts of another live table when given them', () => {
     const base = buildWeights([2, 1, 5], 3, 'w');
     const slow = new LiveCounts(base, 6, 8);
@@ -719,6 +733,67 @@ describe('AdaptivePrior', () => {
       new RangeError('Position 7 is outside [0, 1)')
     );
   });
+});
+
+describe('AdaptivePrior options', () => {
+  const weights = [
+    [4, 2, 1, 1],
+    [1, 1, 2, 4],
+  ];
+  const lifted = weights.map((row) => row.map((weight) => weight + 3));
+  const random = mulberry32(77);
+  const symbols = sequence(78, 400, 4, 0.6);
+  const rows = symbols.map(() => Math.floor(random() * 2));
+
+  it('refuses live rows of another count than the rows', () => {
+    expect(
+      () => new AdaptivePrior(weights, 4, undefined, 'w', undefined, { live: [ones(4)] })
+    ).toThrow(new TypeError('w adaptive prior has 2 rows, but 1 live rows'));
+  });
+
+  it('pools what every row learns into one set of counts', () => {
+    /** The share of the states member 1 holds in row 1, after row 0 learned it 200 times. */
+    const share = (pooled: boolean): number => {
+      const prior = new AdaptivePrior(weights, 4, undefined, 'w', undefined, { pooled });
+      const enc = new Encoder();
+      for (let i = 0; i < 200; i++) {
+        prior.write(enc, 1, 0);
+      }
+      const [, freq, total] = prior.estimate(enc, 1, 1);
+      return freq / total;
+    };
+    expect(share(true)).toBeGreaterThan(share(false) * 4);
+  });
+
+  it.each([
+    ['pooled', { pooled: true }],
+    ['pooled, over live rows that keep', { pooled: true, live: lifted, keep: true }],
+    ['over live rows', { live: lifted }],
+  ])('decodes what it encodes %s', (_name, options) => {
+    const prior = new AdaptivePrior(weights, 4, 16, 'w', undefined, options);
+    const bytes = encodeAll(prior, symbols, rows);
+    expect(decodeAll(prior, bytes, rows)).toEqual(symbols);
+  });
+
+  it('spells its first value under the declared rows, whatever the live ones', () => {
+    const plain = new AdaptivePrior(weights, 4, undefined, 'w');
+    const live = new AdaptivePrior(weights, 4, undefined, 'w', undefined, { live: lifted });
+    for (const row of [0, 1]) {
+      for (let symbol = 0; symbol < 4; symbol++) {
+        expect(encodeAll(live, [symbol], [row])).toEqual(encodeAll(plain, [symbol], [row]));
+      }
+    }
+  });
+
+  it.each([0, 1, 2, 3])(
+    'weighs the live rows under the rungs and the declared ones under static, coding %i',
+    (coding) => {
+      const prior = new AdaptivePrior(weights, 4, undefined, 'w', undefined, { live: lifted });
+      const bytes = forge(prior, lifted, coding, symbols, rows);
+      expect(selector(prior, bytes, rows[0])).toBe(coding);
+      expect(decodeAll(prior, bytes, rows)).toEqual(symbols);
+    }
+  );
 });
 
 describe('AdaptivePrior exclusion and learning', () => {

@@ -1,7 +1,9 @@
 /**
  * Order-1 prose models for `p.string().prose()`: character frequencies
  * conditioned on the previous character, driven exactly through the weighted
- * packer — no code-length rounding. A model is a matrix: one row per
+ * packer — no code-length rounding. Prose codes text lowercase, its casing
+ * and separators restored by a shape (`./shape`), so a model weights no
+ * ASCII capitals. A model is a matrix: one row per
  * previous character plus one for anything outside the alphabet, one column
  * per next character plus an escape that hands any other code point to the
  * laddered codec. Nothing is rejected — text far from the model only pays
@@ -9,6 +11,7 @@
  * and context rules; together they ARE its wire format.
  */
 import { buildWeights } from './weights';
+import { lowercase } from './shape';
 
 /** Occurrences per ten thousand characters of running English text. */
 const BASE_WEIGHTS: Record<string, number> = {
@@ -150,23 +153,24 @@ const WORD_INITIAL: Record<string, number> = {
 
 const VOWELS = 'aeiou';
 
-/** Uppercase letters ride at a fraction of their lowercase weight. */
-const UPPERCASE_DIVISOR = 30;
-
 /** Escape weight per context; anything outside the model rides behind it. */
 const ESCAPE_WEIGHT = 30;
 
-/** The characters the English model weights: tab, newline and printable ASCII. */
+/** Whether `code` is an ASCII capital, which prose never codes. */
+const isCapital = (code: number): boolean => code >= 65 && code <= 90;
+
+/** The characters the English model weights: tab, newline and printable ASCII but the capitals. */
 const ENGLISH_ALPHABET: string = (() => {
   let alphabet = '\t\n';
   for (let code = 32; code <= 126; code++) {
-    alphabet += String.fromCharCode(code);
+    if (!isCapital(code)) {
+      alphabet += String.fromCharCode(code);
+    }
   }
   return alphabet;
 })();
 
-const UPPER = /^[A-Z]$/;
-const LETTER = /^[A-Za-z]$/;
+const LETTER = /^[a-z]$/;
 const DIGIT = /^[0-9]$/;
 const PUNCTUATION = /^[.!?,;:]$/;
 
@@ -179,12 +183,7 @@ export const baseWeight = (ch: string): number => {
   if (ch.length !== 1) {
     throw new RangeError(`baseWeight expected a single character, got ${JSON.stringify(ch)}`);
   }
-  const own = BASE_WEIGHTS[ch];
-  if (own !== undefined) {
-    return own;
-  }
-  const lower = BASE_WEIGHTS[ch.toLowerCase()];
-  return lower === undefined ? 1 : Math.max(1, Math.round(lower / UPPERCASE_DIVISOR));
+  return BASE_WEIGHTS[ch] ?? 1;
 };
 
 /**
@@ -197,28 +196,24 @@ export const contextMultiplier = (prev: string, next: string): number => {
       `contextMultiplier expected single characters, got ${JSON.stringify(prev)} and ${JSON.stringify(next)}`
     );
   }
-  const pair = prev.toLowerCase() + next.toLowerCase();
-  const boost = BIGRAM_BOOSTS[pair];
+  const boost = BIGRAM_BOOSTS[prev + next];
   let m = boost ?? 1;
 
   if (prev === ' ' || prev === '\n' || prev === '\t') {
     // Word-initial: first-letter rates replace the running-text rates, and
-    // sentence case is common while run-on whitespace is not.
-    const initial = WORD_INITIAL[next.toLowerCase()];
+    // run-on whitespace is rare.
+    const initial = WORD_INITIAL[next];
     if (initial !== undefined) {
-      m = initial / baseWeight(next.toLowerCase());
+      m = initial / baseWeight(next);
     }
-    if (UPPER.test(next)) m *= 15;
     if (next === ' ') m /= 8;
-  } else if (LETTER.test(prev) && UPPER.test(next)) {
-    m /= 8;
   }
 
   // English alternates vowels and consonants; a same-class pair without its
   // own boost is a poor bet.
   if (boost === undefined && LETTER.test(prev) && LETTER.test(next)) {
-    const prevVowel = VOWELS.includes(prev.toLowerCase());
-    const nextVowel = VOWELS.includes(next.toLowerCase());
+    const prevVowel = VOWELS.includes(prev);
+    const nextVowel = VOWELS.includes(next);
     if (prevVowel === nextVowel) m /= 3;
     else m *= 1.7;
   }
@@ -234,7 +229,7 @@ export const contextMultiplier = (prev: string, next: string): number => {
   }
 
   // After q almost nothing but u happens; the qu boost above carries u.
-  if (prev.toLowerCase() === 'q' && next.toLowerCase() !== 'u') m /= 20;
+  if (prev === 'q' && next !== 'u') m /= 20;
 
   return m;
 };
@@ -245,7 +240,8 @@ export const contextMultiplier = (prev: string, next: string): number => {
  * one more for after any character outside it; columns run over `alphabet`,
  * then the escape that hands any other code point to the laddered codec. A
  * string starts in the row of the space, or the extra row if the alphabet has
- * no space. The model is part of the wire format.
+ * no space. Prose codes text lowercase, so ASCII capitals in the alphabet
+ * are never used. The model is part of the wire format.
  */
 export interface ProseModel {
   readonly alphabet: string;
@@ -282,6 +278,8 @@ export interface ProseTable {
   /** Code point of each symbol, in alphabet order. */
   readonly codes: readonly number[];
   readonly index: ReadonlyMap<number, number>;
+  /** The symbol of each ASCII code, the escape for one outside the model: `index` without the lookup. */
+  readonly ascii: Int32Array;
   /** Symbol of the escape, and the row for after a character outside the model. */
   readonly escape: number;
   /** Row of the imaginary character before the first. */
@@ -314,9 +312,16 @@ export function compileProse(model: ProseModel): ProseTable {
     for (const row of model.weights) {
       buildWeights(row, escape + 1, 'p.string prose');
     }
+    const ascii = new Int32Array(128).fill(escape);
+    codes.forEach((code, sym) => {
+      if (code < 128) {
+        ascii[code] = sym;
+      }
+    });
     const fields: Omit<ProseTable, typeof compiledTable> = {
       codes,
       index,
+      ascii,
       escape,
       start: index.get(SPACE) ?? escape,
     };
@@ -326,9 +331,81 @@ export function compileProse(model: ProseModel): ProseTable {
   return table;
 }
 
-/** The row for the character after `code`. */
+/** The symbol of `code`, a code point, and the row for the character after it: the escape's for one outside the model. */
 export const proseContext = (table: ProseTable, code: number): number =>
-  table.index.get(code) ?? table.escape;
+  (code & 127) === code ? table.ascii[code] : (table.index.get(code) ?? table.escape);
+
+/** The item of a shift: the letter after it is a capital. */
+export const SHIFT = -1;
+
+/**
+ * A model extended with a shift for text that keeps its capitals: a column
+ * after the escape, and two rows after the model's, for after a shift and
+ * for the first character of a string.
+ */
+export interface ShiftedTable {
+  readonly rows: readonly (readonly number[])[];
+  /** The symbol of the shift. */
+  readonly shift: number;
+  /** The row after a shift. */
+  readonly after: number;
+  /** The row of a string's first character. */
+  readonly start: number;
+}
+
+/**
+ * The share of the letters' weight a shift takes after a character: likely
+ * opening a word and most likely opening the string, rare inside a word.
+ */
+function shiftShare(code: number | undefined): number {
+  if (code === undefined) {
+    return 1 / 10;
+  }
+  if (code >= 97 && code <= 122) {
+    return 1 / 100;
+  }
+  if (OPENERS.has(code)) {
+    return 1 / 5;
+  }
+  return code >= 48 && code <= 57 ? 1 / 50 : 1 / 20;
+}
+
+/** The characters a word opens after: whitespace, quotes, brackets, emphasis. */
+const OPENERS = new Set(Array.from(' \t\n"\'(*_“‘', (ch) => ch.charCodeAt(0)));
+
+const shiftedTables = new WeakMap<ProseModel, ShiftedTable>();
+
+/**
+ * The model's table with a shift, built once per model. Each row's shift
+ * weighs a share of its letters' weight by the character the row follows;
+ * the row after a shift weighs the letters as the start row does and the
+ * shift at the least; the first character's row is the start row with the
+ * shift as likely as all its letters together.
+ */
+export function shiftedTable(model: ProseModel): ShiftedTable {
+  let shifted = shiftedTables.get(model);
+  if (shifted === undefined) {
+    const table = compileProse(model);
+    const letters = Array.from({ length: 26 }, (_, i) => table.index.get(97 + i)).filter(
+      (sym): sym is number => sym !== undefined
+    );
+    const mass = (row: readonly number[]): number =>
+      letters.reduce((sum, sym) => sum + row[sym], 0);
+    const rows = model.weights.map((row, r) => [
+      ...row,
+      Math.max(1, Math.round(mass(row) * shiftShare(table.codes[r]))),
+    ]);
+    const start = model.weights[table.start];
+    const after = new Array<number>(table.escape + 2).fill(1);
+    for (const sym of letters) {
+      after[sym] = start[sym];
+    }
+    rows.push(after, [...start, Math.max(1, mass(start))]);
+    shifted = { rows, shift: table.escape + 1, after: table.escape + 1, start: table.escape + 2 };
+    shiftedTables.set(model, shifted);
+  }
+  return shifted;
+}
 
 export interface ProseModelOptions {
   /** The modeled characters; overrides `minCount`. */
@@ -340,16 +417,19 @@ export interface ProseModelOptions {
 /**
  * Count a model from sample text: each adjacent pair of characters adds one
  * to its cell, on top of a floor of one so every character stays encodable.
- * The alphabet defaults to every character the corpus uses at least
- * `minCount` times, in code point order; rarer ones are cheaper behind the
- * escape than as a row and column of their own.
+ * The text is counted lowercase, as prose codes it, and the ASCII capitals
+ * are left out of an alphabet given. The alphabet defaults to every
+ * character the corpus uses at least `minCount` times, in code point order;
+ * rarer ones are cheaper behind the escape than as a row and column of their
+ * own.
  */
-export function buildProseModel(corpus: string, options: ProseModelOptions = {}): ProseModel {
+export function buildProseModel(text: string, options: ProseModelOptions = {}): ProseModel {
   const { minCount = 2 } = options;
   if (!Number.isInteger(minCount) || minCount < 1) {
     throw new RangeError(`buildProseModel minCount must be a positive integer, got ${minCount}`);
   }
-  let chars = options.alphabet;
+  const corpus = lowercase(text);
+  let chars = options.alphabet?.replace(/[A-Z]/g, '');
   if (chars === undefined) {
     const counts = new Map<string, number>();
     for (const ch of corpus) {

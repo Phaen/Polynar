@@ -31,7 +31,6 @@ const toy = (rows?: number[][], check?: (count: number) => void): Symbols<number
   noun: 'length',
   item: 'toy item',
   tailless: false,
-  order: rows === undefined ? 0 : 1,
   count: (value) => value.reduce((sum, item) => sum + (item === 1 ? 2 : 1), 0),
   span: (count) => count,
   check,
@@ -64,7 +63,6 @@ const plain: Symbols<number[]> = {
   noun: 'count',
   item: 'digit',
   tailless: true,
-  order: 0,
   count: (value) => value.length / 2,
   span: (count) => count * 2,
   items: (value) => [...value],
@@ -364,7 +362,6 @@ describe('Sequence', () => {
       const model = new ContextModel(
         new AdaptivePrior([[1, 1, 1, 1]], 4, undefined, 'toy'),
         4,
-        0,
         'toy'
       );
       let history = [4, 4, 4];
@@ -399,7 +396,6 @@ describe('Sequence', () => {
       const model = new ContextModel(
         new AdaptivePrior([[1, 1, 1, 1]], 4, undefined, 'toy'),
         4,
-        0,
         'toy'
       );
       // A first value [2, 2], too short for a repeat; then one of 2^32 - 1
@@ -433,7 +429,6 @@ describe('Sequence', () => {
       const model = new ContextModel(
         new AdaptivePrior([[1, 1, 1, 1]], 4, undefined, 'toy'),
         4,
-        0,
         'toy'
       );
       repeats.writeUsed(enc, true);
@@ -628,7 +623,6 @@ describe('Sequence', () => {
       const model = new ContextModel(
         new AdaptivePrior([[1, 1, 1, 1]], 4, undefined, 'toy'),
         4,
-        0,
         'toy'
       );
       repeats.writeUsed(enc, true);

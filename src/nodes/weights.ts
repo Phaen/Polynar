@@ -48,20 +48,65 @@ export function buildWeights(weights: readonly number[], states: number, who: st
     throw new RangeError(`${who} weights must sum to a safe integer`);
   }
   const freqs = [...weights];
+  const last = cums.length - 1;
+  const guide = guideOf(cums, total);
   // The bucket holding `residual`, for a residual in [0, total) as
   // `parseWeighted` passes; one below 0, or NaN, lands in the first bucket and
   // one at or past `total` in the last.
   const locate = (residual: number): Bucket => {
     let lo = 0;
-    let hi = cums.length - 1;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      if (cums[mid] <= residual) lo = mid;
-      else hi = mid - 1;
+    if (!(residual >= 0)) {
+      lo = 0;
+    } else if (residual >= total) {
+      lo = last;
+    } else if (guide !== undefined) {
+      // The guide names the bucket owning the lowest residual of the slice
+      // `residual` falls in, at or before its own; the scan walks on from
+      // there. Both products are safe integers and the quotient is at least
+      // 1/total from any integer it is not, more than half its spacing, so
+      // the floor is exact.
+      lo = guide[Math.floor((residual * guide.length) / total)];
+      while (lo < last && cums[lo + 1] <= residual) {
+        lo++;
+      }
+    } else {
+      let hi = last;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (cums[mid] <= residual) lo = mid;
+        else hi = mid - 1;
+      }
     }
     return [lo, cums[lo], freqs[lo]];
   };
   return { cums, freqs, total, locate };
+}
+
+/** The fewest buckets a table needs before a guide speeds up its lookups. */
+const GUIDED = 16;
+
+/**
+ * A lookup guide for a table of `cums` over `total`: `total` cut into twice
+ * as many equal slices as buckets, each naming the bucket that owns its
+ * lowest residual. None for a small table, or one whose slice arithmetic
+ * would leave the safe integers.
+ */
+function guideOf(cums: readonly number[], total: number): Int32Array | undefined {
+  const slices = 2 * cums.length;
+  if (cums.length < GUIDED || total * slices > Number.MAX_SAFE_INTEGER) {
+    return undefined;
+  }
+  const guide = new Int32Array(slices);
+  let owner = 0;
+  for (let slice = 0; slice < slices; slice++) {
+    // The lowest residual of the slice: ceil(slice * total / slices).
+    const lowest = Math.ceil((slice * total) / slices);
+    while (owner < cums.length - 1 && cums[owner + 1] <= lowest) {
+      owner++;
+    }
+    guide[slice] = owner;
+  }
+  return guide;
 }
 
 /** Write the `pos`-th entry of a weight table as one weighted symbol. */

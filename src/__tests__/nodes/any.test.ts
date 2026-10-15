@@ -45,9 +45,8 @@ const LEARNING_VALUE = {
   big: -12n,
 };
 const LEARNING_BYTES = [
-  21, 87, 84, 250, 207, 77, 131, 211, 245, 101, 5, 182, 122, 243, 129, 65, 38, 226, 221, 119, 91,
-  114, 91, 83, 141, 179, 136, 100, 98, 23, 241, 203, 70, 22, 46, 240, 110, 233, 110, 57, 233, 142,
-  14,
+  41, 173, 165, 188, 236, 209, 61, 242, 171, 23, 190, 246, 229, 247, 86, 196, 201, 109, 76, 215, 70,
+  27, 46, 47, 91, 221, 139, 122, 116, 146, 31, 123, 162, 131, 147, 169, 233, 142, 14,
 ];
 
 /** The tags of the kinds the hand-built messages use. */
@@ -271,9 +270,10 @@ describe('Schema any', () => {
     const node = p.any().adaptive();
     const recalled = node.encode(new Map([['hello', 'hello']]));
     expect(recalled.length).toBeLessThan(node.encode(new Map([['hello', 'world']])).length);
-    const record = { hello: 'hello' };
+    // Spelled on the ladder, where an anagram costs the same.
+    const record = { éè: 'éè' };
     expect(trip(node, record)).toEqual(record);
-    expect(node.encode(record).length).toEqual(node.encode({ hello: 'olleh' }).length);
+    expect(node.encode(record).length).toEqual(node.encode({ éè: 'èé' }).length);
   });
 
   it('round-trips Maps and Sets of any values, keys included', () => {

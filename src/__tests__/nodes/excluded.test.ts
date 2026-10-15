@@ -54,6 +54,28 @@ describe('Exclusion', () => {
     expect(exclusion.members).toEqual([4]);
   });
 
+  it('makes room for members far into a large table as they are added', () => {
+    const exclusion = new Exclusion(5000);
+    exclusion.add(7);
+    exclusion.add(1100);
+    exclusion.add(4999);
+    for (let pos = 300; pos < 600; pos++) {
+      exclusion.add(pos);
+    }
+    expect(exclusion.count).toBe(303);
+    expect(exclusion.members.slice(0, 4)).toEqual([7, 1100, 4999, 300]);
+    expect([7, 8, 599, 600, 1100, 4999].map((pos) => exclusion.has(pos))).toEqual([
+      true,
+      false,
+      true,
+      false,
+      true,
+      true,
+    ]);
+    exclusion.clear();
+    expect(exclusion.has(4999)).toBe(false);
+  });
+
   it('holds no member outside its range', () => {
     const exclusion = new Exclusion(2);
     for (const pos of [-1, 2, 0.5, NaN]) {

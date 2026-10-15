@@ -94,6 +94,12 @@ describe('Fenwick', () => {
     expectModel(tree, [0, 1, 1, 0]);
   });
 
+  it('halves rounding up when asked, so no count above 0 drops to it', () => {
+    const tree = new Fenwick([0, 1, 2, 3, 5]);
+    tree.halve(true);
+    expectModel(tree, [0, 1, 1, 2, 3]);
+  });
+
   it('copies its counts', () => {
     const counts = [1, 2];
     const tree = new Fenwick(counts);

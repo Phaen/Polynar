@@ -18,7 +18,7 @@ describe('baseWeight', () => {
   it.each([
     [' ', 1600],
     ['e', 999],
-    ['E', 33],
+    ['E', 1],
     ['Z', 1],
     ['9', 3],
     ['~', 1],
@@ -39,13 +39,13 @@ describe('contextMultiplier', () => {
   it.each([
     ['q', 'u', 400],
     ['t', 'h', 12],
-    ['T', 'H', 12 / 8],
-    // Word-initial: the first-letter rate over the running rate, sentence case.
+    // Capitals are not modeled.
+    ['T', 'H', 1],
+    // Word-initial: the first-letter rate over the running rate.
     [' ', 't', 1600 / 742],
-    [' ', 'T', (1600 / 742) * 15],
+    [' ', 'T', 1],
     ['\n', ' ', 1 / 8],
-    // A capital inside a word, after a vowel.
-    ['a', 'B', 1.7 / 8],
+    ['a', 'B', 1],
     ['b', 'c', 1 / 3],
     ['.', ' ', 12],
     [',', 'a', 1 / 3],

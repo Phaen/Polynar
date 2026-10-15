@@ -8,12 +8,19 @@
 import type { Encoder, Decoder, Bucket } from '../packer';
 import type { WeightTable } from './weights';
 
-/** A set of members ruled out of a table: they keep their index but own no states. */
+/** The members an exclusion makes room for before it first grows. */
+const FIRST_ROOM = 256;
+
+/**
+ * A set of members ruled out of a table: they keep their index but own no
+ * states. Its room grows with the largest member excluded, so a table of
+ * many members that are rarely excluded costs little.
+ */
 export class Exclusion {
-  /** 1 for each excluded member. */
-  private readonly flags: Uint8Array;
+  /** 1 for each excluded member, over the members there is room for. */
+  private flags: Uint8Array;
   /** The excluded members, in the order they were added, in the first `count` slots. */
-  private readonly list: Int32Array;
+  private list: Int32Array;
   private added = 0;
 
   /** Over `size` members, a non-negative integer. */
@@ -24,8 +31,9 @@ export class Exclusion {
     if (size < 0) {
       throw new RangeError(`Exclusion size ${size} is negative`);
     }
-    this.flags = new Uint8Array(size);
-    this.list = new Int32Array(size);
+    const room = Math.min(size, FIRST_ROOM);
+    this.flags = new Uint8Array(room);
+    this.list = new Int32Array(room);
   }
 
   /** The number of excluded members. */
@@ -43,7 +51,7 @@ export class Exclusion {
     return this.list[i];
   }
 
-  /** Whether member `pos` is excluded; no position outside the members is. */
+  /** Whether member `pos` is excluded; no position outside the room is. */
   has(pos: number): boolean {
     return this.flags[pos] === 1;
   }
@@ -53,10 +61,28 @@ export class Exclusion {
     if (!Number.isInteger(pos) || pos < 0 || pos >= this.size) {
       throw new RangeError(`Excluded member ${pos} is outside [0, ${this.size})`);
     }
+    if (pos >= this.flags.length) {
+      this.grow(pos);
+    }
     if (this.flags[pos] === 0) {
       this.flags[pos] = 1;
       this.list[this.added++] = pos;
     }
+  }
+
+  /** Makes room for member `pos`, doubling the room past it, within the members. */
+  private grow(pos: number): void {
+    let room = this.flags.length * 2;
+    while (room <= pos) {
+      room *= 2;
+    }
+    room = Math.min(room, this.size);
+    const flags = new Uint8Array(room);
+    flags.set(this.flags);
+    const list = new Int32Array(room);
+    list.set(this.list);
+    this.flags = flags;
+    this.list = list;
   }
 
   /** Readmits every member. */

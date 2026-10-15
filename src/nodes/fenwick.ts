@@ -203,8 +203,8 @@ export class Fenwick implements LiveTable, Undoable {
     }
   }
 
-  /** Every count becomes `floor(count / 2)`. */
-  halve(): void {
+  /** Every count becomes `floor(count / 2)`, or `ceil(count / 2)` when `up`, so no count above 0 drops to it. */
+  halve(up = false): void {
     if (this.journal?.active === true) {
       const { counts, sum } = this;
       this.counts = counts.slice();
@@ -216,7 +216,7 @@ export class Fenwick implements LiveTable, Undoable {
     }
     this.sum = 0;
     for (let i = 0; i < this.counts.length; i++) {
-      this.counts[i] = Math.floor(this.counts[i] / 2);
+      this.counts[i] = up ? Math.ceil(this.counts[i] / 2) : Math.floor(this.counts[i] / 2);
       this.sum += this.counts[i];
     }
     this.rebuild();
