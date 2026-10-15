@@ -55,38 +55,38 @@ describe('Finder', () => {
     //              0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17
     const items = [1, 2, 3, 4, 5, 9, 1, 2, 3, 4, 7, 9, 1, 2, 3, 4, 5, 8];
     const finder = finderOver(items, 12);
-    expect(finder.find(items, 12, 100)).toEqual({ distance: 12, length: 5 });
+    expect(finder.matches(items, 12, 100).at(-1)).toEqual({ distance: 12, length: 5 });
     const tie = [1, 2, 3, 4, 9, 1, 2, 3, 4, 8, 1, 2, 3, 4, 7];
-    expect(finderOver(tie, 10).find(tie, 10, 100)).toEqual({ distance: 5, length: 4 });
+    expect(finderOver(tie, 10).matches(tie, 10, 100).at(-1)).toEqual({ distance: 5, length: 4 });
   });
 
   it('copies overlapping its own start', () => {
     const items = ones(20);
-    expect(finderOver(items, 1).find(items, 1, 100)).toEqual({ distance: 1, length: 19 });
+    expect(finderOver(items, 1).matches(items, 1, 100).at(-1)).toEqual({ distance: 1, length: 19 });
   });
 
   it('stops at the limit and the end of the items', () => {
     const items = [1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7];
     const finder = finderOver(items, 7);
-    expect(finder.find(items, 7, 100)).toEqual({ distance: 7, length: 7 });
-    expect(finder.find(items, 7, 5)).toEqual({ distance: 7, length: 5 });
-    expect(finder.find(items, 7, 5.9)).toEqual({ distance: 7, length: 5 });
-    expect(finder.find(items, 7, MIN_MATCH)).toEqual({ distance: 7, length: MIN_MATCH });
-    expect(finder.find(items, 7, MIN_MATCH - 1)).toBeUndefined();
-    expect(finder.find(items, 7, NaN)).toBeUndefined();
-    expect(finder.find(items, 12, 100)).toBeUndefined();
-    expect(finder.find(items, 14, 100)).toBeUndefined();
+    expect(finder.matches(items, 7, 100).at(-1)).toEqual({ distance: 7, length: 7 });
+    expect(finder.matches(items, 7, 5).at(-1)).toEqual({ distance: 7, length: 5 });
+    expect(finder.matches(items, 7, 5.9).at(-1)).toEqual({ distance: 7, length: 5 });
+    expect(finder.matches(items, 7, MIN_MATCH).at(-1)).toEqual({ distance: 7, length: MIN_MATCH });
+    expect(finder.matches(items, 7, MIN_MATCH - 1).at(-1)).toBeUndefined();
+    expect(finder.matches(items, 7, NaN).at(-1)).toBeUndefined();
+    expect(finder.matches(items, 12, 100).at(-1)).toBeUndefined();
+    expect(finder.matches(items, 14, 100).at(-1)).toBeUndefined();
   });
 
   it('finds nothing shorter than MIN_MATCH, nothing unregistered, nothing at or after the position', () => {
     const items = [1, 2, 3, 4, 1, 2, 3, 5, 1, 2, 3, 4];
-    expect(finderOver(items, 8).find(items, 8, 100)).toEqual({ distance: 8, length: 4 });
-    expect(finderOver(items, 0).find(items, 8, 100)).toBeUndefined();
+    expect(finderOver(items, 8).matches(items, 8, 100).at(-1)).toEqual({ distance: 8, length: 4 });
+    expect(finderOver(items, 0).matches(items, 8, 100).at(-1)).toBeUndefined();
     const short = [1, 2, 9, 1, 2, 8];
-    expect(finderOver(short, 3).find(short, 3, 100)).toBeUndefined();
+    expect(finderOver(short, 3).matches(short, 3, 100).at(-1)).toBeUndefined();
     const all = finderOver(items, 9);
-    expect(all.find(items, 0, 100)).toBeUndefined();
-    expect(all.find(items, 8, 100)).toEqual({ distance: 8, length: 4 });
+    expect(all.matches(items, 0, 100).at(-1)).toBeUndefined();
+    expect(all.matches(items, 8, 100).at(-1)).toEqual({ distance: 8, length: 4 });
   });
 
   it('examines at most CHAIN_DEPTH candidates, newest first', () => {
@@ -102,13 +102,19 @@ describe('Finder', () => {
     };
     const near = build(10);
     const end = near.length - 6;
-    expect(finderOver(near, end).find(near, end, 100)).toEqual({ distance: end, length: 6 });
+    expect(finderOver(near, end).matches(near, end, 100).at(-1)).toEqual({
+      distance: end,
+      length: 6,
+    });
     const far = build(CHAIN_DEPTH);
     const farEnd = far.length - 6;
-    expect(finderOver(far, farEnd).find(far, farEnd, 100)).toEqual({ distance: 4, length: 3 });
+    expect(finderOver(far, farEnd).matches(far, farEnd, 100).at(-1)).toEqual({
+      distance: 4,
+      length: 3,
+    });
     const edge = build(CHAIN_DEPTH - 1);
     const edgeEnd = edge.length - 6;
-    expect(finderOver(edge, edgeEnd).find(edge, edgeEnd, 100)).toEqual({
+    expect(finderOver(edge, edgeEnd).matches(edge, edgeEnd, 100).at(-1)).toEqual({
       distance: edgeEnd,
       length: 6,
     });
@@ -128,7 +134,47 @@ describe('Finder', () => {
         }
       }
       // Few candidates per hash on 400 items, so the depth never binds.
-      expect(finder.find(items, at, 12)).toEqual(best);
+      expect(finder.matches(items, at, 12).at(-1)).toEqual(best);
+      finder.insert(items, at);
+    }
+  });
+
+  it('lists each match longer than every nearer one, nearest first', () => {
+    //              0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
+    const items = [1, 2, 3, 4, 5, 9, 1, 2, 3, 9, 1, 2, 3, 4, 8, 1, 2, 3, 4, 5];
+    const finder = finderOver(items, 15);
+    expect(finder.matches(items, 15, 100)).toEqual([
+      { distance: 5, length: 4 },
+      { distance: 15, length: 5 },
+    ]);
+    expect(finder.matches(items, 15, 4)).toEqual([{ distance: 5, length: 4 }]);
+    expect(finder.matches(items, 15, 4.5)).toEqual([{ distance: 5, length: 4 }]);
+    expect(finder.matches(items, 15, MIN_MATCH - 1)).toEqual([]);
+    expect(finder.matches(items, 18, 100)).toEqual([]);
+    // Positions at and after the one searched are passed over.
+    expect(finderOver(items, 18).matches(items, 10, 100)).toEqual([
+      { distance: 4, length: 3 },
+      { distance: 10, length: 4 },
+    ]);
+    expect(() => finder.matches(items, 21, 4)).toThrow(
+      new RangeError('Position 21 is above the maximum 20')
+    );
+  });
+
+  it('lists the matches a brute-force search finds on random items', () => {
+    const random = mulberry32(11);
+    const items = Array.from({ length: 400 }, () => Math.floor(random() * 3));
+    const finder = new Finder();
+    for (let at = 0; at + MIN_MATCH <= items.length; at++) {
+      const best: Match[] = [];
+      for (let cand = at - 1; cand >= 0; cand--) {
+        let l = 0;
+        while (l < 12 && at + l < items.length && items[cand + l] === items[at + l]) l++;
+        if (l >= MIN_MATCH && l > (best.at(-1)?.length ?? 0)) {
+          best.push({ distance: at - cand, length: l });
+        }
+      }
+      expect(finder.matches(items, at, 12)).toEqual(best);
       finder.insert(items, at);
     }
   });
@@ -157,11 +203,11 @@ describe('Finder', () => {
     const items = [1, 2, 3, 4, 1, 2, 3, 5, 1, 2, 3, 4, 1, 2, 3, 4];
     const finder = finderOver(items, 12);
     finder.rewind(items, 12);
-    expect(finder.find(items, 12, 100)).toEqual({ distance: 4, length: 4 });
+    expect(finder.matches(items, 12, 100).at(-1)).toEqual({ distance: 4, length: 4 });
     finder.rewind(items, 5);
-    expect(finder.find(items, 12, 100)).toEqual({ distance: 12, length: 4 });
+    expect(finder.matches(items, 12, 100).at(-1)).toEqual({ distance: 12, length: 4 });
     finder.rewind(items, 0);
-    expect(finder.find(items, 12, 100)).toBeUndefined();
+    expect(finder.matches(items, 12, 100).at(-1)).toBeUndefined();
     finder.insert(items, 0);
     expect(() => finder.rewind(items, 2)).toThrow(
       new RangeError('Position 2 is above the maximum 1')
@@ -173,14 +219,14 @@ describe('Finder', () => {
 
   it('refuses a position outside the items', () => {
     const finder = new Finder();
-    expect(() => finder.find([1, 2], -1, 4)).toThrow(
+    expect(() => finder.matches([1, 2], -1, 4).at(-1)).toThrow(
       new RangeError('Position -1 is below the minimum 0')
     );
-    expect(() => finder.find([1, 2], 3, 4)).toThrow(
+    expect(() => finder.matches([1, 2], 3, 4).at(-1)).toThrow(
       new RangeError('Position 3 is above the maximum 2')
     );
-    expect(() => finder.find([1, 2], 1.5, 4)).toThrow(TypeError);
-    expect(finder.find([1, 2], 2, 4)).toBeUndefined();
+    expect(() => finder.matches([1, 2], 1.5, 4).at(-1)).toThrow(TypeError);
+    expect(finder.matches([1, 2], 2, 4).at(-1)).toBeUndefined();
   });
 });
 
@@ -484,6 +530,28 @@ describe('Repeats', () => {
     expect(reader.priceMatch(dec, match, 9, 16, 0)).toBe(priced);
     expect(readSteps(tail)).toEqual(tail);
     dec.finalize();
+  });
+
+  it('prices a match as its head and its length', () => {
+    const random = mulberry32(3);
+    for (const repeats of [new Repeats('w'), EVEN_REPEATS]) {
+      const enc = new Encoder();
+      for (let i = 0; i < 50; i++) {
+        const maxDistance = 1 + Math.floor(random() * 5000);
+        const maxLength = MIN_MATCH + Math.floor(random() * 300);
+        const distance = 1 + Math.floor(random() * maxDistance);
+        const length = MIN_MATCH + Math.floor(random() * (maxLength - MIN_MATCH + 1));
+        const rep = repeats.cached && random() < 0.5 ? Math.floor(random() * REPS) : undefined;
+        const match: Match = rep === undefined ? { distance, length } : { distance, length, rep };
+        const context = Math.floor(random() * 3) as FlagContext;
+        expect(
+          repeats.priceHead(enc, match, maxDistance, context) +
+            repeats.priceLength(enc, match, maxLength)
+        ).toBe(repeats.priceMatch(enc, match, maxDistance, maxLength, context));
+        repeats.writeFlag(enc, true, context);
+        repeats.writeMatch(enc, match, maxDistance, maxLength);
+      }
+    }
   });
 
   it('prices a recurring match cheaper than a fresh one', () => {

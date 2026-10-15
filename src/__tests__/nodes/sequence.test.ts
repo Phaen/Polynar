@@ -515,7 +515,7 @@ describe('Sequence', () => {
 
     /** Two tailless values with matches that stop short and resume, and the events of writing them. */
     const written = (): { values: number[][]; events: Event[] } => {
-      const values = [mutated(5, 40, 12), mutated(6, 30, 10)];
+      const values = [mutated(5, 40, 12), mutated(12, 30, 10)];
       const sequence = new Sequence(plain, { adaptive: {} });
       const enc = new Encoder();
       const events = record(() => values.forEach((value) => sequence.write(enc, value)));
@@ -563,6 +563,11 @@ describe('Sequence', () => {
       const { values, events } = written();
       let applied = 0;
       let dropped = 0;
+      // The values share no start, so the message holds them whole, and a
+      // match may reach back into the value before.
+      expect(values[1][0]).not.toBe(values[0][0]);
+      const all = values.flat();
+      let base = 0;
       byValue(values, events).forEach((list, v) => {
         const items = values[v];
         let at = 0;
@@ -571,7 +576,7 @@ describe('Sequence', () => {
           if (event.kind === 'match') {
             if (pending !== undefined) dropped++;
             at += event.match.length;
-            pending = at < items.length ? items[at - event.match.distance] : undefined;
+            pending = at < items.length ? all[base + at - event.match.distance] : undefined;
           } else if (event.kind === 'literal') {
             expect(event.except).toBe(pending);
             if (pending !== undefined) {
@@ -582,6 +587,7 @@ describe('Sequence', () => {
             at++;
           }
         }
+        base += items.length;
       });
       expect(applied).toBeGreaterThan(0);
       expect(dropped).toBeGreaterThan(0);

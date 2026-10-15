@@ -311,6 +311,8 @@ export class ContextModel {
   }));
   /** What `visit` returns, its contexts written over by the next visit. */
   private readonly visited: Context[] = [];
+  /** Whether the symbol `price` last priced would be a hit in the highest-order context. */
+  pricedTop = false;
   /** What `scan` returns. */
   private readonly scratch: Scan = { left: 0, sum: 0, below: 0, width: 0, found: false };
 
@@ -457,6 +459,7 @@ export class ContextModel {
     const state = this.message(enc);
     const { tables, exclusion } = state;
     this.open(exclusion, except);
+    this.pricedTop = false;
     for (let i = 0; i < this.orders.length && state.coded >= WARMUP; i++) {
       const context = tables[i].get(this.key(history, this.orders[i]));
       if (context === undefined) {
@@ -470,6 +473,7 @@ export class ContextModel {
       }
       if (has) {
         cost += costUnits(scan.width, scan.sum);
+        this.pricedTop = i === 0;
         return cost;
       }
       this.exclude(exclusion, context);

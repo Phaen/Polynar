@@ -144,26 +144,25 @@ export class Finder implements Undoable {
   }
 
   /**
-   * The longest match for position `at` that ends within `at + limit` and
-   * within `items`, from a registered position before `at`. At most
-   * `CHAIN_DEPTH` candidates are examined, newest first, so a tie goes to
-   * the nearest. Undefined when no match reaches `MIN_MATCH` items.
+   * Every match for position `at` that is longer than each nearer one,
+   * ending within `at + limit` and within `items`, nearest first: the
+   * nearest distance of each length the chain improves to, from `MIN_MATCH`
+   * items. At most `CHAIN_DEPTH` candidates are examined.
    */
-  find(items: readonly number[], at: number, limit: number): Match | undefined {
+  matches(items: readonly number[], at: number, limit: number): Match[] {
     checkInteger(at, 0, items.length, 'Position');
+    const found: Match[] = [];
     const most = Math.min(Math.floor(limit), items.length - at);
     if (most < MIN_MATCH) {
-      return undefined;
+      return found;
     }
-    let length = 0;
-    let distance = 0;
+    let length = MIN_MATCH - 1;
     let cand = this.head.get(hashAt(items, at)) ?? -1;
     for (let depth = 0; cand >= 0 && depth < CHAIN_DEPTH; cand = this.prev[cand]) {
       if (cand >= at) {
         continue;
       }
       depth++;
-      // A candidate differing at the best length so far cannot beat it.
       if (items[cand + length] !== items[at + length]) {
         continue;
       }
@@ -173,13 +172,13 @@ export class Finder implements Undoable {
       }
       if (l > length) {
         length = l;
-        distance = at - cand;
+        found.push({ distance: at - cand, length: l });
         if (l === most) {
           break;
         }
       }
     }
-    return length >= MIN_MATCH ? { distance, length } : undefined;
+    return found;
   }
 }
 
@@ -303,6 +302,15 @@ export interface RepeatCoding {
     maxLength: number,
     context: FlagContext
   ): number;
+  /** The part of `priceMatch` before the length: the flag, the kind and a new distance. */
+  priceHead(
+    side: Encoder | Decoder,
+    match: Match,
+    maxDistance: number,
+    context: FlagContext
+  ): number;
+  /** The part of `priceMatch` for the length: `priceMatch` less `priceHead`. */
+  priceLength(side: Encoder | Decoder, match: Match, maxLength: number): number;
 }
 
 /**
@@ -420,20 +428,29 @@ export class Repeats implements RepeatCoding {
     context: FlagContext
   ): number {
     checkMatch(match, maxDistance, maxLength);
+    return (
+      this.priceHead(side, match, maxDistance, context) + this.priceLength(side, match, maxLength)
+    );
+  }
+
+  priceHead(
+    side: Encoder | Decoder,
+    match: Match,
+    maxDistance: number,
+    context: FlagContext
+  ): number {
     const { rep } = match;
     const [, freq, total] = this.kind.bucket(side, rep ?? REPS);
     const head = this.priceFlag(side, true, context) + costUnits(freq, total);
-    if (rep !== undefined) {
-      return (
-        head +
-        priceBucketed(side, this.repLength, match.length - REP_MIN + 1, maxLength - REP_MIN + 1)
-      );
-    }
-    return (
-      head +
-      priceBucketed(side, this.distance, match.distance, maxDistance) +
-      priceBucketed(side, this.length, match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1)
-    );
+    return rep === undefined
+      ? head + priceBucketed(side, this.distance, match.distance, maxDistance)
+      : head;
+  }
+
+  priceLength(side: Encoder | Decoder, match: Match, maxLength: number): number {
+    return match.rep === undefined
+      ? priceBucketed(side, this.length, match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1)
+      : priceBucketed(side, this.repLength, match.length - REP_MIN + 1, maxLength - REP_MIN + 1);
   }
 }
 
@@ -516,5 +533,13 @@ export const EVEN_REPEATS: RepeatCoding = {
       priceEven(match.distance, maxDistance) +
       priceEven(match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1)
     );
+  },
+
+  priceHead(_side, match, maxDistance) {
+    return COST_UNITS + priceEven(match.distance, maxDistance);
+  },
+
+  priceLength(_side, match, maxLength) {
+    return priceEven(match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1);
   },
 };

@@ -62,6 +62,46 @@ import type { Run } from './base';
 const MATCH_LEARNED = 16;
 
 /**
+ * The items a parse plans ahead: it settles the cheapest spelling of the
+ * next `PARSE_WINDOW` items, further where a match reaches past them, as the
+ * model stands when it starts. Measured on real text and binaries, a longer
+ * plan buys little more and a shorter one gives part of the gain back.
+ */
+const PARSE_WINDOW = 128;
+
+/**
+ * A match from this many items on is taken where the parse finds it rather
+ * than parsed around, and the parse looks no further along a match. A
+ * shorter bound saves time on long repeats and gives size back.
+ */
+const LONG_MATCH = 256;
+
+/**
+ * One way a parse reaches a position: its cost, in `COST_UNITS`, the step
+ * that reaches it from `from`, a match or a literal (undefined), and what
+ * follows from that step: the cached distances, the flag context and the
+ * symbol a literal next rules out.
+ */
+interface Label {
+  readonly cost: number;
+  readonly from: number;
+  readonly step: Match | undefined;
+  readonly reps: readonly number[];
+  readonly context: FlagContext;
+  readonly except: number | undefined;
+}
+
+/**
+ * The cheapest way a parse reaches a position, `any`, and the cheapest a
+ * literal may follow, `free`: a match cut short leaves the copy's next item
+ * to rule out where it is the item that follows.
+ */
+interface Node {
+  any: Label;
+  free?: Label;
+}
+
+/**
  * An alphabet a sequence is spelled in: how a value becomes items
  * (integers), how an item becomes a symbol of the table with an optional
  * tail, and which row the next symbol is priced in.
@@ -268,6 +308,8 @@ interface Literals {
     except?: number
   ): number;
   hitTop(side: Encoder | Decoder): boolean;
+  /** Whether the symbol `price` last priced would be a hit in the highest-order context. */
+  readonly pricedTop: boolean;
 }
 
 /**
@@ -340,6 +382,8 @@ export class StaticLiterals implements Literals {
   hitTop(): boolean {
     return false;
   }
+
+  readonly pricedTop = false;
 }
 
 /**
@@ -504,10 +548,10 @@ class Spelled<T> implements Body {
  *
  * In a tailless alphabet the literal right after a match that stops short
  * of the value's end rules out the item that followed the copied stretch
- * in its source: every candidate is extended while its items match, so
- * that item differs from the next one. In an alphabet with tails a band or
- * an escape maps many items to one symbol, so a differing item may still
- * share the symbol, and nothing is ruled out.
+ * in its source: the encoder follows a match it cut short with another
+ * match, never a literal, so that item differs from the next one. In an
+ * alphabet with tails a band or an escape maps many items to one symbol, so
+ * a differing item may still share the symbol, and nothing is ruled out.
  */
 class Engine<T> implements Body {
   /**
@@ -520,6 +564,13 @@ class Engine<T> implements Body {
 
   /** The model of each kind of value, built on its first use. */
   private readonly models: Literals[] = [];
+
+  /** The steps of the parse planned, by item of the value, a literal undefined. */
+  private readonly plan = new Map<number, Match | undefined>();
+  /** The item of the value the plan ends at, where the next parse starts. */
+  private planEnd = -1;
+  /** The positions a parse works in, from its first item on. */
+  private readonly nodes: (Node | undefined)[] = [];
 
   constructor(
     private readonly symbols: Symbols<T>,
@@ -678,6 +729,7 @@ class Engine<T> implements Body {
     const { repeats } = this;
     const { model, base, span, syms, rows, histories, before } = walk;
     let context: FlagContext = 0;
+    this.planEnd = -1;
     for (let k = 0; k < items.length; ) {
       const at = base + k;
       const limit = span - before[k];
@@ -692,7 +744,7 @@ class Engine<T> implements Body {
           }
           k += match.length;
           context = 2;
-          except = this.continuation(state.items, base + k, match, k < items.length);
+          except = this.continuation(state.items, base + k, match.distance, k < items.length);
           continue;
         }
       }
@@ -756,12 +808,10 @@ class Engine<T> implements Body {
   private continuation(
     all: readonly number[],
     end: number,
-    match: Match,
+    distance: number,
     short: boolean
   ): number | undefined {
-    return this.symbols.tailless && short
-      ? this.symbols.symbol(all[end - match.distance])
-      : undefined;
+    return this.symbols.tailless && short ? this.symbols.symbol(all[end - distance]) : undefined;
   }
 
   /**
@@ -777,15 +827,9 @@ class Engine<T> implements Body {
   /**
    * The match to take at item `k` of the value, a position a repeat is
    * decodable at, its flag in `context` and a literal there ruling out
-   * `except`. The candidates are the longest earlier match that fits the
-   * units left, then the run at each cached distance no further back than
-   * the message reaches, from `REP_MIN` items up to the value's end; each
-   * saves the cost, in `COST_UNITS`, of spelling its items, flag included,
-   * less that of its copy, both priced by the model as it stands. The candidate
-   * saving most is taken when it saves anything, a tie going to the
-   * earlier. After a hit in the highest-order context (`context` 1), a
-   * literal costing at most `CHEAP_LITERAL` is taken without a search.
-   * Positions before it register with the finder first.
+   * `except`: the step the parse planned there, planning from `k` when the
+   * plan does not reach it. Positions before it register with the finder
+   * first.
    */
   private choose(
     enc: Encoder,
@@ -800,7 +844,10 @@ class Engine<T> implements Body {
     const finder = this.register(enc, state, walk.base + k);
     // A spelling written again takes the match its try chose.
     const noted = enc.note(() => {
-      const match = this.search(enc, state, walk, k, context, except, finder);
+      if (k >= this.planEnd) {
+        this.parse(enc, state, walk, k, context, except, finder);
+      }
+      const match = this.plan.get(k);
       if (match === undefined) {
         return [];
       }
@@ -815,7 +862,199 @@ class Engine<T> implements Body {
     return cached === undefined ? { distance, length } : { distance, length, rep: cached };
   }
 
-  /** The match `choose` takes at item `k`, searched for with `finder`. */
+  /**
+   * The matches at item `j` of the value, each up to `LONG_MATCH` items:
+   * the finder's, longer the further back, then the run at each of `reps`,
+   * the cached distances, no further back than the message reaches, from
+   * `REP_MIN` items.
+   */
+  private candidates(
+    state: Message,
+    walk: Walk,
+    j: number,
+    reps: readonly number[],
+    finder: Finder
+  ): Match[] {
+    const all = state.items;
+    const at = walk.base + j;
+    // The items left in the value add up to exactly the units left, so a
+    // match, which the finder ends within the value, always fits them.
+    const found = finder.matches(all, at, Math.min(LONG_MATCH, walk.span - walk.before[j]));
+    if (this.repeats.cached) {
+      const most = Math.min(all.length - at, LONG_MATCH);
+      reps.forEach((distance, rep) => {
+        if (distance <= at) {
+          let length = 0;
+          while (length < most && all[at + length - distance] === all[at + length]) {
+            length++;
+          }
+          if (length >= REP_MIN) {
+            found.push({ distance, length, rep });
+          }
+        }
+      });
+    }
+    return found;
+  }
+
+  /**
+   * Plans the spelling from item `k0` of the value, its flag in `context`
+   * and a literal there ruling out `except`, into `plan`, up to `planEnd`.
+   * The plan is the cheapest path through the positions ahead: a literal
+   * steps one item, each candidate match, at every length from the shortest
+   * its distance improves on up to its own, steps its items, all priced as
+   * the model and the repeat tables stand at `k0`. Each position keeps the
+   * cheapest way there and the cheapest a literal may follow, with the
+   * cached distances, flag context and ruled-out symbol it leaves. The path
+   * ends `PARSE_WINDOW` items on, or further at the end of a match reaching
+   * past them, or at a position with a match of `LONG_MATCH` items, at the
+   * cheapest way there a literal may follow. Three cases plan one step: a
+   * literal where it costs at most `CHEAP_LITERAL` after a hit in the
+   * highest-order context or where there is no candidate, and `search`'s
+   * choice where a candidate reaches `LONG_MATCH` items. Inside the plan, a
+   * position reached only by such a cheap literal searches no candidates.
+   */
+  private parse(
+    enc: Encoder,
+    state: Message,
+    walk: Walk,
+    k0: number,
+    context: FlagContext,
+    except: number | undefined,
+    finder: Finder
+  ): void {
+    const { repeats, plan, nodes } = this;
+    const { model, base, span, before, syms } = walk;
+    const all = state.items;
+    const n = syms.length;
+    plan.clear();
+    this.planEnd = k0 + 1;
+    if (
+      context === 1 &&
+      this.priceLiteral(enc, walk, all[base + k0], k0, except) <= CHEAP_LITERAL
+    ) {
+      return;
+    }
+    const first = this.candidates(state, walk, k0, state.reps, finder);
+    if (first.length === 0) {
+      return;
+    }
+    if (first.some((c) => c.length >= LONG_MATCH)) {
+      plan.set(k0, this.search(enc, state, walk, k0, context, except, finder));
+      return;
+    }
+    // The plan starts where a literal may follow: after a match the plan
+    // cut short, the plan goes on, and every other match runs to its end.
+    const start: Label = { cost: 0, from: -1, step: undefined, reps: state.reps, context, except };
+    nodes.length = 0;
+    nodes[0] = { any: start, free: start };
+    const reach = (e: number, label: Label, free: boolean): void => {
+      const node = nodes[e - k0];
+      if (node === undefined) {
+        nodes[e - k0] = { any: label, free: free ? label : undefined };
+        return;
+      }
+      if (label.cost < node.any.cost) {
+        node.any = label;
+      }
+      if (free && (node.free === undefined || label.cost < node.free.cost)) {
+        node.free = label;
+      }
+    };
+    let horizon = Math.min(n, k0 + PARSE_WINDOW);
+    const cap = Math.min(n, horizon + LONG_MATCH);
+    let j = k0;
+    for (; j < horizon; j++) {
+      // A literal from each position reaches the next, so every position
+      // up to the horizon is reached in a way a literal may follow.
+      const { any, free } = nodes[j - k0] as Required<Node>;
+      const at = base + j;
+      const limit = span - before[j];
+      const matchable = decodable(at, limit);
+      let cost = this.priceLiteral(enc, walk, all[at], j, free.except);
+      const top = model.pricedTop;
+      const cheap = free === any && free.context === 1 && cost <= CHEAP_LITERAL;
+      if (matchable) {
+        cost += repeats.priceFlag(enc, false, free.context);
+      }
+      const literal: Label = {
+        cost: free.cost + cost,
+        from: j,
+        step: undefined,
+        reps: free.reps,
+        context: top ? 1 : 0,
+        except: undefined,
+      };
+      reach(j + 1, literal, true);
+      if (!matchable || cheap) {
+        continue;
+      }
+      const found =
+        j === k0 ? first : this.candidates(state, walk, j, any.reps, this.register(enc, state, at));
+      if (j > k0 && found.some((c) => c.length >= LONG_MATCH)) {
+        break;
+      }
+      let shortest = MIN_MATCH;
+      for (const { distance, length, rep } of found) {
+        const head = any.cost + repeats.priceHead(enc, { distance, length, rep }, at, any.context);
+        const lowest = rep === undefined ? shortest : REP_MIN;
+        const longest = Math.min(length, cap - j);
+        if (lowest <= longest) {
+          horizon = Math.max(horizon, j + longest);
+        }
+        // A length's cost changes only with its bucket.
+        const off = (rep === undefined ? MIN_MATCH : REP_MIN) - 1;
+        let bucket = -1;
+        let cost = 0;
+        for (let l = lowest; l <= longest; l++) {
+          const e = j + l;
+          const b = 31 - Math.clz32(l - off);
+          if (b !== bucket) {
+            bucket = b;
+            cost = head + repeats.priceLength(enc, { distance, length: l, rep }, limit);
+          }
+          const ruled = this.continuation(all, base + e, distance, e < n);
+          const open = ruled === undefined || ruled !== syms[e];
+          const target = nodes[e - k0];
+          if (
+            target !== undefined &&
+            cost >= target.any.cost &&
+            (!open || (target.free !== undefined && cost >= target.free.cost))
+          ) {
+            continue;
+          }
+          const taken: Match =
+            rep === undefined ? { distance, length: l } : { distance, length: l, rep };
+          const reps = any.reps.slice();
+          cache(reps, taken);
+          reach(e, { cost, from: j, step: taken, reps, context: 2, except: ruled }, open);
+        }
+        if (rep === undefined) {
+          shortest = length + 1;
+        }
+      }
+    }
+    // The plan ends where a literal may follow, or anyhow at the value's end.
+    const end = nodes[j - k0] as Required<Node>;
+    let label = j === n ? end.any : end.free;
+    while (label.from >= 0) {
+      plan.set(label.from, label.step);
+      const prev = nodes[label.from - k0] as Required<Node>;
+      label = label.step === undefined ? prev.free : prev.any;
+    }
+    this.planEnd = j;
+  }
+
+  /**
+   * The match to take at item `k` of the value, where a candidate reaches
+   * `LONG_MATCH` items, its flag in `context` and a literal there ruling
+   * out `except`: of the longest earlier match that fits the units left and
+   * the run at each cached distance no further back than the message
+   * reaches, from `REP_MIN` items up to the value's end, the one saving most
+   * of the cost, in `COST_UNITS`, of spelling its items, flag included, less
+   * that of its copy, both priced by the model as it stands, a tie going to
+   * the earlier.
+   */
   private search(
     enc: Encoder,
     state: Message,
@@ -824,26 +1063,15 @@ class Engine<T> implements Body {
     context: FlagContext,
     except: number | undefined,
     finder: Finder
-  ): Match | undefined {
+  ): Match {
     const { repeats } = this;
     const { base, span, before } = walk;
     const all = state.items;
     const at = base + k;
     const limit = span - before[k];
-    let first = -1;
-    if (context === 1) {
-      first = this.priceLiteral(enc, walk, all[at], k, except);
-      if (first <= CHEAP_LITERAL) {
-        return undefined;
-      }
-    }
     // The items left in the value add up to exactly `limit` units, so a
     // match, which the finder ends within the value, always fits them.
-    const candidates: Match[] = [];
-    const found = finder.find(all, at, limit);
-    if (found !== undefined) {
-      candidates.push(found);
-    }
+    const candidates = finder.matches(all, at, limit).slice(-1);
     const left = all.length - at;
     state.reps.forEach((distance, rep) => {
       if (repeats.cached && distance <= at) {
@@ -856,9 +1084,6 @@ class Engine<T> implements Body {
         }
       }
     });
-    if (candidates.length === 0) {
-      return undefined;
-    }
     // The cost of spelling the first `l` items, flag included, for every `l`
     // up to the longest candidate.
     let longest = 0;
@@ -867,12 +1092,13 @@ class Engine<T> implements Body {
     }
     const { costs } = this;
     costs[0] = repeats.priceFlag(enc, false, context);
-    costs[1] = costs[0] + (first >= 0 ? first : this.priceLiteral(enc, walk, all[at], k, except));
+    costs[1] = costs[0] + this.priceLiteral(enc, walk, all[at], k, except);
     for (let j = k + 1; j < k + longest; j++) {
       costs[j - k + 1] = costs[j - k] + this.priceLiteral(enc, walk, all[base + j], j);
     }
-    let best: Match | undefined;
-    let saved = 0;
+    // The parse found a candidate of `LONG_MATCH` items here, so there is one.
+    let best = candidates[0];
+    let saved = -Infinity;
     for (const candidate of candidates) {
       const saving =
         costs[candidate.length] - repeats.priceMatch(enc, candidate, at, limit, context);
@@ -939,7 +1165,7 @@ class Engine<T> implements Body {
         }
         cache(state.reps, match);
         context = 2;
-        except = this.continuation(all, all.length, match, units < span);
+        except = this.continuation(all, all.length, distance, units < span);
         continue;
       }
       const sym = model.read(dec, row, history, except);

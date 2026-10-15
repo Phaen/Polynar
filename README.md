@@ -36,7 +36,7 @@ The first table is self-describing: keys and types travel with the data. Polynar
 | Sensor reading |  53.8 (55.9) |  39.9 (43.7) |  42.9 (32.2) |  39.5 (29.6) |  32.6 (**24.5**) |
 | Shopping cart  | 124.4 (67.0) |  85.1 (61.9) | 100.6 (38.5) |  92.6 (35.4) |  76.1 (**29.2**) |
 | Status feed    | 521.8 (63.4) | 323.8 (60.4) | 384.9 (24.6) | 354.2 (22.7) | 290.8 (**18.7**) |
-| Lorem ipsum    |   1375 (641) |   1372 (631) |   1596 (763) |   1469 (702) |   1206 (**576**) |
+| Lorem ipsum    |   1375 (641) |   1372 (631) |   1596 (767) |   1469 (705) |   1206 (**579**) |
 
 In the second table both sides share a schema and only the values are written. Protobuf and Avro get the same decimal steps as scaled integers, but only Polynar can use the bounds. Protobuf tags every field and rounds it up to whole bytes, Avro drops the tags but keeps the bytes, and Polynar spends fractional bits.
 
@@ -48,7 +48,7 @@ In the second table both sides share a schema and only the values are written. P
 | Sensor reading |  10.6 (14.6) |   7.2 (11.2) |   5.9 (5.9) |   5.3 (5.3) |   **4.6** (4.6) |
 | Shopping cart  |  37.2 (40.8) |  20.8 (24.8) | 18.5 (15.8) | 17.0 (14.6) | 14.1 (**12.1**) |
 | Status feed    | 102.0 (27.8) | 103.0 (28.1) |  24.0 (8.5) |  22.1 (7.9) |  18.3 (**6.6**) |
-| Lorem ipsum    |   1372 (629) |   1371 (632) |   968 (762) |   891 (701) |   732 (**576**) |
+| Lorem ipsum    |   1372 (629) |   1371 (632) |   968 (766) |   891 (705) |   732 (**579**) |
 
 Polynar's binary output is smaller than every binary format's on every row, plain or compressed, and its url-safe text is smaller than JSON on every row and rivals the binary formats.
 
@@ -360,7 +360,7 @@ Hints are nodes some values are expected to fit: `p.any([p.string().charset(Char
 | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.adaptive(options?: { window?: number })` | Builds a schema as the message goes: each key name gets its own type tags and adaptive int, float, string, array, record, map and set nodes the first time it appears, starting from what every key has learned so far, and an array's items sit under its key. Ints, floats and strings each pick their plain spelling or the difference from the key's previous one, and strings, key lists and whole arrays and records that recur are recalled, from the key's own first, then from the whole message. The characters of new strings and keys learn across the message, as English prose that the message takes over. Hints are used in their adaptive form where they have one, and a hint that takes only strings recalls them; a hinted string leaves the shared string learning. Encoding and decoding take 5–40× as long. See [Priors that learn](#priors-that-learn-adaptive). |
 
-Under `.adaptive()` the status feed's hundred strings from a set of three average 23 bytes instead of 292, an array of same-shaped objects pays for its keys once, and lorem costs less than under `.prose()`. Thirteen real JSON documents (GitHub and npm API responses, GeoJSON, a Slack export and more) take 108.8 kB, where JSON with brotli takes 128.9 kB.
+Under `.adaptive()` the status feed's hundred strings from a set of three average 23 bytes instead of 292, an array of same-shaped objects pays for its keys once, and lorem costs less than under `.prose()`. Thirteen real JSON documents (GitHub and npm API responses, GeoJSON, a Slack export and more) take 108.6 kB, where JSON with brotli takes 128.9 kB.
 
 ### Priors: `.weights()`
 

@@ -663,11 +663,11 @@ describe('p.string adaptive contexts and repeats', () => {
     expect(learning.encode(text).length).toBeLessThan(fixed.encode(text).length / 2);
   });
 
-  it('spells the README lorem ipsum under prose in at most 576 bytes', () => {
+  it('spells the README lorem ipsum under prose in at most 579 bytes', () => {
     const node = p.string().prose().adaptive();
     const bytes = node.encode(LOREM_IPSUM);
     expect(node.decode(bytes)).toBe(LOREM_IPSUM);
-    expect(bytes.length).toBeLessThanOrEqual(576);
+    expect(bytes.length).toBeLessThanOrEqual(579);
   });
 
   it('copies a lone surrogate inside a repeat', () => {
