@@ -817,3 +817,169 @@ describe('p.string methods', () => {
     );
   });
 });
+
+describe('p.string digit fields', () => {
+  /** ISO timestamps a few seconds apart, milliseconds random. */
+  const stamps = (() => {
+    const random = mulberry32(5);
+    let at = Date.UTC(2026, 9, 14, 8, 0, 0);
+    return Array.from({ length: 200 }, () => {
+      at += Math.floor(random() * 20000);
+      return new Date(at).toISOString();
+    });
+  })();
+  const size = (node: PNode<string>, values: string[]) => p.array(node).encode(values).length;
+
+  it('spells each run of digits as one integer of its width, the frame by a flag once it repeats', () => {
+    // '7': one field of one digit, the frame a placeholder digit, then the
+    // field; '8': the frame flagged as the previous one's, then the field.
+    const node = p.array(p.string().charset(CharSets.digit).length(1).digits()).length(2);
+    const enc = new Encoder();
+    enc.compose(1, 2);
+    enc.compose(0, 10);
+    enc.compose(7, 10);
+    enc.compose(1, 2);
+    enc.compose(8, 10);
+    expect(node.encode(['7', '8'])).toEqual(enc.output());
+  });
+
+  it('round-trips leading zeros, long runs, text without digits and every alphabet', () => {
+    const values = [
+      'v1.2.003',
+      'v1.2.004',
+      '',
+      'no digits',
+      '0000',
+      '12345678901234567890123456789012345',
+      'a12345678901234567890b',
+      '2026-10-14T08:00:11.167Z',
+      'x9',
+      'x10',
+      'Ab 12',
+    ];
+    for (const node of [
+      p.string().digits(),
+      p.string().digits().delta(),
+      p.string().digits().adaptive(),
+      p.string().digits().recall(),
+      p.string().digits().repeats(),
+      p.string().prose().digits(),
+      p.string().adaptive().prose(),
+      p.string().max(40).digits(),
+      p.string().charset(CharSets.asciiSafe).digits(),
+      p.string().charset(CharSets.asciiSafe).adaptive(),
+    ]) {
+      expect(trip(p.array(node), values)).toEqual(values);
+    }
+    const sparse = ['a7', 'a8', 'b9a'];
+    expect(trip(p.array(p.string().charset('ab789').digits()), sparse)).toEqual(sparse);
+  });
+
+  it('packs timestamps far below their characters, closer still on their differences', () => {
+    expect(trip(p.array(p.string().digits()), stamps)).toEqual(stamps);
+    expect(size(p.string().digits(), stamps)).toBeLessThan(size(p.string(), stamps) / 2);
+    expect(size(p.string().digits().delta(), stamps)).toBeLessThan(
+      size(p.string().digits(), stamps)
+    );
+    expect(size(p.string().digits().adaptive(), stamps)).toBeLessThan(
+      size(p.string().digits().delta(), stamps) / 2
+    );
+  });
+
+  it('is picked under adaptive where it pays', () => {
+    expect(trip(p.array(p.string().adaptive()), stamps)).toEqual(stamps);
+    expect(size(p.string().adaptive(), stamps)).toBeLessThan(
+      size(p.string().adaptive().delta(), stamps) * 0.75
+    );
+  });
+
+  it('refuses a digit its charset lacks', () => {
+    // No previous value: one field, one digit, the frame its placeholder,
+    // then a field of 5.
+    const node = p.string().charset('ab1').length(1).digits();
+    const enc = new Encoder();
+    enc.compose(1, 2);
+    enc.compose(2, 3);
+    enc.compose(5, 10);
+    expect(() => node.decode(enc.output())).toThrow(
+      new CorruptInputError('A digit field holds a digit outside the alphabet')
+    );
+  });
+});
+
+describe('p.string positions', () => {
+  /** Random v4 uuids. */
+  const uuids = (() => {
+    const random = mulberry32(9);
+    const hex = (n: number) =>
+      Array.from({ length: n }, () => '0123456789abcdef'.charAt(Math.floor(random() * 16))).join(
+        ''
+      );
+    return Array.from({ length: 200 }, () => {
+      const h = hex(32);
+      return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20)}`;
+    });
+  })();
+  const size = (node: PNode<string>, values: string[]) => p.array(node).encode(values).length;
+
+  it('spells a string of a known length by the characters seen at each place', () => {
+    // 'ab' in full; 'ab' as the one character seen at each place; 'ba' as
+    // new at both, the one character not seen there costing nothing.
+    const node = p.array(p.string().charset('ab').length(2).positional()).length(3);
+    const enc = new Encoder();
+    enc.compose(0, 2);
+    enc.compose(1, 2);
+    enc.compose(1, 2);
+    enc.compose(1, 2);
+    enc.compose(0, 2);
+    enc.compose(0, 2);
+    expect(node.encode(['ab', 'ab', 'ba'])).toEqual(enc.output());
+  });
+
+  it('round-trips strings whose items differ at a length, and every alphabet', () => {
+    const values = ['abcd', 'ab👋', 'abcd', 'abcdef', 'AbCd', 'aBcD', 'xyz', 'xy', 'x', '', 'abcd'];
+    for (const node of [
+      p.string().positional(),
+      p.string().positional().adaptive(),
+      p.string().positional().delta(),
+      p.string().positional().recall(),
+      p.string().prose().positional(),
+      p.string().prose().positional().adaptive(),
+      p.string().positional().digits(),
+    ]) {
+      expect(trip(p.array(node), values)).toEqual(values);
+    }
+    const ascii = values.filter((value) => !value.includes('👋'));
+    for (const node of [
+      p.string().charset(CharSets.alpha).positional(),
+      p.string().charset(CharSets.alpha).positional().adaptive(),
+    ]) {
+      expect(trip(p.array(node), ascii)).toEqual(ascii);
+    }
+  });
+
+  it('packs uuids near their random digits, and under adaptive below the text model', () => {
+    for (const node of [p.string().positional(), p.string().positional().adaptive()]) {
+      expect(trip(p.array(node), uuids)).toEqual(uuids);
+    }
+    expect(size(p.string().positional(), uuids)).toBeLessThan(size(p.string(), uuids) * 0.6);
+    expect(trip(p.array(p.string().adaptive()), uuids)).toEqual(uuids);
+    expect(size(p.string().adaptive(), uuids)).toBeLessThan(
+      size(p.string().adaptive().delta(), uuids) * 0.9
+    );
+    // 122 random bits in each.
+    expect(size(p.string().adaptive(), uuids)).toBeLessThan((uuids.length * 130) / 8);
+  });
+
+  it('keeps its methods through every later option, each declared once', () => {
+    const values = ['a1', 'b2', 'c3'];
+    expect(p.array(p.string().digits().positional().max(4)).encode(values)).toEqual(
+      p.array(p.string().max(4).positional().digits()).encode(values)
+    );
+    for (const method of ['digits', 'positional'] as const) {
+      expect(() => p.string()[method]()[method]()).toThrow(
+        new TypeError(`p.string ${method} is already set`)
+      );
+    }
+  });
+});

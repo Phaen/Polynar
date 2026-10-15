@@ -7,7 +7,7 @@ import type { SequenceAdaptiveOptions } from './adaptive';
 import { withMethod } from './methods';
 import {
   Sequence,
-  withRepeats,
+  withSequenceMethod,
   type SequenceBounds,
   type SequenceSpelling,
   type Symbols,
@@ -244,7 +244,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * is declared.
    */
   repeats(): PBinary<A> {
-    return this._with(this._bounds, withRepeats(this._spelling, 'p.binary'));
+    return this._with(this._bounds, withSequenceMethod(this._spelling, 'repeats', 'p.binary'));
   }
 
   /** This node with `bounds` and `spelling`, of the same element type. */

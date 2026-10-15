@@ -156,8 +156,8 @@ const hotGen = <T>(draw: () => T): (() => T) => {
   return () => (rand() < 0.8 ? pick(hot) : draw());
 };
 
-/** A method a node may declare: `.delta()`, `.recall()` or `.repeats()`. */
-type Method = 'delta' | 'recall' | 'repeats';
+/** A method a node may declare: `.delta()`, `.recall()`, `.repeats()`, and on a string `.digits()` or `.positional()`. */
+type Method = 'delta' | 'recall' | 'repeats' | 'digits' | 'positional';
 
 /**
  * `c` with each of `methods` declared a third of the time, in the order
@@ -182,6 +182,23 @@ const NUMBER_METHODS: readonly Method[] = ['delta', 'recall'];
 
 /** The methods of a string or binary: those of a number, and repeats. */
 const SEQUENCE_METHODS: readonly Method[] = ['delta', 'recall', 'repeats'];
+
+/** The methods of a string: those of a sequence, digit fields and positions. */
+const TEXT_METHODS: readonly Method[] = [...SEQUENCE_METHODS, 'digits', 'positional'];
+
+/** A string with digit runs, some with leading zeros and some past a field's 15 digits, or of one length, mostly. */
+const fieldString = (): string => {
+  switch (randInt(0, 3)) {
+    case 0:
+      return `v${randInt(0, 12)}.${randInt(0, 30)}.${String(randInt(0, 999)).padStart(3, '0')}`;
+    case 1:
+      return `${randInt(0, 9999)}${String(randInt(0, 999999)).repeat(randInt(1, 4))}`;
+    case 2:
+      return Array.from({ length: 8 }, () => '0123456789abcdef'.charAt(randInt(0, 15))).join('');
+    default:
+      return randString(10);
+  }
+};
 
 const intCase = (): Case => {
   const lo = randInt(-1000, 0);
@@ -385,10 +402,11 @@ const stringCase = (): Case => {
       return withMethods(
         learnsCharacters({
           build: (m) => m.p.string(),
-          gen: () => (rand() < 0.5 ? randString(10) : `pre${randString(3)}`),
+          gen: () =>
+            rand() < 0.4 ? randString(10) : rand() < 0.3 ? `pre${randString(3)}` : fieldString(),
           src: 'p.string()',
         }),
-        SEQUENCE_METHODS
+        TEXT_METHODS
       );
     case 1: {
       // A bounded length packs as a radix slot instead of a term; a floor
@@ -409,17 +427,23 @@ const stringCase = (): Case => {
       }
       return withMethods(
         { build, gen: () => 'x'.repeat(min) + randString(max - min), src },
-        SEQUENCE_METHODS
+        TEXT_METHODS
       );
     }
     case 2: {
       // English half the time, else a model counted from random text.
       if (rand() < 0.5) {
-        return learnsCharacters({
-          build: (m) => m.p.string().prose(),
-          gen: () => (rand() < 0.5 ? randString(10) : pick(['the cat', 'Hello, world!', 'qu'])),
-          src: 'p.string().prose()',
-        });
+        return withMethods(
+          learnsCharacters({
+            build: (m) => m.p.string().prose(),
+            gen: () =>
+              rand() < 0.5
+                ? randString(10)
+                : pick(['the cat', 'Hello, world!', 'qu', 'Ab 12', 'Cd 34']),
+            src: 'p.string().prose()',
+          }),
+          TEXT_METHODS
+        );
       }
       const corpus = 'q' + randString(30);
       return learnsCharacters({
@@ -445,7 +469,7 @@ const stringCase = (): Case => {
             },
             alphabet.length
           ),
-          SEQUENCE_METHODS
+          TEXT_METHODS
         );
       }
       const lo = randInt(0, 50000);

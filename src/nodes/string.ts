@@ -42,7 +42,7 @@ import { members, type Members } from './members';
 import { LOWER, MIXED, SHAPE_COUNT, SHAPE_WEIGHTS, plain, restore, shapesOf } from './shape';
 import {
   Sequence,
-  withRepeats,
+  withSequenceMethod,
   type Ascent,
   type SequenceBounds,
   type SequenceSpelling,
@@ -107,6 +107,14 @@ abstract class CodePoints extends Text {
 
   units(code: number): number {
     return code > 0xffff ? 2 : 1;
+  }
+
+  digit(code: number): number {
+    return code >= 48 && code <= 57 ? code - 48 : -1;
+  }
+
+  digitItem(digit: number): number {
+    return digit + 48;
   }
 
   build(codes: number[]): string {
@@ -476,6 +484,15 @@ class CharsetText extends Text implements Symbols<string> {
     return 1;
   }
 
+  digit(item: number): number {
+    const code = this.alphabet.charAt(item).charCodeAt(0);
+    return code >= 48 && code <= 57 ? code - 48 : -1;
+  }
+
+  digitItem(digit: number): number {
+    return this.alphabet.digitOf(48 + digit);
+  }
+
   symbol(digit: number): number {
     return digit;
   }
@@ -620,8 +637,7 @@ export class ProseText implements TextCodec {
       this.mixed = new Sequence(text, bounds, spelling, VERBATIM);
     }
     this.shapes = members(SHAPE_COUNT, { weights: SHAPE_WEIGHTS, adaptive }, 'p.string');
-    const { delta, recall, repeats } = spelling;
-    this.priced = adaptive === undefined && !delta && !recall && !repeats;
+    this.priced = adaptive === undefined && Object.keys(spelling).length === 0;
   }
 
   write(enc: Encoder, value: string): void {
@@ -930,7 +946,44 @@ export class PString extends PNode<string> {
    * not this is declared.
    */
   repeats(): PString {
-    return this._with(this._bounds, undefined, undefined, withRepeats(this._spelling, 'p.string'));
+    return this._with(
+      this._bounds,
+      undefined,
+      undefined,
+      withSequenceMethod(this._spelling, 'repeats', 'p.string')
+    );
+  }
+
+  /**
+   * Spell each run of digits as one integer of its width, leading zeros
+   * kept, and the text around the runs as a frame: after the node's first
+   * string, one bit says the frame is the previous string's, else the
+   * frame is spelled with a digit standing for each run. With `.delta()`
+   * each run is its difference from the same run of the previous string,
+   * on the magnitude scale, and under `.adaptive()` on a learned one, so
+   * timestamps, versions and numbered ids cost what their changing digits
+   * do; without either, a run of n digits costs log2(10^n) bits. Under
+   * `.adaptive()` without it, a string after one holding a digit picks this
+   * spelling by the learned mode.
+   */
+  digits(): PString {
+    const spelling = withSequenceMethod(this._spelling, 'digits', 'p.string');
+    return this._with(this._bounds, undefined, undefined, spelling);
+  }
+
+  /**
+   * Spell a string whose length the node already wrote by its characters
+   * at each place: per place, whether the character is one seen there in a
+   * string of that length and which, or a new one in full. Every choice
+   * alike, or learned under `.adaptive()`, where a constant place soon costs
+   * next to nothing and a hex digit four bits: uuids, hashes, tokens and
+   * fixed-format codes. A string of a new length is spelled as without it.
+   * Under `.adaptive()` without it, a string of a length the node met
+   * before picks this spelling by the learned mode.
+   */
+  positional(): PString {
+    const spelling = withSequenceMethod(this._spelling, 'positional', 'p.string');
+    return this._with(this._bounds, undefined, undefined, spelling);
   }
 
   _write(enc: Encoder, value: string): void {

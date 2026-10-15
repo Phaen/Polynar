@@ -6,7 +6,7 @@
  */
 
 import { Encoder, Decoder, CorruptInputError } from '../../index';
-import { Sequence, StaticLiterals, withRepeats, type Symbols } from '../../nodes/sequence';
+import { Sequence, StaticLiterals, withSequenceMethod, type Symbols } from '../../nodes/sequence';
 import { buildWeights, writeTable } from '../../nodes/weights';
 import { costUnits } from '../../packer';
 import type { LengthBounds } from '../../nodes/lattice';
@@ -1044,8 +1044,11 @@ describe('Sequence methods', () => {
     });
 
     it('are declared once', () => {
-      expect(withRepeats({ delta: true }, 'toy')).toEqual({ delta: true, repeats: true });
-      expect(() => withRepeats({ repeats: true }, 'toy')).toThrow(
+      expect(withSequenceMethod({ delta: true }, 'repeats', 'toy')).toEqual({
+        delta: true,
+        repeats: true,
+      });
+      expect(() => withSequenceMethod({ repeats: true }, 'repeats', 'toy')).toThrow(
         new TypeError('toy repeats is already set')
       );
     });
