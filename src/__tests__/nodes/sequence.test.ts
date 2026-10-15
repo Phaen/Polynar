@@ -364,10 +364,10 @@ describe('Sequence', () => {
         4,
         'toy'
       );
-      let history = [4, 4, 4];
+      let history = [4, 4, 4, 4];
       for (const sym of [2, 0, 3]) {
         model.write(enc, sym, 0, history);
-        history = [sym, history[0], history[1]];
+        history = [sym, history[0], history[1], history[2]];
       }
       const read = ContextModel.prototype.read;
       let literals = 0;
@@ -404,13 +404,13 @@ describe('Sequence', () => {
       const enc = new Encoder();
       const length = lengths();
       length(enc, 2);
-      model.write(enc, 2, 0, [4, 4, 4]);
-      model.write(enc, 2, 0, [2, 4, 4]);
+      model.write(enc, 2, 0, [4, 4, 4, 4]);
+      model.write(enc, 2, 0, [2, 4, 4, 4]);
       length(enc, 2 ** 32 - 1);
       plainMode(enc);
       repeats.writeUsed(enc, true);
       repeats.writeFlag(enc, false, 0);
-      model.write(enc, 0, 0, [4, 4, 4]);
+      model.write(enc, 0, 0, [4, 4, 4, 4]);
       repeats.writeFlag(enc, true, 0);
       repeats.writeMatch(enc, { distance: 1, length: 2 ** 32 - 2 }, 3, 2 ** 32 - 2);
       const sequence = new Sequence(toy(), { adaptive: {} });
@@ -432,7 +432,7 @@ describe('Sequence', () => {
         'toy'
       );
       repeats.writeUsed(enc, true);
-      model.write(enc, 2, 0, [4, 4, 4]);
+      model.write(enc, 2, 0, [4, 4, 4, 4]);
       repeats.writeFlag(enc, true, 0);
       repeats.writeMatch(enc, { distance: 1, length: 2 ** 20 - 1 }, 1, 2 ** 20 - 1);
       const bytes = enc.output();
@@ -513,9 +513,9 @@ describe('Sequence', () => {
       return value;
     };
 
-    /** Two tailless values with matches that stop short and resume, and the events of writing them. */
-    const written = (): { values: number[][]; events: Event[] } => {
-      const values = [mutated(5, 40, 12), mutated(12, 30, 10)];
+    /** Two tailless values, seeded by `seeds`, with matches that stop short and resume, and the events of writing them. */
+    const written = (seeds = [5, 12]): { values: number[][]; events: Event[] } => {
+      const values = [mutated(seeds[0], 40, 12), mutated(seeds[1], 30, 10)];
       const sequence = new Sequence(plain, { adaptive: {} });
       const enc = new Encoder();
       const events = record(() => values.forEach((value) => sequence.write(enc, value)));
@@ -560,7 +560,7 @@ describe('Sequence', () => {
     });
 
     it('rules out the continuation of a match that stopped short from the literal after it', () => {
-      const { values, events } = written();
+      const { values, events } = written([6, 12]);
       let applied = 0;
       let dropped = 0;
       // The values share no start, so the message holds them whole, and a
@@ -632,7 +632,7 @@ describe('Sequence', () => {
         'toy'
       );
       repeats.writeUsed(enc, true);
-      model.write(enc, 1, 0, [4, 4, 4]);
+      model.write(enc, 1, 0, [4, 4, 4, 4]);
       repeats.writeFlag(enc, true, 0);
       repeats.writeMatch(enc, { distance: 1, length: 35 }, 1, 68);
       expect(() => new Sequence(toy(), { adaptive: {} }).read(new Decoder(enc.output()))).toThrow(

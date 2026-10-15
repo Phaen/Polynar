@@ -14,6 +14,7 @@ import {
   MAX_ORDER,
   WARMUP,
   cellKey,
+  inherited,
 } from '../../nodes/contexts';
 import { mulberry32 } from '../support';
 
@@ -36,10 +37,10 @@ const modelOf = (order: 0 | 1): ContextModel => new ContextModel(priorOf(order),
 
 /** Each symbol's history, newest first, and its row: the previous symbol under a row per symbol. */
 const steps = (symbols: readonly number[], order: 0 | 1) => {
-  let history = [START, START, START];
+  let history = [START, START, START, START];
   return symbols.map((sym) => {
     const step = { sym, history, row: order === 0 ? 0 : history[0] };
-    history = [sym, history[0], history[1]];
+    history = [sym, ...history.slice(0, -1)];
     return step;
   });
 };
@@ -122,19 +123,44 @@ describe('Context', () => {
     ]);
   });
 
+  it('enters a new symbol at the count it is given, and recurs by the gain given, 2 by default', () => {
+    const context = new Context(4);
+    context.update(1, 5);
+    context.update(1, 5);
+    context.update(3, 9, 1);
+    context.update(3, 9, 1);
+    expect([context.syms, context.counts, context.total]).toEqual([[1, 3], [7, 10], 17]);
+  });
+
+  it('takes back an entry at its count, a recurrence and a halving', () => {
+    const enc = new Encoder();
+    const context = new Context(4, enc.journal);
+    context.update(1);
+    const mark = enc.mark();
+    context.update(2, 7);
+    context.update(1, 7);
+    context.update(1, 7, 1);
+    for (let i = 0; i < 130; i++) {
+      context.update(2);
+    }
+    expect(context.total).toBeLessThan(CONTEXT_LIMIT);
+    enc.rollback(mark);
+    expect([context.syms, context.counts, context.total]).toEqual([[1], [1], 1]);
+  });
+
   it('halves every count, rounding up, once the sum passes the limit', () => {
-    expect(CONTEXT_LIMIT).toBe(1024);
+    expect(CONTEXT_LIMIT).toBe(256);
     const context = new Context(4);
     context.update(1);
     context.update(3);
-    // 1 + 2·511 = 1023 for symbol 3, and 1 for symbol 1: the sum is 1024.
-    for (let i = 0; i < 511; i++) {
+    // 1 + 2·127 = 255 for symbol 3, and 1 for symbol 1: the sum is 256.
+    for (let i = 0; i < 127; i++) {
       context.update(3);
     }
-    expect([context.counts, context.total]).toEqual([[1, 1023], 1024]);
+    expect([context.counts, context.total]).toEqual([[1, 255], 256]);
     context.update(0);
-    // 1025 passes the limit: 1, 1 and 1023 halve to 1, 1 and 512.
-    expect([context.syms, context.counts, context.total]).toEqual([[0, 1, 3], [1, 1, 512], 514]);
+    // 257 passes the limit: 1, 1 and 255 halve to 1, 1 and 128.
+    expect([context.syms, context.counts, context.total]).toEqual([[0, 1, 3], [1, 1, 128], 130]);
     expect(context.cum(3)).toBe(2);
   });
 
@@ -158,21 +184,38 @@ describe('Context', () => {
 
 describe('cellKey', () => {
   it('keys on the order index, the symbols left by powers of two, and their mean count', () => {
-    expect([1, 2, 3, 4, 5, 8, 9, 16, 17, 32, 33, 1000].map((n) => cellKey(0, n, n))).toEqual([
-      0, 10, 20, 20, 30, 30, 40, 40, 50, 50, 60, 60,
-    ]);
+    expect([1, 2, 3, 4, 5, 8, 9, 16, 17, 32, 33, 1000].map((n) => cellKey(0, n, n, false))).toEqual(
+      [0, 10, 20, 20, 30, 30, 40, 40, 50, 50, 60, 60]
+    );
     // Means just below and at 1.5, 3, 6 and 12, over two symbols.
-    expect([2, 3, 5, 6, 11, 12, 23, 24, 1000].map((sum) => cellKey(0, 2, sum))).toEqual([
+    expect([2, 3, 5, 6, 11, 12, 23, 24, 1000].map((sum) => cellKey(0, 2, sum, false))).toEqual([
       10, 11, 11, 12, 12, 13, 13, 14, 14,
     ]);
-    expect(cellKey(1, 1, 1)).toBe(100);
-    expect(cellKey(2, 40, 480)).toBe(264);
+    expect(cellKey(1, 1, 1, false)).toBe(100);
+    expect(cellKey(3, 40, 480, false)).toBe(364);
+  });
+
+  it('keys apart the cells after a hit in the highest-order context', () => {
+    expect(cellKey(0, 1, 1, true)).toBe(1000);
+    expect(cellKey(3, 40, 480, true)).toBe(1364);
+  });
+});
+
+describe('inherited', () => {
+  it('enters a symbol at 1 + ⌊8p⌋, p its probability in the context that coded it', () => {
+    // p = (width / sum)·(hit / (hit + escape)).
+    expect(inherited(1, 8, 1, 1)).toBe(1);
+    expect(inherited(1, 4, 1, 1)).toBe(2);
+    expect(inherited(3, 4, 2, 1)).toBe(5);
+    expect(inherited(5, 5, 4, 0)).toBe(9);
+    // Just below an eighth: 0.1249…
+    expect(inherited(1249, 10000, 1, 0)).toBe(1);
   });
 });
 
 describe('ContextModel', () => {
-  it('keys on up to three previous symbols', () => {
-    expect(MAX_ORDER).toBe(3);
+  it('keys on up to four previous symbols', () => {
+    expect(MAX_ORDER).toBe(4);
   });
 
   it('refuses a size its prior does not span', () => {
@@ -232,7 +275,7 @@ describe('ContextModel', () => {
     const model = new ContextModel(prior, SIZE, 'w');
     const enc = new Encoder();
     for (let i = 0; i < WARMUP; i++) {
-      model.learn(enc, 4, 0, [4, 4, 4]);
+      model.learn(enc, 4, 0, [4, 4, 4, 4]);
     }
     const all = steps([...symbols, next], order);
     for (const { sym, row, history } of all.slice(0, -1)) {
@@ -304,11 +347,12 @@ describe('ContextModel', () => {
 
   it('learns each cell from the decisions coded in it, halving past the limit', () => {
     expect(CELL_LIMIT).toBe(4096);
-    // Zeros after zeros past the warm-up: each a hit in the order-3
-    // context, one symbol at a mean count of at least 12, cell 4. The cell
-    // starts at 4 hits and 2 escapes and gains 2 hits per symbol; the
-    // symbol then holds every state of its context, a factor of one that
-    // may round.
+    // Zeros after zeros past the warm-up: each a hit in the order-4
+    // context, one symbol at a mean count of at least 12. The first comes
+    // after no top hit, cell 4; every later one after a top hit, cell 1004.
+    // A cell starts at 4 hits and 2 escapes and gains 2 hits per symbol;
+    // the symbol then holds every state of its context, a factor of one
+    // that may round.
     const zeros = (n: number): { model: ContextModel; enc: Encoder } => {
       const model = modelOf(0);
       const enc = new Encoder();
@@ -319,16 +363,17 @@ describe('ContextModel', () => {
     };
     const hit = (hits: number, total: number): void => {
       const { model, enc } = zeros(WARMUP + hits);
-      const priced = model.price(enc, 0, 0, [0, 0, 0]);
+      const priced = model.price(enc, 0, 0, [0, 0, 0, 0]);
       expect(priced).toBe(costUnits(hits === 0 ? 4 : total - 2, total));
     };
     hit(0, 6);
-    hit(3, 12);
-    // 2046 hits bring the cell to 4096 and 2, past the limit: 2048 and 1,
-    // and one more hit to 2050 and 1, where unhalved counts would be 4098
-    // and 2.
-    const { model, enc } = zeros(WARMUP + 2047);
-    const priced = model.price(enc, 0, 0, [0, 0, 0]);
+    hit(1, 6);
+    hit(3, 10);
+    // 2046 hits after the first bring cell 1004 to 4096 and 2, past the
+    // limit: 2048 and 1, and one more hit to 2050 and 1, where unhalved
+    // counts would be 4098 and 2.
+    const { model, enc } = zeros(WARMUP + 2048);
+    const priced = model.price(enc, 0, 0, [0, 0, 0, 0]);
     expect(priced).toBe(costUnits(2050, 2051));
   });
 
@@ -406,6 +451,78 @@ describe('ContextModel', () => {
     expect(model.hitTop(enc)).toBe(false);
   });
 
+  it('enters a symbol into the contexts above the one that coded it at what that one gave it', () => {
+    // 2 after 1 0 1 0: the order-4 and order-3 contexts are new, the
+    // order-2 one has seen 2 after 1 0 and codes it.
+    const { model, enc, step } = trained(0, [1, 0, 2, 3, 1, 0], 2);
+    const composed = jest.spyOn(enc, 'composeWeighted');
+    const update = jest.spyOn(Context.prototype, 'update');
+    model.write(enc, step.sym, step.row, step.history);
+    const [[, hits, total], [, width, sum]] = composed.mock.calls;
+    const enter = inherited(width, sum, hits, total - hits);
+    expect(enter).toBeGreaterThan(1);
+    // The order-1 context, below the one that coded it, gains 1.
+    expect(update.mock.calls).toEqual([
+      [2, enter, 2],
+      [2, enter, 2],
+      [2, enter, 2],
+      [2, enter, 1],
+    ]);
+    composed.mockRestore();
+    // A symbol the prior codes, or one learned, enters at 1 everywhere.
+    update.mockClear();
+    model.write(enc, 4, 0, [2, 0, 1, 3]);
+    model.learn(enc, 3, 0, [4, 2, 0, 1]);
+    expect(update.mock.calls).toEqual(
+      new Array(2 * MAX_ORDER).fill(0).map((_, i) => [i < MAX_ORDER ? 4 : 3, 1, 2])
+    );
+    update.mockRestore();
+  });
+
+  it('teaches the contexts from the one that coded a symbol up, the one below at 1, and the prior below order 3', () => {
+    // 2 after 1 0 2 1: a hit in the order-4 context.
+    const { model, prior, enc, step } = trained(0, [0, 1, 2, 0, 1, 2, 0, 1], 2);
+    const update = jest.spyOn(Context.prototype, 'update');
+    const learned = jest.spyOn(prior, 'learn');
+    model.write(enc, step.sym, step.row, step.history);
+    expect(model.hitTop(enc)).toBe(true);
+    expect(update.mock.calls.map(([, , gain]) => gain)).toEqual([2, 1]);
+    expect(learned).not.toHaveBeenCalled();
+    // The same through `absorb`, and a hit in the order-2 context teaches
+    // the prior.
+    for (const [symbols, gains, taught] of [
+      [[0, 1, 2, 0, 1, 2, 0, 1], [2, 1], 0],
+      [[1, 0, 2, 3, 1, 0], [2, 2, 2, 1], 1],
+    ] as const) {
+      const run = trained(0, symbols, 2);
+      const spied = jest.spyOn(run.prior, 'learn');
+      update.mockClear();
+      run.model.absorb(run.enc, run.step.sym, run.step.row, run.step.history);
+      expect(update.mock.calls.map(([, , gain]) => gain)).toEqual(gains);
+      expect(spied).toHaveBeenCalledTimes(taught);
+    }
+    update.mockRestore();
+  });
+
+  it('builds the same contexts again after a rollback, their keys in step with the decoder', () => {
+    const symbols = sequence(21, 400);
+    const tried = sequence(22, 300, 0.5);
+    for (const order of [0, 1] as const) {
+      const run = steps([...symbols.slice(0, 200), ...tried], order);
+      const kept = steps(symbols, order);
+      const model = modelOf(order);
+      const enc = new Encoder();
+      kept.slice(0, 200).forEach(({ sym, row, history }) => model.write(enc, sym, row, history));
+      const mark = enc.mark();
+      run.slice(200).forEach(({ sym, row, history }) => model.write(enc, sym, row, history));
+      enc.rollback(mark);
+      kept.slice(200).forEach(({ sym, row, history }) => model.write(enc, sym, row, history));
+      const bytes = enc.output();
+      expect(bytes).toEqual(encode(modelOf(order), symbols, order));
+      expect(decode(modelOf(order), bytes, symbols, order)).toEqual(symbols);
+    }
+  });
+
   it('decodes values learned between written ones on both sides', () => {
     const symbols = sequence(5, 1200);
     const random = mulberry32(6);
@@ -439,7 +556,7 @@ describe('ContextModel', () => {
     const model = modelOf(1);
     const enc = new Encoder();
     const dec = new Decoder(new Encoder().output());
-    const history = [START, START, START];
+    const history = [START, START, START, START];
     expect(() => model.write(enc, 5, 0, history)).toThrow(
       new RangeError('w symbol 5 is outside [0, 5)')
     );
@@ -460,18 +577,18 @@ describe('ContextModel', () => {
       expect(() => model.write(enc, 0, row, history)).toThrow(message);
       expect(() => model.read(dec, row, history)).toThrow(message);
     }
-    for (const bad of [[START, START], [START, START, START, START], []]) {
-      const message = new TypeError(`w history must hold 3 symbols, got ${bad.length}`);
+    for (const bad of [[START, START, START], [START, START, START, START, START], []]) {
+      const message = new TypeError(`w history must hold 4 symbols, got ${bad.length}`);
       expect(() => model.write(enc, 0, 0, bad)).toThrow(message);
       expect(() => model.read(dec, 0, bad)).toThrow(message);
     }
-    expect(() => model.read(dec, 0, [6, 0, 0])).toThrow(
+    expect(() => model.read(dec, 0, [6, 0, 0, 0])).toThrow(
       new RangeError('w history symbol 6 is outside [0, 5]')
     );
-    expect(() => model.write(enc, 0, 0, [0, -1, 0])).toThrow(
+    expect(() => model.write(enc, 0, 0, [0, -1, 0, 0])).toThrow(
       new RangeError('w history symbol -1 is outside [0, 5]')
     );
-    expect(() => model.write(enc, 0, 0, [0, 0, 1.5])).toThrow(
+    expect(() => model.write(enc, 0, 0, [0, 0, 0, 1.5])).toThrow(
       new TypeError('w history symbol 1.5 is not an integer')
     );
   });

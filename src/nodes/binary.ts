@@ -188,7 +188,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
   }
 
   /**
-   * Let the node learn from the message. Each byte is priced by the three
+   * Let the node learn from the message. Each byte is priced by the four
    * bytes before it, as the message so far has followed them, falling back
    * to a prior over the bytes that learns too; a stretch of bytes that
    * already occurred in the message is referred back to instead of spelled

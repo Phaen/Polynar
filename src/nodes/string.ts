@@ -843,7 +843,7 @@ export class PString extends PNode<string> {
 
   /**
    * Let the node learn from the message. Each character is priced by the
-   * three characters before it, as the message so far has followed them,
+   * four characters before it, as the message so far has followed them,
    * falling back to a prior over the characters that learns too; a stretch
    * that already occurred in the message is referred back to instead of
    * spelled again; and the length learns, on the magnitude scale from the

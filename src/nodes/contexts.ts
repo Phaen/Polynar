@@ -11,8 +11,17 @@
  *
  * Whether a context escapes is learned apart from its symbols: contexts
  * alike in their order, how many symbols they have left after exclusion
- * and how often those recurred share a cell of hit and escape counts, so a
- * young context escapes at the rate its kind has escaped in the message.
+ * and how often those recurred, and in whether the symbol before was a hit
+ * in the longest context, share a cell of hit and escape counts, so a young
+ * context escapes at the rate its kind has escaped in the message. A
+ * symbol new to a context inherits a count from the probability the
+ * context that coded it gave it.
+ *
+ * A coded symbol teaches the context that coded it and the longer ones in
+ * full, the one just below at half the gain, and the prior only when no
+ * context longer than `PRIOR_ORDER` coded it: a short context then counts
+ * mostly what the longer ones failed to predict, which is what it gets to
+ * code.
  */
 
 import { SlotCache } from '../packer';
@@ -21,7 +30,7 @@ import { Exclusion, type Table } from './excluded';
 import { KeyMap } from './keymap';
 
 /** The longest history a context keys on. */
-export const MAX_ORDER = 3;
+export const MAX_ORDER = 4;
 
 /**
  * The symbols a node codes in a message before its contexts price any: a
@@ -34,14 +43,24 @@ export const MAX_ORDER = 3;
 export const WARMUP = 64;
 
 /** The count sum past which a context halves its counts. */
-export const CONTEXT_LIMIT = 1024;
+export const CONTEXT_LIMIT = 256;
 
 /** The hit and escape count sum past which a cell halves both. */
 export const CELL_LIMIT = 4096;
 
-/** The ops a context takes back: a symbol recurring, and a symbol entering. */
-const RECUR = 0;
-const ENTER = 1;
+/** The op a context takes back for a symbol entering; a recurrence's op is the count it gained. */
+const ENTER = 0;
+
+/** The highest context order whose hit still teaches the prior. */
+export const PRIOR_ORDER = 2;
+
+/**
+ * The scale of what a symbol inherits: a context that had not seen a
+ * symbol a lower one coded with probability `p` gains it at `1 + ⌊8p⌋`
+ * rather than 1, so a young high-order context starts off knowing what
+ * the shorter history already predicted.
+ */
+const INHERIT = 8;
 
 /** The hit and escape counts a cell starts at. */
 const CELL_START: readonly [number, number] = [4, 2];
@@ -49,15 +68,26 @@ const CELL_START: readonly [number, number] = [4, 2];
 /**
  * The key of the escape cell of a context at index `index` among the
  * orders, highest first, with `n` symbols left after exclusion, a positive
- * integer, whose counts sum to `sum`: `index·100 + d·10 + r`, where `d`
- * buckets `n` by powers of two up to 32 and above, and `r` the mean count
- * `sum / n` at 1.5, 3, 6 and 12. The mean is compared in integers, so
- * every engine buckets it alike.
+ * integer, whose counts sum to `sum`, after a symbol that was (`top`) or
+ * was not a hit in the highest-order context: `t·1000 + index·100 + d·10 +
+ * r`, where `t` is 1 after a top hit, `d` buckets `n` by powers of two up
+ * to 32 and above, and `r` the mean count `sum / n` at 1.5, 3, 6 and 12.
+ * The mean is compared in integers, so every engine buckets it alike.
  */
-export function cellKey(index: number, n: number, sum: number): number {
+export function cellKey(index: number, n: number, sum: number, top: boolean): number {
   const d = n <= 1 ? 0 : n <= 2 ? 1 : n <= 4 ? 2 : n <= 8 ? 3 : n <= 16 ? 4 : n <= 32 ? 5 : 6;
   const r = 2 * sum < 3 * n ? 0 : sum < 3 * n ? 1 : sum < 6 * n ? 2 : sum < 12 * n ? 3 : 4;
-  return index * 100 + d * 10 + r;
+  return (top ? 1000 : 0) + index * 100 + d * 10 + r;
+}
+
+/**
+ * The count a symbol enters a context at after a lower context coded it
+ * with probability `(width / sum)·(hit / (hit + escape))`: its bucket among
+ * the symbols left and the cell's hit share, `1 + ⌊INHERIT·p⌋`, in
+ * `[1, INHERIT + 1]`.
+ */
+export function inherited(width: number, sum: number, hit: number, escape: number): number {
+  return 1 + Math.floor((INHERIT * width * hit) / (sum * (hit + escape)));
 }
 
 /**
@@ -75,9 +105,10 @@ function checkSymbol(sym: number, end: number, who: string, what: string, inclus
 
 /**
  * A learned-only context: the symbols seen after one history, sparse. A
- * symbol enters at a count of 1 and gains 2 each time it recurs; once the
- * counts sum past `CONTEXT_LIMIT` every count halves, rounding up, so the
- * context follows the message's recent symbols. A symbol never seen owns
+ * symbol enters at the count it is given and gains 2, or the gain given,
+ * each time it recurs;
+ * once the counts sum past `CONTEXT_LIMIT` every count halves, rounding up,
+ * so the context follows the message's recent symbols. A symbol never seen owns
  * no states. Every change records its undo in `journal`, an encoder's.
  */
 export class Context implements Table, Undoable {
@@ -88,10 +119,15 @@ export class Context implements Table, Undoable {
   /** The sum of `counts`. */
   private sum = 0;
 
-  /** Over `symbols` symbols, a positive integer. */
+  /**
+   * Over `symbols` symbols, a positive integer. `id` tells the context
+   * apart from the others of its order in the message, so a context one
+   * order up keys on it.
+   */
   constructor(
     private readonly symbols: number,
-    private readonly journal?: Journal
+    private readonly journal?: Journal,
+    readonly id = 0
   ) {
     if (!Number.isInteger(symbols)) {
       throw new TypeError(`Context size must be an integer, got ${symbols}`);
@@ -147,24 +183,24 @@ export class Context implements Table, Undoable {
   }
 
   /**
-   * Counts one more `sym`, an integer in `[0, symbols)`: 1 when new, else 2
-   * more, then halves every count, rounding up, once the sum passes
-   * `CONTEXT_LIMIT`.
+   * Counts one more `sym`, an integer in `[0, symbols)`: `enter`, a positive
+   * integer, when new, else `gain`, a positive integer, more, then halves
+   * every count, rounding up, once the sum passes `CONTEXT_LIMIT`.
    */
-  update(sym: number): void {
+  update(sym: number, enter = 1, gain = 2): void {
     checkSymbol(sym, this.symbols, 'Context', 'symbol');
     const i = this.find(sym);
     const journal = this.journal;
     if (this.syms[i] === sym) {
-      this.counts[i] += 2;
-      this.sum += 2;
+      this.counts[i] += gain;
+      this.sum += gain;
       if (journal?.active === true) {
-        journal.own(this, RECUR, i);
+        journal.own(this, gain, i);
       }
     } else {
       this.syms.splice(i, 0, sym);
-      this.counts.splice(i, 0, 1);
-      this.sum += 1;
+      this.counts.splice(i, 0, enter);
+      this.sum += enter;
       if (journal?.active === true) {
         journal.own(this, ENTER, i);
       }
@@ -189,15 +225,15 @@ export class Context implements Table, Undoable {
     }
   }
 
-  /** Takes back the count a symbol gained at index `i`: its recurrence (`RECUR`) or its entry (`ENTER`). */
+  /** Takes back the count a symbol gained at index `i`: its entry (`ENTER`), else `op` from a recurrence. */
   undo(op: number, i: number): void {
-    if (op === RECUR) {
-      this.counts[i] -= 2;
-      this.sum -= 2;
-    } else {
+    if (op === ENTER) {
+      this.sum -= this.counts[i];
       this.syms.splice(i, 1);
       this.counts.splice(i, 1);
-      this.sum -= 1;
+    } else {
+      this.counts[i] -= op;
+      this.sum -= op;
     }
   }
 }
@@ -237,6 +273,7 @@ interface Scan {
 /**
  * Reads a symbol of `context` written under the exclusion, whose symbols
  * left sum to `sum`: the one whose bucket among them holds the residual.
+ * Returns its index in the context's `syms`.
  */
 function readLeft(dec: Decoder, context: Context, exclusion: Exclusion, sum: number): number {
   const { syms, counts } = context;
@@ -247,7 +284,7 @@ function readLeft(dec: Decoder, context: Context, exclusion: Exclusion, sum: num
       if (!exclusion.has(s)) {
         const count = counts[j];
         if (residual < cum + count) {
-          return [s, cum, count];
+          return [j, cum, count];
         }
         cum += count;
       }
@@ -311,6 +348,8 @@ export class ContextModel {
   }));
   /** What `visit` returns, its contexts written over by the next visit. */
   private readonly visited: Context[] = [];
+  /** What `lookup` fills, written over by the next lookup. */
+  private readonly found: Context[] = [];
   /** Whether the symbol `price` last priced would be a hit in the highest-order context. */
   pricedTop = false;
   /** What `scan` returns. */
@@ -340,7 +379,7 @@ export class ContextModel {
    * decision goes first, through the context's cell, then on a hit the
    * symbol among those left; a context with none left writes nothing.
    * `except`, a symbol other than `sym`, is ruled out of every table from
-   * the start. Every context visited learns `sym`, and so does the prior.
+   * the start. The contexts and the prior learn `sym` as `teach` says.
    */
   write(enc: Encoder, sym: number, row: number, history: readonly number[], except?: number): void {
     this.check(sym, row, history);
@@ -349,37 +388,36 @@ export class ContextModel {
     const contexts = this.visit(enc, history);
     this.open(exclusion, except);
     let hit = -1;
+    let enter = 1;
     const pricing = this.pricing(state, contexts);
     for (let i = 0; i < pricing.length; i++) {
       const context = pricing[i];
       // A context that has seen `sym` still has it left: the symbols ruled
-      // out are `except` and those of contexts that had not seen it.
+      // out are `except` and those of contexts that had not seen it, so
+      // it has a cell.
       const scan = this.scan(context, exclusion, sym);
-      const has = scan.found;
       const cell = this.cell(state, i, scan);
-      if (cell !== undefined) {
-        const total = cell[0] + cell[1];
-        if (has) {
-          enc.composeWeighted(0, cell[0], total);
-          enc.composeWeighted(scan.below, scan.width, scan.sum);
-        } else {
-          enc.composeWeighted(cell[0], cell[1], total);
-        }
-        learnCell(cell, !has, enc.journal);
-      }
-      if (has) {
+      if (scan.found) {
+        enc.composeWeighted(0, cell![0], cell![0] + cell![1]);
+        enc.composeWeighted(scan.below, scan.width, scan.sum);
+        enter = inherited(scan.width, scan.sum, cell![0], cell![1]);
+        learnCell(cell!, false, enc.journal);
         hit = i;
         break;
+      }
+      if (cell !== undefined) {
+        enc.composeWeighted(cell[0], cell[1], cell[0] + cell[1]);
+        learnCell(cell, true, enc.journal);
       }
       this.exclude(exclusion, context);
     }
     this.setTop(state, hit === 0);
-    if (hit >= 0) {
-      this.prior.learn(enc, sym, row);
-    } else {
+    if (hit < 0) {
       this.prior.write(enc, sym, row, exclusion);
+    } else if (this.teachesPrior(hit)) {
+      this.prior.learn(enc, sym, row);
     }
-    this.teach(state, contexts, sym);
+    this.teach(state, contexts, sym, enter, hit);
   }
 
   /** Reads a symbol written by `write` in `row` after `history` under the same `except`. */
@@ -392,18 +430,22 @@ export class ContextModel {
     this.open(exclusion, except);
     let hit = -1;
     let sym = 0;
+    let enter = 1;
     const pricing = this.pricing(state, contexts);
     for (let i = 0; i < pricing.length; i++) {
       const context = pricing[i];
       const scan = this.scan(context, exclusion, -1);
       const cell = this.cell(state, i, scan);
       if (cell !== undefined) {
-        const escaped = dec.parseWeighted(cell[0] + cell[1], (r) =>
-          r >= cell[0] ? [true, cell[0], cell[1]] : [false, 0, cell[0]]
+        const [hits, escapes] = cell;
+        const escaped = dec.parseWeighted(hits + escapes, (r) =>
+          r >= hits ? [true, hits, escapes] : [false, 0, hits]
         );
         learnCell(cell, escaped, dec.journal);
         if (!escaped) {
-          sym = readLeft(dec, context, exclusion, scan.sum);
+          const at = readLeft(dec, context, exclusion, scan.sum);
+          sym = context.syms[at];
+          enter = inherited(context.counts[at], scan.sum, hits, escapes);
           hit = i;
           break;
         }
@@ -411,12 +453,12 @@ export class ContextModel {
       this.exclude(exclusion, context);
     }
     this.setTop(state, hit === 0);
-    if (hit >= 0) {
-      this.prior.learn(dec, sym, row);
-    } else {
+    if (hit < 0) {
       sym = this.prior.read(dec, row, exclusion);
+    } else if (this.teachesPrior(hit)) {
+      this.prior.learn(dec, sym, row);
     }
-    this.teach(state, contexts, sym);
+    this.teach(state, contexts, sym, enter, hit);
     return sym;
   }
 
@@ -427,7 +469,7 @@ export class ContextModel {
   learn(side: Encoder | Decoder, sym: number, row: number, history: readonly number[]): void {
     this.check(sym, row, history);
     const state = this.message(side);
-    this.teach(state, this.visit(side, history), sym);
+    this.teach(state, this.visit(side, history), sym, 1, -1);
     this.setTop(state, false);
     this.prior.learn(side, sym, row);
   }
@@ -457,14 +499,13 @@ export class ContextModel {
     this.check(sym, row, history);
     let cost = 0;
     const state = this.message(enc);
-    const { tables, exclusion } = state;
+    const { exclusion } = state;
     this.open(exclusion, except);
     this.pricedTop = false;
-    for (let i = 0; i < this.orders.length && state.coded >= WARMUP; i++) {
-      const context = tables[i].get(this.key(history, this.orders[i]));
-      if (context === undefined) {
-        continue;
-      }
+    const found = this.found;
+    const from = state.coded >= WARMUP ? this.lookup(state, history) : this.orders.length;
+    for (let i = from; i < this.orders.length; i++) {
+      const context = found[i];
       const scan = this.scan(context, exclusion, sym);
       const has = scan.found;
       const cell = this.cell(state, i, scan);
@@ -500,7 +541,7 @@ export class ContextModel {
     if (left === 0) {
       return undefined;
     }
-    const key = cellKey(index, left, sum);
+    const key = cellKey(index, left, sum, state.top);
     const { cells } = state;
     let cell = cells[key];
     if (cell === undefined) {
@@ -562,15 +603,33 @@ export class ContextModel {
     return state.coded >= WARMUP ? contexts : [];
   }
 
-  /** Every context of the symbol learns it, and the message counts it. */
-  private teach(state: Contexts, contexts: readonly Context[], sym: number): void {
-    for (const context of contexts) {
-      context.update(sym);
+  /**
+   * The contexts of the symbol learn it, those new to it at `enter`, and
+   * the message counts it: every context when `hit` is -1, else the one at
+   * index `hit`, which coded it, and those above in full, and the one below
+   * at a gain of 1. That one has seen the symbol: whatever first taught it
+   * to a longer context taught it to this one too.
+   */
+  private teach(
+    state: Contexts,
+    contexts: readonly Context[],
+    sym: number,
+    enter: number,
+    hit: number
+  ): void {
+    const end = hit < 0 ? contexts.length : Math.min(hit + 2, contexts.length);
+    for (let i = 0; i < end; i++) {
+      contexts[i].update(sym, enter, hit >= 0 && i > hit ? 1 : 2);
     }
     state.coded++;
     if (state.journal?.active === true) {
       state.journal.set(state, 'coded', state.coded - 1);
     }
+  }
+
+  /** Whether a hit in the context at index `hit` among the orders teaches the prior. */
+  private teachesPrior(hit: number): boolean {
+    return this.orders[hit] <= PRIOR_ORDER;
   }
 
   /** Records whether the last symbol coded was a hit in the highest-order context. */
@@ -583,36 +642,66 @@ export class ContextModel {
     }
   }
 
-  /** The contexts of `history`, highest order first, each built on its first visit. */
+  /**
+   * The contexts of `history`, highest order first. They are found lowest
+   * order first, each keyed on the one below, and each is built on its
+   * first visit with the next id of its order: the count of its order's
+   * contexts. A rollback drops the newest contexts first, so the ids in use
+   * stay distinct and match the decoder's.
+   */
   private visit(side: Encoder | Decoder, history: readonly number[]): Context[] {
     const { tables, journal } = this.message(side);
-    const { orders, visited } = this;
-    for (let i = 0; i < orders.length; i++) {
-      const key = this.key(history, orders[i]);
-      let context = tables[i].get(key);
+    const { visited } = this;
+    let parent: Context | undefined;
+    for (let i = this.orders.length - 1; i >= 0; i--) {
+      const table = tables[i];
+      const key = this.key(history, i, parent);
+      let context = table.get(key);
       if (context === undefined) {
-        context = new Context(this.size, journal);
-        tables[i].set(key, context);
+        context = new Context(this.size, journal, table.size);
+        table.set(key, context);
         if (journal?.active === true) {
-          journal.drop(tables[i], key);
+          journal.drop(table, key);
         }
       }
       visited[i] = context;
+      parent = context;
     }
     return visited;
   }
 
   /**
-   * The key of the first `k` history entries: `h[0] + (size + 1)·(h[1] +
-   * (size + 1)·h[2])` cut to them. With `size` at most 65536 it stays below
-   * 2^49, a safe integer.
+   * Finds the contexts of `history` built so far into `found` without
+   * building any, lowest order first; returns the index of the highest
+   * found, the orders' count when none is. Every visit builds each order,
+   * so a context's lower orders exist whenever it does.
    */
-  private key(history: readonly number[], k: number): number {
-    let key = 0;
-    for (let j = k - 1; j >= 0; j--) {
-      key = key * (this.size + 1) + history[j];
+  private lookup(state: Contexts, history: readonly number[]): number {
+    const { tables } = state;
+    const { found } = this;
+    let parent: Context | undefined;
+    let i = this.orders.length - 1;
+    for (; i >= 0; i--) {
+      const context = tables[i].get(this.key(history, i, parent));
+      if (context === undefined) {
+        break;
+      }
+      found[i] = context;
+      parent = context;
     }
-    return key;
+    return i + 1;
+  }
+
+  /**
+   * The key of the context at index `i` among the orders, of order `k`, for
+   * `history`: `h[0]` for order 1, else `parent.id·(size + 1) + h[k - 1]`,
+   * `parent` the context of order `k - 1`. An order holds no more contexts
+   * than symbols coded, so the key stays a safe integer however long the
+   * history.
+   */
+  private key(history: readonly number[], i: number, parent: Context | undefined): number {
+    const k = this.orders[i];
+    return parent === undefined ? history[0] : parent.id * (this.size + 1) + history[k - 1];
   }
 
   /**
