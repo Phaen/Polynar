@@ -647,3 +647,135 @@ describe('ContextModel warm-up', () => {
     expect(priceOf(run[WARMUP])).not.toBe(estimate(run[WARMUP]));
   });
 });
+
+describe('ContextModel absorb', () => {
+  /** Sums, over the calls of `enc.composeWeighted` while it runs, what each costs in `COST_UNITS`. */
+  const costOf = (enc: Encoder, run: () => void): number => {
+    let sum = 0;
+    const compose = enc.composeWeighted.bind(enc);
+    const spy = jest.spyOn(enc, 'composeWeighted').mockImplementation((cum, freq, total) => {
+      sum += costUnits(freq, total);
+      compose(cum, freq, total);
+    });
+    try {
+      run();
+    } finally {
+      spy.mockRestore();
+    }
+    return sum;
+  };
+
+  /** A seeded choice, per step, of whether it is absorbed: 40% of those past the warm-up. */
+  const absorbed = (length: number, seed: number): boolean[] => {
+    const random = mulberry32(seed);
+    return Array.from({ length }, (_, i) => i >= WARMUP && random() < 0.4);
+  };
+
+  it.each([0, 1] as const)(
+    'absorbs a symbol as write codes it, in a model of order %i',
+    (order) => {
+      const symbols = sequence(31, 700, 0.02);
+      const choice = absorbed(symbols.length, 5);
+      const written = modelOf(order);
+      const mixed = modelOf(order);
+      const enc1 = new Encoder();
+      const enc2 = new Encoder();
+      let compared = 0;
+      for (const [i, { sym, row, history }] of steps(symbols, order).entries()) {
+        const cost = costOf(enc1, () => written.write(enc1, sym, row, history));
+        if (choice[i]) {
+          const got = mixed.absorb(enc2, sym, row, history);
+          expect(got).toBe(written.fell ? -1 : cost);
+          compared++;
+        } else {
+          mixed.write(enc2, sym, row, history);
+        }
+        expect(mixed.hitTop(enc2)).toBe(written.hitTop(enc1));
+        if (written.fell && i >= WARMUP) {
+          break;
+        }
+      }
+      expect(compared).toBeGreaterThan(0);
+    }
+  );
+
+  it.each([0, 1] as const)(
+    'reports the cost of a symbol it reads, in a model of order %i',
+    (order) => {
+      const symbols = sequence(31, 700);
+      const choice = absorbed(symbols.length, 9);
+      const list = steps(symbols, order);
+      const model = modelOf(order);
+      const enc = new Encoder();
+      const expected: number[] = [];
+      list.forEach(({ sym, row, history }, i) => {
+        if (choice[i]) {
+          expected.push(model.absorb(enc, sym, row, history));
+          return;
+        }
+        const cost = costOf(enc, () => model.write(enc, sym, row, history));
+        expected.push(model.fell ? -1 : cost);
+      });
+      const reader = modelOf(order);
+      const dec = new Decoder(enc.output());
+      const out: number[] = [];
+      list.forEach(({ sym, row, history }, i) => {
+        if (choice[i]) {
+          reader.absorb(dec, sym, row, history);
+          out.push(sym);
+          return;
+        }
+        out.push(reader.read(dec, row, history));
+        expect(reader.readUnits).toBe(expected[i]);
+      });
+      dec.finalize();
+      expect(out).toEqual(symbols);
+    }
+  );
+
+  it('falls to the prior in the warm-up and hits a context after it', () => {
+    const phrase = [0, 1, 2, 0, 3, 1, 0, 4];
+    const symbols = Array.from({ length: 200 }, (_, i) => phrase[i % phrase.length]);
+    const model = modelOf(0);
+    const enc = new Encoder();
+    const fell = steps(symbols, 0).map(({ sym, row, history }) => {
+      model.write(enc, sym, row, history);
+      return model.fell;
+    });
+    expect(fell.slice(0, WARMUP)).toEqual(new Array<boolean>(WARMUP).fill(true));
+    expect(fell.slice(WARMUP)).toEqual(new Array<boolean>(200 - WARMUP).fill(false));
+  });
+
+  it('rules out nothing for an except naming the symbol itself', () => {
+    const all = steps([...sequence(4, 200), ...sequence(8, 6)], 0);
+    const train = (): { model: ContextModel; enc: Encoder } => {
+      const model = modelOf(0);
+      const enc = new Encoder();
+      all.slice(0, 200).forEach(({ sym, row, history }) => model.write(enc, sym, row, history));
+      return { model, enc };
+    };
+    const a = train();
+    const b = train();
+    all.slice(200).forEach(({ sym, row, history }, i) => {
+      const priced = a.model.price(a.enc, sym, row, history);
+      expect(b.model.price(b.enc, sym, row, history)).toBe(priced);
+      const withExcept = a.model.absorb(a.enc, sym, row, history, i === 0 ? sym : undefined);
+      const without = b.model.absorb(b.enc, sym, row, history);
+      expect(withExcept).toBe(without);
+    });
+  });
+
+  it('is warm once the warm-up is coded or learned, and not before', () => {
+    const model = modelOf(0);
+    const enc = new Encoder();
+    expect(model.warm(enc)).toBe(false);
+    steps(sequence(2, WARMUP + 5), 0).forEach(({ sym, row, history }, i) => {
+      if (i % 2 === 0) {
+        model.write(enc, sym, row, history);
+      } else {
+        model.learn(enc, sym, row, history);
+      }
+      expect(model.warm(enc)).toBe(i + 1 >= WARMUP);
+    });
+  });
+});

@@ -17,6 +17,11 @@
  * change the writes made to the message's state, through the `journal`
  * nodes record their changes in. `commit` keeps it. `decide` builds a
  * choice among spellings on them.
+ *
+ * `composeMixture` writes a value several ways at once and leaves the
+ * choice to the fold, which takes it off the state it folds onto. The
+ * decoder, having read the value, puts the choice back with
+ * `Decoder.parseMixture`, so the bits the choice took are recovered.
  */
 
 import type { Bucket, CodecOptions, OutputType, Radix } from './types';
@@ -35,7 +40,8 @@ import {
   checksumOf,
   costUnits,
 } from './utils';
-import { StreamWriter } from './stream';
+import { StreamWriter, type Spelling } from './stream';
+import { MixtureLayout } from './mixture';
 import { MessageState, checkKey } from './state';
 import { Journal } from './journal';
 
@@ -63,7 +69,8 @@ function checkBucket(cum: number, freq: number, total: number): void {
  * event `i` is the bucket `[cums[i], cums[i] + freqs[i])` of `totals[i]`
  * states, a weighted symbol when `weighted[i]`, else a uniform slot with a
  * freq of 1. A symbol of an alternatives group holds coding 0's bucket
- * until `output` settles the group.
+ * until `output` settles the group. A mixture reads as the spelling of its
+ * heaviest choice, then that choice's bucket among the mixture's weights.
  */
 export interface EventLog {
   readonly cums: readonly number[];
@@ -80,6 +87,8 @@ export interface Mark {
   readonly pending: number;
   /** The groups opened before it. */
   readonly groups: number;
+  /** The mixtures written before it. */
+  readonly mixtures: number;
   /** What each try `decide` runs around it had spent, as it stood. */
   readonly running?: readonly number[];
   /** Its mark in the journal. */
@@ -148,6 +157,33 @@ interface Trial {
   stopped: boolean;
 }
 
+/** A value written by `composeMixture`, its choice left to the fold. */
+interface Mixture {
+  /** Its slots in the log: the heaviest choice's spelling from `start`, its own symbol at `at`. */
+  readonly start: number;
+  readonly at: number;
+  readonly layout: MixtureLayout;
+  /** Each choice's spelling, none for a choice of weight 0. */
+  readonly spellings: readonly (Spelling | undefined)[];
+  /** What it costs in `UNITS`, as `bitsSince` prices it. */
+  readonly units: number;
+}
+
+/**
+ * The cost in `UNITS` of a mixture whose choices' spellings cost `units`:
+ * −log2 of the sum of their probabilities, which is what a choice costs
+ * less the bits its weight gives back when the weights are those
+ * probabilities, and never below 0.
+ */
+function mixtureUnits(units: readonly number[]): number {
+  const least = Math.min(...units);
+  let sum = 0;
+  for (const u of units) {
+    sum += 2 ** ((least - u) / UNITS);
+  }
+  return Math.max(0, Math.round(least - Math.log2(sum) * UNITS));
+}
+
 /** A symbol written as one of its group's alternative buckets, waiting for the group's choice. */
 interface Alternative {
   /** The symbol's slot in the buffer. */
@@ -175,6 +211,10 @@ export class Encoder {
   private readonly opened: object[] = [];
   /** The alternative symbols written since the last `output`, in buffer order. */
   private pending: Alternative[] = [];
+  /** The mixtures written so far, in buffer order. */
+  private readonly mixtures: Mixture[] = [];
+  /** Whether `composeMixture` is writing its spellings. */
+  private mixing = false;
   /** The choices `decide` made in the try running now, each followed by those inside it. */
   private tape?: number[];
   /** Set while a spelling `decide` tried is written again: its choices, and the next to take. */
@@ -366,6 +406,166 @@ export class Encoder {
   }
 
   /**
+   * Write a value as a mixture of its spellings: `write(j)` writes it as
+   * choice j, and choice j has weight `weights[j]`, a non-negative integer,
+   * the weights summing to a positive safe integer. The fold takes a choice
+   * with probability its weight over their sum, off the bits the symbols
+   * after the value left on the state, and writes its spelling. The decoder
+   * reads the spelling, and with it the value and the choice, and hands
+   * both to `Decoder.parseMixture` with the same weights, which puts the
+   * choice back and so recovers −log2 of its probability. When the weights
+   * are the spellings' probabilities, the value costs −log2 of their sum.
+   * Where nothing follows the mixture, there is nothing to take a choice
+   * off, and the fold spells the heaviest choice.
+   *
+   * Every choice of positive weight is written, each from the message state
+   * as it stands, and whatever a spelling changes in it is taken back: the
+   * state after the value must not depend on the choice. A spelling writes
+   * plain symbols only, no selector, alternatives or mixture. A lone choice
+   * of positive weight is written as it is, and the decoder reads nothing
+   * more for it.
+   */
+  composeMixture(weights: readonly number[], write: (choice: number) => void): void {
+    const layout = new MixtureLayout(weights);
+    if (layout.only >= 0) {
+      write(layout.only);
+      return;
+    }
+    this.mix(
+      weights.map((weight) => weight > 0),
+      write,
+      () => layout
+    );
+  }
+
+  /**
+   * `composeMixture` of `count` choices whose weights follow from what
+   * their spellings cost: every choice is written, then `weigh` gets each
+   * one's cost in `COST_UNITS`, as `bitsSince` prices it times 2^20, and
+   * returns the weights, `count` of them. Where only one has positive
+   * weight, its spelling is the value's, with no choice to put back.
+   *
+   * Choice `kept`, when given, keeps what its spelling changes in the
+   * message state, and the choices after it are written from the state it
+   * leaves: for a value whose state after it is the one that spelling
+   * leaves, which the caller would otherwise teach it again. Where any
+   * spelling throws, every change is taken back.
+   */
+  composePriced(
+    count: number,
+    weigh: (units: readonly number[]) => readonly number[],
+    write: (choice: number) => void,
+    kept = -1
+  ): void {
+    this.mix(
+      new Array<boolean>(count).fill(true),
+      write,
+      (units) => {
+        const weights = weigh(units);
+        if (weights.length !== count) {
+          throw new RangeError(`Expected ${count} weights, got ${weights.length}`);
+        }
+        return new MixtureLayout(weights);
+      },
+      kept
+    );
+  }
+
+  /**
+   * Writes the spelling of each choice `written` names, each from the
+   * message state as it stands and taken back but for choice `kept`'s, then
+   * the mixture of them `lay` lays out from their costs.
+   */
+  private mix(
+    written: readonly boolean[],
+    write: (choice: number) => void,
+    lay: (units: readonly number[]) => MixtureLayout,
+    kept = -1
+  ): void {
+    if (this.mixing) {
+      throw new TypeError('A mixture spelling cannot write a mixture');
+    }
+    const { running, limits, ties } = this;
+    // A spelling is written to be priced, not as a candidate of the tries
+    // running: they pay for the mixture as a whole.
+    const spent = running.splice(0);
+    const budgets = limits.splice(0);
+    const sides = ties.splice(0);
+    const spellings: (Spelling | undefined)[] = [];
+    const costs: number[] = [];
+    this.mixing = true;
+    // Taken with no try running, so taking it back leaves `running` be.
+    const outer = kept >= 0 ? this.mark() : undefined;
+    try {
+      for (let j = 0; j < written.length; j++) {
+        if (!written[j]) {
+          spellings.push(undefined);
+          costs.push(Infinity);
+          continue;
+        }
+        const mark = this.mark();
+        let keep = false;
+        try {
+          write(j);
+          if (this.opened.length !== mark.groups || this.pending.length !== mark.pending) {
+            throw new TypeError('A mixture spelling cannot write a selector or alternatives');
+          }
+          const at = mark.events;
+          spellings.push({
+            cums: this.cums.slice(at),
+            freqs: this.freqs.slice(at),
+            totals: this.totals.slice(at),
+            weighted: this.weighted.slice(at),
+          });
+          costs.push(this.unitsSince(mark));
+          keep = j === kept;
+        } finally {
+          if (keep) {
+            this.unlog(mark);
+          } else {
+            this.rollback(mark);
+          }
+        }
+      }
+      if (outer !== undefined) {
+        this.commit(outer);
+      }
+    } catch (error) {
+      if (outer !== undefined) {
+        this.rollback(outer);
+      }
+      throw error;
+    } finally {
+      this.mixing = false;
+      running.push(...spent);
+      limits.push(...budgets);
+      ties.push(...sides);
+    }
+
+    const layout = lay(costs);
+    const { top, cums: choices, total, only } = layout;
+    const start = this.totals.length;
+    const { cums, freqs, totals, weighted } = spellings[top] as Spelling;
+    for (let i = 0; i < totals.length; i++) {
+      this.cums.push(cums[i]);
+      this.freqs.push(freqs[i] as Radix);
+      this.totals.push(totals[i] as Radix);
+      this.weighted.push(weighted[i]);
+    }
+    const units = mixtureUnits(costs.filter((_, j) => layout.weights[j] > 0));
+    if (only < 0) {
+      this.cums.push(choices[top]);
+      this.freqs.push(layout.weights[top] as Radix);
+      this.totals.push(total as Radix);
+      this.weighted.push(true);
+      this.mixtures.push({ start, at: this.totals.length - 1, layout, spellings, units });
+    }
+    if (running.length > 0) {
+      this.charge(units);
+    }
+  }
+
+  /**
    * Adds the cost of the symbol just logged, in `UNITS`, to every try
    * `decide` runs, and aborts the innermost when a budget is passed: its
    * own, when it can no longer win, else the outermost budget passed
@@ -458,6 +658,7 @@ export class Encoder {
       events: this.totals.length,
       pending: this.pending.length,
       groups: this.opened.length,
+      mixtures: this.mixtures.length,
       running: this.running.length > 0 ? this.running.slice() : undefined,
       journal: this.journal.mark(),
     };
@@ -488,10 +689,19 @@ export class Encoder {
         codings.push(choices[Math.min(PRICED_CODING, choices.length - 1)]);
       }
     }
+    const { mixtures } = this;
+    let mixture = mark.mixtures;
+    let start = mixture < mixtures.length ? mixtures[mixture].start : -1;
     let selector = 0;
     let units = 0;
     for (let i = mark.events; i < totals.length; i++) {
-      if (i === next) {
+      if (i === start) {
+        // A mixture's span holds plain symbols only.
+        units += mixtures[mixture].units;
+        i = mixtures[mixture].at;
+        mixture++;
+        start = mixture < mixtures.length ? mixtures[mixture].start : -1;
+      } else if (i === next) {
         const { buckets } = pending[alternative];
         units += bucketUnits(buckets[Math.min(PRICED_CODING, buckets.length - 1)]);
         alternative++;
@@ -515,6 +725,7 @@ export class Encoder {
     this.totals.length = at;
     this.weighted.length = at;
     this.pending.length = mark.pending;
+    this.mixtures.length = mark.mixtures;
     const { opened, groups } = this;
     for (let k = mark.groups; k < opened.length; k++) {
       groups.delete(opened[k]);
@@ -526,6 +737,20 @@ export class Encoder {
         this.running[k] = running[k];
       }
     }
+  }
+
+  /**
+   * Keeps the changes to the message state since `mark`, the innermost open
+   * transaction, and closes it, but drops the symbols logged since, which
+   * wrote no selector, alternatives or mixture.
+   */
+  private unlog(mark: Mark): void {
+    this.journal.release(mark.journal);
+    const at = mark.events;
+    this.cums.length = at;
+    this.freqs.length = at;
+    this.totals.length = at;
+    this.weighted.length = at;
   }
 
   /** Keep everything written since `mark`, the innermost open transaction, and close it. */
@@ -857,9 +1082,15 @@ export class Encoder {
    */
   private toDigits(size: number, sum: number): number[] {
     const { cums, freqs, totals, weighted } = this;
-    const writer = new StreamWriter(size, totals, freqs, sum > 0 ? 2 ** sum : 0);
-    for (let i = totals.length - 1; i >= 0; i--) {
-      writer.push(cums[i], freqs[i], totals[i], weighted[i]);
+    const head = sum > 0 ? 2 ** sum : 0;
+    let writer: StreamWriter;
+    if (this.mixtures.length === 0) {
+      writer = new StreamWriter(size, totals, freqs, head);
+      for (let i = totals.length - 1; i >= 0; i--) {
+        writer.push(cums[i], freqs[i], totals[i], weighted[i]);
+      }
+    } else {
+      writer = this.mixedWriter(size, head);
     }
     if (sum > 0) {
       const radix = 2 ** sum;
@@ -869,6 +1100,48 @@ export class Encoder {
       writer.push(h, 1, radix, false);
     }
     return writer.digits();
+  }
+
+  /**
+   * `toDigits`' writer with the log folded into it, for a log with
+   * mixtures: the writer takes each mixture as a latent choice, a freq of 0,
+   * in place of its span, and `unmix` folds it with the spelling it takes.
+   */
+  private mixedWriter(size: number, head: number): StreamWriter {
+    const { cums, freqs, totals, weighted, mixtures } = this;
+    const symbolTotals: number[] = [];
+    const symbolFreqs: number[] = [];
+    /** Each symbol's slot in the log, or -1 - k for mixture k. */
+    const slots: number[] = [];
+    let k = 0;
+    for (let i = 0; i < totals.length; i++) {
+      if (k < mixtures.length && i === mixtures[k].start) {
+        symbolTotals.push(mixtures[k].layout.total);
+        symbolFreqs.push(0);
+        slots.push(-1 - k);
+        i = mixtures[k].at;
+        k++;
+      } else {
+        symbolTotals.push(totals[i]);
+        symbolFreqs.push(freqs[i]);
+        slots.push(i);
+      }
+    }
+    const writer = new StreamWriter(size, symbolTotals, symbolFreqs, head);
+    for (let e = slots.length - 1; e >= 0; e--) {
+      const i = slots[e];
+      if (i >= 0) {
+        writer.push(cums[i], freqs[i], totals[i], weighted[i]);
+      } else {
+        const { layout, spellings } = mixtures[-1 - i];
+        writer.unmix(
+          layout.total,
+          (residual) => layout.locate(residual),
+          (choice) => spellings[choice] as Spelling
+        );
+      }
+    }
+    return writer;
   }
 
   /** The message as bytes, or as text when `type` is `'text'`. */

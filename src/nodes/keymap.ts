@@ -23,7 +23,8 @@ export class KeyMap<V> {
   /** The home slot of `key`. */
   private home(key: number): number {
     const low = key >>> 0;
-    const high = Math.floor(key / 4294967296);
+    // Below 2^32 the high word is 0 and mixes in nothing.
+    const high = key === low ? 0 : Math.floor(key / 4294967296);
     return Math.imul(low ^ Math.imul(high, 0x85ebca6b), 0x9e3779b1) >>> this.shift;
   }
 

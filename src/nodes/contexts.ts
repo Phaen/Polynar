@@ -381,6 +381,13 @@ export class ContextModel {
   private readonly found: Context[] = [];
   /** Whether the symbol `price` last priced would be a hit in the highest-order context. */
   pricedTop = false;
+  /**
+   * The cost, in `COST_UNITS`, of the symbol `read` last read through a
+   * context: its escape decisions and its bucket; -1 when it fell to the prior.
+   */
+  readUnits = -1;
+  /** Whether the symbol `write` wrote last fell to the prior. */
+  fell = false;
   /** What `scan` returns. */
   private readonly scratch: Scan = { left: 0, sum: 0, below: 0, width: 0, found: false };
 
@@ -441,6 +448,7 @@ export class ContextModel {
       this.exclude(exclusion, context);
     }
     this.setTop(state, hit === 0);
+    this.fell = hit < 0;
     if (hit < 0) {
       this.prior.write(enc, sym, row, exclusion);
     } else if (this.teachesPrior(hit)) {
@@ -460,6 +468,7 @@ export class ContextModel {
     let hit = -1;
     let sym = 0;
     let enter = 1;
+    let units = 0;
     const pricing = this.pricing(state);
     for (let i = 0; i < pricing; i++) {
       const context = contexts[i];
@@ -469,9 +478,11 @@ export class ContextModel {
         const [hits, escapes] = cell;
         const escaped = dec.parseSplit(hits, hits + escapes);
         learnCell(cell, escaped, dec.journal);
+        units += costUnits(escaped ? escapes : hits, hits + escapes);
         if (!escaped) {
           const at = readLeft(dec, context, exclusion, scan.sum);
           sym = context.syms[at];
+          units += costUnits(context.counts[at], scan.sum);
           enter = inherited(context.counts[at], scan.sum, hits, escapes);
           hit = i;
           break;
@@ -479,6 +490,7 @@ export class ContextModel {
       }
       this.exclude(exclusion, context);
     }
+    this.readUnits = hit >= 0 ? units : -1;
     this.setTop(state, hit === 0);
     if (hit < 0) {
       sym = this.prior.read(dec, row, exclusion);
@@ -487,6 +499,61 @@ export class ContextModel {
     }
     this.teach(state, contexts, sym, enter, hit);
     return sym;
+  }
+
+  /**
+   * Learns `sym` as `write` would code it, writing nothing, on either side,
+   * and returns what `write` would charge it through the contexts, in
+   * `COST_UNITS`: the escape decisions and the bucket of the context that
+   * has seen it. Where none has, it returns -1, and the prior learns it as
+   * `learn` teaches it rather than as `write` codes it. `except` rules out
+   * a symbol other than `sym`; a corrupt input may name `sym` itself, which
+   * then rules out nothing.
+   */
+  absorb(
+    side: Encoder | Decoder,
+    sym: number,
+    row: number,
+    history: readonly number[],
+    except?: number
+  ): number {
+    this.check(sym, row, history);
+    const state = this.message(side);
+    const { exclusion } = state;
+    const contexts = this.visit(state, history);
+    this.open(exclusion, except === sym ? undefined : except);
+    let hit = -1;
+    let enter = 1;
+    let units = 0;
+    const pricing = this.pricing(state);
+    for (let i = 0; i < pricing; i++) {
+      const context = contexts[i];
+      const scan = this.scan(context, exclusion, sym);
+      const cell = this.cell(state, i, scan);
+      if (scan.found) {
+        units += costUnits(cell![0], cell![0] + cell![1]) + costUnits(scan.width, scan.sum);
+        enter = inherited(scan.width, scan.sum, cell![0], cell![1]);
+        learnCell(cell!, false, side.journal);
+        hit = i;
+        break;
+      }
+      if (cell !== undefined) {
+        units += costUnits(cell[1], cell[0] + cell[1]);
+        learnCell(cell, true, side.journal);
+      }
+      this.exclude(exclusion, context);
+    }
+    this.setTop(state, hit === 0);
+    if (hit < 0 || this.teachesPrior(hit)) {
+      this.prior.learn(side, sym, row);
+    }
+    this.teach(state, contexts, sym, enter, hit);
+    return hit >= 0 ? units : -1;
+  }
+
+  /** Whether the contexts on `side` are past the warm-up and price symbols. */
+  warm(side: Encoder | Decoder): boolean {
+    return this.message(side).coded >= WARMUP;
   }
 
   /**

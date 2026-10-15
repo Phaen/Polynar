@@ -29,6 +29,7 @@ import {
   radixOf,
 } from './utils';
 import { Span, StreamReader, TupleLocator, type Located, type Locator } from './stream';
+import { choiceCum, measure } from './mixture';
 import { MessageState } from './state';
 
 const BIG_CHUNK_STATES = 2 ** BIG_CHUNK_BITS;
@@ -40,6 +41,12 @@ const PAYLOAD_RADIX = TERM_PAYLOAD_BASE as Radix;
 const PAYLOAD_TOP_RADIX = (TERM_PAYLOAD_BASE - 1) as Radix;
 /** The longest array a JavaScript engine builds. */
 const MAX_COUNT = 2 ** 32 - 1;
+/**
+ * The mixture choices put back past the input before any counts against the
+ * limit: a message ending in mixtures puts its last few back from the final
+ * state, which its input backs, about a dozen at most.
+ */
+const FREE_CHOICES = 64;
 
 /** Splits the residuals of a `parseSplit` at `low`: false below it, true from it on. */
 class SplitLocator implements Locator<boolean> {
@@ -100,6 +107,8 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
   private announcedAt = 0;
   /** Whether the input has run out with the state at 0, for good. */
   private dry = false;
+  /** The mixture choices still to be put back past the input free. */
+  private freeChoices = FREE_CHOICES;
   /**
    * The locators the weighted reads wrap their arguments in, reused from read
    * to read: a locator calls nothing that reads, so one read is done with
@@ -334,6 +343,42 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
       return locator.locate(0, this.span);
     }
     return this.reader.weighted(total, locator, checked);
+  }
+
+  /**
+   * Close a value written by `composeMixture`, once its spelling is read:
+   * `choice` is the choice the spelling was, `weights` the weights the
+   * encoder mixed with. Puts the choice back on the state, which reads
+   * nothing; the decode goes on with the bits the encoder took the choice
+   * off. A choice of weight 0 was never written.
+   */
+  parseMixture(weights: readonly number[], choice: number): void {
+    const { total, top, owners } = measure(weights);
+    if (!(weights[choice] > 0)) {
+      throw new CorruptInputError('Mixture spelling is a choice of weight 0');
+    }
+    if (owners > 1) {
+      this.restoreChoice(choiceCum(weights, top, choice), weights[choice], total);
+    }
+  }
+
+  /**
+   * Folds a mixture's choice, the bucket `[cum, cum + freq)` of `total`
+   * states, back onto the state. Once every digit is read, digits emitted
+   * back included, each choice past the first `FREE_CHOICES` counts against
+   * the limit as a value, so reads and choices taking and giving back the
+   * same bits cannot run on past the input unchecked.
+   */
+  protected restoreChoice(cum: number, freq: number, total: number): void {
+    const reader = this.reader;
+    if (reader.position >= this.input.length) {
+      if (this.freeChoices > 0) {
+        this.freeChoices--;
+      } else {
+        this.spend(1);
+      }
+    }
+    reader.mix(cum, freq, total);
   }
 
   /** Read one unbounded non-negative integer composed by `composeTerm`. */

@@ -26,6 +26,12 @@
  * After unfolding symbol i the state is below size·B_i ≤ size·A_{i+1}, so a
  * step that starts on a BigInt state takes it as a double when its own
  * bound allows.
+ *
+ * A latent choice runs the other way: the encoder takes it off the state
+ * (`StreamWriter.unmix`) and the decoder folds it back on (`StreamReader.mix`)
+ * after reading the spelling it chose, so the bits it took are recovered.
+ * The digits the encoder takes back from the emitted ones, the decoder
+ * emits back into its input, to read them again.
  */
 
 import { ransWindow } from './constants';
@@ -98,11 +104,38 @@ class Windows {
   /** The largest A for which size·A is a safe integer. */
   private readonly limit: number;
 
+  /** `carry` is B of the coded symbol before the first one opened, 0 at the message's start. */
   constructor(
     private readonly L: number,
-    size: number
+    size: number,
+    carry: number | bigint = 0
   ) {
     this.limit = floorDiv(Number.MAX_SAFE_INTEGER, size);
+    if (typeof carry === 'bigint') {
+      this.carry = NaN;
+      this.carryBig = carry;
+    } else {
+      this.carry = carry;
+    }
+  }
+
+  /** B of the last coded symbol, a BigInt past 2^53. */
+  get carried(): number | bigint {
+    return this.carry === this.carry ? this.carry : this.carryBig;
+  }
+
+  /**
+   * Open and close a latent choice of `total` states, which the decoder
+   * folds and the encoder unfolds: k = max(1, ⌊L/T⌋) whatever came before,
+   * and B = A = k·T, so the windows after it do not depend on the choice.
+   */
+  latent(total: number): void {
+    const k = Math.max(1, floorDiv(this.L, total));
+    // At most max(L, total), a safe integer.
+    const A = k * total;
+    this.k = k;
+    this.A = A;
+    this.carry = A;
   }
 
   /** Open a symbol of `total` states, a safe integer of at least 2. */
@@ -159,6 +192,36 @@ class Windows {
   }
 }
 
+/** A run of symbols in message order, as `StreamWriter.unmix` folds a choice's spelling. */
+export interface Spelling {
+  readonly cums: readonly number[];
+  readonly freqs: readonly number[];
+  readonly totals: readonly number[];
+  readonly weighted: readonly boolean[];
+}
+
+/** The windows of `spelling`'s symbols after a carry of `carry`, and the carry after them. */
+function spellingWindows(
+  L: number,
+  size: number,
+  carry: number | bigint,
+  spelling: Spelling
+): { ks: number[]; bigKs: Map<number, bigint>; carry: bigint } {
+  const windows = new Windows(L, size, carry);
+  const ks: number[] = [];
+  const bigKs = new Map<number, bigint>();
+  const { totals, freqs } = spelling;
+  for (let i = 0; i < totals.length; i++) {
+    windows.open(totals[i]);
+    if (windows.k !== windows.k) {
+      bigKs.set(i, windows.kBig);
+    }
+    ks.push(windows.k);
+    windows.close(freqs[i]);
+  }
+  return { ks, bigKs, carry: BigInt(windows.carried) };
+}
+
 /** The write side: symbols pushed last to first, then `digits`. */
 export class StreamWriter {
   /** The state, a double unless `big`. */
@@ -170,6 +233,8 @@ export class StreamWriter {
   /** Each symbol's k in message order, NaN where it is in `bigKs`. */
   private readonly ks: number[];
   private readonly bigKs = new Map<number, bigint>();
+  /** The carry before each latent choice, for the windows of the spelling it settles on. */
+  private readonly carries = new Map<number, number | bigint>();
   /** The message position of the last symbol pushed. */
   private next: number;
   /** The largest A for which size·A is a safe integer. */
@@ -177,21 +242,29 @@ export class StreamWriter {
 
   /**
    * A writer for the symbols of `totals` and `freqs` in message order,
-   * after a uniform `head` slot of that many states when it is not 0.
-   * `size` is the digit base, from 2 to 65536; `L` is the window,
-   * `ransWindow(size)` unless a test narrows it.
+   * after a uniform `head` slot of that many states when it is not 0. A
+   * freq of 0 marks a latent choice of `total` states, which `unmix` folds
+   * along with the spelling it settles on; the spellings' symbols are not
+   * among `totals`. `size` is the digit base, from 2 to 65536; `L` is the
+   * window, `ransWindow(size)` unless a test narrows it.
    */
   constructor(
     private readonly size: number,
     totals: ArrayLike<number>,
     freqs: ArrayLike<number>,
     head: number,
-    L: number = ransWindow(size)
+    private readonly L: number = ransWindow(size)
   ) {
     this.limit = floorDiv(Number.MAX_SAFE_INTEGER, size);
     const windows = new Windows(L, size);
     const ks: number[] = [];
     const step = (total: number, freq: number): void => {
+      if (freq === 0) {
+        this.carries.set(ks.length, windows.carried);
+        windows.latent(total);
+        ks.push(windows.k);
+        return;
+      }
       windows.open(total);
       if (windows.k !== windows.k) {
         this.bigKs.set(ks.length, windows.kBig);
@@ -231,9 +304,19 @@ export class StreamWriter {
    * one it folds onto. Whether the fold keeps a double state.
    */
   renormalise(freq: number, total: number): boolean {
-    const at = this.next - 1;
-    const k = this.ks[at];
+    return this.settle(this.ks, this.bigKs, this.next - 1, freq, total);
+  }
+
+  /** `renormalise` under the window of symbol `at` among `ks`, or `bigKs` where it is NaN. */
+  private settle(
+    ks: readonly number[],
+    bigKs: ReadonlyMap<number, bigint>,
+    at: number,
+    freq: number,
+    total: number
+  ): boolean {
     const size = this.size;
+    const k = ks[at];
     if (k * total <= this.limit) {
       const top = size * k * freq;
       if (this.big) {
@@ -258,8 +341,7 @@ export class StreamWriter {
       this.xb = BigInt(this.x);
       this.big = true;
     }
-    const bigK = k === k ? BigInt(k) : (this.bigKs.get(at) as bigint);
-    this.emitBig(BigInt(size) * bigK * BigInt(freq));
+    this.emitBig(BigInt(size) * (k === k ? BigInt(k) : (bigKs.get(at) as bigint)) * BigInt(freq));
     return false;
   }
 
@@ -287,7 +369,21 @@ export class StreamWriter {
    * not all of `total`: such a symbol carries nothing and is never pushed.
    */
   push(cum: number, freq: number, total: number, weighted: boolean): void {
-    if (this.renormalise(freq, total)) {
+    this.fold(this.ks, this.bigKs, this.next - 1, cum, freq, total, weighted);
+    this.next--;
+  }
+
+  /** `push` under the window of symbol `at` among `ks`, or `bigKs` where it is NaN. */
+  private fold(
+    ks: readonly number[],
+    bigKs: ReadonlyMap<number, bigint>,
+    at: number,
+    cum: number,
+    freq: number,
+    total: number,
+    weighted: boolean
+  ): void {
+    if (this.settle(ks, bigKs, at, freq, total)) {
       // Below size·A, a safe integer, after the fold, and so is every step to it.
       const x = this.x;
       if (!weighted) {
@@ -314,7 +410,75 @@ export class StreamWriter {
         }
       }
     }
+  }
+
+  /**
+   * Fold the next symbol back from the message's end when it is a latent
+   * choice of `total` states: take the choice off the state, the inverse of
+   * the decoder's `StreamReader.mix`, then fold the symbols `spell` gives
+   * for it. `locate` maps a residual in [0, total) to its choice's bucket.
+   *
+   * The state is first brought below size·k·T, k the latent window, as for
+   * a symbol owning every state; with digits emitted, it is at least k·T
+   * then. Unfolding the choice's bucket [c, c + q) leaves R in
+   * [k·q, size·k·q), which takes the digits emitted last back while it is
+   * below A_f = max(B, k·T), B of the spelling's last symbol, and digits
+   * remain. The decoder, after the spelling, reads those digits up to A_f,
+   * then emits them back while its state is at least size·k·q; every state
+   * on the way down is, as R is at least k·q, so it stops at R, and folding
+   * the bucket onto R gives the state unfolded here. Neither k nor the
+   * windows after it depend on the choice. A_f does, through the spelling,
+   * and both ends know the spelling where they need A_f.
+   */
+  unmix(
+    total: number,
+    locate: (residual: number) => Located<number>,
+    spell: (choice: number) => Spelling
+  ): void {
+    const at = this.next - 1;
+    if (!this.big) {
+      this.xb = BigInt(this.x);
+      this.big = true;
+    }
+    const bigTotal = BigInt(total);
+    const kT = BigInt(this.ks[at]) * bigTotal;
+    this.emitBig(BigInt(this.size) * kT);
+    const x = this.xb;
+    let choice: number;
+    let rest: bigint;
+    if (x < bigTotal) {
+      // Below `total`, so below 2^53: a double holds it exactly.
+      const { residual, visit } = residualAt(Number(x), total);
+      const [symbol, cum, freq] = locate(residual);
+      choice = symbol;
+      rest = BigInt(rankOf(visit, cum, freq, total));
+    } else {
+      const q = x / bigTotal;
+      const residual = Number(x - q * bigTotal);
+      const [symbol, cum, freq] = locate(residual);
+      choice = symbol;
+      rest = BigInt(freq) * q + BigInt(residual - cum);
+    }
+    const spelling = spell(choice);
+    const windows = spellingWindows(
+      this.L,
+      this.size,
+      this.carries.get(at) as number | bigint,
+      spelling
+    );
+    const fill = windows.carry > kT ? windows.carry : kT;
+    const base = BigInt(this.size);
+    const emitted = this.emitted;
+    while (rest < fill && emitted.length > 0) {
+      rest = rest * base + BigInt(emitted.pop() as number);
+    }
+    this.xb = rest;
     this.next--;
+    const { cums, freqs, totals, weighted } = spelling;
+    const { ks, bigKs } = windows;
+    for (let i = totals.length - 1; i >= 0; i--) {
+      this.fold(ks, bigKs, i, cums[i], freqs[i], totals[i], weighted[i]);
+    }
   }
 
   /** The message: the state's digits, most significant first, then the emitted digits in read order. */
@@ -352,6 +516,8 @@ export class StreamReader {
   /** The next digit to read. */
   private at = 0;
   private readonly windows: Windows;
+  /** The digit at each position before `at` that `mix` emitted back, until it is read again. */
+  private back?: Map<number, number>;
   /** Where `weighted` has its locator leave a bucket. */
   private readonly span = new Span();
 
@@ -360,7 +526,7 @@ export class StreamReader {
    * and `L` match the writer's.
    */
   constructor(
-    private readonly digitAt: (i: number) => number,
+    private digitAt: (i: number) => number,
     private readonly length: number,
     private readonly size: number,
     L: number = ransWindow(size)
@@ -545,6 +711,104 @@ export class StreamReader {
       windows.close(freq);
     }
     return symbol;
+  }
+
+  /**
+   * Fold a latent choice back onto the state, after the symbols of the
+   * spelling it chose: the bucket `[cum, cum + freq)` of `total` states,
+   * which `StreamWriter.unmix` took off. The state first reads digits while
+   * it is below A_f = max(B, k·T), B of the last symbol read; it then emits
+   * digits back while it is at least size·k·q, to be read again by the
+   * symbols after it, and folds.
+   */
+  mix(cum: number, freq: number, total: number): void {
+    const windows = this.windows;
+    const carried = windows.carried;
+    windows.latent(total);
+    if (typeof carried === 'number' && this.mixSmall(carried, cum, freq, total)) {
+      return;
+    }
+    const carry = BigInt(carried);
+    const kT = BigInt(windows.A);
+    const fill = carry > kT ? carry : kT;
+    let x = this.large();
+    if (this.at < this.length && x < fill) {
+      x = this.fillBig(x, fill);
+    }
+    const base = BigInt(this.size);
+    const top = base * BigInt(windows.k) * BigInt(freq);
+    if (x >= top) {
+      const back = this.emitted();
+      do {
+        const q = x / base;
+        back.set(--this.at, Number(x - q * base));
+        x = q;
+      } while (x >= top);
+    }
+    const bigFreq = BigInt(freq);
+    if (x < bigFreq) {
+      // Below `freq`, so below 2^53: a double holds it exactly.
+      this.xb = BigInt(spreadOf(cum, freq, total, Number(x)));
+    } else {
+      const q = x / bigFreq;
+      this.xb = q * BigInt(total) + BigInt(cum) + (x - q * bigFreq);
+    }
+  }
+
+  /**
+   * `mix` on a double state, after B of `carry`, where the window after it
+   * keeps every value it takes below 2^52: a filled state is below size
+   * times the larger of `carry` and k·T, and folds to below
+   * (size·k + 1)·T. Returns false, having changed nothing, where either
+   * bound is passed or the state is a BigInt.
+   */
+  private mixSmall(carry: number, cum: number, freq: number, total: number): boolean {
+    const windows = this.windows;
+    const size = this.size;
+    const { k, A } = windows;
+    const fill = carry > A ? carry : A;
+    if (this.big || fill * size > 2 ** 52 || (size * k + 1) * total > 2 ** 52) {
+      return false;
+    }
+    let x = this.x;
+    if (this.at < this.length && x < fill) {
+      x = this.fill(x, fill);
+    }
+    const top = size * k * freq;
+    if (x >= top) {
+      const back = this.emitted();
+      do {
+        const q = floorDiv(x, size);
+        back.set(--this.at, x - q * size);
+        x = q;
+      } while (x >= top);
+    }
+    if (x < freq) {
+      this.x = spreadOf(cum, freq, total, x);
+    } else {
+      const q = floorDiv(x, freq);
+      this.x = q * total + cum + (x - q * freq);
+    }
+    return true;
+  }
+
+  /** The digits `mix` emits back, kept until read again, which the reads take first. */
+  private emitted(): Map<number, number> {
+    let back = this.back;
+    if (back === undefined) {
+      const map = new Map<number, number>();
+      const digitAt = this.digitAt;
+      this.digitAt = (i) => {
+        const digit = map.get(i);
+        if (digit === undefined) {
+          return digitAt(i);
+        }
+        map.delete(i);
+        return digit;
+      };
+      this.back = back = map;
+    }
+    return back;
   }
 }
 

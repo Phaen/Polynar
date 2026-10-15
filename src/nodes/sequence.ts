@@ -16,6 +16,7 @@ import {
   Encoder,
   Decoder,
   CorruptInputError,
+  type EventLog,
   SlotCache,
   COST_UNITS,
   costUnits,
@@ -55,6 +56,10 @@ import {
   type RepeatCoding,
 } from './repeats';
 import { buildWeights, checkIndex } from './weights';
+import { WordModel, mixWeights } from './words';
+
+/** Thrown out of a word's spellings where a literal of it falls to the prior, which a mixture cannot hold. */
+const UNMIXED = new Error('A word literal fell to the prior');
 import type { Run } from './base';
 
 /**
@@ -189,6 +194,12 @@ export interface Symbols<T> {
   identity?(value: T): string;
   /** A copy of a decoded value, for a recall whose values may be mutated; the value itself when left out. */
   copy?(value: T): T;
+  /**
+   * Whether `item` is a letter, a one-unit item without a tail below 128:
+   * a run of letters is a word, which the learned spelling may write as
+   * one token (`./words`). Left out, a sequence has no words.
+   */
+  letter?(item: number): boolean;
 }
 
 /**
@@ -588,7 +599,8 @@ class Engine<T> implements Body {
     private readonly literals: () => Literals,
     private readonly repeats: RepeatCoding,
     private readonly gate: number,
-    private readonly grown?: GrownAlphabet
+    private readonly grown?: GrownAlphabet,
+    private readonly words?: WordModel
   ) {}
 
   /** The symbol of `item` on `side`: its own once admitted, else the alphabet's. */
@@ -679,7 +691,8 @@ class Engine<T> implements Body {
       history = advance(history, syms[k]);
       row = symbols.row(items[k]);
     }
-    return { model, base, span, syms, rows, histories, before };
+    const prev = lead.length > 0 ? lead[lead.length - 1] : -1;
+    return { model, base, span, syms, rows, histories, before, prev };
   }
 
   /**
@@ -740,24 +753,34 @@ class Engine<T> implements Body {
     const { repeats } = this;
     const { model, base, span, syms, rows, histories, before } = walk;
     let context: FlagContext = 0;
+    // A match whose flag ended the word before it.
+    let ending: Match | undefined;
     this.planEnd = -1;
     for (let k = 0; k < items.length; ) {
       const at = base + k;
       const limit = span - before[k];
-      if (used && decodable(at, limit)) {
-        const match = this.choose(enc, state, walk, k, context, except);
+      let match = ending;
+      ending = undefined;
+      if (match === undefined && used && decodable(at, limit)) {
+        match = this.choose(enc, state, walk, k, context, except);
         repeats.writeFlag(enc, match !== undefined, context);
-        if (match !== undefined) {
-          repeats.writeMatch(enc, match, at, limit);
-          this.cache(enc, state, match);
-          for (let j = k; j < k + Math.min(match.length, MATCH_LEARNED); j++) {
-            model.learn(enc, syms[j], rows[j], histories[j]);
-          }
-          k += match.length;
-          context = 2;
-          except = this.continuation(state.items, base + k, match.distance, k < items.length);
-          continue;
+      }
+      if (match !== undefined) {
+        repeats.writeMatch(enc, match, at, limit);
+        this.cache(enc, state, match);
+        for (let j = k; j < k + Math.min(match.length, MATCH_LEARNED); j++) {
+          model.learn(enc, syms[j], rows[j], histories[j]);
         }
+        k += match.length;
+        context = 2;
+        except = this.continuation(state.items, base + k, match.distance, k < items.length);
+        continue;
+      }
+      const prev = k === 0 ? walk.prev : items[k - 1];
+      if (this.opens(enc, model, prev)) {
+        [k, context, ending] = this.writeWord(enc, state, walk, items, k, prev, used, except);
+        except = undefined;
+        continue;
       }
       const sym = syms[k];
       model.write(enc, sym, rows[k], histories[k], except);
@@ -768,6 +791,242 @@ class Engine<T> implements Body {
       except = undefined;
       k++;
     }
+  }
+
+  /** Whether `item` is a letter of a word. */
+  private letter(item: number): boolean {
+    return this.symbols.letter?.(item) === true;
+  }
+
+  /** Whether `item`, spelled as `sym`, writes no tail. */
+  private plain(item: number, sym: number): boolean {
+    return this.admitted(sym) || this.symbols.tails(item, sym) === 1;
+  }
+
+  /**
+   * Whether a literal on `side` after `prev`, -1 at a value's start, opens
+   * a word: where the engine keeps words, after anything but a letter, once
+   * the contexts price symbols.
+   */
+  private opens(side: Encoder | Decoder, model: Literals, prev: number): boolean {
+    return (
+      this.words !== undefined &&
+      (prev < 0 || !this.letter(prev)) &&
+      (model as ContextModel).warm(side)
+    );
+  }
+
+  /** Learns a match flag of `context` on `side` as written, where the flags learn. */
+  private learnFlag(side: Encoder | Decoder, match: boolean, context: FlagContext): void {
+    this.repeats.learnFlag?.(side, match, context);
+  }
+
+  /**
+   * Closes word `word` on `dec`, read as token `id`, -1 for its letters:
+   * where both spellings could have written it, `hits` that every literal
+   * of it hit a context, the choice goes back on the state, weighed by the
+   * letters' `cost`; then the word model learns it.
+   */
+  private closeWord(
+    dec: Decoder,
+    prev: number,
+    word: string,
+    id: number,
+    hits: boolean,
+    cost: number
+  ): void {
+    const words = this.words as WordModel;
+    const known = id !== -1 ? id : words.id(dec, word);
+    let weights: [number, number] | undefined;
+    if (hits && known !== -1) {
+      weights = words.mixture(dec, prev, cost, known);
+      dec.parseMixture(weights, id === -1 ? 0 : 1);
+    }
+    words.learn(dec, prev, word, weights, known);
+  }
+
+  /**
+   * Writes the word that opens at item `k` of `walk`, a literal ruling out
+   * `except`: the run of letters from there up to whatever ends it, a
+   * literal other than a letter, a match the plan takes, or the value's
+   * end. The word is spelled by its letters after the word model's escape,
+   * or by its token where the message spelled it before; where both can
+   * and every literal of the letters' spelling, the literal ending it
+   * included, hits a context, the two are mixed. The literal ending the
+   * word, or the flag of the match, is part of either spelling, so the
+   * decoder knows the word whole before it closes the mixture. Returns the
+   * item to go on from, the flag context there, and the match ending the
+   * word, whose flag is written.
+   */
+  private writeWord(
+    enc: Encoder,
+    state: Message,
+    walk: Walk,
+    items: readonly number[],
+    k: number,
+    prev: number,
+    used: boolean,
+    except: number | undefined
+  ): [number, FlagContext, Match | undefined] {
+    const words = this.words as WordModel;
+    const { repeats } = this;
+    const model = walk.model as ContextModel;
+    const { base, span, syms, rows, histories, before } = walk;
+    const n = items.length;
+    const matchable = (j: number): boolean => used && decodable(base + j, span - before[j]);
+    const ruled = (j: number): number | undefined => (j === k ? except : undefined);
+    /**
+     * The match the plan takes at item `j` of the word. A plan made there
+     * is made as the letters before it leave the model, learned and taken
+     * back.
+     */
+    const pick = (j: number): Match | undefined => {
+      if (j < this.planEnd) {
+        return this.choose(enc, state, walk, j, 0, undefined);
+      }
+      const mark = enc.mark();
+      try {
+        return this.choose(
+          enc,
+          state,
+          walk,
+          j,
+          this.learnLetters(enc, walk, k, j, used, except),
+          undefined
+        );
+      } finally {
+        enc.rollback(mark);
+      }
+    };
+    let e = k;
+    let end: Match | undefined;
+    for (; e < n && this.letter(items[e]); e++) {
+      if (e > k && matchable(e)) {
+        end = pick(e);
+        if (end !== undefined) {
+          break;
+        }
+      }
+    }
+    if (end === undefined && e < n && e > k && matchable(e)) {
+      end = pick(e);
+    }
+    const literal = end === undefined && e < n;
+    let word = '';
+    for (let j = k; j < e; j++) {
+      word += String.fromCharCode(items[j]);
+    }
+    const id = words.id(enc, word);
+
+    /** Writes what ends the word after its letters, `flag` the flag context there. */
+    const close = (flag: FlagContext): void => {
+      if (end !== undefined) {
+        repeats.writeFlag(enc, true, flag);
+      } else if (literal) {
+        if (e > k && matchable(e)) {
+          repeats.writeFlag(enc, false, flag);
+        }
+        model.write(enc, syms[e], rows[e], histories[e], ruled(e));
+        if (!this.admitted(syms[e])) {
+          this.tail(enc, items[e], syms[e]);
+        }
+      }
+    };
+    // What ends the word as the letters' spelling wrote it, for the token's.
+    let ending: Pick<EventLog, 'cums' | 'freqs' | 'totals'> | undefined;
+    /** The letters, spelled one by one; `mixed`, refusing a literal that falls to the prior. */
+    const letters = (mixed: boolean): void => {
+      words.write(enc, prev, -1);
+      let flag: FlagContext = 0;
+      for (let j = k; j < e; j++) {
+        if (j > k && matchable(j)) {
+          repeats.writeFlag(enc, false, flag);
+        }
+        model.write(enc, syms[j], rows[j], histories[j], ruled(j));
+        if (mixed && model.fell) {
+          throw UNMIXED;
+        }
+        flag = model.hitTop(enc) ? 1 : 0;
+      }
+      const from = enc.events().totals.length;
+      close(flag);
+      if (mixed) {
+        if (literal && (model.fell || !this.plain(items[e], syms[e]))) {
+          throw UNMIXED;
+        }
+        const { cums, freqs, totals } = enc.events();
+        ending = {
+          cums: cums.slice(from),
+          freqs: freqs.slice(from),
+          totals: totals.slice(from),
+        };
+      }
+    };
+    /**
+     * The word as its token, then what ends it as the letters' spelling
+     * wrote it: a flag, a context's escapes and its hit, all weighted, as a
+     * literal ending a mixed word writes no tail.
+     */
+    const token = (): void => {
+      words.write(enc, prev, id);
+      const { cums, freqs, totals } = ending as Pick<EventLog, 'cums' | 'freqs' | 'totals'>;
+      for (let i = 0; i < totals.length; i++) {
+        enc.composeWeighted(cums[i], freqs[i], totals[i]);
+      }
+    };
+    let weights: [number, number] | undefined;
+    if (id === -1) {
+      letters(false);
+    } else {
+      try {
+        // What either spelling leaves is what the letters' leaves: the
+        // letters, then the end, learned; the token's changes nothing.
+        enc.composePriced(
+          2,
+          (units) => (weights = mixWeights(units[0], units[1])),
+          (j) => (j === 0 ? letters(true) : token()),
+          0
+        );
+      } catch (error) {
+        if (error !== UNMIXED) {
+          throw error;
+        }
+      }
+      if (weights === undefined) {
+        letters(false);
+      }
+    }
+    words.learn(enc, prev, word, weights, id);
+    if (end !== undefined) {
+      return [e, 0, end];
+    }
+    return [literal ? e + 1 : e, model.hitTop(enc) ? 1 : 0, undefined];
+  }
+
+  /**
+   * Learns items `k` to `e` of `walk`, letters of a word that opens at `k`
+   * ruling out `except`, as spelling them one by one would, each match flag
+   * before them included, and returns the flag context after them.
+   */
+  private learnLetters(
+    enc: Encoder,
+    walk: Walk,
+    k: number,
+    e: number,
+    used: boolean,
+    except: number | undefined
+  ): FlagContext {
+    const model = walk.model as ContextModel;
+    const { base, span, syms, rows, histories, before } = walk;
+    let flag: FlagContext = 0;
+    for (let j = k; j < e; j++) {
+      if (j > k && used && decodable(base + j, span - before[j])) {
+        this.learnFlag(enc, false, flag);
+      }
+      model.absorb(enc, syms[j], rows[j], histories[j], j === k ? except : undefined);
+      flag = model.hitTop(enc) ? 1 : 0;
+    }
+    return flag;
   }
 
   /** Caches the distance of `match`, taken on `enc`. */
@@ -1165,11 +1424,92 @@ class Engine<T> implements Body {
       history = advance(history, sym);
       row = symbols.row(item);
     };
+    /** The item `sym` read spells, its tail read. */
+    const untail = (sym: number): number =>
+      this.admitted(sym) ? (this.grown as GrownAlphabet).item(dec, sym) : this.untail(dec, sym);
+    const matchable = (): boolean => used && decodable(all.length, span - units);
+    /**
+     * Reads a word `writeWord` wrote, from its token to what ends it, and
+     * returns whether that is a match's flag.
+     */
+    const readWord = (prev: number): boolean => {
+      const words = this.words as WordModel;
+      const contexts = model as ContextModel;
+      const start = all.length;
+      const id = words.read(dec, prev);
+      let cost = 0;
+      let hits = true;
+      let flag: FlagContext = 0;
+      let word = '';
+      if (id === -1) {
+        for (;;) {
+          // The flag before a letter is the letters' cost; the one before
+          // what ends the word is either spelling's.
+          let price = 0;
+          if (all.length > start) {
+            if (units >= span) {
+              break;
+            }
+            if (matchable()) {
+              price = this.repeats.priceFlag(dec, false, flag);
+              if (this.repeats.readFlag(dec, flag)) {
+                this.closeWord(dec, prev, word, id, hits, cost);
+                return true;
+              }
+            }
+          }
+          const sym = model.read(dec, row, history, all.length === start ? except : undefined);
+          const paid = contexts.readUnits;
+          const item = untail(sym);
+          take(item, sym);
+          if (!this.letter(item)) {
+            hits &&= paid >= 0 && this.plain(item, sym);
+            break;
+          }
+          hits &&= paid >= 0;
+          cost += price + paid;
+          word += String.fromCharCode(item);
+          flag = contexts.hitTop(dec) ? 1 : 0;
+        }
+        this.closeWord(dec, prev, word, id, hits, cost);
+        return false;
+      }
+      // A word past the span overruns it, which `readBody` refuses.
+      word = words.word(dec, id);
+      for (let j = 0; j < word.length; j++) {
+        if (j > 0 && matchable()) {
+          cost += this.repeats.priceFlag(dec, false, flag);
+          this.learnFlag(dec, false, flag);
+        }
+        const item = word.charCodeAt(j);
+        const sym = this.symbol(dec, item);
+        const paid = contexts.absorb(dec, sym, row, history, j === 0 ? except : undefined);
+        hits &&= paid >= 0;
+        cost += paid;
+        take(item, sym);
+        flag = contexts.hitTop(dec) ? 1 : 0;
+      }
+      if (units < span) {
+        if (matchable() && this.repeats.readFlag(dec, flag)) {
+          this.closeWord(dec, prev, word, id, hits, cost);
+          return true;
+        }
+        const sym = model.read(dec, row, history);
+        const paid = contexts.readUnits;
+        const item = untail(sym);
+        hits &&= paid >= 0 && this.plain(item, sym);
+        take(item, sym);
+      }
+      this.closeWord(dec, prev, word, id, hits, cost);
+      return false;
+    };
+    let ending = false;
     while (units < span) {
       bounded(all.length - base, span);
       const at = all.length;
       const limit = span - units;
-      if (used && decodable(at, limit) && repeats.readFlag(dec, context)) {
+      if (ending || (used && decodable(at, limit) && repeats.readFlag(dec, context))) {
+        ending = false;
         const match = repeats.readMatch(dec, at, limit, state.reps);
         const { distance, length } = match;
         // The encoder holds a message's items in one JS array, so no match
@@ -1197,6 +1537,13 @@ class Engine<T> implements Body {
         cache(state.reps, match);
         context = 2;
         except = this.continuation(all, all.length, distance, units < span);
+        continue;
+      }
+      const prev = at > base ? all[at - 1] : lead.length > 0 ? lead[lead.length - 1] : -1;
+      if (this.opens(dec, model, prev)) {
+        ending = readWord(prev);
+        context = model.hitTop(dec) ? 1 : 0;
+        except = undefined;
         continue;
       }
       const sym = model.read(dec, row, history, except);
@@ -1240,7 +1587,8 @@ function learned<T>(symbols: Symbols<T>, window: number | undefined): Engine<T> 
       ? new ContextModel(prior, size, who)
       : new ContextModel(new GrownPrior(prior, grown), grown.size, who);
   };
-  return new Engine(symbols, model, new Repeats(who), WARMUP, grown);
+  const words = symbols.letter === undefined ? undefined : new WordModel();
+  return new Engine(symbols, model, new Repeats(who), WARMUP, grown, words);
 }
 
 /**
@@ -1278,6 +1626,8 @@ interface Walk {
   readonly histories: readonly (readonly number[])[];
   /** The units before each item, and after the last. */
   readonly before: readonly number[];
+  /** The item before the value's first, -1 for none. */
+  readonly prev: number;
 }
 
 /** The methods a sequence declares: those of `Spelling`, repeats, and the field spellings of text. */

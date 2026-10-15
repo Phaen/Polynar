@@ -31,7 +31,9 @@ export interface CodecOptions<T extends OutputType = never> {
 export interface DecodeOptions<T extends OutputType = never> extends CodecOptions<T> {
   /**
    * How many values a decode may read after its input runs out, where every
-   * value reads as zero for free; 2^20 when omitted, `Infinity` for no limit.
+   * value reads as zero for free, a mixture's choice put back past the first
+   * 64 counted as one;
+   * 2^20 when omitted, `Infinity` for no limit.
    */
   limit?: number;
 }

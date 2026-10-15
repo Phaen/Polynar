@@ -292,6 +292,8 @@ export interface RepeatCoding {
   writeFlag(enc: Encoder, match: boolean, context: FlagContext): void;
   readFlag(dec: Decoder, context: FlagContext): boolean;
   priceFlag(side: Encoder | Decoder, match: boolean, context: FlagContext): number;
+  /** Learns the flag as `writeFlag` would write it, writing nothing: where the flag learns. */
+  learnFlag?(side: Encoder | Decoder, match: boolean, context: FlagContext): void;
   writeMatch(enc: Encoder, match: Match, maxDistance: number, maxLength: number): void;
   readMatch(dec: Decoder, maxDistance: number, maxLength: number, reps: readonly number[]): Match;
   priceMatch(
@@ -360,6 +362,12 @@ export class Repeats implements RepeatCoding {
   /** Reads the flag written by `writeFlag` in the same context. */
   readFlag(dec: Decoder, context: FlagContext): boolean {
     return this.flag(context).read(dec) === 1;
+  }
+
+  learnFlag(side: Encoder | Decoder, match: boolean, context: FlagContext): void {
+    this.flag(context)
+      .live(side)
+      .learn(match ? 1 : 0);
   }
 
   /**

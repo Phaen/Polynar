@@ -429,6 +429,12 @@ class LearnedText extends CodePoints implements Symbols<string> {
     const sym = proseContext(this.table, code);
     return sym === this.table.escape && isCapital(code) ? proseContext(this.table, code + 32) : sym;
   }
+
+  /** The ASCII letters, the ones a shape changes the case of. */
+  letter(code: number): boolean {
+    const lower = code | 32;
+    return lower >= 97 && lower <= 122;
+  }
 }
 
 /** An explicit charset: each character is its digit in the alphabet. */

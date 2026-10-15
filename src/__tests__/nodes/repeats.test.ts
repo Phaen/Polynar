@@ -704,3 +704,27 @@ describe('EVEN_REPEATS', () => {
     );
   });
 });
+
+describe('Repeats learnFlag', () => {
+  it('leaves the flag tables as writeFlag does, writing nothing', () => {
+    const random = mulberry32(11);
+    const written = new Repeats('w');
+    const learned = new Repeats('w');
+    const enc1 = new Encoder();
+    const enc2 = new Encoder();
+    for (let i = 0; i < 300; i++) {
+      const match = random() < 0.4;
+      const context = Math.floor(random() * 3) as FlagContext;
+      written.writeFlag(enc1, match, context);
+      const before = enc2.events().totals.length;
+      learned.learnFlag(enc2, match, context);
+      expect(enc2.events().totals).toHaveLength(before);
+      for (const flag of [false, true]) {
+        for (const at of [0, 1, 2] as const) {
+          expect(learned.priceFlag(enc2, flag, at)).toBe(written.priceFlag(enc1, flag, at));
+        }
+      }
+    }
+    expect(enc2.events().totals).toHaveLength(0);
+  });
+});

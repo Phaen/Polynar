@@ -60,6 +60,14 @@ export class ReplayDecoder extends Decoder<string> {
     return symbol;
   }
 
+  /** A mixture logs its choice's bucket after the spelling: refused unless it is that one. */
+  protected restoreChoice(cum: number, freq: number, total: number): void {
+    const i = this.next(total, true);
+    if (this.log.cums[i] !== cum || this.log.freqs[i] !== freq) {
+      throw new TypeError(`Replay read event ${i} as a bucket other than the one logged`);
+    }
+  }
+
   /** The next event, refused unless it is of `total` states and weighted as `weighted`. */
   private next(total: number, weighted: boolean): number {
     const { totals } = this.log;
