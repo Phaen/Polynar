@@ -2,9 +2,10 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { PNode } from './base';
 import { describe } from './path';
 import type { Kind } from './guards';
-import { IndexRange, checkUnset } from './lattice';
+import { IndexMethods, IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 import type { AdaptiveOptions } from './adaptive';
+import { withMethod, type Spelling } from './methods';
 
 const valueSubject = (value: number): string => `Value ${value}`;
 
@@ -53,9 +54,18 @@ export class PDecimal extends PNode<number> {
   private readonly _scaledStep: number;
   /** Indexed by step multiple: the k-th multiple of the step is index k. */
   private readonly _range: IndexRange;
+  private readonly _spelling: Spelling;
+  private readonly _methods: IndexMethods;
   declare readonly _radix?: number;
 
-  constructor(step: number, min?: number, max?: number, prior?: Prior, adaptive?: AdaptiveOptions) {
+  constructor(
+    step: number,
+    min?: number,
+    max?: number,
+    prior?: Prior,
+    adaptive?: AdaptiveOptions,
+    spelling: Spelling = {}
+  ) {
     super();
     if (!(step > 0) || step === Infinity) {
       throw new TypeError(`p.decimal step must be a positive finite number, got ${step}`);
@@ -81,25 +91,29 @@ export class PDecimal extends PNode<number> {
     this._range = new IndexRange('p.decimal', kMin, kMax, prior, adaptive, (k) =>
       String(this._valueAt(k))
     );
-    this._radix = this._range.radix;
-    const fromDigit = this._range.fromDigit;
-    if (fromDigit !== undefined) {
-      this._fromDigit = (digit) => this._decode(fromDigit(digit));
-    }
-    const toDigit = this._range.toDigit;
-    if (toDigit !== undefined) {
-      this._toDigit = (value) => toDigit(this._index(value), () => valueSubject(value));
+    this._spelling = spelling;
+    this._methods = new IndexMethods(this._range, spelling, 'p.decimal');
+    if (this._methods.plain) {
+      this._radix = this._range.radix;
+      const fromDigit = this._range.fromDigit;
+      if (fromDigit !== undefined) {
+        this._fromDigit = (digit) => this._decode(fromDigit(digit));
+      }
+      const toDigit = this._range.toDigit;
+      if (toDigit !== undefined) {
+        this._toDigit = (value) => toDigit(this._index(value), () => valueSubject(value));
+      }
     }
   }
 
   min(n: number): PDecimal {
     checkUnset(this._minRaw, 'p.decimal', 'min');
-    return new PDecimal(this._step, n, this._maxRaw, this._range.declared, this._range.adaptive);
+    return this._with({ min: n });
   }
 
   max(n: number): PDecimal {
     checkUnset(this._maxRaw, 'p.decimal', 'max');
-    return new PDecimal(this._step, this._minRaw, n, this._range.declared, this._range.adaptive);
+    return this._with({ max: n });
   }
 
   /**
@@ -110,7 +124,7 @@ export class PDecimal extends PNode<number> {
    * encode.
    */
   cdf(fn: Cdf): PDecimal {
-    return new PDecimal(this._step, this._minRaw, this._maxRaw, fn, this._range.adaptive);
+    return this._with({ prior: fn });
   }
 
   /**
@@ -118,7 +132,7 @@ export class PDecimal extends PNode<number> {
    * prior as `.cdf()`, given as the histogram instead of its running total.
    */
   weights(w: readonly number[]): PDecimal {
-    return new PDecimal(this._step, this._minRaw, this._maxRaw, w, this._range.adaptive);
+    return this._with({ prior: w });
   }
 
   /**
@@ -130,20 +144,61 @@ export class PDecimal extends PNode<number> {
    * out, and raised to the number of values it counts when smaller). From its
    * second value on, the node spends one bit to stay static, or a few to name
    * the learning rate that paid off. Takes weights, not a cdf; part of the wire
-   * format, like the weights.
+   * format, like the weights. A grid unbounded or wider than 65536 points
+   * learns on the magnitude scale instead: step multiples from the min,
+   * else the max, else 0, by bit-length class. From the second value on,
+   * unless `.delta()` is declared, each value also spends a learned mode
+   * symbol naming whether it is spelled plainly or as its difference from
+   * the previous value, whichever the encoder prices cheaper.
    */
   adaptive(options?: AdaptiveOptions): PDecimal {
+    return this._with({ adaptive: options ?? {} });
+  }
+
+  /**
+   * Spell every value after the node's first in the message as its
+   * difference from the previous one, in steps: its side, unless the bounds
+   * rule one out, the bit-length class of its size among the classes the
+   * bounds reach, equally likely or learned under `.adaptive()`, then the
+   * low bits. Prices and readings that drift cost a few bits each, bounded
+   * or not. The node's first value costs its plain spelling. Takes no
+   * weights or cdf; values must lie within 2^53 - 1 steps of the min, else
+   * the max, else 0.
+   */
+  delta(): PDecimal {
+    return this._with({ spelling: withMethod(this._spelling, 'delta', 'p.decimal') });
+  }
+
+  /**
+   * Spell a value this node already wrote in the message by its place
+   * among the distinct values it wrote, and a new one as an escape and then
+   * as the node otherwise spells it: with n values seen, a repeat costs
+   * log2(n + 1) bits, or under `.adaptive()` less the more often it
+   * recurs. The message's first value costs nothing extra.
+   */
+  recall(): PDecimal {
+    return this._with({ spelling: withMethod(this._spelling, 'recall', 'p.decimal') });
+  }
+
+  private _with(change: {
+    min?: number;
+    max?: number;
+    prior?: Prior;
+    adaptive?: AdaptiveOptions;
+    spelling?: Spelling;
+  }): PDecimal {
     return new PDecimal(
       this._step,
-      this._minRaw,
-      this._maxRaw,
-      this._range.declared,
-      options ?? {}
+      change.min ?? this._minRaw,
+      change.max ?? this._maxRaw,
+      change.prior ?? this._range.declared,
+      change.adaptive ?? this._range.adaptive,
+      change.spelling ?? this._spelling
     );
   }
 
   _write(enc: Encoder, value: number): void {
-    this._range.write(enc, this._index(value), () => valueSubject(value));
+    this._methods.write(enc, this._index(value), () => valueSubject(value));
   }
 
   /** The step multiple `value` is, refused unless it is a finite number on the grid. */
@@ -155,7 +210,7 @@ export class PDecimal extends PNode<number> {
   }
 
   _read(dec: Decoder): number {
-    return this._decode(this._range.read(dec));
+    return this._decode(this._methods.read(dec));
   }
 
   /**

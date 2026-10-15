@@ -4,7 +4,14 @@ import { typedArrayKind, type Kind, type TypedArray } from './guards';
 import { checkUnset } from './lattice';
 import type { Cdf } from './weights';
 import type { SequenceAdaptiveOptions } from './adaptive';
-import { Sequence, type SequenceBounds, type Symbols } from './sequence';
+import { withMethod } from './methods';
+import {
+  Sequence,
+  withRepeats,
+  type SequenceBounds,
+  type SequenceSpelling,
+  type Symbols,
+} from './sequence';
 
 /**
  * A typed-array class: its element width and a way to build it on a buffer.
@@ -107,6 +114,10 @@ class Bytes<A extends TypedArray> implements Symbols<A> {
   subject(value: A): string {
     return `Binary length ${value.length}`;
   }
+
+  copy(value: A): A {
+    return value.slice() as A;
+  }
 }
 
 /**
@@ -120,25 +131,32 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
 
   private readonly _type: TypedArrayClass<A>;
   private readonly _bounds: SequenceBounds;
+  /** The declared methods. */
+  private readonly _spelling: SequenceSpelling;
   private readonly _sequence: Sequence<A>;
 
-  constructor(type: TypedArrayClass<A>, bounds: SequenceBounds = {}) {
+  constructor(
+    type: TypedArrayClass<A>,
+    bounds: SequenceBounds = {},
+    spelling: SequenceSpelling = {}
+  ) {
     super();
     this._type = type;
     this._bounds = bounds;
-    this._sequence = new Sequence(new Bytes(type), bounds);
+    this._spelling = spelling;
+    this._sequence = new Sequence(new Bytes(type), bounds, spelling);
     this._kinds = [typedArrayKind(new type(new ArrayBuffer(0)))];
   }
 
   /** A floor on the element count; the prefix then counts up from it. */
   min(n: number): PBinary<A> {
     checkUnset(this._bounds.min, 'p.binary', 'min');
-    return new PBinary(this._type, { ...this._bounds, min: n });
+    return this._with({ ...this._bounds, min: n });
   }
 
   max(n: number): PBinary<A> {
     checkUnset(this._bounds.max, 'p.binary', 'max');
-    return new PBinary(this._type, { ...this._bounds, max: n });
+    return this._with({ ...this._bounds, max: n });
   }
 
   /**
@@ -148,7 +166,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
   length(n: number): PBinary<A> {
     checkUnset(this._bounds.min, 'p.binary', 'min');
     checkUnset(this._bounds.max, 'p.binary', 'max');
-    return new PBinary(this._type, { ...this._bounds, min: n, max: n });
+    return this._with({ ...this._bounds, min: n, max: n });
   }
 
   /**
@@ -157,7 +175,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * count cannot encode.
    */
   cdf(fn: Cdf): PBinary<A> {
-    return new PBinary(this._type, { ...this._bounds, prior: fn });
+    return this._with({ ...this._bounds, prior: fn });
   }
 
   /**
@@ -166,7 +184,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * running total.
    */
   weights(w: readonly number[]): PBinary<A> {
-    return new PBinary(this._type, { ...this._bounds, prior: w });
+    return this._with({ ...this._bounds, prior: w });
   }
 
   /**
@@ -187,10 +205,48 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * cdf; part of the wire format, like the weights.
    */
   adaptive(options?: SequenceAdaptiveOptions): PBinary<A> {
-    return new PBinary(this._type, {
-      ...this._bounds,
-      adaptive: options ?? {},
-    });
+    return this._with({ ...this._bounds, adaptive: options ?? {} });
+  }
+
+  /**
+   * Spell each array after the node's first by the start it shares with
+   * the node's previous array: after the element count, how many of its
+   * leading bytes are the previous array's (every count up to the shorter
+   * byte length alike, or learned under `.adaptive()`), then only the bytes
+   * after them, priced as following that start. Under `.adaptive()` without
+   * it, each array picks the plain spelling or this one by a learned mode.
+   */
+  delta(): PBinary<A> {
+    return this._with(this._bounds, withMethod(this._spelling, 'delta', 'p.binary'));
+  }
+
+  /**
+   * Spell an array this node already wrote in the message by its place
+   * among the distinct arrays it wrote, and a new one as an escape and then
+   * in full: with n arrays seen, a repeat costs log2(n + 1) bits, or under
+   * `.adaptive()` less the more often it recurs. The message's first array
+   * costs nothing extra, and a repeat decodes as a copy of the array first
+   * decoded.
+   */
+  recall(): PBinary<A> {
+    return this._with(this._bounds, withMethod(this._spelling, 'recall', 'p.binary'));
+  }
+
+  /**
+   * Copy a stretch of bytes this node already wrote in the message instead
+   * of spelling it again: each array spends one bit on whether it copies
+   * any, and one that does a bit at each position on whether a copy starts
+   * there, and for a copy how far back it starts and how long it runs.
+   * Under `.adaptive()` the odds learn and arrays copy whether or not this
+   * is declared.
+   */
+  repeats(): PBinary<A> {
+    return this._with(this._bounds, withRepeats(this._spelling, 'p.binary'));
+  }
+
+  /** This node with `bounds` and `spelling`, of the same element type. */
+  private _with(bounds: SequenceBounds, spelling = this._spelling): PBinary<A> {
+    return new PBinary(this._type, bounds, spelling);
   }
 
   _write(enc: Encoder, value: A): void {

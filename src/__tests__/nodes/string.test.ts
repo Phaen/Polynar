@@ -2,7 +2,7 @@
  * `p.string()`: unicode strings, optionally under a charset or a prose model.
  */
 
-import { p, CharSets, Encoder, ProseModels, buildProseModel } from '../../index';
+import { p, CharSets, CorruptInputError, Encoder, ProseModels, buildProseModel } from '../../index';
 import type { PNode, PString } from '../../index';
 import { TEXT_DIRECT_MAX, TEXT_FIRST_RADIX } from '../../nodes/codepoint';
 import { compileProse } from '../../nodes/prose';
@@ -270,11 +270,12 @@ describe('p.string adaptive', () => {
       expect(plain.weights(weights).adaptive().encode(value)).toEqual(
         plain.weights(weights).encode(value)
       );
-      expect(p.string().prose().adaptive().encode(value)).toEqual(p.string().prose().encode(value));
+      const prose = p.string().prose().max(9);
+      expect(prose.adaptive().encode(value)).toEqual(prose.encode(value));
     }
   });
 
-  it('learns its characters without a max, the length staying a term', () => {
+  it('learns its characters without a max, and the length on the magnitude scale', () => {
     const text = 'abababababababababababababababababababab';
     const learner = p.string().adaptive();
     expect(trip(learner, text)).toBe(text);
@@ -475,5 +476,116 @@ describe('p.string adaptive contexts and repeats', () => {
     for (const value of ['abcd👋abcd👋', '👋👋👋👋👋👋👋', 'abcdabcd👋']) {
       expect(trip(p.string().adaptive(), value)).toBe(value);
     }
+  });
+});
+
+describe('p.string methods', () => {
+  /** Sorted GitHub-style URLs, sharing long starts with their neighbours. */
+  const urls = (() => {
+    const random = mulberry32(21);
+    const pick = <T>(list: readonly T[]): T => list[Math.floor(random() * list.length)];
+    const owners = ['facebook', 'microsoft', 'vercel', 'nodejs', 'denoland', 'sveltejs'];
+    const repos = ['react', 'typescript', 'next.js', 'node', 'deno', 'svelte', 'docs'];
+    const list = Array.from({ length: 200 }, () => {
+      const base = `https://github.com/${pick(owners)}/${pick(repos)}`;
+      return random() < 0.5
+        ? `${base}/issues/${Math.floor(random() * 30000)}`
+        : `${base}/blob/main/${pick(['src/index.ts', 'README.md', 'package.json'])}`;
+    });
+    return list.sort();
+  })();
+  const size = (node: PNode<string>, values: string[]) => p.array(node).encode(values).length;
+
+  it('spells a URL list after the start each shares with the one before, far below plain', () => {
+    expect(trip(p.array(p.string().delta()), urls)).toEqual(urls);
+    expect(size(p.string().delta(), urls)).toBeLessThan(size(p.string(), urls) / 2);
+    for (const node of [
+      p.string().adaptive(),
+      p.string().adaptive().delta(),
+      p.string().repeats(),
+      p.string().delta().repeats(),
+      p.string().prose().delta(),
+      p.string().charset(CharSets.asciiSafe).delta(),
+    ]) {
+      expect(trip(p.array(node), urls)).toEqual(urls);
+    }
+    expect(size(p.string().repeats(), urls)).toBeLessThan(size(p.string(), urls) / 2);
+    expect(size(p.string().adaptive(), urls)).toBeLessThan(size(p.string().delta(), urls));
+  });
+
+  it('keeps its first value, and every value without the methods, as plain', () => {
+    expect(p.string().delta().encode('hello')).toEqual(p.string().encode('hello'));
+    expect(p.string().recall().encode('hello')).toEqual(p.string().encode('hello'));
+    expect(p.string().max(9).adaptive().delta().encode('hello')).toEqual(
+      p.string().max(9).adaptive().encode('hello')
+    );
+    const values = ['ab', 'ac', 'ab'];
+    expect(p.array(p.string().max(3).min(1).charset('abc')).encode(values)).toEqual(
+      p.array(p.string().charset('abc').min(1).max(3)).encode(values)
+    );
+  });
+
+  it('spells a string by the start it shares, the characters after it priced as following it', () => {
+    // 'abc' then 'abd': the length 3 of at most 4, then 'ab' shared of
+    // three, then 'd'.
+    const node = p.object({ a: p.string().charset('abcd').max(4).delta(), b: p.string() });
+    const twice = p.array(p.string().charset('abcd').max(4).delta()).length(2);
+    const enc = new Encoder();
+    enc.compose(3, 5);
+    for (const c of [0, 1, 2]) enc.compose(c, 4);
+    enc.compose(3, 5);
+    enc.compose(2, 4);
+    enc.compose(3, 4);
+    expect(twice.encode(['abc', 'abd'])).toEqual(enc.output());
+    expect(trip(node, { a: 'abc', b: 'x' })).toEqual({ a: 'abc', b: 'x' });
+  });
+
+  it('recalls a string it already wrote', () => {
+    const values = ['https://example.com/a', 'https://example.com/b', 'https://example.com/a'];
+    expect(trip(p.array(p.string().recall()), values)).toEqual(values);
+    expect(trip(p.array(p.string().adaptive().recall().delta()), values)).toEqual(values);
+    expect(size(p.string().recall(), values)).toBeLessThan(size(p.string(), values));
+  });
+
+  it('keeps its methods through every later option, each declared once', () => {
+    const values = ['abc', 'abd', 'abc', 'xbc'];
+    const late = p.string().delta().recall().repeats().max(9).min(1).charset('abcdx');
+    const early = p.string().charset('abcdx').min(1).max(9).repeats().recall().delta();
+    expect(p.array(late).encode(values)).toEqual(p.array(early).encode(values));
+    const kept = [
+      p.string().delta().length(3),
+      p.string().delta().max(5).weights([1, 1, 1, 1, 1, 1]),
+      p
+        .string()
+        .delta()
+        .max(5)
+        .cdf((n) => n),
+      p.string().delta().prose(),
+    ];
+    for (const node of kept) {
+      expect(p.array(node).encode(['abc', 'abd'])).not.toEqual(
+        p.array(p.string().length(3)).encode(['abc', 'abd'])
+      );
+    }
+    for (const method of ['delta', 'recall', 'repeats'] as const) {
+      expect(() => p.string()[method]()[method]()).toThrow(
+        new TypeError(`p.string ${method} is already set`)
+      );
+    }
+  });
+
+  it('learns the length without a max, a long run of equal lengths costing little', () => {
+    const values = Array.from({ length: 100 }, (_, i) => `${i % 10}`.repeat(40));
+    const learner = p.array(p.string().adaptive());
+    expect(trip(learner, values)).toEqual(values);
+    expect(learner.encode(values).length).toBeLessThan(
+      p.array(p.string()).encode(values).length / 10
+    );
+  });
+
+  it('refuses a truncated delta', () => {
+    const node = p.array(p.string().delta());
+    const bytes = node.encode(urls.slice(0, 5));
+    expect(() => node.decode(bytes.subarray(0, bytes.length - 3))).toThrow(CorruptInputError);
   });
 });

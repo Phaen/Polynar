@@ -5,6 +5,7 @@
 import { p, Encoder, CorruptInputError } from '../../index';
 import { mulberry32, trip } from '../support';
 import { decimalPlaces } from '../../nodes/decimal';
+import { STATIC_MAGNITUDE } from '../../nodes/magnitude';
 
 describe('Schema decimal', () => {
   it.each([0, 0.07, 0.29, 3.14, 99.99, 100])(
@@ -235,12 +236,12 @@ describe('p.decimal adaptive', () => {
     );
   });
 
-  it('learns a skew, at most a byte over the static prior of it', () => {
+  it('learns a skew, its mode symbols at most a twentieth over the static prior of it', () => {
     const values = run(2000, 3);
     const size = (node: typeof plain) => p.array(node).encode(values).length;
     expect(size(plain.adaptive())).toBeLessThan(size(plain));
     expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
-      size(plain.weights(weights)) + 1
+      Math.ceil(size(plain.weights(weights)) * 1.05)
     );
   });
 
@@ -265,11 +266,86 @@ describe('p.decimal adaptive', () => {
         'p.decimal adaptive prior 32 and window 1024 overflow with weights totalling 35184372088847'
       )
     );
-    expect(() => p.decimal(0.5).max(7.5).adaptive()).toThrow(
-      new TypeError('p.decimal adaptive requires both bounds')
-    );
     const cdf = new TypeError('p.decimal adaptive takes weights, not a cdf');
     expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
     expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
+  });
+});
+
+describe('p.decimal methods', () => {
+  const prices = [9.99, 10.01, 10.05, 10.02, 9.97, 10.01];
+
+  it('spells each price after the first as its difference in steps', () => {
+    const node = p.array(p.decimal(0.01).min(0).max(100).delta()).length(prices.length);
+    const model = new Encoder();
+    model.compose(999, 10001);
+    for (let i = 1; i < prices.length; i++) {
+      STATIC_MAGNITUDE.write(
+        model,
+        Math.round(prices[i] * 100),
+        Math.round(prices[i - 1] * 100),
+        0,
+        10000
+      );
+    }
+    const bytes = node.encode(prices);
+    expect(bytes).toEqual(model.output());
+    expect(node.decode(bytes)).toEqual(prices);
+  });
+
+  it('round-trips with delta, recall and adaptive on any grid', () => {
+    const random = mulberry32(21);
+    const values = Array.from({ length: 300 }, () => Math.round(random() * 40) / 4 - 3);
+    for (const node of [
+      p.decimal(0.25).delta(),
+      p.decimal(0.25).min(-5).delta().recall(),
+      p.decimal(0.25).recall(),
+      p.decimal(0.25).adaptive(),
+      p.decimal(0.25).max(100).adaptive().recall(),
+      p.decimal(0.25).min(-5).max(10).adaptive().delta(),
+    ]) {
+      expect(trip(p.array(node), values)).toEqual(values);
+    }
+    const fives = values.map((v) => Math.round(v) * 5 + 0);
+    expect(trip(p.array(p.decimal(5).adaptive()), fives)).toEqual(fives);
+  });
+
+  it('carries its methods through every rebuild, set once, without weights', () => {
+    const declared = p.array(p.decimal(0.5).min(0).max(9).delta().recall());
+    const values = [1.5, 2, 1.5, 9];
+    for (const node of [
+      p.decimal(0.5).delta().recall().min(0).max(9),
+      p.decimal(0.5).max(9).recall().delta().min(0),
+    ]) {
+      expect(p.array(node).encode(values)).toEqual(declared.encode(values));
+    }
+    expect(p.decimal(0.5).min(0).max(9).delta()._radix).toBeUndefined();
+    expect(p.decimal(0.5).min(0).max(9).recall()._fromDigit).toBeUndefined();
+    expect(() => p.decimal(0.5).delta().delta()).toThrow(
+      new TypeError('p.decimal delta is already set')
+    );
+    expect(() => p.decimal(0.5).recall().recall()).toThrow(
+      new TypeError('p.decimal recall is already set')
+    );
+    expect(() => p.decimal(0.5).min(0).max(0.5).weights([1, 1]).delta()).toThrow(
+      new TypeError('p.decimal delta takes no weights')
+    );
+    expect(() =>
+      p
+        .decimal(0.5)
+        .min(0)
+        .max(0.5)
+        .delta()
+        .cdf((v) => v)
+    ).toThrow(new TypeError('p.decimal delta takes no cdf'));
+  });
+
+  it('reads a step multiple whose product rounds as corrupt', () => {
+    // A difference far past the grid's exact range lands off the step.
+    const bytes = p
+      .array(p.int().delta())
+      .length(2)
+      .encode([0, 2 ** 52 + 1]);
+    expect(() => p.array(p.decimal(3).delta()).length(2).decode(bytes)).toThrow(CorruptInputError);
   });
 });

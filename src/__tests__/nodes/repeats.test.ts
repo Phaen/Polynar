@@ -12,6 +12,7 @@ import {
   MIN_MATCH,
   REPS,
   REP_MIN,
+  EVEN_REPEATS,
   Repeats,
   type FlagContext,
   readBucketed,
@@ -562,5 +563,126 @@ describe('Repeats', () => {
       expect(() => repeats.writeMatch(enc, match, 5, 8)).toThrow(error);
       expect(() => repeats.priceMatch(enc, match, 5, 8, 0, into)).toThrow(error);
     }
+  });
+});
+
+describe('Repeats priceUsed', () => {
+  it('prices the branch as its table would code it, learning nothing', () => {
+    const repeats = new Repeats('w');
+    const enc = new Encoder();
+    repeats.writeUsed(enc, true);
+    repeats.writeUsed(enc, true);
+    // Two members at prior 2, member 1 learned twice: 2 + 2·2 of 4 + 2·2.
+    for (const [used, freq] of [
+      [true, 6],
+      [false, 2],
+    ] as const) {
+      const priced = new ScaledRatio();
+      repeats.priceUsed(enc, used, priced);
+      const hand = new ScaledRatio();
+      hand.multiply(freq, 8);
+      expectSame(priced, hand);
+    }
+    const again = new ScaledRatio();
+    repeats.priceUsed(enc, true, again);
+    const hand = new ScaledRatio();
+    hand.multiply(6, 8);
+    expectSame(again, hand);
+  });
+});
+
+describe('EVEN_REPEATS', () => {
+  it('names no cached distance', () => {
+    expect(EVEN_REPEATS.cached).toBe(false);
+  });
+
+  it('spells the branch and every flag as one even bit, whatever the context', () => {
+    const enc = new Encoder();
+    EVEN_REPEATS.writeUsed(enc, true);
+    EVEN_REPEATS.writeUsed(enc, false);
+    EVEN_REPEATS.writeFlag(enc, true, 2);
+    EVEN_REPEATS.writeFlag(enc, false, 1);
+    const hand = new Encoder();
+    for (const digit of [1, 0, 1, 0]) {
+      hand.compose(digit, 2);
+    }
+    expect(enc.output()).toEqual(hand.output());
+    const dec = new Decoder(enc.output());
+    expect([
+      EVEN_REPEATS.readUsed(dec),
+      EVEN_REPEATS.readUsed(dec),
+      EVEN_REPEATS.readFlag(dec, 0),
+      EVEN_REPEATS.readFlag(dec, 2),
+    ]).toEqual([true, false, true, false]);
+    dec.finalize();
+    for (const price of [
+      (into: ScaledRatio) => EVEN_REPEATS.priceUsed(enc, true, into),
+      (into: ScaledRatio) => EVEN_REPEATS.priceFlag(enc, false, 1, into),
+    ]) {
+      const priced = new ScaledRatio();
+      price(priced);
+      const half = new ScaledRatio();
+      half.multiply(1, 2);
+      expectSame(priced, half);
+    }
+  });
+
+  it('spells a match as its distance and length, each an even bucket and offset', () => {
+    // Distance 17 of 40: bucket 4 of 6, offset 1 of 16; length 9 of 30 as
+    // 7 of 28: bucket 2 of 5, offset 3 of 4.
+    const enc = new Encoder();
+    EVEN_REPEATS.writeMatch(enc, { distance: 17, length: 9 }, 40, 30);
+    const hand = new Encoder();
+    for (const [digit, radix] of [
+      [4, 6],
+      [1, 16],
+      [2, 5],
+      [3, 4],
+    ]) {
+      hand.compose(digit, radix);
+    }
+    expect(enc.output()).toEqual(hand.output());
+    const priced = new ScaledRatio();
+    EVEN_REPEATS.priceMatch(enc, { distance: 17, length: 9 }, 40, 30, 2, priced);
+    const odds = new ScaledRatio();
+    odds.multiply(1, 2 * 6 * 16 * 5 * 4);
+    expectSame(priced, odds);
+  });
+
+  it('round-trips random matches under random bounds, the cache unread', () => {
+    const random = mulberry32(5);
+    const draw = (lo: number, hi: number): number => lo + Math.floor(random() * (hi - lo + 1));
+    const cases = Array.from({ length: 300 }, () => {
+      const maxDistance = draw(1, 2 ** draw(0, 32) - 1 || 1);
+      const maxLength = draw(MIN_MATCH, Math.max(MIN_MATCH, 2 ** draw(2, 32) - 1));
+      const match = { distance: draw(1, maxDistance), length: draw(MIN_MATCH, maxLength) };
+      return { match, maxDistance, maxLength };
+    });
+    const enc = new Encoder();
+    for (const { match, maxDistance, maxLength } of cases) {
+      EVEN_REPEATS.writeMatch(enc, match, maxDistance, maxLength);
+    }
+    const dec = new Decoder(enc.output());
+    for (const { match, maxDistance, maxLength } of cases) {
+      expect(EVEN_REPEATS.readMatch(dec, maxDistance, maxLength, [])).toEqual(match);
+    }
+    dec.finalize();
+  });
+
+  it('refuses a match at a cached distance, and bounds and matches outside them', () => {
+    const enc = new Encoder();
+    const rep = { distance: 1, length: 3, rep: 0 };
+    expect(() => EVEN_REPEATS.writeMatch(enc, rep, 4, 4)).toThrow(
+      new TypeError('Repeats at fixed odds name no cached distance')
+    );
+    expect(() => EVEN_REPEATS.priceMatch(enc, rep, 4, 4, 0, new ScaledRatio())).toThrow(
+      new TypeError('Repeats at fixed odds name no cached distance')
+    );
+    expect(() => EVEN_REPEATS.writeMatch(enc, { distance: 5, length: 3 }, 4, 4)).toThrow(
+      new RangeError('Match distance 5 is above the maximum 4')
+    );
+    expect(() => EVEN_REPEATS.readMatch(new Decoder(new Uint8Array(4)), 0, 4, [])).toThrow(
+      new RangeError('Maximum distance 0 is below the minimum 1')
+    );
   });
 });

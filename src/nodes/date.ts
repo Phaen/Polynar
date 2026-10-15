@@ -2,9 +2,10 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { isDate, type Kind } from './guards';
 import { PNode } from './base';
 import { describe } from './path';
-import { IndexRange, checkUnset } from './lattice';
+import { IndexMethods, IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 import type { AdaptiveOptions } from './adaptive';
+import { withMethod, type Spelling } from './methods';
 
 export type DateUnit =
   | 'millisecond'
@@ -136,6 +137,8 @@ export class PDate extends PNode<Date> {
   private readonly _calendar: Calendar;
   /** Bucket indices on the UTC calendar, the epoch's bucket at 0. */
   private readonly _range: IndexRange;
+  private readonly _spelling: Spelling;
+  private readonly _methods: IndexMethods;
   declare readonly _radix?: number;
 
   constructor(
@@ -144,7 +147,8 @@ export class PDate extends PNode<Date> {
     unit: DateUnit = 'millisecond',
     step = 1,
     prior?: Prior,
-    adaptive?: AdaptiveOptions
+    adaptive?: AdaptiveOptions,
+    spelling: Spelling = {}
   ) {
     super();
     this._min = isDate(min) ? min.getTime() : min;
@@ -177,12 +181,15 @@ export class PDate extends PNode<Date> {
     this._range = new IndexRange('p.date', lo, hi, prior, adaptive, (b) =>
       iso(this._calendar.start(b))
     );
+    this._spelling = spelling;
+    this._methods = new IndexMethods(this._range, spelling, 'p.date');
     // Bucket starts rise with the index and none starts after its bound,
     // which lies within the Date range, so when the first bucket starts
     // within it every bucket does, and reading a digit cannot fail. Only a
     // first bucket straddling the earliest Date starts before it.
     const fromDigit = this._range.fromDigit;
     if (
+      this._methods.plain &&
       lo !== undefined &&
       fromDigit !== undefined &&
       !isNaN(new Date(this._calendar.start(lo)).getTime())
@@ -240,14 +247,44 @@ export class PDate extends PNode<Date> {
    * out, and raised to the number of values it counts when smaller). From its
    * second value on, the node spends one bit to stay static, or a few to name
    * the learning rate that paid off. Takes weights, not a cdf; part of the wire
-   * format, like the weights.
+   * format, like the weights. A range unbounded or wider than 65536 buckets
+   * learns on the magnitude scale instead: buckets from the min's, else the
+   * max's, else the epoch's, by bit-length class. From the second value on,
+   * unless `.delta()` is declared, each value also spends a learned mode
+   * symbol naming whether it is spelled plainly or as its difference from
+   * the previous value, whichever the encoder prices cheaper.
    */
   adaptive(options?: AdaptiveOptions): PDate {
     return this._with({ adaptive: options ?? {} });
   }
 
+  /**
+   * Spell every date after the node's first in the message as its
+   * difference in buckets from the previous one: its side, unless the
+   * bounds rule one out, the bit-length class of its size among the classes
+   * the bounds reach, equally likely or learned under `.adaptive()`, then
+   * the low bits. Timestamps a few seconds apart cost a few bits plus the
+   * gap's own, bounded or not. The node's first date costs its plain
+   * spelling. Takes no weights or cdf.
+   */
+  delta(): PDate {
+    return this._with({ spelling: withMethod(this._spelling, 'delta', 'p.date') });
+  }
+
+  /**
+   * Spell a date this node already wrote in the message by its place among
+   * the distinct buckets it wrote, and a new one as an escape and then as
+   * the node otherwise spells it: with n buckets seen, a repeat costs
+   * log2(n + 1) bits, or under `.adaptive()` less the more often it
+   * recurs. The message's first date costs nothing extra; a repeat decodes
+   * as a new Date.
+   */
+  recall(): PDate {
+    return this._with({ spelling: withMethod(this._spelling, 'recall', 'p.date') });
+  }
+
   _write(enc: Encoder, value: Date): void {
-    this._range.write(enc, this._bucket(value), () => `Date ${value.toISOString()}`);
+    this._methods.write(enc, this._bucket(value), () => `Date ${value.toISOString()}`);
   }
 
   /** The bucket of `value`, refused when it is invalid or the decoder could not rebuild it. */
@@ -267,7 +304,7 @@ export class PDate extends PNode<Date> {
   }
 
   _read(dec: Decoder): Date {
-    const bucket = this._range.read(dec);
+    const bucket = this._methods.read(dec);
     const date = new Date(this._calendar.start(bucket));
     // A bucket starting beyond the ±8.64e15 ms Date range can only come from
     // a corrupted input or from a bucket that straddles the range's edge.
@@ -284,6 +321,7 @@ export class PDate extends PNode<Date> {
     step?: number;
     prior?: Prior;
     adaptive?: AdaptiveOptions;
+    spelling?: Spelling;
   }): PDate {
     return new PDate(
       change.min ?? this._min,
@@ -291,7 +329,8 @@ export class PDate extends PNode<Date> {
       change.unit ?? this._unit,
       change.step ?? this._step,
       change.prior ?? this._range.declared,
-      change.adaptive ?? this._range.adaptive
+      change.adaptive ?? this._range.adaptive,
+      change.spelling ?? this._spelling
     );
   }
 }

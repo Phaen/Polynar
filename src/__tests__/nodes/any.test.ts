@@ -55,9 +55,9 @@ const LEARNING_VALUE = {
   big: -12n,
 };
 const LEARNING_BYTES = [
-  8, 32, 150, 178, 144, 32, 204, 66, 161, 84, 232, 186, 170, 114, 194, 36, 99, 22, 25, 96, 71, 158,
-  171, 60, 149, 37, 60, 82, 145, 41, 34, 44, 86, 72, 138, 7, 106, 169, 212, 217, 28, 139, 96, 244,
-  8,
+  235, 72, 34, 158, 160, 65, 67, 2, 31, 152, 211, 5, 183, 234, 88, 81, 239, 153, 108, 94, 52, 81,
+  106, 226, 242, 71, 187, 213, 154, 133, 163, 206, 197, 116, 192, 55, 12, 138, 154, 40, 135, 73, 42,
+  5,
 ];
 
 /** The tags of the kinds the hand-built messages use. */
@@ -266,12 +266,11 @@ describe('Schema any', () => {
     const node = p.any().adaptive();
     const recalled = node.encode(new Map([['hello', 'hello']]));
     expect(recalled.length).toBeLessThan(node.encode(new Map([['hello', 'world']])).length);
-    // Keys and values share what their characters learn, which below the
-    // warm-up of contexts and repeats depends on the counts alone, so only
-    // recall could tell these two apart.
+    // A record key isn't recalled among string values, but keys and values
+    // share one spelling, so a value repeating its key shares its whole start.
     const record = { hello: 'hello' };
     expect(trip(node, record)).toEqual(record);
-    expect(node.encode(record).length).toBe(node.encode({ hello: 'olleh' }).length);
+    expect(node.encode(record).length).toBeLessThan(node.encode({ hello: 'olleh' }).length);
   });
 
   it('round-trips Maps and Sets of any values, keys included', () => {

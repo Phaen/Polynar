@@ -248,11 +248,39 @@ function checkMatch(match: Match, maxDistance: number, maxLength: number): void 
 }
 
 /**
+ * How a sequence spells its repeats: whether a value spells any, the match
+ * flag at each position a repeat is decodable at, and each match. `price*`
+ * multiply into `into` the probability the matching `write*` would give its
+ * symbols now, learning nothing.
+ */
+export interface RepeatCoding {
+  /** Whether a match may name one of the cached distances again. */
+  readonly cached: boolean;
+  writeUsed(enc: Encoder, used: boolean): void;
+  readUsed(dec: Decoder): boolean;
+  priceUsed(side: Encoder | Decoder, used: boolean, into: ScaledRatio): void;
+  writeFlag(enc: Encoder, match: boolean, context: FlagContext): void;
+  readFlag(dec: Decoder, context: FlagContext): boolean;
+  priceFlag(side: Encoder | Decoder, match: boolean, context: FlagContext, into: ScaledRatio): void;
+  writeMatch(enc: Encoder, match: Match, maxDistance: number, maxLength: number): void;
+  readMatch(dec: Decoder, maxDistance: number, maxLength: number, reps: readonly number[]): Match;
+  priceMatch(
+    side: Encoder | Decoder,
+    match: Match,
+    maxDistance: number,
+    maxLength: number,
+    context: FlagContext,
+    into: ScaledRatio
+  ): void;
+}
+
+/**
  * The repeat tables of one node: the per-value branch, the match flag in
  * each flag context, the match kind, distance buckets, length buckets, and
  * the length buckets of a match at a cached distance.
  */
-export class Repeats {
+export class Repeats implements RepeatCoding {
+  readonly cached = true;
   private readonly used: AdaptiveTable;
   private readonly flags: readonly AdaptiveTable[];
   /** Members 0 to `REPS - 1` name a cached distance, `REPS` a new one. */
@@ -284,6 +312,12 @@ export class Repeats {
   /** Reads the branch written by `writeUsed`. */
   readUsed(dec: Decoder): boolean {
     return this.used.read(dec) === 1;
+  }
+
+  /** Multiplies the probability the branch would be written with now into `into`, learning nothing. */
+  priceUsed(side: Encoder | Decoder, used: boolean, into: ScaledRatio): void {
+    const [, freq, total] = this.used.bucket(side, used ? 1 : 0);
+    into.multiply(freq, total);
   }
 
   /** Writes whether a match starts at this position, through the flag table of `context`. */
@@ -385,3 +419,88 @@ export class Repeats {
     priceBucketed(side, this.length, match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1, into);
   }
 }
+
+/** Writes `v`, an integer in `[1, max]`, as its log2 bucket among those `max` allows and its offset in the bucket, each uniformly. */
+function writeEven(enc: Encoder, v: number, max: number): void {
+  checkMax(max);
+  checkInteger(v, 1, max, 'Value');
+  const b = bucketOf(v);
+  enc.compose(b, bucketOf(max) + 1);
+  enc.compose(v - 2 ** b, widthOf(b, max));
+}
+
+/** Reads a value written by `writeEven` under the same `max`. */
+function readEven(dec: Decoder, max: number): number {
+  checkMax(max);
+  const b = dec.parse(bucketOf(max) + 1);
+  return 2 ** b + dec.parse(widthOf(b, max));
+}
+
+/** Multiplies the probability `writeEven` gives `v` into `into`. */
+function priceEven(v: number, max: number, into: ScaledRatio): void {
+  into.multiply(1, bucketOf(max) + 1);
+  into.multiply(1, widthOf(bucketOf(v), max));
+}
+
+/** Refuses a match naming a cached distance, which fixed-odds repeats never do. */
+function checkNew(match: Match, maxDistance: number, maxLength: number): void {
+  checkMatch(match, maxDistance, maxLength);
+  if (match.rep !== undefined) {
+    throw new TypeError('Repeats at fixed odds name no cached distance');
+  }
+}
+
+/**
+ * Repeats at fixed odds, for a node that declares them without learning:
+ * the branch and every flag one even bit, a match its distance and length
+ * as `Repeats` codes a new distance's, each bucket among those the bound
+ * allows equally likely. There is no cache of distances, so every match
+ * names its distance.
+ */
+export const EVEN_REPEATS: RepeatCoding = {
+  cached: false,
+
+  writeUsed(enc, used) {
+    enc.compose(used ? 1 : 0, 2);
+  },
+
+  readUsed(dec) {
+    return dec.parse(2) === 1;
+  },
+
+  priceUsed(_side, _used, into) {
+    into.multiply(1, 2);
+  },
+
+  writeFlag(enc, match) {
+    enc.compose(match ? 1 : 0, 2);
+  },
+
+  readFlag(dec) {
+    return dec.parse(2) === 1;
+  },
+
+  priceFlag(_side, _match, _context, into) {
+    into.multiply(1, 2);
+  },
+
+  writeMatch(enc, match, maxDistance, maxLength) {
+    checkNew(match, maxDistance, maxLength);
+    writeEven(enc, match.distance, maxDistance);
+    writeEven(enc, match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1);
+  },
+
+  readMatch(dec, maxDistance, maxLength) {
+    checkBounds(maxDistance, maxLength);
+    const distance = readEven(dec, maxDistance);
+    const length = readEven(dec, maxLength - MIN_MATCH + 1) + MIN_MATCH - 1;
+    return { distance, length };
+  },
+
+  priceMatch(_side, match, maxDistance, maxLength, _context, into) {
+    checkNew(match, maxDistance, maxLength);
+    into.multiply(1, 2);
+    priceEven(match.distance, maxDistance, into);
+    priceEven(match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1, into);
+  },
+};

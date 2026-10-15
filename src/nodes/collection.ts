@@ -6,6 +6,8 @@ import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattic
 import type { Cdf } from './weights';
 import type { AdaptiveOptions } from './adaptive';
 import { checkOrdinal, ordinalDigits, readOrdinal, writeOrdinal, type Order } from './ordinal';
+import { withMethod, type Spelling } from './methods';
+import { Recall, copy, identity } from './recall';
 
 /** The keys of an unordered collection: distinct by construction, so a set of digits. */
 const UNORDERED: Order = { unordered: true, unique: true };
@@ -76,13 +78,17 @@ export class PCollection<T> extends PNode<T> {
   private readonly _count: IndexRange;
   /** Set by `.unordered()`. */
   private readonly _unordered?: true;
+  private readonly _spelling: Spelling;
+  /** Set by `.recall()`: learned when the count is adaptive. */
+  private readonly _recall?: Recall<T>;
 
   constructor(
     layout: Layout<T>,
     key: PNode<any>,
     value?: PNode<any>,
     bounds: LengthBounds = {},
-    unordered?: true
+    unordered?: true,
+    spelling: Spelling = {}
   ) {
     super();
     this._layout = layout;
@@ -92,6 +98,10 @@ export class PCollection<T> extends PNode<T> {
     this._count = lengthRange(bounds, layout.who, 'count');
     this._kinds = [layout.kind];
     this._unordered = unordered;
+    this._spelling = spelling;
+    if (spelling.recall !== undefined) {
+      this._recall = new Recall(bounds.adaptive !== undefined, copy);
+    }
   }
 
   /** Require at least `n` entries. A raised floor packs the count denser. */
@@ -162,8 +172,30 @@ export class PCollection<T> extends PNode<T> {
     return this._with(this._bounds, true);
   }
 
+  /**
+   * Spell a collection this node already wrote in the message by its place
+   * among the distinct collections it wrote, and a new one as an escape and
+   * then in full: with n collections seen, a repeat costs log2(n + 1) bits,
+   * or under `.adaptive()` less the more often it recurs. The message's
+   * first collection costs nothing extra. Collections the schema writes the
+   * same way are the same collection, and a repeat decodes as a copy
+   * of the collection first decoded.
+   */
+  recall(): PCollection<T> {
+    const spelling = withMethod(this._spelling, 'recall', this._layout.who);
+    return new PCollection<T>(
+      this._layout,
+      this._key,
+      this._value,
+      this._bounds,
+      this._unordered,
+      spelling
+    );
+  }
+
   private _with(bounds: LengthBounds, unordered = this._unordered): PCollection<T> {
-    return new PCollection<T>(this._layout, this._key, this._value, bounds, unordered);
+    const { _layout, _key, _value, _spelling } = this;
+    return new PCollection<T>(_layout, _key, _value, bounds, unordered, _spelling);
   }
 
   /**
@@ -175,6 +207,22 @@ export class PCollection<T> extends PNode<T> {
   }
 
   _write(enc: Encoder, value: T): void {
+    const recall = this._recall;
+    if (recall === undefined) {
+      this._spell(enc, value);
+    } else {
+      const key = identity((alone) => this._spell(alone, value));
+      recall.write(enc, key, () => this._spell(enc, value));
+    }
+  }
+
+  _read(dec: Decoder): T {
+    const recall = this._recall;
+    return recall === undefined ? this._unspell(dec) : recall.read(dec, () => this._unspell(dec));
+  }
+
+  /** Writes the collection in full. */
+  private _spell(enc: Encoder, value: T): void {
     const { name } = this._layout;
     const size = this._layout.size(value);
     this._count.write(enc, size, () => `${name} size ${size}`);
@@ -207,7 +255,8 @@ export class PCollection<T> extends PNode<T> {
     }
   }
 
-  _read(dec: Decoder): T {
+  /** Reads a collection `_spell` wrote. */
+  private _unspell(dec: Decoder): T {
     const count = this._count.read(dec);
     const entries = new Map<unknown, unknown>();
     if (this._unordered !== undefined) {

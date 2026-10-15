@@ -23,7 +23,14 @@ import {
   parseCodePointTail,
 } from './codepoint';
 import { ProseModels, compileProse, proseContext, type ProseModel, type ProseTable } from './prose';
-import { Sequence, type SequenceBounds, type Symbols } from './sequence';
+import { withMethod } from './methods';
+import {
+  Sequence,
+  withRepeats,
+  type SequenceBounds,
+  type SequenceSpelling,
+  type Symbols,
+} from './sequence';
 
 /** What every text alphabet shares: a length prefix counting UTF-16 code units. */
 abstract class Text {
@@ -43,6 +50,11 @@ abstract class Text {
 
   subject(value: string): string {
     return `String length ${value.length}`;
+  }
+
+  // Every alphabet spells distinct strings apart, so a string is its own identity.
+  identity(value: string): string {
+    return value;
   }
 }
 
@@ -235,12 +247,20 @@ export class PString extends PNode<string> {
   private readonly _alphabet?: Alphabet;
   /** Prose model replacing the flat ladder, as given. */
   private readonly _prose?: ProseModel;
+  /** The declared methods. */
+  private readonly _spelling: SequenceSpelling;
   /** The length and the characters, in the ladder, the prose model or the charset. */
   private readonly _sequence: Sequence<string>;
 
-  constructor(bounds: SequenceBounds = {}, charset?: Charset, prose?: ProseModel) {
+  constructor(
+    bounds: SequenceBounds = {},
+    charset?: Charset,
+    prose?: ProseModel,
+    spelling: SequenceSpelling = {}
+  ) {
     super();
     this._bounds = bounds;
+    this._spelling = spelling;
     let symbols: Symbols<string> = new Ladder();
     if (prose !== undefined) {
       this._prose = prose;
@@ -256,18 +276,28 @@ export class PString extends PNode<string> {
       this._alphabet = new Alphabet(charset, 1);
       symbols = new CharsetText(this._alphabet);
     }
-    this._sequence = new Sequence(symbols, bounds);
+    this._sequence = new Sequence(symbols, bounds, spelling);
+  }
+
+  /** This node with `bounds`, `charset` and `prose`, keeping its methods. */
+  private _with(
+    bounds: SequenceBounds,
+    charset = this._alphabet?.charset,
+    prose = this._prose,
+    spelling = this._spelling
+  ): PString {
+    return new PString(bounds, charset, prose, spelling);
   }
 
   /** A floor on the length; the prefix then counts up from it. */
   min(n: number): PString {
     checkUnset(this._bounds.min, 'p.string', 'min');
-    return new PString({ ...this._bounds, min: n }, this._alphabet?.charset, this._prose);
+    return this._with({ ...this._bounds, min: n });
   }
 
   max(n: number): PString {
     checkUnset(this._bounds.max, 'p.string', 'max');
-    return new PString({ ...this._bounds, max: n }, this._alphabet?.charset, this._prose);
+    return this._with({ ...this._bounds, max: n });
   }
 
   /**
@@ -277,7 +307,7 @@ export class PString extends PNode<string> {
   length(n: number): PString {
     checkUnset(this._bounds.min, 'p.string', 'min');
     checkUnset(this._bounds.max, 'p.string', 'max');
-    return new PString({ ...this._bounds, min: n, max: n }, this._alphabet?.charset, this._prose);
+    return this._with({ ...this._bounds, min: n, max: n });
   }
 
   /**
@@ -286,7 +316,7 @@ export class PString extends PNode<string> {
    * length cannot encode.
    */
   cdf(fn: Cdf): PString {
-    return new PString({ ...this._bounds, prior: fn }, this._alphabet?.charset, this._prose);
+    return this._with({ ...this._bounds, prior: fn });
   }
 
   /**
@@ -295,7 +325,7 @@ export class PString extends PNode<string> {
    * total.
    */
   weights(w: readonly number[]): PString {
-    return new PString({ ...this._bounds, prior: w }, this._alphabet?.charset, this._prose);
+    return this._with({ ...this._bounds, prior: w });
   }
 
   /**
@@ -316,15 +346,11 @@ export class PString extends PNode<string> {
    * takes weights, not a cdf; part of the wire format, like the weights.
    */
   adaptive(options?: SequenceAdaptiveOptions): PString {
-    return new PString(
-      { ...this._bounds, adaptive: options ?? {} },
-      this._alphabet?.charset,
-      this._prose
-    );
+    return this._with({ ...this._bounds, adaptive: options ?? {} });
   }
 
   charset(c: Charset): PString {
-    return new PString(this._bounds, c, this._prose);
+    return this._with(this._bounds, c);
   }
 
   /**
@@ -335,7 +361,45 @@ export class PString extends PNode<string> {
    * cost. English by default; any other `ProseModel` swaps the matrix.
    */
   prose(model: ProseModel = ProseModels.english): PString {
-    return new PString(this._bounds, this._alphabet?.charset, model);
+    return this._with(this._bounds, this._alphabet?.charset, model);
+  }
+
+  /**
+   * Spell each string after the node's first by the start it shares with
+   * the node's previous string: after the length, how many of its leading
+   * characters are the previous string's (every count up to the shorter
+   * length alike, or learned under `.adaptive()`), then only the characters
+   * after them, priced as following that start. Suits sorted keys, paths
+   * and URLs. Under `.adaptive()` without it, each string picks the plain
+   * spelling or this one by a learned mode.
+   */
+  delta(): PString {
+    const spelling = withMethod(this._spelling, 'delta', 'p.string');
+    return this._with(this._bounds, undefined, undefined, spelling);
+  }
+
+  /**
+   * Spell a string this node already wrote in the message by its place
+   * among the distinct strings it wrote, and a new one as an escape and
+   * then in full: with n strings seen, a repeat costs log2(n + 1) bits, or
+   * under `.adaptive()` less the more often it recurs. The message's first
+   * string costs nothing extra.
+   */
+  recall(): PString {
+    const spelling = withMethod(this._spelling, 'recall', 'p.string');
+    return this._with(this._bounds, undefined, undefined, spelling);
+  }
+
+  /**
+   * Copy a stretch of characters this node already wrote in the message
+   * instead of spelling it again: each string spends one bit on whether it
+   * copies any, and one that does a bit at each position on whether a copy
+   * starts there, and for a copy how far back it starts and how long it
+   * runs. Under `.adaptive()` the odds learn and strings copy whether or
+   * not this is declared.
+   */
+  repeats(): PString {
+    return this._with(this._bounds, undefined, undefined, withRepeats(this._spelling, 'p.string'));
   }
 
   _write(enc: Encoder, value: string): void {

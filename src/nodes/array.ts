@@ -13,6 +13,8 @@ import {
   writeOrdinal,
   type Order,
 } from './ordinal';
+import { withMethod, type Spelling } from './methods';
+import { Recall, copy, identity } from './recall';
 
 const MAX_ARRAY_LENGTH = 2 ** 32 - 1;
 
@@ -29,8 +31,16 @@ export class PArray<TItem> extends PNode<TItem[]> {
   private readonly _bounds: LengthBounds;
   private readonly _count: IndexRange;
   private readonly _order: Order;
+  private readonly _spelling: Spelling;
+  /** Set by `.recall()`: learned when the count is adaptive. */
+  private readonly _recall?: Recall<TItem[]>;
 
-  constructor(item: PNode<TItem>, bounds: LengthBounds = {}, order: Order = {}) {
+  constructor(
+    item: PNode<TItem>,
+    bounds: LengthBounds = {},
+    order: Order = {},
+    spelling: Spelling = {}
+  ) {
     super();
     this._item = item;
     this._bounds = bounds;
@@ -39,6 +49,10 @@ export class PArray<TItem> extends PNode<TItem[]> {
       throw new TypeError('p.array takes sorted or unordered, not both');
     }
     this._order = order;
+    this._spelling = spelling;
+    if (spelling.recall !== undefined) {
+      this._recall = new Recall(bounds.adaptive !== undefined, copy);
+    }
   }
 
   /** Require at least `n` items. A raised floor packs the count denser. */
@@ -132,11 +146,40 @@ export class PArray<TItem> extends PNode<TItem[]> {
     return this._with(this._bounds, { ...this._order, unordered: true });
   }
 
+  /**
+   * Spell an array this node already wrote in the message by its place
+   * among the distinct arrays it wrote, and a new one as an escape and then
+   * in full: with n arrays seen, a repeat costs log2(n + 1) bits, or under
+   * `.adaptive()` less the more often it recurs. The message's first array
+   * costs nothing extra. Arrays the schema writes the same way are the same
+   * array, and a repeat decodes as a copy of the array first decoded.
+   */
+  recall(): PArray<TItem> {
+    const spelling = withMethod(this._spelling, 'recall', 'p.array');
+    return new PArray<TItem>(this._item, this._bounds, this._order, spelling);
+  }
+
   private _with(bounds: LengthBounds, order: Order = this._order): PArray<TItem> {
-    return new PArray<TItem>(this._item, bounds, order);
+    return new PArray<TItem>(this._item, bounds, order, this._spelling);
   }
 
   _write(enc: Encoder, value: TItem[]): void {
+    const recall = this._recall;
+    if (recall === undefined) {
+      this._spell(enc, value);
+    } else {
+      const key = identity((alone) => this._spell(alone, value));
+      recall.write(enc, key, () => this._spell(enc, value));
+    }
+  }
+
+  _read(dec: Decoder): TItem[] {
+    const recall = this._recall;
+    return recall === undefined ? this._unspell(dec) : recall.read(dec, () => this._unspell(dec));
+  }
+
+  /** Writes the array in full. */
+  private _spell(enc: Encoder, value: TItem[]): void {
     const count = value.length;
 
     this._count.write(enc, count, () => `Array length ${count}`);
@@ -161,7 +204,8 @@ export class PArray<TItem> extends PNode<TItem[]> {
     }
   }
 
-  _read(dec: Decoder): TItem[] {
+  /** Reads an array `_spell` wrote. */
+  private _unspell(dec: Decoder): TItem[] {
     const count = this._count.read(dec);
     // No array is longer than 2^32 - 1, so a larger count was never written.
     // Items that take no bits never run out of input to say so themselves.

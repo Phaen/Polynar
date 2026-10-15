@@ -2,7 +2,8 @@
  * `p.date()`: timestamps, optionally floored to UTC calendar buckets.
  */
 
-import { p, type DateUnit } from '../../index';
+import { p, Encoder, type DateUnit } from '../../index';
+import { STATIC_MAGNITUDE } from '../../nodes/magnitude';
 import { mulberry32, trip } from '../support';
 import { calendar, checkInRange, iso, utcMonthStart } from '../../nodes/date';
 
@@ -279,12 +280,12 @@ describe('p.date adaptive', () => {
     );
   });
 
-  it('learns a skew, at most a byte over the static prior of it', () => {
+  it('learns a skew, its mode symbols at most a twentieth over the static prior of it', () => {
     const values = run(2000, 3);
     const size = (node: typeof plain) => p.array(node).encode(values).length;
     expect(size(plain.adaptive())).toBeLessThan(size(plain));
     expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
-      size(plain.weights(weights)) + 1
+      Math.ceil(size(plain.weights(weights)) * 1.05)
     );
   });
 
@@ -309,11 +310,87 @@ describe('p.date adaptive', () => {
         'p.date adaptive prior 32 and window 1024 overflow with weights totalling 35184372088847'
       )
     );
-    expect(() => p.date().min(new Date(0)).adaptive()).toThrow(
-      new TypeError('p.date adaptive requires both bounds')
-    );
     const cdf = new TypeError('p.date adaptive takes weights, not a cdf');
     expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
     expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
+  });
+});
+
+describe('p.date methods', () => {
+  const start = Date.UTC(2024, 0, 1);
+  const random = mulberry32(31);
+  let at = start;
+  const times = Array.from(
+    { length: 300 },
+    () => new Date((at += 1000 * (1 + Math.floor(random() * 9))))
+  );
+
+  it('spells each date after the first as its difference in buckets', () => {
+    const node = p.date().min(start).precision('second').delta();
+    const three = times.slice(0, 3);
+    const model = new Encoder();
+    const seconds = three.map((t) => (t.getTime() - start) / 1000);
+    model.composeTerm(seconds[0]);
+    for (let i = 1; i < 3; i++) {
+      STATIC_MAGNITUDE.write(model, seconds[i], seconds[i - 1], 0, Number.MAX_SAFE_INTEGER);
+    }
+    const bytes = p.array(node).length(3).encode(three);
+    expect(bytes).toEqual(model.output());
+    expect(p.array(node).length(3).decode(bytes)).toEqual(three);
+  });
+
+  it('round-trips with delta, recall and adaptive, bounded or not', () => {
+    const repeats = times.map((t, i) => (i % 3 === 0 ? times[0] : t));
+    for (const node of [
+      p.date().delta(),
+      p.date().precision('second').delta().adaptive(),
+      p.date().precision('second').adaptive(),
+      p.date().min(start).recall(),
+      p
+        .date()
+        .max(new Date(start + 1e7))
+        .precision('second')
+        .recall()
+        .adaptive(),
+      p
+        .date()
+        .min(start)
+        .max(new Date(start + 1e7))
+        .precision('second')
+        .delta()
+        .recall(),
+    ]) {
+      expect(trip(p.array(node), repeats)).toEqual(
+        repeats.map((t) => new Date(Math.floor(t.getTime() / 1000) * 1000))
+      );
+    }
+  });
+
+  it('decodes a recalled date as a new Date', () => {
+    const [one, two] = trip(p.array(p.date().recall()), [times[0], times[0]]);
+    expect(two).toEqual(one);
+    expect(two).not.toBe(one);
+  });
+
+  it('carries its methods through every rebuild, set once, without weights', () => {
+    const declared = p.array(p.date().min(start).precision('second').delta().recall());
+    for (const node of [
+      p.date().delta().recall().precision('second').min(start),
+      p.date().recall().min(start).delta().precision('second'),
+    ]) {
+      expect(p.array(node).encode(times)).toEqual(declared.encode(times));
+    }
+    const day = p
+      .date()
+      .min(start)
+      .max(new Date(start + 2 * 86_400_000))
+      .precision('day');
+    expect(day.delta()._radix).toBeUndefined();
+    expect(day.recall()._fromDigit).toBeUndefined();
+    expect(() => p.date().delta().delta()).toThrow(new TypeError('p.date delta is already set'));
+    expect(() => day.weights([1, 1, 1]).delta()).toThrow(
+      new TypeError('p.date delta takes no weights')
+    );
+    expect(() => day.delta().cdf((t) => t)).toThrow(new TypeError('p.date delta takes no cdf'));
   });
 });

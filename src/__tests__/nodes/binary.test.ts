@@ -3,6 +3,7 @@
  */
 
 import { p, CorruptInputError } from '../../index';
+import type { PBinary } from '../../nodes/binary';
 import { mulberry32, trip } from '../support';
 
 const rand = mulberry32(0xb1a5);
@@ -261,5 +262,68 @@ describe('p.binary adaptive repeats', () => {
     const node = p.binary(Int16Array).adaptive();
     expect(trip(node, value)).toEqual(value);
     expect(node.encode(value).length).toBeLessThan(p.binary(Int16Array).encode(value).length - 40);
+  });
+});
+
+describe('p.binary methods', () => {
+  const header = Uint8Array.from({ length: 24 }, (_, i) => (i * 29) % 256);
+  /** Packets sharing a header, each with a short body of its own. */
+  const packets = Array.from({ length: 40 }, (_, i) =>
+    Uint8Array.from([...header, i, (i * 7) % 256, 3])
+  );
+  const size = (node: PBinary<Uint8Array>) => p.array(node).encode(packets).length;
+
+  it('spells each array after the bytes it shares with the one before', () => {
+    for (const node of [
+      p.binary().delta(),
+      p.binary().repeats(),
+      p.binary().adaptive(),
+      p.binary().adaptive().delta(),
+      p.binary().delta().repeats().recall(),
+    ]) {
+      expect(trip(p.array(node), packets)).toEqual(packets);
+    }
+    expect(size(p.binary().delta())).toBeLessThan(size(p.binary()) / 4);
+    expect(size(p.binary().repeats())).toBeLessThan(size(p.binary()) / 2);
+  });
+
+  it('shares bytes, not elements, under a wider type', () => {
+    const values = [Int16Array.of(1, 2, 3), Int16Array.of(1, 2, 0x103), Int16Array.of(1)];
+    const node = p.array(p.binary(Int16Array).delta());
+    expect(trip(node, values)).toEqual(values);
+  });
+
+  it('recalls an array it already wrote as a copy of the one first decoded', () => {
+    const a = Uint8Array.of(1, 2, 3);
+    const values = [a, Uint8Array.of(4), a];
+    for (const node of [p.binary().recall(), p.binary().adaptive().recall()]) {
+      const out = trip(p.array(node), values);
+      expect(out).toEqual(values);
+      expect(out[2]).not.toBe(out[0]);
+      expect(out[2]).toBeInstanceOf(Uint8Array);
+    }
+    const wide = trip(p.array(p.binary(Float64Array).recall()), [
+      Float64Array.of(0.5),
+      Float64Array.of(0.5),
+    ]);
+    expect(wide[1]).toBeInstanceOf(Float64Array);
+    expect(wide[1]).not.toBe(wide[0]);
+  });
+
+  it('keeps its methods through every later option, each declared once', () => {
+    const late = p.binary().delta().min(1).max(40);
+    const early = p.binary().min(1).max(40).delta();
+    expect(p.array(late).encode(packets)).toEqual(p.array(early).encode(packets));
+    for (const method of ['delta', 'recall', 'repeats'] as const) {
+      expect(() => p.binary()[method]()[method]()).toThrow(
+        new TypeError(`p.binary ${method} is already set`)
+      );
+    }
+  });
+
+  it('refuses a corrupt length without a max under adaptive', () => {
+    expect(() => p.binary(Float64Array).adaptive().decode(new Uint8Array(12).fill(255))).toThrow(
+      CorruptInputError
+    );
   });
 });
