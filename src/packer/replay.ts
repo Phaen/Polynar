@@ -8,7 +8,7 @@
 import { Decoder } from './decoder';
 import type { Encoder, EventLog } from './encoder';
 import type { Radix } from './types';
-import { radixOf } from './utils';
+import type { Locator } from './stream';
 
 /**
  * Reads `encoder`'s log as a decoder reads its output, each read checked
@@ -42,19 +42,19 @@ export class ReplayDecoder extends Decoder<string> {
     return this.log.cums[this.next(radix, false)];
   }
 
-  parseWeighted<T>(total: number, locate: (residual: number) => readonly [T, number, number]): T {
-    radixOf(total, 'Total');
+  protected parseLocator<T>(total: number, locator: Locator<T>): T {
+    const span = this.span;
     // The encoder logs nothing for a bucket holding every state, which both
     // ends of the residual range landing on its symbol tell, as the stream
     // reader tells it.
-    const only = locate(0);
-    if (only[2] === total && locate(total - 1)[0] === only[0]) {
-      return only[0];
+    const only = locator.locate(0, span);
+    if (span.freq === total && locator.locate(total - 1, span) === only) {
+      return only;
     }
     const { cums, freqs } = this.log;
     const i = this.next(total, true);
-    const [symbol, cum, freq] = locate(cums[i]);
-    if (cum !== cums[i] || freq !== freqs[i]) {
+    const symbol = locator.locate(cums[i], span);
+    if (span.cum !== cums[i] || span.freq !== freqs[i]) {
       throw new TypeError(`Replay read event ${i} as a bucket other than the one logged`);
     }
     return symbol;

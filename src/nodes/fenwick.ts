@@ -95,6 +95,15 @@ export class Fenwick implements LiveTable, Undoable {
     return this.sum;
   }
 
+  /**
+   * The tree, 1-based: entry `j` sums the `lowbit(j)` counts ending at
+   * position `j`, so a descent that has passed `j - lowbit(j)` counts adds
+   * the next `lowbit(j)` in one step. Read-only.
+   */
+  get nodes(): readonly number[] {
+    return this.tree;
+  }
+
   /** The count at `i`, an integer in `[0, size)`. */
   count(i: number): number {
     checkPosition(i, this.size, 'index');
@@ -120,11 +129,6 @@ export class Fenwick implements LiveTable, Undoable {
   /** The width of member `pos`'s bucket: `count(pos)`. */
   freq(pos: number): number {
     return this.count(pos);
-  }
-
-  /** Member `pos` as `parseWeighted` reads it: `[pos, cum(pos), freq(pos)]`. */
-  located(pos: number): readonly [number, number, number] {
-    return [pos, this.cum(pos), this.freq(pos)];
   }
 
   /** Adds `delta` to the count at `i`; the count stays non-negative and the total safe. */

@@ -76,16 +76,22 @@ describe('Fenwick', () => {
     expect(() => Fenwick.zeros(-1)).toThrow(new RangeError('Fenwick size -1 is negative'));
   });
 
+  it('shows its tree, each node summing the counts it spans', () => {
+    const tree = new Fenwick([3, 0, 2, 5, 1, 4]);
+    expect(tree.nodes).toEqual([0, 3, 3, 2, 10, 1, 5]);
+  });
+
   it('locates members as a live table, following every push', () => {
     const tree = new Fenwick([3, 0, 2]);
-    expect([0, 1, 2].map((i) => tree.located(i))).toEqual([
+    const located = (i: number) => [i, tree.cum(i), tree.freq(i)];
+    expect([0, 1, 2].map(located)).toEqual([
       [0, 0, 3],
       [1, 3, 0],
       [2, 3, 2],
     ]);
     tree.push(4);
-    expect(tree.located(3)).toEqual([3, 5, 4]);
-    expect(() => tree.located(4)).toThrow(RangeError);
+    expect(located(3)).toEqual([3, 5, 4]);
+    expect(() => located(4)).toThrow(RangeError);
   });
 
   it('halves by flooring, down to 0', () => {

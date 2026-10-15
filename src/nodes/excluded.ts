@@ -106,6 +106,8 @@ export interface Table {
   readonly total: number;
   cum(pos: number): number;
   freq(pos: number): number;
+  /** The largest member whose bucket starts at or below `residual`, an integer in `[0, total)`, where the table finds it faster than bisection. */
+  locate?(residual: number): number;
 }
 
 /** The static table `base` as a `Table`; a position outside its entries is a RangeError. */
@@ -128,6 +130,7 @@ export function staticTable(base: WeightTable): Table {
       check(pos);
       return base.freqs[pos];
     },
+    locate: (residual) => base.locate(residual)[0],
   };
 }
 
@@ -174,36 +177,69 @@ export function writeExcluded(
 }
 
 /**
+ * The excluded members `readExcluded` sorts and the sums of their widths,
+ * reused across reads: a read finishes before the next begins.
+ */
+let scratchExcluded = new Int32Array(FIRST_ROOM);
+let scratchShed = new Float64Array(FIRST_ROOM + 1);
+
+/**
  * Reads a member written by `writeExcluded`. A residual belongs to the
  * largest member whose bucket starts at or below it: the starts never fall,
  * and members with empty buckets share the start of the next one, so the
- * bisection lands past them. A start is the table's less the widths of the
+ * search lands past them. A start is the table's less the widths of the
  * excluded members below it, which `shed` sums over the excluded members
  * in ascending order.
+ *
+ * A table that locates its own residuals is searched from the residual up:
+ * shifted by the widths of the `k` lowest excluded members, the residual
+ * falls in the table's member `pos`, and when exactly `k` excluded members
+ * lie at or below `pos` it is the one; else `k` becomes their count and the
+ * search repeats. `k` only grows and never passes the count below the
+ * member sought, so it settles there. Any other table is bisected.
  */
 export function readExcluded(dec: Decoder, table: Table, exclusion: Exclusion | undefined): number {
   const count = exclusion?.count ?? 0;
-  const excluded = new Int32Array(count);
+  if (count >= scratchExcluded.length) {
+    scratchExcluded = new Int32Array(2 * count);
+    scratchShed = new Float64Array(2 * count + 1);
+  }
+  const excluded = scratchExcluded;
+  const shed = scratchShed;
   for (let i = 0; i < count; i++) {
     excluded[i] = (exclusion as Exclusion).member(i);
   }
-  excluded.sort();
-  const shed = new Float64Array(count + 1);
+  excluded.subarray(0, count).sort();
   for (let i = 0; i < count; i++) {
     shed[i + 1] = shed[i] + table.freq(excluded[i]);
   }
-  /** The start of member `pos`'s bucket under the exclusion. */
-  const start = (pos: number): number => {
-    let lo = 0;
+  /** How many excluded members lie below `pos`, or at it too when `at`, `from` known to. */
+  const below = (pos: number, at: boolean, from: number): number => {
+    let lo = from;
     let hi = count;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (excluded[mid] < pos) lo = mid + 1;
+      if (excluded[mid] < pos || (at && excluded[mid] === pos)) lo = mid + 1;
       else hi = mid;
     }
-    return table.cum(pos) - shed[lo];
+    return lo;
   };
-  const locate = (residual: number): readonly [number, number, number] => {
+  const own = table.locate;
+  if (own !== undefined) {
+    return dec.parseWeighted(table.total - shed[count], (residual) => {
+      for (let k = 0; ; ) {
+        const pos = own.call(table, residual + shed[k]);
+        const at = below(pos, true, k);
+        if (at === k) {
+          return [pos, table.cum(pos) - shed[k], table.freq(pos)];
+        }
+        k = at;
+      }
+    });
+  }
+  /** The start of member `pos`'s bucket under the exclusion. */
+  const start = (pos: number): number => table.cum(pos) - shed[below(pos, false, 0)];
+  return dec.parseWeighted(table.total - shed[count], (residual) => {
     let lo = 0;
     let hi = table.size - 1;
     while (lo < hi) {
@@ -213,6 +249,5 @@ export function readExcluded(dec: Decoder, table: Table, exclusion: Exclusion | 
     }
     // The member found holds the residual, so it owns states: it is not excluded.
     return [lo, start(lo), table.freq(lo)];
-  };
-  return dec.parseWeighted(table.total - shed[count], locate);
+  });
 }

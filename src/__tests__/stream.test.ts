@@ -6,7 +6,7 @@
  * Seeded, so failures reproduce.
  */
 
-import { StreamReader, StreamWriter } from '../packer/stream';
+import { StreamReader, StreamWriter, TupleLocator } from '../packer/stream';
 import { rankOf, residualAt, spreadOf } from '../packer/spread';
 import { mulberry32 } from './support';
 
@@ -53,7 +53,9 @@ const write = (events: readonly Event[], size: number, L?: number): number[] => 
 const read = (digits: readonly number[], events: readonly Event[], size: number, L?: number) => {
   const reader = new StreamReader((i) => digits[i], digits.length, size, L);
   const symbols = events.map((event) =>
-    event[3] ? reader.weighted(event[2], around(event)) : reader.uniform(event[2])
+    event[3]
+      ? reader.weighted(event[2], new TupleLocator(around(event)), true)
+      : reader.uniform(event[2])
   );
   return { symbols, state: reader.state, position: reader.position };
 };
@@ -177,7 +179,7 @@ describe('StreamWriter / StreamReader', () => {
       expect(write([], size)).toEqual([]);
       const reader = new StreamReader(() => 0, 0, size);
       expect(reader.uniform(1000)).toBe(0);
-      expect(reader.weighted(10, around([3, 4, 10, true]))).toBe(0);
+      expect(reader.weighted(10, new TupleLocator(around([3, 4, 10, true])), true)).toBe(0);
       expect(reader.uniform(MAX_SAFE)).toBe(0);
       expect([reader.state, reader.position, reader.drained]).toEqual([0n, 0, true]);
     }
@@ -218,7 +220,9 @@ describe('StreamWriter / StreamReader', () => {
         const reader = new StreamReader((i) => digits[i], digits.length, size);
         expect(reader.uniform(head)).toBe(head - 1);
         expect(
-          events.map((e) => (e[3] ? reader.weighted(e[2], around(e)) : reader.uniform(e[2])))
+          events.map((e) =>
+            e[3] ? reader.weighted(e[2], new TupleLocator(around(e)), true) : reader.uniform(e[2])
+          )
         ).toEqual(events.map(([cum]) => cum));
         expect([reader.state, reader.position]).toEqual([0n, digits.length]);
       }
@@ -360,16 +364,16 @@ describe('StreamWriter / StreamReader', () => {
     const digits = write([[3, 1, 10, false]], 10);
     const full = (): readonly [string, number, number] => ['all', 0, 10];
     const reader = new StreamReader((i) => digits[i], digits.length, 10);
-    expect(reader.weighted(10, full)).toBe('all');
+    expect(reader.weighted(10, new TupleLocator(full), true)).toBe('all');
     expect(reader.position).toBe(0);
     expect(reader.uniform(10)).toBe(3);
-    expect(reader.weighted(10, full)).toBe('all');
+    expect(reader.weighted(10, new TupleLocator(full), true)).toBe('all');
     expect([reader.state, reader.position]).toEqual([0n, digits.length]);
     // The same around a total whose window takes a BigInt state.
     const wide = write([[3, 1, MAX_SAFE, false]], 10);
     const all = (): readonly [string, number, number] => ['all', 0, MAX_SAFE];
     const big = new StreamReader((i) => wide[i], wide.length, 10);
-    expect(big.weighted(MAX_SAFE, all)).toBe('all');
+    expect(big.weighted(MAX_SAFE, new TupleLocator(all), true)).toBe('all');
     expect(big.position).toBe(0);
     expect(big.uniform(MAX_SAFE)).toBe(3);
     expect([big.state, big.position]).toEqual([0n, wide.length]);
@@ -382,7 +386,7 @@ describe('StreamWriter / StreamReader', () => {
     const locate = (r: number): readonly [number, number, number] =>
       r === 9 ? [9, 9, 1] : [0, 0, 10];
     const reader = new StreamReader((i) => digits[i], digits.length, 10);
-    expect(reader.weighted(10, locate)).toBe(9);
+    expect(reader.weighted(10, new TupleLocator(locate), true)).toBe(9);
     expect(reader.position).toBe(digits.length);
   });
 
@@ -407,7 +411,9 @@ describe('StreamWriter / StreamReader', () => {
     for (const [cum, freq] of misses) {
       for (const digits of [small, large]) {
         const reader = new StreamReader((i) => digits[i], digits.length, 256);
-        expect(() => reader.weighted(10, () => ['x', cum, freq] as const)).toThrow(
+        expect(() =>
+          reader.weighted(10, new TupleLocator(() => ['x', cum, freq] as const), true)
+        ).toThrow(
           new RegExp(`^locate returned a bucket that does not contain the residual: \\[${cum}, `)
         );
       }

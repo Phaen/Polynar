@@ -28,7 +28,7 @@ import {
   type OutputAlphabet,
   radixOf,
 } from './utils';
-import { StreamReader } from './stream';
+import { Span, StreamReader, TupleLocator, type Located, type Locator } from './stream';
 import { MessageState } from './state';
 
 const BIG_CHUNK_STATES = 2 ** BIG_CHUNK_BITS;
@@ -40,6 +40,45 @@ const PAYLOAD_RADIX = TERM_PAYLOAD_BASE as Radix;
 const PAYLOAD_TOP_RADIX = (TERM_PAYLOAD_BASE - 1) as Radix;
 /** The longest array a JavaScript engine builds. */
 const MAX_COUNT = 2 ** 32 - 1;
+
+/** Splits the residuals of a `parseSplit` at `low`: false below it, true from it on. */
+class SplitLocator implements Locator<boolean> {
+  low = 0;
+  total = 0;
+
+  locate(residual: number, span: Span): boolean {
+    const low = this.low;
+    if (residual < low) {
+      span.cum = 0;
+      span.freq = low;
+      return false;
+    }
+    span.cum = low;
+    span.freq = this.total - low;
+    return true;
+  }
+}
+
+/** A table of members that locates its own residuals, as `parseMember` reads it. */
+export interface MemberTable {
+  /** The member whose bucket holds `residual`, an integer in `[0, total)`. */
+  locate(residual: number): number;
+  cum(pos: number): number;
+  freq(pos: number): number;
+}
+
+/** Locates a residual in `table`, the `MemberTable` of the `parseMember` running. */
+class MemberLocator implements Locator<number> {
+  table?: MemberTable;
+
+  locate(residual: number, span: Span): number {
+    const table = this.table as MemberTable;
+    const pos = table.locate(residual);
+    span.cum = table.cum(pos);
+    span.freq = table.freq(pos);
+    return pos;
+  }
+}
 
 /** `I` is the input's type, which pairs it with the matching options. */
 export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
@@ -61,6 +100,16 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
   private announcedAt = 0;
   /** Whether the input has run out with the state at 0, for good. */
   private dry = false;
+  /**
+   * The locators the weighted reads wrap their arguments in, reused from read
+   * to read: a locator calls nothing that reads, so one read is done with
+   * them before the next takes them over.
+   */
+  private readonly tuples = new TupleLocator<unknown>();
+  private readonly split = new SplitLocator();
+  private readonly members = new MemberLocator();
+  /** Where a read of a single state has its locator leave the bucket. */
+  protected readonly span = new Span();
 
   constructor(
     input: I,
@@ -241,14 +290,50 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
    * A bucket holding all `total` states carries nothing, so the encoder
    * records nothing for it and this returns its symbol without reading.
    */
-  parseWeighted<T>(total: number, locate: (residual: number) => readonly [T, number, number]): T {
+  parseWeighted<T>(total: number, locate: (residual: number) => Located<T>): T {
     radixOf(total, 'Total');
+    const tuples = this.tuples as TupleLocator<T>;
+    tuples.find = locate;
+    return this.parseLocator(total, tuples, true);
+  }
+
+  /**
+   * `parseWeighted` for the packer's own models, trusted to pass a total
+   * that is a radix and a `locator` that finds the bucket holding the
+   * residual. A model builds its totals and buckets from the symbols read
+   * before, never from the input itself, so corrupt input cannot break
+   * either: checking them would catch a bug in the model, and no input.
+   */
+  parseLocated<T>(total: number, locator: Locator<T>): T {
+    return this.parseLocator(total, locator, false);
+  }
+
+  /**
+   * Read a symbol of two buckets of `total` states, `[0, low)` and
+   * `[low, total)`, as `parseLocated` would: whether it is the second.
+   */
+  parseSplit(low: number, total: number): boolean {
+    const split = this.split;
+    split.low = low;
+    split.total = total;
+    return this.parseLocator(total, split, false);
+  }
+
+  /** Read a member of `table`, of `total` states, as `parseLocated` would: its position. */
+  parseMember(total: number, table: MemberTable): number {
+    const members = this.members;
+    members.table = table;
+    return this.parseLocator(total, members, false);
+  }
+
+  /** A weighted read, the bucket found checked against its residual when `checked`. */
+  protected parseLocator<T>(total: number, locator: Locator<T>, checked: boolean): T {
     this.read();
     // A single state is a bucket holding every state.
     if (total === 1) {
-      return locate(0)[0];
+      return locator.locate(0, this.span);
     }
-    return this.reader.weighted(total, locate);
+    return this.reader.weighted(total, locator, checked);
   }
 
   /** Read one unbounded non-negative integer composed by `composeTerm`. */

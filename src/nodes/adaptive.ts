@@ -140,8 +140,6 @@ export interface LiveTable {
   cum(pos: number): number;
   freq(pos: number): number;
   locate(residual: number): number;
-  /** Member `pos` as `parseWeighted` reads it: `[pos, cum(pos), freq(pos)]`. */
-  located(pos: number): readonly [number, number, number];
 }
 
 /** Writes member `pos` of a live table as one weighted symbol; a lone member writes nothing. */
@@ -158,7 +156,7 @@ export function readLive(dec: Decoder, table: LiveTable): number {
   if (table.size === 1) {
     return 0;
   }
-  return dec.parseWeighted(table.total, (residual) => table.located(table.locate(residual)));
+  return dec.parseMember(table.total, table);
 }
 
 /**
@@ -205,29 +203,45 @@ export class LiveCounts implements LiveTable {
     return this.base.freqs[pos] * this.prior + this.learned.freq(pos) * this.base.total;
   }
 
-  located(pos: number): readonly [number, number, number] {
-    return [pos, this.cum(pos), this.freq(pos)];
-  }
-
   /** Member `pos`'s bucket as `[cum, freq, total]`. */
   bucket(pos: number): Bucket {
     return [this.cum(pos), this.freq(pos), this.total];
   }
 
   /**
-   * The largest member whose bucket starts at or below `residual`, by
-   * bisection: every bucket holds at least `prior` states, so the starts
-   * rise strictly.
+   * The states of the members the learned counts' tree node `j` spans,
+   * `[j - lowbit(j), j)`, for `j` in `[1, size]`: their learned counts' and
+   * their weights'.
+   */
+  spanned(j: number): number {
+    const { cums, total } = this.base;
+    const from = j - (j & -j);
+    const weights = (j === this.size ? total : cums[j]) - cums[from];
+    return weights * this.prior + this.learned.nodes[j] * total;
+  }
+
+  /**
+   * The largest member whose bucket starts at or below `residual`, an
+   * integer in `[0, total)`: a descent over the learned counts' tree from
+   * its widest node, taking each node whose states the residual still
+   * covers. Every bucket holds at least `prior` states, so the starts rise
+   * strictly.
    */
   locate(residual: number): number {
-    let lo = 0;
-    let hi = this.size - 1;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      if (this.cum(mid) <= residual) lo = mid;
-      else hi = mid - 1;
+    const { size } = this;
+    let pos = 0;
+    let rest = residual;
+    for (let step = 1 << (31 - Math.clz32(size)); step >= 1; step >>= 1) {
+      const next = pos + step;
+      if (next <= size) {
+        const states = this.spanned(next);
+        if (states <= rest) {
+          pos = next;
+          rest -= states;
+        }
+      }
     }
-    return lo;
+    return pos;
   }
 
   /**
@@ -383,8 +397,12 @@ export class Lineage {
  * `journal`, an encoder's, the gathered table's through its own.
  */
 class Blend implements Table, Undoable {
-  /** The own observations of each member seen, none kept at 0. */
-  private learned = new Map<number, number>();
+  /** The members seen, ascending, none kept at 0 observations. */
+  private seen: number[] = [];
+  /** The own observations of each member in `seen`, in the same order. */
+  private owns: number[] = [];
+  /** The own observations of the members in `seen` before each, and of all of them last; rebuilt after a change. */
+  private below: number[] | undefined;
   /** The own observations of all members. */
   private count = 0;
 
@@ -402,59 +420,136 @@ class Blend implements Table, Undoable {
     return this.gathered.total * (BLEND_SHARE + this.count);
   }
 
+  /** The index in `seen` of the first member at or above `pos`. */
+  private find(pos: number): number {
+    const seen = this.seen;
+    let lo = 0;
+    let hi = seen.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (seen[mid] < pos) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  /** The own observations of the members in `seen` before each index, built on demand. */
+  private belows(): number[] {
+    let below = this.below;
+    if (below === undefined) {
+      below = [0];
+      let sum = 0;
+      for (const own of this.owns) {
+        sum += own;
+        below.push(sum);
+      }
+      this.below = below;
+    }
+    return below;
+  }
+
   cum(pos: number): number {
-    let below = 0;
-    for (const [member, count] of this.learned) {
-      if (member < pos) {
-        below += count;
+    return (
+      this.gathered.cum(pos) * BLEND_SHARE + this.belows()[this.find(pos)] * this.gathered.total
+    );
+  }
+
+  /**
+   * The largest member whose bucket starts at or below `residual`, an
+   * integer in `[0, total)`: `LiveCounts.locate`'s descent over the
+   * gathered table, each node's states blended with the own observations
+   * of the members it spans, found among those seen from where the last
+   * node taken ended.
+   */
+  locate(residual: number): number {
+    const { gathered, seen, size } = this;
+    const below = this.belows();
+    let pos = 0;
+    // The index in `seen` of the first member at or above `pos`.
+    let at = 0;
+    let rest = residual;
+    for (let step = 1 << (31 - Math.clz32(size)); step >= 1; step >>= 1) {
+      const next = pos + step;
+      if (next <= size) {
+        let lo = at;
+        let hi = seen.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (seen[mid] < next) lo = mid + 1;
+          else hi = mid;
+        }
+        const own = below[lo] - below[at];
+        const states = gathered.spanned(next) * BLEND_SHARE + own * gathered.total;
+        if (states <= rest) {
+          pos = next;
+          at = lo;
+          rest -= states;
+        }
       }
     }
-    return this.gathered.cum(pos) * BLEND_SHARE + below * this.gathered.total;
+    return pos;
   }
 
   freq(pos: number): number {
-    const own = this.learned.get(pos) ?? 0;
+    const i = this.find(pos);
+    const own = this.seen[i] === pos ? this.owns[i] : 0;
     return this.gathered.freq(pos) * BLEND_SHARE + own * this.gathered.total;
   }
 
   learn(pos: number): void {
     const journal = this.journal;
-    const own = this.learned.get(pos);
-    this.learned.set(pos, (own ?? 0) + 1);
+    const { seen, owns } = this;
+    const i = this.find(pos);
+    let own = 0;
+    if (seen[i] === pos) {
+      own = owns[i];
+      owns[i] = own + 1;
+    } else {
+      seen.splice(i, 0, pos);
+      owns.splice(i, 0, 1);
+    }
+    this.below = undefined;
     this.count++;
     if (journal?.active === true) {
-      journal.own(this, 0, pos, own ?? 0);
+      journal.own(this, 0, pos, own);
     }
     if (this.count > this.window) {
       if (journal?.active === true) {
-        const { learned, count } = this;
-        this.learned = new Map(learned);
+        const { count } = this;
         journal.call(() => {
-          this.learned = learned;
+          this.seen = seen;
+          this.owns = owns;
+          this.below = undefined;
           this.count = count;
         });
       }
+      const halfSeen: number[] = [];
+      const halfOwns: number[] = [];
       this.count = 0;
-      for (const [member, count] of this.learned) {
-        const half = Math.floor(count / 2);
-        if (half === 0) {
-          this.learned.delete(member);
-        } else {
-          this.learned.set(member, half);
+      for (let j = 0; j < seen.length; j++) {
+        const half = Math.floor(owns[j] / 2);
+        if (half > 0) {
+          halfSeen.push(seen[j]);
+          halfOwns.push(half);
           this.count += half;
         }
       }
+      this.seen = halfSeen;
+      this.owns = halfOwns;
     }
     this.gathered.learn(pos);
   }
 
   /** Takes back a `learn` of `pos`, which had `own` observations before it. */
   undo(_op: number, pos: number, own: number): void {
+    const i = this.find(pos);
     if (own === 0) {
-      this.learned.delete(pos);
+      this.seen.splice(i, 1);
+      this.owns.splice(i, 1);
     } else {
-      this.learned.set(pos, own);
+      this.owns[i] = own;
     }
+    this.below = undefined;
     this.count--;
   }
 }
@@ -570,6 +665,8 @@ interface Reading {
 export class AdaptivePrior {
   /** The static table of each row. */
   readonly bases: readonly WeightTable[];
+  /** The static table of each row as exclusion reads it. */
+  private readonly statics: readonly Table[];
   /** The table of each row the live tables weigh their prior by. */
   private readonly liveBases: readonly WeightTable[];
   /** Whether every row learns into one set of counts. */
@@ -625,6 +722,7 @@ export class AdaptivePrior {
     // A prior paired with its root's has the same weights, and so shares
     // the root's tables.
     this.bases = parent?.bases ?? rows.map((row) => buildWeights(row, members, who));
+    this.statics = this.bases.map(staticTable);
     const { live, pooled = false, keep = false } = options;
     if (live !== undefined && live.length !== rows.length) {
       throw new TypeError(
@@ -729,7 +827,7 @@ export class AdaptivePrior {
    * with the members of `excluded` ruled out; `pos` is never one of them.
    */
   write(enc: Encoder, pos: number, row = 0, excluded?: Exclusion): void {
-    const base = this.check(pos, row);
+    this.check(pos, row);
     if (this.members === 1) {
       return;
     }
@@ -741,7 +839,7 @@ export class AdaptivePrior {
     }
     const state = this.writing(enc);
     if (excluded === undefined || excluded.count < this.members - 1) {
-      const table = staticTable(base);
+      const table = this.statics[row];
       if (state.written === 0) {
         writeExcluded(enc, table, excluded, pos);
       } else {
@@ -788,7 +886,7 @@ export class AdaptivePrior {
 
   /** Reads a member written by `write` in context `row` under the same exclusion. */
   read(dec: Decoder, row = 0, excluded?: Exclusion): number {
-    const base = this.base(row);
+    this.base(row);
     if (this.members === 1) {
       return 0;
     }
@@ -808,7 +906,7 @@ export class AdaptivePrior {
       }
     } else if (state.read === 0) {
       state.read = 1;
-      pos = readExcluded(dec, staticTable(base), excluded);
+      pos = readExcluded(dec, this.statics[row], excluded);
     } else {
       if (state.read === 1) {
         state.read = 2;
@@ -825,7 +923,7 @@ export class AdaptivePrior {
       }
       pos = readExcluded(
         dec,
-        state.coding === 0 ? staticTable(base) : this.live(state, row),
+        state.coding === 0 ? this.statics[row] : this.live(state, row),
         excluded
       );
     }

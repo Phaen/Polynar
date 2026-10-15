@@ -234,12 +234,11 @@ describe('AdaptiveTable', () => {
     }
   });
 
-  it('gives each member of its live table its located bucket', () => {
+  it('gives each member of its live table its bucket', () => {
     const table = new AdaptiveTable([2, 1, 5], 3, 3, 100, 'w');
     const live = table.live(new Encoder());
     live.learn(2);
     for (let i = 0; i < 3; i++) {
-      expect(live.located(i)).toEqual([i, live.cum(i), live.freq(i)]);
       expect(live.bucket(i)).toEqual([live.cum(i), live.freq(i), live.total]);
     }
   });
@@ -263,6 +262,17 @@ describe('AdaptiveTable', () => {
       const pos = live.locate(r);
       expect(live.cum(pos)).toBeLessThanOrEqual(r);
       expect(r).toBeLessThan(live.cum(pos) + live.freq(pos));
+    }
+  });
+
+  it('gives the states each node of its learned tree spans', () => {
+    const live = new AdaptiveTable([2, 1, 5, 1, 3, 1, 4], 7, 3, 100, 'w').live(new Encoder());
+    for (const pos of [1, 6, 1, 3, 0, 6]) {
+      live.learn(pos);
+    }
+    const start = (j: number): number => (j === live.size ? live.total : live.cum(j));
+    for (let j = 1; j <= live.size; j++) {
+      expect(live.spanned(j)).toBe(start(j) - start(j - (j & -j)));
     }
   });
 

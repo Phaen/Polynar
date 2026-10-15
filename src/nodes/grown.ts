@@ -96,9 +96,7 @@ function codeOffset(
         upper = offset >= mid;
         enc.composeWeighted(upper ? low : 0, upper ? total - low : low, total);
       } else {
-        upper = (side as Decoder).parseWeighted(total, (residual) =>
-          residual < low ? [false, 0, low] : [true, low, total - low]
-        );
+        upper = (side as Decoder).parseSplit(low, total);
       }
     }
     if (upper) {

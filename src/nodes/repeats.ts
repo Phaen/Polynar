@@ -208,7 +208,6 @@ function restricted(live: LiveCounts, top: number): LiveTable {
       }
       return lo;
     },
-    located: (pos) => live.located(pos),
   };
   return table;
 }

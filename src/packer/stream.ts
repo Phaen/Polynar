@@ -34,6 +34,34 @@ import { rankOf, residualAt, spreadOf } from './spread';
 /** A symbol's bucket as `locate` maps a residual to it: the symbol, its cum and its freq. */
 export type Located<T> = readonly [symbol: T, cum: number, freq: number];
 
+/** Where a `Locator` leaves the bucket `[cum, cum + freq)` it found. */
+export class Span {
+  cum = 0;
+  freq = 0;
+}
+
+/**
+ * Maps a residual to the symbol whose bucket holds it, the bucket left in
+ * `span`. A locator keeps whatever it reads by between calls in its own
+ * fields, so a read allocates nothing.
+ */
+export interface Locator<T> {
+  locate(residual: number, span: Span): T;
+}
+
+/** A `Locator` over a function returning each bucket as a `Located` triple. */
+export class TupleLocator<T> implements Locator<T> {
+  /** `find` may be left out until the first read. */
+  constructor(public find?: (residual: number) => Located<T>) {}
+
+  locate(residual: number, span: Span): T {
+    const located = (this.find as (residual: number) => Located<T>)(residual);
+    span.cum = located[1];
+    span.freq = located[2];
+    return located[0];
+  }
+}
+
 /**
  * ⌊a/b⌋ for a safe integer a ≥ 0 and an integer b ≥ 1. Rounding never takes
  * a/b below an integer it reaches, so the floor could only be off where a/b
@@ -324,6 +352,8 @@ export class StreamReader {
   /** The next digit to read. */
   private at = 0;
   private readonly windows: Windows;
+  /** Where `weighted` has its locator leave a bucket. */
+  private readonly span = new Span();
 
   /**
    * Reads the `length` digits `digitAt` returns, each in [0, size); `size`
@@ -424,8 +454,10 @@ export class StreamReader {
   }
 
   /**
-   * Read one weighted symbol of `total` states, at least 2. `locate` maps a
-   * residual in [0, total) to its symbol's bucket.
+   * Read one weighted symbol of `total` states, at least 2. `locator` maps a
+   * residual in [0, total) to its symbol, leaving the symbol's bucket in
+   * `span`. With `checked`, a bucket that does not contain the residual is
+   * refused: that is a bug in the locator, not corrupt input.
    *
    * A bucket holding all `total` states was never pushed, so nothing is read
    * for it and the state and windows stay. Before a read of digits it is
@@ -434,22 +466,28 @@ export class StreamReader {
    * only, and then a symbol was written and must be read. Without a read,
    * the bucket the state's own residual lands in tells it apart.
    */
-  weighted<T>(total: number, locate: (residual: number) => Located<T>): T {
+  weighted<T>(total: number, locator: Locator<T>, checked: boolean): T {
     const windows = this.windows;
+    const span = this.span;
     windows.open(total);
+    let symbol: T;
     if (windows.small) {
       let x = this.small();
       if (this.at < this.length && x < windows.A) {
-        const only = locate(0);
-        if (only[2] === total && locate(total - 1)[0] === only[0]) {
-          return only[0];
+        const only = locator.locate(0, span);
+        if (span.freq === total && locator.locate(total - 1, span) === only) {
+          return only;
         }
         x = this.fill(x, windows.A);
         this.x = x;
       }
       if (x < total) {
         const { residual, visit } = residualAt(x, total);
-        const [symbol, cum, freq] = checkLocated(locate(residual), residual, total);
+        symbol = locator.locate(residual, span);
+        const { cum, freq } = span;
+        if (checked) {
+          checkSpan(cum, freq, residual, total);
+        }
         if (freq !== total) {
           this.x = rankOf(visit, cum, freq, total);
           windows.close(freq);
@@ -458,7 +496,11 @@ export class StreamReader {
       }
       const q = floorDiv(x, total);
       const residual = x - q * total;
-      const [symbol, cum, freq] = checkLocated(locate(residual), residual, total);
+      symbol = locator.locate(residual, span);
+      const { cum, freq } = span;
+      if (checked) {
+        checkSpan(cum, freq, residual, total);
+      }
       if (freq !== total) {
         // Below size·B ≤ size·A, a safe integer.
         this.x = freq * q + (residual - cum);
@@ -470,9 +512,9 @@ export class StreamReader {
     const bigTotal = BigInt(total);
     const A = windows.bigK * bigTotal;
     if (this.at < this.length && x < A) {
-      const only = locate(0);
-      if (only[2] === total && locate(total - 1)[0] === only[0]) {
-        return only[0];
+      const only = locator.locate(0, span);
+      if (span.freq === total && locator.locate(total - 1, span) === only) {
+        return only;
       }
       x = this.fillBig(x, A);
       this.xb = x;
@@ -480,7 +522,11 @@ export class StreamReader {
     if (x < bigTotal) {
       // Below `total`, so below 2^53: a double holds it exactly.
       const { residual, visit } = residualAt(Number(x), total);
-      const [symbol, cum, freq] = checkLocated(locate(residual), residual, total);
+      symbol = locator.locate(residual, span);
+      const { cum, freq } = span;
+      if (checked) {
+        checkSpan(cum, freq, residual, total);
+      }
       if (freq !== total) {
         this.xb = BigInt(rankOf(visit, cum, freq, total));
         windows.close(freq);
@@ -489,7 +535,11 @@ export class StreamReader {
     }
     const q = x / bigTotal;
     const residual = Number(x - q * bigTotal);
-    const [symbol, cum, freq] = checkLocated(locate(residual), residual, total);
+    symbol = locator.locate(residual, span);
+    const { cum, freq } = span;
+    if (checked) {
+      checkSpan(cum, freq, residual, total);
+    }
     if (freq !== total) {
       this.xb = BigInt(freq) * q + BigInt(residual - cum);
       windows.close(freq);
@@ -499,12 +549,11 @@ export class StreamReader {
 }
 
 /**
- * The bucket `locate` returned for `residual`, refused when it does not
- * contain the residual: that is a model bug on the reading side, not
- * corrupt input.
+ * Refuses the bucket `[cum, cum + freq)` a locator found for `residual`
+ * when it does not contain the residual: that is a model bug on the
+ * reading side, not corrupt input.
  */
-function checkLocated<T>(located: Located<T>, residual: number, total: number): Located<T> {
-  const [, cum, freq] = located;
+function checkSpan(cum: number, freq: number, residual: number, total: number): void {
   if (
     !Number.isInteger(cum) ||
     !Number.isInteger(freq) ||
@@ -518,5 +567,4 @@ function checkLocated<T>(located: Located<T>, residual: number, total: number): 
       `locate returned a bucket that does not contain the residual: [${cum}, ${cum + freq}) for ${residual}`
     );
   }
-  return located;
 }

@@ -25,7 +25,15 @@
  */
 
 import { SlotCache } from '../packer';
-import { costUnits, type Encoder, type Decoder, type Journal, type Undoable } from '../packer';
+import {
+  costUnits,
+  type Encoder,
+  type Decoder,
+  type Journal,
+  type Locator,
+  type Span,
+  type Undoable,
+} from '../packer';
 import { Exclusion, type Table } from './excluded';
 import { KeyMap } from './keymap';
 
@@ -79,6 +87,12 @@ export function cellKey(index: number, n: number, sum: number, top: boolean): nu
   const r = 2 * sum < 3 * n ? 0 : sum < 3 * n ? 1 : sum < 6 * n ? 2 : sum < 12 * n ? 3 : 4;
   return (top ? 1000 : 0) + index * 100 + d * 10 + r;
 }
+
+/**
+ * Above every `cellKey`: a message's cells fit an array of this length,
+ * which stays a plain array where one grown by its keys would turn sparse.
+ */
+const CELL_KEYS = 2000;
 
 /**
  * The count a symbol enters a context at after a lower context coded it
@@ -270,26 +284,41 @@ interface Scan {
   found: boolean;
 }
 
+/** The symbols of `context` left under `exclusion`, as `readLeft` locates a residual among them. */
+class LeftLocator implements Locator<number> {
+  context?: Context;
+  exclusion?: Exclusion;
+
+  locate(residual: number, span: Span): number {
+    const { syms, counts } = this.context as Context;
+    const exclusion = this.exclusion as Exclusion;
+    let cum = 0;
+    for (let j = 0; ; j++) {
+      if (!exclusion.has(syms[j])) {
+        const count = counts[j];
+        if (residual < cum + count) {
+          span.cum = cum;
+          span.freq = count;
+          return j;
+        }
+        cum += count;
+      }
+    }
+  }
+}
+
+/** The locator `readLeft` reuses: a read finishes before the next begins. */
+const left = new LeftLocator();
+
 /**
  * Reads a symbol of `context` written under the exclusion, whose symbols
  * left sum to `sum`: the one whose bucket among them holds the residual.
  * Returns its index in the context's `syms`.
  */
 function readLeft(dec: Decoder, context: Context, exclusion: Exclusion, sum: number): number {
-  const { syms, counts } = context;
-  return dec.parseWeighted(sum, (residual) => {
-    let cum = 0;
-    for (let j = 0; ; j++) {
-      const s = syms[j];
-      if (!exclusion.has(s)) {
-        const count = counts[j];
-        if (residual < cum + count) {
-          return [j, cum, count];
-        }
-        cum += count;
-      }
-    }
-  });
+  left.context = context;
+  left.exclusion = exclusion;
+  return dec.parseLocated(sum, left);
 }
 
 /**
@@ -340,7 +369,7 @@ export class ContextModel {
   /** Each message's contexts. */
   private readonly messages = new SlotCache<Contexts, Encoder | Decoder>(this, (side) => ({
     tables: this.orders.map(() => new KeyMap<Context>()),
-    cells: [],
+    cells: new Array<[number, number] | undefined>(CELL_KEYS),
     exclusion: new Exclusion(this.size),
     coded: 0,
     top: false,
@@ -385,13 +414,13 @@ export class ContextModel {
     this.check(sym, row, history);
     const state = this.message(enc);
     const { exclusion } = state;
-    const contexts = this.visit(enc, history);
+    const contexts = this.visit(state, history);
     this.open(exclusion, except);
     let hit = -1;
     let enter = 1;
-    const pricing = this.pricing(state, contexts);
-    for (let i = 0; i < pricing.length; i++) {
-      const context = pricing[i];
+    const pricing = this.pricing(state);
+    for (let i = 0; i < pricing; i++) {
+      const context = contexts[i];
       // A context that has seen `sym` still has it left: the symbols ruled
       // out are `except` and those of contexts that had not seen it, so
       // it has a cell.
@@ -426,21 +455,19 @@ export class ContextModel {
     this.checkHistory(history);
     const state = this.message(dec);
     const { exclusion } = state;
-    const contexts = this.visit(dec, history);
+    const contexts = this.visit(state, history);
     this.open(exclusion, except);
     let hit = -1;
     let sym = 0;
     let enter = 1;
-    const pricing = this.pricing(state, contexts);
-    for (let i = 0; i < pricing.length; i++) {
-      const context = pricing[i];
-      const scan = this.scan(context, exclusion, -1);
+    const pricing = this.pricing(state);
+    for (let i = 0; i < pricing; i++) {
+      const context = contexts[i];
+      const scan = this.tally(context, exclusion);
       const cell = this.cell(state, i, scan);
       if (cell !== undefined) {
         const [hits, escapes] = cell;
-        const escaped = dec.parseWeighted(hits + escapes, (r) =>
-          r >= hits ? [true, hits, escapes] : [false, 0, hits]
-        );
+        const escaped = dec.parseSplit(hits, hits + escapes);
         learnCell(cell, escaped, dec.journal);
         if (!escaped) {
           const at = readLeft(dec, context, exclusion, scan.sum);
@@ -469,7 +496,7 @@ export class ContextModel {
   learn(side: Encoder | Decoder, sym: number, row: number, history: readonly number[]): void {
     this.check(sym, row, history);
     const state = this.message(side);
-    this.teach(state, this.visit(side, history), sym, 1, -1);
+    this.teach(state, this.visit(state, history), sym, 1, -1);
     this.setTop(state, false);
     this.prior.learn(side, sym, row);
   }
@@ -593,14 +620,39 @@ export class ContextModel {
     return scan;
   }
 
+  /**
+   * `context` under the exclusion as `scan` gives it for a symbol it has
+   * not seen: how many symbols it has left and their counts' sum.
+   */
+  private tally(context: Context, exclusion: Exclusion): Scan {
+    const scan = this.scratch;
+    const { syms, counts } = context;
+    if (exclusion.count === 0) {
+      scan.left = syms.length;
+      scan.sum = context.total;
+      return scan;
+    }
+    let left = 0;
+    let sum = 0;
+    for (let j = 0; j < syms.length; j++) {
+      if (!exclusion.has(syms[j])) {
+        left++;
+        sum += counts[j];
+      }
+    }
+    scan.left = left;
+    scan.sum = sum;
+    return scan;
+  }
+
   /** This message's contexts on `side`. */
   private message(side: Encoder | Decoder): Contexts {
     return this.messages.get(side);
   }
 
-  /** The contexts that price the next symbol: none until the warm-up is over. */
-  private pricing(state: Contexts, contexts: readonly Context[]): readonly Context[] {
-    return state.coded >= WARMUP ? contexts : [];
+  /** How many of the contexts, highest order first, price the next symbol: none until the warm-up is over. */
+  private pricing(state: Contexts): number {
+    return state.coded >= WARMUP ? this.orders.length : 0;
   }
 
   /**
@@ -649,8 +701,8 @@ export class ContextModel {
    * contexts. A rollback drops the newest contexts first, so the ids in use
    * stay distinct and match the decoder's.
    */
-  private visit(side: Encoder | Decoder, history: readonly number[]): Context[] {
-    const { tables, journal } = this.message(side);
+  private visit(state: Contexts, history: readonly number[]): Context[] {
+    const { tables, journal } = state;
     const { visited } = this;
     let parent: Context | undefined;
     for (let i = this.orders.length - 1; i >= 0; i--) {

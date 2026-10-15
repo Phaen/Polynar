@@ -161,6 +161,29 @@ describe('writeExcluded and readExcluded', () => {
   it.each([
     ['a Fenwick with empty buckets', () => new Fenwick([3, 0, 1, 0, 5, 2, 0, 9])],
     ['a static table', () => staticTable(buildWeights([2, 1, 5, 1, 1, 3, 8, 2], 8, 'w'))],
+    [
+      'a table that does not locate its own residuals',
+      (): Table => {
+        const fenwick = new Fenwick([3, 0, 1, 0, 5, 2, 0, 9]);
+        return {
+          size: fenwick.size,
+          total: fenwick.total,
+          cum: (pos) => fenwick.cum(pos),
+          freq: (pos) => fenwick.freq(pos),
+        };
+      },
+    ],
+    [
+      'a large static table, more members excluded than the first room',
+      () =>
+        staticTable(
+          buildWeights(
+            Array.from({ length: 700 }, (_, i) => 1 + (i % 7)),
+            700,
+            'w'
+          )
+        ),
+    ],
   ])('round-trip members of %s with members excluded', (_name, build) => {
     const table: Table = build();
     const random = mulberry32(table.total);
