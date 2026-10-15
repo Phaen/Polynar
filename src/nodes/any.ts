@@ -289,15 +289,16 @@ const TAG_BY_KIND = new Map<Kind, number>([
 ]);
 
 /** The tags whose node each key builds for itself under `.adaptive()`. */
-const OWN_TAGS = [TAG_INT, TAG_STRING, TAG_ARRAY, TAG_OBJECT, TAG_MAP, TAG_SET];
+const OWN_TAGS = [TAG_INT, TAG_FLOAT, TAG_STRING, TAG_ARRAY, TAG_OBJECT, TAG_MAP, TAG_SET];
 
 /**
  * The nodes behind the tags, in tag order: the default scalars, then the
- * given int, string, array, record, map and set nodes, then the raw bytes,
- * then the hints. A node left out is built on first use.
+ * given int, float, string, array, record, map and set nodes, then the raw
+ * bytes, then the hints. A node left out is built on first use.
  */
 function tagNodes(
   int: PNode<number> | undefined,
+  float: PNode<number> | undefined,
   text: PNode<string> | undefined,
   array: PNode<AnyValue[]> | undefined,
   record: PNode<{ [key: string]: AnyValue }> | undefined,
@@ -311,7 +312,7 @@ function tagNodes(
     ANY_FALSE,
     ANY_TRUE,
     int,
-    ANY_FLOAT,
+    float,
     ANY_BIGINT,
     text,
     ANY_DATE,
@@ -757,6 +758,7 @@ export class PAny extends PNode<AnyValue> {
         members(tiers.length, { weights: tiers }, 'p.any'),
         tagNodes(
           ANY_INT,
+          ANY_FLOAT,
           ANY_STRING,
           new PArray<AnyValue>(this),
           new PCollection(RECORD, ANY_STRING, this),
@@ -796,13 +798,14 @@ export class PAny extends PNode<AnyValue> {
 
   /**
    * Learns as the message goes on, a schema built on the fly: each key name
-   * gets its own tag table, ints, strings, arrays, records, maps and sets,
-   * all adaptive, the first time it appears, and keeps them wherever it
+   * gets its own tag table, ints, floats, strings, arrays, records, maps
+   * and sets, all adaptive, the first time it appears, and keeps them wherever it
    * appears again; an array's items sit under its key with `[]` added, and
    * values outside any record under a key of their own. A key's tables
-   * start from what every key learned so far. Ints and strings each pick
-   * their plain spelling or the difference from the key's previous one, as
-   * `p.string().adaptive()` does; strings, key lists and whole arrays and records equal to an earlier one
+   * start from what every key learned so far. Ints, floats and strings
+   * each pick their plain spelling or the difference from the key's previous
+   * one, as their nodes' `.adaptive()` does, and floats learn their decimal
+   * places; strings, key lists and whole arrays and records equal to an earlier one
    * are recalled, from the key's own first, then from every key's, and the
    * characters of new strings and keys learn across the whole message, as
    * under `p.string().adaptive()`. Hints are used in their own adaptive
@@ -856,8 +859,8 @@ export class PAny extends PNode<AnyValue> {
   /**
    * The codec of key `key`, or the shared one past `MAX_KEYS` when
    * undefined, its adaptive tables starting from the roots' lineages, or
-   * rooting them when `roots`. Its int, string, array, record, map and set
-   * nodes are built on first use; the shared codec's arrays, maps and sets
+   * rooting them when `roots`. Its int, float, string, array, record, map
+   * and set nodes are built on first use; the shared codec's arrays, maps and sets
    * hold values of the shared codec too.
    */
   private _build(key: string | undefined, roots = false): AnyCodec {
@@ -870,6 +873,8 @@ export class PAny extends PNode<AnyValue> {
       switch (tag) {
         case TAG_INT:
           return new PInt().adaptive(adaptive);
+        case TAG_FLOAT:
+          return new PFloat().adaptive(adaptive);
         case TAG_STRING:
           return new PRecall(new PRecall(new PString().adaptive(adaptive), same, texts), same);
         case TAG_ARRAY:
@@ -893,6 +898,7 @@ export class PAny extends PNode<AnyValue> {
       this,
       members(tiers.length, { weights: tiers, adaptive: options(learning.tagRoot) }, 'p.any'),
       tagNodes(
+        undefined,
         undefined,
         undefined,
         undefined,

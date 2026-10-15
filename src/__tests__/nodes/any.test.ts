@@ -45,8 +45,8 @@ const LEARNING_VALUE = {
   big: -12n,
 };
 const LEARNING_BYTES = [
-  41, 173, 165, 188, 236, 209, 61, 242, 171, 23, 190, 246, 229, 247, 86, 196, 201, 109, 76, 215, 70,
-  27, 46, 47, 91, 221, 139, 122, 116, 146, 31, 123, 162, 131, 147, 169, 233, 142, 14,
+  27, 184, 176, 250, 135, 145, 97, 208, 155, 146, 200, 100, 60, 75, 84, 114, 113, 30, 239, 252, 102,
+  36, 113, 19, 142, 249, 90, 10, 19, 236, 123, 174, 79, 183, 175, 89, 113, 131, 205,
 ];
 
 /** The tags of the kinds the hand-built messages use. */
@@ -683,6 +683,17 @@ describe('p.any().adaptive() per key', () => {
     expect(trip(node, rows)).toEqual(rows);
     const ids = rows.map(({ id }) => ({ id }));
     expect(node.encode(ids).length).toBeLessThan(ids.length);
+  });
+
+  it('learns the decimals of each key apart', () => {
+    const rows = Array.from({ length: 100 }, (_, i) => ({
+      price: ((i * 7919) % 10000) / 100,
+      at: [52 + i / 1e4, -0, NaN, 0.1 + 0.2],
+    }));
+    const node = p.any().adaptive();
+    expect(trip(node, rows)).toEqual(rows);
+    const prices = rows.map(({ price }) => ({ price }));
+    expect(node.encode(prices).length).toBeLessThan(p.any().encode(prices).length / 2);
   });
 
   it('starts a new key from what every key learned', () => {

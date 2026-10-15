@@ -6,7 +6,7 @@
  * the spelling, and zero is a selector state of its own.
  */
 
-import { p, Encoder, CorruptInputError } from '../../index';
+import { p, Encoder, CorruptInputError, type PNode } from '../../index';
 import {
   simplestInInterval,
   simplestDyadic,
@@ -19,6 +19,8 @@ import {
   roundToSignificand,
   doubleFrom,
   DEFAULT_FLOAT_WEIGHTS,
+  placesOf,
+  digitsAt,
 } from '../../nodes/float';
 import { buildWeights, writeTable } from '../../nodes/weights';
 import { mulberry32 } from '../support';
@@ -269,6 +271,103 @@ describe('Schema float', () => {
     expect(() => p.float().decode(spelled(sel, significand))).toThrow(
       new CorruptInputError(message)
     );
+  });
+
+  describe('adaptive', () => {
+    /** Whether every value comes back bit-exact through `node`, in one message. */
+    const exact = (node: PNode<number[]>, values: number[]): boolean =>
+      node.decode(node.encode(values)).every((back, i) => Object.is(back, values[i]));
+
+    const rand = mulberry32(0x5e);
+    const prices = Array.from({ length: 200 }, () => Math.round(rand() * 100000) / 100);
+    const doubles = Array.from({ length: 200 }, () => rand() * 2 - 1);
+
+    it.each([
+      ['mixed', [0, -0, 1, -2.5, 0.1, 0.1 + 0.2, 1 / 3, NaN, Infinity, -Infinity, 5e-324, 1e21]],
+      ['prices', prices],
+      ['random doubles', doubles],
+      ['past the safe digits', [9e15, 0.5, -9e15, 0.25, 2 ** 53, 1e-15, 123.456]],
+      ['zeros after small negatives', [-0.04, 0, -0.4, 0, 0, -0.3]],
+      ['places dropping', [0.123456789012345, 1234.5, 1.25, 1.5, 2]],
+    ])('round-trips %s bit-exact', (_name, values) => {
+      expect(exact(p.array(p.float().adaptive()), values)).toBe(true);
+      expect(exact(p.array(p.float().adaptive({ window: 16 })), values)).toBe(true);
+    });
+
+    it('spells short decimals as their digits, a drifting series as differences', () => {
+      const plain = p.array(p.float()).encode(prices).length;
+      expect(p.array(p.float().adaptive()).encode(prices).length).toBeLessThan(plain * 0.6);
+      let at = 52.1;
+      const track = Array.from(
+        { length: 200 },
+        () => (at = Math.round((at + rand() / 1e3) * 1e6) / 1e6)
+      );
+      expect(exact(p.array(p.float().adaptive()), track)).toBe(true);
+      expect(p.array(p.float().adaptive()).encode(track).length).toBeLessThan(
+        p.array(p.float()).encode(track).length * 0.3
+      );
+    });
+
+    it('spells a value as a double where that is cheaper', () => {
+      const plain = p.array(p.float()).encode(doubles).length;
+      expect(p.array(p.float().adaptive()).encode(doubles).length).toBeLessThan(plain * 1.01);
+    });
+
+    it('keeps the weights of the double spelling', () => {
+      const weighted = p.array(p.float().weights({ other: 9 }).adaptive());
+      expect(weighted.encode(doubles)).toEqual(
+        p.array(p.float().adaptive().weights({ other: 9 })).encode(doubles)
+      );
+      expect(weighted.encode(doubles)).not.toEqual(p.array(p.float().adaptive()).encode(doubles));
+    });
+
+    it.each([null, '1', 1n])('rejects the non-number %p', (value) => {
+      expect(() =>
+        p
+          .float()
+          .adaptive()
+          .encode(value as never)
+      ).toThrow(/^p\.float expected a number, got /);
+    });
+  });
+});
+
+describe('placesOf', () => {
+  it.each([
+    [0, 0],
+    [123, 0],
+    [2.5, 1],
+    [0.123456789012345, 15],
+    [-0.000123, 6],
+    [9e15, 0],
+  ])('gives %p the places %p', (value, places) => {
+    expect(placesOf(value)).toBe(places);
+  });
+
+  it.each([-0, NaN, Infinity, 0.1 + 0.2, 1 / 3, 5e-324, 2 ** 53, 1e21])(
+    'spells %p as a double',
+    (value) => {
+      expect(placesOf(value)).toBe(16);
+    }
+  );
+});
+
+describe('digitsAt', () => {
+  it.each([
+    [2.9, 1, 29],
+    [2.9, 2, 290],
+    [-1.5, 3, -1500],
+    [7, 0, 7],
+  ])('gives %p at %p places the digits %p', (value, places, digits) => {
+    expect(digitsAt(value, places)).toBe(digits);
+  });
+
+  it.each([
+    [0.25, 1],
+    [1234.5, 15],
+    [2 ** 53, 0],
+  ])('gives %p no digits at %p places', (value, places) => {
+    expect(digitsAt(value, places)).toBeUndefined();
   });
 });
 

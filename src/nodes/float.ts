@@ -9,6 +9,11 @@ import { PNode } from './base';
 import { describe } from './path';
 import type { Kind } from './guards';
 import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
+import { AdaptivePrior, checkAdaptation, lineageOf, type AdaptiveOptions } from './adaptive';
+import { decimalPlaces } from './decimal';
+import { Delta, IndexRange } from './lattice';
+import { magnitude } from './magnitude';
+import { ModeChoice, type Method } from './methods';
 
 // Scratch views for splitting a double into its IEEE-754 fields and back.
 // Both views share one buffer, so platform endianness cancels out; the wire
@@ -448,6 +453,144 @@ export function doubleFrom(exponent: number, mantissa: bigint): number {
   return FLOAT_SCRATCH[0];
 }
 
+/** The most decimal places a value is spelled at as a decimal under `.adaptive()`. */
+const MAX_PLACES = 15;
+/** The places symbol of a value spelled as a double instead of a decimal. */
+const AS_DOUBLE = MAX_PLACES + 1;
+/** 10^places for every places symbol of a decimal, each exact. */
+const POWERS = Array.from({ length: MAX_PLACES + 1 }, (_, places) => 10 ** places);
+const MAX_SAFE = Number.MAX_SAFE_INTEGER;
+
+/**
+ * The digits of `value` at `places` decimal places: the safe integer that,
+ * divided by 10^places, gives it back exactly, if there is one.
+ */
+export function digitsAt(value: number, places: number): number | undefined {
+  const digits = Math.round(value * POWERS[places]) + 0;
+  return Math.abs(digits) <= MAX_SAFE && digits / POWERS[places] === value ? digits : undefined;
+}
+
+/**
+ * The fewest decimal places `value` has digits at, or `AS_DOUBLE` when it
+ * has none within `MAX_PLACES` or is -0, whose digits would read back as 0.
+ */
+export function placesOf(value: number): number {
+  const places = Object.is(value, -0) ? null : decimalPlaces(value);
+  return places === null || digitsAt(value, places) === undefined ? AS_DOUBLE : places;
+}
+
+/** A side's previous decimal of one node in the message: both undefined before its first. */
+interface Previous {
+  value?: number;
+  /** The places it was spelled at. */
+  places?: number;
+}
+
+/**
+ * The spelling `.adaptive()` gives a float: a learned symbol naming its
+ * decimal places, or that it is spelled as a double, then its digits as an
+ * integer, by a learned mode between the plain magnitude and the difference
+ * from the previous decimal, rounded to the same places.
+ */
+class LearnedDecimal {
+  private readonly places: AdaptivePrior;
+  private readonly delta: Delta;
+  private readonly mode: ModeChoice<number>;
+
+  constructor(adaptive: AdaptiveOptions, who: string) {
+    const { window } = checkAdaptation(adaptive, who);
+    const symbols = AS_DOUBLE + 1;
+    this.places = new AdaptivePrior(
+      [new Array<number>(symbols).fill(1)],
+      symbols,
+      window,
+      who,
+      lineageOf(adaptive)
+    );
+    const range = new IndexRange(who, undefined, undefined, undefined, adaptive);
+    this.delta = new Delta(magnitude(adaptive, true, who), range.low, range.high);
+    // An unbounded adaptive range always learns.
+    this.mode = new ModeChoice([range.learned as Method<number>, this.delta], adaptive, who);
+  }
+
+  /** This message's previous decimal on `side`. */
+  private previous(side: Encoder | Decoder): Previous {
+    return side.state<Previous>(this, () => ({}));
+  }
+
+  /**
+   * Points the difference at the previous decimal's digits at `places`,
+   * rounded and clamped to the safe integers, once there is one. A -0 from
+   * the rounding counts as 0, so no difference reads back as -0.
+   */
+  private aim(side: Encoder | Decoder, places: number): void {
+    const { value } = this.previous(side);
+    if (value !== undefined) {
+      const origin = Math.round(value * POWERS[places]) + 0;
+      this.delta.follow(side, Math.max(-MAX_SAFE, Math.min(MAX_SAFE, origin)));
+    }
+  }
+
+  /** Makes `value` the previous decimal on `side`. */
+  private remember(side: Encoder | Decoder, value: number, places: number): void {
+    const previous = this.previous(side);
+    const before = previous.value;
+    const beforePlaces = previous.places;
+    previous.value = value;
+    previous.places = places;
+    if (side.journal?.active === true) {
+      side.journal.call(() => {
+        previous.value = before;
+        previous.places = beforePlaces;
+      });
+    }
+  }
+
+  /**
+   * Writes `value`: its places symbol, then its digits, or `double` when it
+   * is spelled as a double. A value with decimal places takes whichever the
+   * encoder prices cheapest of its fewest, the previous decimal's when it
+   * has digits there too, and the double, in that order on a tie.
+   */
+  write(enc: Encoder, value: number, double: () => void): void {
+    const places = placesOf(value);
+    if (places === AS_DOUBLE) {
+      this.spell(enc, value, AS_DOUBLE, double);
+      return;
+    }
+    const last = this.previous(enc).places;
+    const symbols =
+      last !== undefined && last > places && digitsAt(value, last) !== undefined
+        ? [places, last, AS_DOUBLE]
+        : [places, AS_DOUBLE];
+    enc.decide(symbols, symbols, (symbol) => this.spell(enc, value, symbol, double));
+  }
+
+  /** Writes `value` at places symbol `symbol`, at which it has digits unless it is `AS_DOUBLE`. */
+  private spell(enc: Encoder, value: number, symbol: number, double: () => void): void {
+    this.places.write(enc, symbol);
+    if (symbol === AS_DOUBLE) {
+      double();
+      return;
+    }
+    this.aim(enc, symbol);
+    this.mode.write(enc, digitsAt(value, symbol) as number);
+    this.remember(enc, value, symbol);
+  }
+
+  /** Reads a value `write` wrote, through `double` for one spelled as a double. */
+  read(dec: Decoder, double: () => number): number {
+    const places = this.places.read(dec);
+    if (places === AS_DOUBLE) {
+      return double();
+    }
+    this.aim(dec, places);
+    const value = this.mode.read(dec) / POWERS[places];
+    this.remember(dec, value, places);
+    return value;
+  }
+}
+
 /**
  * IEEE-754 double, bit-exact apart from NaN payloads. The significand
  * travels as the cheapest of four spellings — flat mantissa, simplest
@@ -466,12 +609,20 @@ export class PFloat extends PNode<number> {
   private readonly _forms: WeightTable;
   /** The selector at exponent code 0, where the zero state lives. */
   private readonly _formsAtBias: WeightTable;
+  private readonly _adaptive?: AdaptiveOptions;
+  /** Set under `.adaptive()`: the decimal spelling, which falls back on the double's. */
+  private readonly _learned?: LearnedDecimal;
 
   constructor(
     weights?: Partial<FloatWeights>,
-    base: Readonly<FloatWeights> = DEFAULT_FLOAT_WEIGHTS
+    base: Readonly<FloatWeights> = DEFAULT_FLOAT_WEIGHTS,
+    adaptive?: AdaptiveOptions
   ) {
     super();
+    this._adaptive = adaptive;
+    if (adaptive !== undefined) {
+      this._learned = new LearnedDecimal(adaptive, 'p.float');
+    }
     const resolved = { ...base };
     for (const key of FLOAT_WEIGHT_KEYS) {
       const weight = weights?.[key];
@@ -496,10 +647,39 @@ export class PFloat extends PNode<number> {
    * constraint, and part of the wire format.
    */
   weights(w: Partial<FloatWeights>): PFloat {
-    return new PFloat(w, this._declared);
+    return new PFloat(w, this._declared, this._adaptive);
+  }
+
+  /**
+   * Let the node learn the message's numbers: each value names its decimal
+   * places, learned, then its digits as an integer, plainly or as the
+   * difference from the previous decimal at the same places, whichever the
+   * encoder prices cheaper, each on a learned magnitude scale. A value with
+   * no exact decimal form within 15 places, -0, NaN and the infinities name
+   * the double instead and are spelled as without. `window` is how many
+   * observations the counts hold before they halve (1024 when left out).
+   * Part of the wire format.
+   */
+  adaptive(options?: AdaptiveOptions): PFloat {
+    return new PFloat(undefined, this._declared, options ?? {});
   }
 
   _write(enc: Encoder, value: number): void {
+    if (this._learned === undefined) {
+      this._double(enc, value);
+    } else {
+      this._learned.write(enc, value, () => this._double(enc, value));
+    }
+  }
+
+  _read(dec: Decoder): number {
+    return this._learned === undefined
+      ? this._readDouble(dec)
+      : this._learned.read(dec, () => this._readDouble(dec));
+  }
+
+  /** Writes `value` as a double. */
+  private _double(enc: Encoder, value: number): void {
     if (Number.isNaN(value)) {
       enc.compose(0, 2);
       enc.composeTerm(ZIGZAG_NAN);
@@ -561,7 +741,8 @@ export class PFloat extends PNode<number> {
     enc.compose(Number(form.p - form.q), Number(form.q));
   }
 
-  _read(dec: Decoder): number {
+  /** Reads a double `_double` wrote. */
+  private _readDouble(dec: Decoder): number {
     const sign = BigInt(dec.parse(2));
     const zigzag = dec.parseTerm();
     if (zigzag === ZIGZAG_INFINITY) {
