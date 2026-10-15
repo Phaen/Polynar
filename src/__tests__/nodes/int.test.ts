@@ -51,6 +51,18 @@ describe('Schema int', () => {
     expect(p.int().min(0)._fromDigit).toBeUndefined();
     expect(p.int().min(0).max(1).weights([1, 2])._fromDigit).toBeUndefined();
   });
+
+  it('maps a value to its digit only with both bounds and no prior, throwing as a write does', () => {
+    const node = p.int().min(-5).max(5);
+    expect(node._toDigit?.(-5)).toBe(0);
+    expect(node._toDigit?.(5)).toBe(10);
+    expect(() => node._toDigit?.(1.5)).toThrow(new TypeError('p.int expected an integer, got 1.5'));
+    expect(() => node._toDigit?.(6)).toThrow(new RangeError('Value 6 is above the maximum 5'));
+    expect(() => node._toDigit?.(-6)).toThrow(new RangeError('Value -6 is below the minimum -5'));
+    expect(p.int()._toDigit).toBeUndefined();
+    expect(p.int().min(0)._toDigit).toBeUndefined();
+    expect(p.int().min(0).max(1).weights([1, 2])._toDigit).toBeUndefined();
+  });
 });
 
 describe('p.int adaptive', () => {

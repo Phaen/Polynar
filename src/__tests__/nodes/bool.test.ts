@@ -14,6 +14,14 @@ describe('Schema bool', () => {
   });
 });
 
+describe('p.bool digits', () => {
+  it('map true to 0 and false to 1, and back', () => {
+    const node = p.bool();
+    expect([node._toDigit(true), node._toDigit(false)]).toEqual([0, 1]);
+    expect([node._fromDigit(0), node._fromDigit(1)]).toEqual([true, false]);
+  });
+});
+
 describe('p.bool adaptive', () => {
   const plain = p.bool();
   const weights = [9, 1];

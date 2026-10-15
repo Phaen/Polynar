@@ -71,11 +71,7 @@ export class PEnum<T> extends PNode<T> {
   }
 
   _write(enc: Encoder, value: T): void {
-    const pos = this._list.indexOf(value);
-    if (pos === -1) {
-      throw new RangeError(`Value ${describe(value)} is not ${oneOf(this._list)}`);
-    }
-    this._members.write(enc, pos);
+    this._members.write(enc, this._toDigit(value));
   }
 
   _read(dec: Decoder): T {
@@ -85,5 +81,14 @@ export class PEnum<T> extends PNode<T> {
   /** `digit` lies in `[0, _radix)`, as a digit read in `_radix` does. */
   _fromDigit(digit: number): T {
     return this._list[digit];
+  }
+
+  /** The member's position in the list, which is also its member index under a prior. */
+  _toDigit(value: T): number {
+    const pos = this._list.indexOf(value);
+    if (pos === -1) {
+      throw new RangeError(`Value ${describe(value)} is not ${oneOf(this._list)}`);
+    }
+    return pos;
   }
 }

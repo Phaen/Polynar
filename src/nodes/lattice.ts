@@ -49,6 +49,11 @@ export class IndexRange {
   readonly radix?: number;
   /** Set with `radix`: the index `digit` steps above min, as a digit read in `radix` stands for. */
   readonly fromDigit?: (digit: number) => number;
+  /**
+   * Set with `radix`: the digit `write` composes for `index`, throwing exactly
+   * as `write` would.
+   */
+  readonly toDigit?: (index: number, subject?: () => string) => number;
   /** The adaptive prior and the min its member 0 stands for. */
   private readonly learner?: { readonly prior: AdaptivePrior; readonly lo: number };
   private readonly show: (index: number) => string;
@@ -95,6 +100,10 @@ export class IndexRange {
     ) {
       this.radix = hi - lo + 1;
       this.fromDigit = (digit) => lo + digit;
+      this.toDigit = (index, subject = () => `Value ${show(index)}`) => {
+        checkIndex(index, lo, hi, subject, show);
+        return index - lo;
+      };
     }
     this.show = show;
   }
@@ -240,8 +249,12 @@ export function lengthRange(bounds: LengthBounds, who: string, noun: string): In
   return new IndexRange(who, min ?? 0, max, prior, adaptive);
 }
 
-/** Refuses a second `min` or `max` on one node: a bound is set once. */
-export function checkUnset(current: unknown, who: string, bound: 'min' | 'max'): void {
+/** Refuses a second `min`, `max` or order restriction on one node: each is set once. */
+export function checkUnset(
+  current: unknown,
+  who: string,
+  bound: 'min' | 'max' | 'sorted' | 'unique' | 'unordered'
+): void {
   if (current !== undefined) {
     throw new TypeError(`${who} ${bound} is already set`);
   }

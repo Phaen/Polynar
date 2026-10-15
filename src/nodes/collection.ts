@@ -5,6 +5,10 @@ import type { Kind } from './guards';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
 import type { AdaptiveOptions } from './adaptive';
+import { checkOrdinal, ordinalDigits, readOrdinal, writeOrdinal, type Order } from './ordinal';
+
+/** The keys of an unordered collection: distinct by construction, so a set of digits. */
+const UNORDERED: Order = { unordered: true, unique: true };
 
 /**
  * How one JS collection type sits on the collection wire: how many entries
@@ -70,8 +74,16 @@ export class PCollection<T> extends PNode<T> {
   private readonly _value?: PNode<any>;
   private readonly _bounds: LengthBounds;
   private readonly _count: IndexRange;
+  /** Set by `.unordered()`. */
+  private readonly _unordered?: true;
 
-  constructor(layout: Layout<T>, key: PNode<any>, value?: PNode<any>, bounds: LengthBounds = {}) {
+  constructor(
+    layout: Layout<T>,
+    key: PNode<any>,
+    value?: PNode<any>,
+    bounds: LengthBounds = {},
+    unordered?: true
+  ) {
     super();
     this._layout = layout;
     this._key = key;
@@ -79,6 +91,7 @@ export class PCollection<T> extends PNode<T> {
     this._bounds = bounds;
     this._count = lengthRange(bounds, layout.who, 'count');
     this._kinds = [layout.kind];
+    this._unordered = unordered;
   }
 
   /** Require at least `n` entries. A raised floor packs the count denser. */
@@ -136,23 +149,59 @@ export class PCollection<T> extends PNode<T> {
     return this._with({ ...this._bounds, adaptive: options ?? {} });
   }
 
-  private _with(bounds: LengthBounds): PCollection<T> {
-    return new PCollection<T>(this._layout, this._key, this._value, bounds);
+  /**
+   * Let the insertion order go: entries encode in any order and decode in
+   * ascending key order, by the key's value order, which saves what the
+   * order would cost. Takes keys (a set's items) of bounded p.int, p.date or
+   * p.decimal, or of p.enum or p.bool, without weights or adaptive.
+   */
+  unordered(): PCollection<T> {
+    const { who } = this._layout;
+    checkUnset(this._unordered, who, 'unordered');
+    checkOrdinal(this._key, who, 'unordered', this._value === undefined ? 'items' : 'keys');
+    return this._with(this._bounds, true);
+  }
+
+  private _with(bounds: LengthBounds, unordered = this._unordered): PCollection<T> {
+    return new PCollection<T>(this._layout, this._key, this._value, bounds, unordered);
+  }
+
+  /**
+   * Where an entry sits in an error: a map or record entry with a string key
+   * by its key, a set's item and any other entry by its position.
+   */
+  private _segment(key: unknown, i: number): string | number {
+    return this._value !== undefined && typeof key === 'string' ? key : i;
   }
 
   _write(enc: Encoder, value: T): void {
     const { name } = this._layout;
     const size = this._layout.size(value);
     this._count.write(enc, size, () => `${name} size ${size}`);
+    if (this._unordered !== undefined) {
+      const entries = [...this._layout.entries(value)];
+      const keys = entries.map(([key]) => key);
+      // checkOrdinal accepted the key when the collection was made unordered.
+      const { digits, at } = ordinalDigits(this._key, keys, UNORDERED, (j) =>
+        this._segment(keys[j], j)
+      );
+      writeOrdinal(enc, digits, this._key._radix as number, UNORDERED);
+      for (const j of at) {
+        try {
+          this._value?._write(enc, entries[j][1]);
+        } catch (error) {
+          throw atPath(error, this._segment(keys[j], j));
+        }
+      }
+      return;
+    }
     let i = 0;
     for (const [key, item] of this._layout.entries(value)) {
       try {
         this._key._write(enc, key);
         this._value?._write(enc, item);
       } catch (error) {
-        // A map or record entry with a string key is named by its key; a
-        // set's item and any other entry by its position.
-        throw atPath(error, this._value !== undefined && typeof key === 'string' ? key : i);
+        throw atPath(error, this._segment(key, i));
       }
       i++;
     }
@@ -161,6 +210,14 @@ export class PCollection<T> extends PNode<T> {
   _read(dec: Decoder): T {
     const count = this._count.read(dec);
     const entries = new Map<unknown, unknown>();
+    if (this._unordered !== undefined) {
+      const keys = this._key;
+      const fromDigit = keys._fromDigit as (digit: number) => unknown;
+      for (const digit of readOrdinal(dec, keys._radix as number, count, UNORDERED)) {
+        entries.set(fromDigit.call(keys, digit), this._value?._read(dec));
+      }
+      return this._layout.build(entries);
+    }
     for (let i = 0; i < count; i++) {
       const key = this._key._read(dec);
       // A repeated key overwrites, as it does in an object literal.

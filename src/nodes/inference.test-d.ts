@@ -154,6 +154,17 @@ const _prices: Equals<Infer<typeof Prices>, { [key: string]: number | undefined 
 const Tags = p.set(p.enum(['a', 'b'])).length(2);
 const _tags: Equals<Infer<typeof Tags>, Set<'a' | 'b'>> = true;
 
+// Order restrictions leave the inferred type alone.
+const Ids = p.array(p.int().min(0).max(99)).unique().sorted().max(5);
+const _ids: Equals<Infer<typeof Ids>, number[]> = true;
+const Bag = p.array(p.enum(['x', 'y'])).unordered();
+const _bag: Equals<Infer<typeof Bag>, ('x' | 'y')[]> = true;
+const Flags = p
+  .map(p.enum(['a', 'b']), p.bool())
+  .unordered()
+  .max(2);
+const _flags: Equals<Infer<typeof Flags>, Map<'a' | 'b', boolean>> = true;
+
 // A binary node decodes to the class it was given.
 const Samples = p.binary(Int16Array);
 const _int16: Equals<Infer<typeof Samples>, Int16Array> = true;

@@ -252,6 +252,13 @@ describe('IndexRange', () => {
     expect(range.fromDigit?.(0)).toBe(-2);
     expect(range.fromDigit?.(7)).toBe(5);
     expect(range.fromDigit?.(-1)).toBe(-3);
+    expect(range.toDigit?.(-2)).toBe(0);
+    expect(range.toDigit?.(5)).toBe(7);
+    expect(() => range.toDigit?.(6)).toThrow(new RangeError('Value 6 is above the maximum 5'));
+    expect(() => range.toDigit?.(-3, () => 'Item')).toThrow(
+      new RangeError('Item is below the minimum -2')
+    );
+    expect(() => range.toDigit?.(0.5)).toThrow(new TypeError('Value 0.5 is not an integer'));
     for (const other of [
       new IndexRange('r'),
       new IndexRange('r', 0),
@@ -262,6 +269,7 @@ describe('IndexRange', () => {
     ]) {
       expect(other.radix).toBeUndefined();
       expect(other.fromDigit).toBeUndefined();
+      expect(other.toDigit).toBeUndefined();
     }
   });
 

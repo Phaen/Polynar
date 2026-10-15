@@ -229,35 +229,41 @@ An object with a fixed shape: `p.object({ x: p.int(), label: p.optional(p.string
 
 An array of one item type, stored with its length. Infers an array of the item's type. Arrays nest.
 
-| Method                                     | Description                                                                                                   |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| `.min(n: number)`                          | Lower bound on the item count; shorter arrays throw.                                                          |
-| `.max(n: number)`                          | Upper bound on the item count; longer arrays throw. With both bounds the count takes a fixed number of bits.  |
-| `.length(n: number)`                       | Fixed item count, the same as `.min(n).max(n)`; costs zero bits.                                              |
-| `.cdf(fn: (n: number) => number)`          | Prior over the item count, called with the count; needs `.max`.                                               |
-| `.weights(w: number[])`                    | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                           |
-| `.adaptive(options?: { window?: number })` | Prior over the item count that learns from the message; see [Priors that learn](#priors-that-learn-adaptive). |
+| Method                                     | Description                                                                                                        |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `.min(n: number)`                          | Lower bound on the item count; shorter arrays throw.                                                               |
+| `.max(n: number)`                          | Upper bound on the item count; longer arrays throw. With both bounds the count takes a fixed number of bits.       |
+| `.length(n: number)`                       | Fixed item count, the same as `.min(n).max(n)`; costs zero bits.                                                   |
+| `.cdf(fn: (n: number) => number)`          | Prior over the item count, called with the count; needs `.max`.                                                    |
+| `.weights(w: number[])`                    | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                                |
+| `.adaptive(options?: { window?: number })` | Prior over the item count that learns from the message; see [Priors that learn](#priors-that-learn-adaptive).      |
+| `.sorted()`                                | Items must be in ascending order; a smaller item after a larger one throws. Can't be combined with `.unordered()`. |
+| `.unique()`                                | Items must be distinct; a repeat throws.                                                                           |
+| `.unordered()`                             | Items are written in any order and decode in ascending order.                                                      |
+
+The last three need items with a fixed set of values: bounded `p.int`, `p.date` or `p.decimal`, `p.enum` or `p.bool`, without `.weights()` or `.adaptive()`. Ascending means by value, enum members in list order and `true` before `false`. Each restriction leaves fewer possible arrays, and the encoding drops exactly what it rules out: 1000 distinct sorted `u32` ids take about 2950 bytes instead of 4000, and a shuffled 52-card deck with `.unique()` 29 bytes instead of 38. `p.map`, `p.record` and `p.set` keys are distinct already, so there `.unordered()` alone does the same.
 
 ### `p.map(key: PNode, value: PNode)`
 
 A `Map` from one key type to one value type: `p.map(p.string(), p.int())` is `Map<string, number>`. Keys can be any node, and entries are stored with their count, in insertion order.
 
-| Method                                     | Description                                                                                                    |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| `.min(n: number)`                          | Lower bound on the entry count; smaller maps throw.                                                            |
-| `.max(n: number)`                          | Upper bound on the entry count; larger maps throw. With both bounds the count takes a fixed number of bits.    |
-| `.length(n: number)`                       | Fixed entry count, the same as `.min(n).max(n)`; costs zero bits.                                              |
-| `.cdf(fn: (n: number) => number)`          | Prior over the entry count, called with the count; needs `.max`.                                               |
-| `.weights(w: number[])`                    | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                            |
-| `.adaptive(options?: { window?: number })` | Prior over the entry count that learns from the message; see [Priors that learn](#priors-that-learn-adaptive). |
+| Method                                     | Description                                                                                                                         |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `.min(n: number)`                          | Lower bound on the entry count; smaller maps throw.                                                                                 |
+| `.max(n: number)`                          | Upper bound on the entry count; larger maps throw. With both bounds the count takes a fixed number of bits.                         |
+| `.length(n: number)`                       | Fixed entry count, the same as `.min(n).max(n)`; costs zero bits.                                                                   |
+| `.cdf(fn: (n: number) => number)`          | Prior over the entry count, called with the count; needs `.max`.                                                                    |
+| `.weights(w: number[])`                    | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                                                 |
+| `.adaptive(options?: { window?: number })` | Prior over the entry count that learns from the message; see [Priors that learn](#priors-that-learn-adaptive).                      |
+| `.unordered()`                             | Entries are written in any order and decode in ascending key order, so insertion order is lost; see [`p.array`](#parrayitem-pnode). |
 
 ### `p.record(value: PNode)`
 
-A plain object with any string keys and one value type: `p.record(p.int())` is `{ [key: string]: number }`. It's stored like `p.map(p.string(), value)` and decodes to a plain object. Unlike `p.object`, every key is written, so it suits dictionaries whose keys aren't known up front. A record counts as an object, so it can't sit next to `p.object` or `p.tagged` in a `p.union`. Same methods as `p.map`.
+A plain object with any string keys and one value type: `p.record(p.int())` is `{ [key: string]: number }`. It's stored like `p.map(p.string(), value)` and decodes to a plain object. Unlike `p.object`, every key is written, so it suits dictionaries whose keys aren't known up front. A record counts as an object, so it can't sit next to `p.object` or `p.tagged` in a `p.union`. Same methods as `p.map`, except that `.unordered()` throws, since string keys have no fixed set of values.
 
 ### `p.set(item: PNode)`
 
-A `Set` of one item type: `p.set(p.string())` is `Set<string>`. Items are stored with their count, in insertion order. Same methods as `p.map`, bounding and weighing the number of items.
+A `Set` of one item type: `p.set(p.string())` is `Set<string>`. Items are stored with their count, in insertion order. Same methods as `p.map`, bounding and weighing the number of items, and with `.unordered()` decoding the items in ascending order.
 
 ### `p.optional(node: PNode)`
 

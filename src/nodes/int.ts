@@ -6,6 +6,18 @@ import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 import type { AdaptiveOptions } from './adaptive';
 
+/**
+ * `value`, refused unless it is an integer. Strict, like every other node: a
+ * fractional value is off the integer lattice and throws — truncating it
+ * away would silently lose data.
+ */
+const checkInteger = (value: number): number => {
+  if (!Number.isInteger(value)) {
+    throw new TypeError(`p.int expected an integer, got ${describe(value)}`);
+  }
+  return value;
+};
+
 /** Integer (strict: non-integers throw). `p.int`. */
 export class PInt extends PNode<number> {
   readonly _kinds: readonly Kind[] = ['number'];
@@ -19,6 +31,10 @@ export class PInt extends PNode<number> {
     this._range = new IndexRange('p.int', min, max, prior, adaptive);
     this._radix = this._range.radix;
     this._fromDigit = this._range.fromDigit;
+    const toDigit = this._range.toDigit;
+    if (toDigit !== undefined) {
+      this._toDigit = (value) => toDigit(checkInteger(value), () => `Value ${value}`);
+    }
   }
 
   min(n: number): PInt {
@@ -65,13 +81,8 @@ export class PInt extends PNode<number> {
   }
 
   _write(enc: Encoder, value: number): void {
-    // Strict, like every other node: a fractional value is off the integer
-    // lattice and throws — truncating it away would silently lose data.
-    if (!Number.isInteger(value)) {
-      throw new TypeError(`p.int expected an integer, got ${describe(value)}`);
-    }
     // -0 packs as 0 on the lattice wire.
-    this._range.write(enc, value, () => `Value ${value}`);
+    this._range.write(enc, checkInteger(value), () => `Value ${value}`);
   }
 
   _read(dec: Decoder): number {

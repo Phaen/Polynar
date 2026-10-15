@@ -3,7 +3,7 @@
  * Arrays of items that read one plain digit (`_radix`) read as one run.
  */
 
-import { p, CorruptInputError, type PNode } from '../../index';
+import { p, CorruptInputError, type PArray, type PNode } from '../../index';
 import { mulberry32, trip } from '../support';
 
 const rand = mulberry32(0xa77a);
@@ -205,5 +205,171 @@ describe('p.array adaptive', () => {
     const cdf = new TypeError('p.array adaptive takes weights, not a cdf');
     expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
     expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
+  });
+});
+
+describe('Schema array order restrictions', () => {
+  const digit = p.int().min(0).max(9);
+  const shuffled = (n: number): number[] => {
+    const values = Array.from({ length: n }, (_, i) => i);
+    for (let i = n - 1; i > 0; i--) {
+      const j = below(i + 1);
+      [values[i], values[j]] = [values[j], values[i]];
+    }
+    return values;
+  };
+
+  it('codes a shuffled deck in log2 52! bits', () => {
+    // 225.6 bits, 29 bytes, where 52 free items take 296.4 bits, 38 bytes.
+    const deck = p.array(p.int().min(0).max(51)).length(52);
+    const value = shuffled(52);
+    expect(deck.unique().encode(value)).toHaveLength(29);
+    expect(deck.encode(value)).toHaveLength(38);
+    expect(trip(deck.unique(), value)).toEqual(value);
+  });
+
+  it('keeps sorted items in order and rejects a descent', () => {
+    const node = p.array(digit).sorted();
+    expect(trip(node, [1, 1, 4, 9])).toEqual([1, 1, 4, 9]);
+    expect(trip(node, [])).toEqual([]);
+    expect(() => node.encode([1, 4, 2])).toThrow(
+      new RangeError('[2]: Value 2 is below the one before it')
+    );
+    expect(() => node.encode([1, 10])).toThrow(
+      new RangeError('[1]: Value 10 is above the maximum 9')
+    );
+  });
+
+  it('keeps unique items in their order and rejects a repeat', () => {
+    const node = p.array(digit).unique();
+    expect(trip(node, [7, 2, 9, 0])).toEqual([7, 2, 9, 0]);
+    expect(() => node.encode([7, 2, 7])).toThrow(
+      new RangeError('[2]: Value 7 repeats an earlier one')
+    );
+    expect(() => node.encode([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9])).toThrow('[10]: Value 9 repeats');
+  });
+
+  it('codes sorted unique items as a set', () => {
+    // C(10, 4) = 210 sets, 8 bits with a fixed count.
+    const node = p.array(digit).sorted().unique().length(4);
+    expect(node.encode([1, 3, 5, 8])).toHaveLength(1);
+    expect(trip(node, [1, 3, 5, 8])).toEqual([1, 3, 5, 8]);
+    expect(() => node.encode([1, 3, 3, 8])).toThrow('[2]: Value 3 repeats an earlier one');
+    expect(() => node.encode([1, 5, 3, 8])).toThrow('[2]: Value 3 is below the one before it');
+  });
+
+  it('decodes unordered items ascending', () => {
+    const bag = p.array(digit).unordered();
+    expect(trip(bag, [5, 1, 5, 0])).toEqual([0, 1, 5, 5]);
+    const set = p.array(digit).unordered().unique();
+    expect(trip(set, [5, 1, 0])).toEqual([0, 1, 5]);
+    expect(() => set.encode([5, 1, 5])).toThrow('[2]: Value 5 repeats an earlier one');
+    // C(10, 4) sets against C(13, 4) = 715 multisets.
+    expect(set.length(4).encode([9, 0, 4, 2])).toHaveLength(1);
+    expect(bag.length(4).encode([9, 0, 4, 2])).toHaveLength(2);
+  });
+
+  it('orders items by their digits', () => {
+    const colours = ['red', 'green', 'blue'] as const;
+    expect(trip(p.array(p.enum(colours)).unordered(), ['blue', 'red', 'green'])).toEqual([
+      'red',
+      'green',
+      'blue',
+    ]);
+    expect(trip(p.array(p.bool()).unordered(), [false, true, false])).toEqual([true, false, false]);
+    expect(trip(p.array(p.decimal(0.5).min(-1).max(1)).sorted(), [-1, 0, 0.5])).toEqual([
+      -1, 0, 0.5,
+    ]);
+    const day = 86_400_000;
+    const dates = p
+      .array(
+        p
+          .date()
+          .min(0)
+          .max(day * 9)
+          .precision('day')
+      )
+      .unique()
+      .unordered();
+    expect(trip(dates, [new Date(day * 3), new Date(day)])).toEqual([
+      new Date(day),
+      new Date(day * 3),
+    ]);
+    // Two dates in one bucket are one value.
+    expect(() => dates.encode([new Date(day), new Date(day + 5)])).toThrow(
+      '[1]: Value "1970-01-02T00:00:00.005Z" repeats an earlier one'
+    );
+  });
+
+  it('keeps the restrictions through the count methods', () => {
+    const value = [9, 4, 6];
+    for (const node of [
+      p.array(digit).unique().min(1),
+      p.array(digit).unique().max(5),
+      p.array(digit).unique().length(3),
+      p.array(digit).unique().max(4).weights([1, 1, 1, 5, 1]),
+      p
+        .array(digit)
+        .unique()
+        .max(4)
+        .cdf((n) => n),
+      p.array(digit).unique().max(4).adaptive(),
+    ]) {
+      expect(trip(node, value)).toEqual(value);
+      expect(() => node.encode([1, 1, 1])).toThrow('[1]: Value 1 repeats an earlier one');
+    }
+    expect(trip(p.array(digit).max(5).sorted(), [1, 2])).toEqual([1, 2]);
+  });
+
+  it('round-trips random runs under every restriction', () => {
+    const item = p.int().min(-50).max(1000);
+    const ascending = (values: number[]) => [...values].sort((a, b) => a - b);
+    const free = () => Array.from({ length: below(80) }, () => below(1051) - 50);
+    const distinct = () => [...new Set(free())];
+    const cases: [PArray<number>, () => number[], (values: number[]) => number[]][] = [
+      [p.array(item).sorted(), () => ascending(free()), (v) => v],
+      [p.array(item).unique(), distinct, (v) => v],
+      [p.array(item).unordered(), free, ascending],
+      [p.array(item).sorted().unique(), () => ascending(distinct()), (v) => v],
+      [p.array(item).unordered().unique(), distinct, ascending],
+    ];
+    for (const [node, make, expected] of cases) {
+      for (let round = 0; round < 20; round++) {
+        const value = make();
+        expect(trip(node, value)).toEqual(expected(value));
+      }
+    }
+  });
+
+  it('rejects more unique items than the item has values as corrupt', () => {
+    const count = p.int().min(0).encode(3);
+    expect(() => p.array(p.bool()).unique().decode(count)).toThrow(CorruptInputError);
+  });
+
+  it('sets each restriction once, on items that have digits', () => {
+    const node = p.array(digit);
+    expect(() => node.sorted().sorted()).toThrow(new TypeError('p.array sorted is already set'));
+    expect(() => node.unique().unique()).toThrow('p.array unique is already set');
+    expect(() => node.unordered().unordered()).toThrow('p.array unordered is already set');
+    expect(() => node.sorted().unordered()).toThrow(
+      new TypeError('p.array takes sorted or unordered, not both')
+    );
+    expect(() => node.unordered().sorted()).toThrow('not both');
+    for (const item of [
+      p.int(),
+      p.string(),
+      p.enum(['a', 'b']).weights([1, 2]),
+      p.bool().adaptive(),
+    ]) {
+      for (const restrict of [
+        (a: PArray<unknown>) => a.sorted(),
+        (a: PArray<unknown>) => a.unique(),
+        (a: PArray<unknown>) => a.unordered(),
+      ]) {
+        expect(() => restrict(p.array(item as PNode<unknown>))).toThrow(
+          /^p\.array (sorted|unique|unordered) requires items of bounded p\.int/
+        );
+      }
+    }
   });
 });

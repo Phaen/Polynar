@@ -5,6 +5,8 @@
 import type { Base, Charset, OutputType, Radix } from './types';
 import { DEFAULT_BLOCK_BITS, DEFAULT_CHARSET } from './constants';
 
+const MAX_SAFE_BIG = BigInt(Number.MAX_SAFE_INTEGER);
+
 /**
  * `value` as a radix: an integer in [1, 2^53), else a TypeError or a
  * RangeError that calls it `name`.
@@ -68,6 +70,34 @@ export function log2Exact(n: Radix): number {
 export function bitLength(x: bigint): number {
   const hex = (x < 0n ? -x : x).toString(16);
   return (hex.length - 1) * 4 + (32 - Math.clz32(parseInt(hex[0], 16)));
+}
+
+/**
+ * The width of the low digits a radix past the safe integers splits into:
+ * the width of [2^32, 2^53), the window its top digit's radix then lands in.
+ */
+export const BIG_CHUNK_BITS = 21;
+
+/**
+ * How a radix past the safe integers spreads over safe digits: `chunks` low
+ * digits of 2^BIG_CHUNK_BITS states under a top digit of `top` states, the
+ * fewest chunks that make `top` = ceil(radix / 2^(BIG_CHUNK_BITS · chunks))
+ * a safe integer. One chunk fewer leaves a top of at least 2^53, so `top`
+ * lies in [2^32, 2^53), and the states past `radix` waste under 2^-31 bits.
+ * `radix` is a positive integer; a safe one takes no chunks.
+ */
+export function bigRadix(radix: bigint): { chunks: number; top: number } {
+  // A top of at least 2^53 has at least 54 bits, so the fewest chunks are
+  // this estimate or one more.
+  let chunks = Math.max(0, Math.ceil((bitLength(radix) - 53) / BIG_CHUNK_BITS));
+  for (;;) {
+    const shift = BigInt(BIG_CHUNK_BITS * chunks);
+    const top = (radix + (1n << shift) - 1n) >> shift;
+    if (top <= MAX_SAFE_BIG) {
+      return { chunks, top: Number(top) };
+    }
+    chunks++;
+  }
 }
 
 /** Shift amounts as BigInts, so a power-of-two digit is a mask and a shift. */

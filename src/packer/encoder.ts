@@ -20,7 +20,9 @@ import {
   TERM_PAYLOAD_MIN_DIGITS,
 } from './constants';
 import {
+  BIG_CHUNK_BITS,
   ScaledRatio,
+  bigRadix,
   outputAlphabet,
   validateBlockBits,
   validateChecksum,
@@ -35,6 +37,7 @@ import { MessageState, checkKey } from './state';
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const TWO_53 = 2 ** 53;
 const ONE = 1 as Radix;
+const BIG_CHUNK_STATES = 2 ** BIG_CHUNK_BITS;
 
 /**
  * Append the lowest `count` digits of `value` in the chunk's base, lowest
@@ -195,6 +198,28 @@ export class Encoder {
     this.totals.push(states);
     this.lastIndex = integer;
     this.lastCount = states;
+  }
+
+  /**
+   * Push one value in a radix of any size: `index` must lie in
+   * `[0, radix)`. A safe radix is one `compose`; a larger one is a top digit
+   * and low chunks, most significant first, as `bigRadix` lays them out.
+   */
+  composeBig(index: bigint, radix: bigint): void {
+    if (radix < 1n) {
+      throw new RangeError(`Radix ${radix} is not positive`);
+    }
+    if (index < 0n || index >= radix) {
+      throw new RangeError(`Digit ${index} is outside [0, ${radix})`);
+    }
+    const { chunks, top } = bigRadix(radix);
+    this.compose(Number(index >> BigInt(BIG_CHUNK_BITS * chunks)), top);
+    for (let i = chunks - 1; i >= 0; i--) {
+      this.compose(
+        Number(BigInt.asUintN(BIG_CHUNK_BITS, index >> BigInt(BIG_CHUNK_BITS * i))),
+        BIG_CHUNK_STATES
+      );
+    }
   }
 
   /**

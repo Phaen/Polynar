@@ -189,6 +189,11 @@ export class PDate extends PNode<Date> {
     ) {
       this._radix = this._range.radix;
       this._fromDigit = (digit) => new Date(this._calendar.start(fromDigit(digit)));
+      const toDigit = this._range.toDigit;
+      if (toDigit !== undefined) {
+        this._toDigit = (value) =>
+          toDigit(this._bucket(value), () => `Date ${value.toISOString()}`);
+      }
     }
   }
 
@@ -242,6 +247,11 @@ export class PDate extends PNode<Date> {
   }
 
   _write(enc: Encoder, value: Date): void {
+    this._range.write(enc, this._bucket(value), () => `Date ${value.toISOString()}`);
+  }
+
+  /** The bucket of `value`, refused when it is invalid or the decoder could not rebuild it. */
+  private _bucket(value: Date): number {
     if (isNaN(value.getTime())) {
       throw new TypeError(`p.date expected a valid Date, got ${describe(value)}`);
     }
@@ -253,8 +263,7 @@ export class PDate extends PNode<Date> {
         `Date ${value.toISOString()} falls in a bucket that starts before the earliest Date`
       );
     }
-
-    this._range.write(enc, bucket, () => `Date ${value.toISOString()}`);
+    return bucket;
   }
 
   _read(dec: Decoder): Date {

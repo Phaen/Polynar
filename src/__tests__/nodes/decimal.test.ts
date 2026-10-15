@@ -192,6 +192,23 @@ describe('Digit reads', () => {
     expect(p.decimal(0.5).max(1)._fromDigit).toBeUndefined();
     expect(bounded.weights([1, 1, 1, 1, 1])._fromDigit).toBeUndefined();
   });
+
+  it('map a value to its digit only with both bounds and no prior, throwing as a write does', () => {
+    const bounded = p.decimal(0.5).min(-1).max(1);
+    expect(bounded._toDigit?.(-1)).toBe(0);
+    expect(bounded._toDigit?.(0.5)).toBe(3);
+    expect(() => bounded._toDigit?.(NaN)).toThrow(
+      new TypeError('p.decimal expected a finite number, got NaN')
+    );
+    expect(() => bounded._toDigit?.(0.25)).toThrow(
+      new RangeError('Value 0.25 is not a multiple of step 0.5')
+    );
+    expect(() => bounded._toDigit?.(1.5)).toThrow(
+      new RangeError('Value 1.5 is above the maximum 1')
+    );
+    expect(p.decimal(0.5)._toDigit).toBeUndefined();
+    expect(bounded.weights([1, 1, 1, 1, 1])._toDigit).toBeUndefined();
+  });
 });
 
 describe('p.decimal adaptive', () => {

@@ -438,6 +438,85 @@ describe('compose / parse / parseMany', () => {
   });
 });
 
+describe('composeBig / parseBig', () => {
+  const MAX = BigInt(Number.MAX_SAFE_INTEGER);
+
+  const trip = (pairs: [bigint, bigint][]): bigint[] => {
+    const encoder = new Encoder();
+    for (const [index, radix] of pairs) {
+      encoder.composeBig(index, radix);
+    }
+    const decoder = new Decoder(encoder.output());
+    const back = pairs.map(([, radix]) => decoder.parseBig(radix));
+    decoder.finalize();
+    return back;
+  };
+
+  it('round-trips indices of safe and unsafe radices', () => {
+    const huge = 3n ** 5000n;
+    const pairs: [bigint, bigint][] = [
+      [0n, 1n],
+      [6n, 7n],
+      [MAX - 1n, MAX],
+      [MAX, MAX + 1n],
+      [0n, MAX + 1n],
+      [MAX + 1n, MAX + 2n],
+      [huge - 1n, huge],
+      [huge / 3n + 12345n, huge],
+      [0n, huge],
+    ];
+    expect(trip(pairs)).toEqual(pairs.map(([index]) => index));
+  });
+
+  it('writes a safe radix as one compose', () => {
+    const big = new Encoder();
+    big.composeBig(1000n, 1001n);
+    big.composeBig(MAX - 2n, MAX);
+    const plain = new Encoder();
+    plain.compose(1000, 1001);
+    plain.compose(Number.MAX_SAFE_INTEGER - 2, Number.MAX_SAFE_INTEGER);
+    expect(big.output()).toEqual(plain.output());
+  });
+
+  it('wastes under a bit on a large radix', () => {
+    // 3^5000 spans 7924.8 bits, so 991 bytes.
+    const encoder = new Encoder();
+    encoder.composeBig(3n ** 5000n - 1n, 3n ** 5000n);
+    expect(encoder.output({ blockBits: 16384 })).toHaveLength(991);
+  });
+
+  it('rejects an invalid radix or index', () => {
+    const encoder = new Encoder();
+    expect(() => encoder.composeBig(0n, 0n)).toThrow(new RangeError('Radix 0 is not positive'));
+    expect(() => encoder.composeBig(0n, -5n)).toThrow(RangeError);
+    expect(() => encoder.composeBig(10n, 10n)).toThrow(
+      new RangeError('Digit 10 is outside [0, 10)')
+    );
+    expect(() => encoder.composeBig(-1n, MAX + 5n)).toThrow(RangeError);
+    expect(() => encoder.composeBig(MAX + 5n, MAX + 5n)).toThrow(RangeError);
+    expect(() => new Decoder(new Uint8Array(0)).parseBig(0n)).toThrow(
+      new RangeError('Radix 0 is not positive')
+    );
+  });
+
+  it('rejects an index past the radix as corrupt', () => {
+    // Radix 2^53 + 1 tops at 2^32 + 1 over one 2^21 chunk, so the top digit
+    // 2^32 with a chunk of 1 assembles 2^53 + 1, and with 0 the largest index.
+    const radix = MAX + 2n;
+    const encoder = new Encoder();
+    encoder.compose(2 ** 32, 2 ** 32 + 1);
+    encoder.compose(1, 2 ** 21);
+    const decoder = new Decoder(encoder.output());
+    expect(() => decoder.parseBig(radix)).toThrow(
+      new CorruptInputError('Index is outside its radix')
+    );
+    const edge = new Encoder();
+    edge.compose(2 ** 32, 2 ** 32 + 1);
+    edge.compose(0, 2 ** 21);
+    expect(new Decoder(edge.output()).parseBig(radix)).toBe(MAX + 1n);
+  });
+});
+
 describe('composeTerm / parseTerm', () => {
   it('round-trips terms above 2^53 bit-exact', () => {
     // The digits travel through BigInt on both ends; float division here

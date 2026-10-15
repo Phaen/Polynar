@@ -43,6 +43,14 @@ export abstract class PNode<TOut> {
   _fromDigit?(digit: number): TOut;
 
   /**
+   * The digit `_write` composes for `value`, throwing exactly as `_write`
+   * would; present whenever `_radix` is. Digits follow the node's value
+   * order, which lets containers code ascending or distinct runs of values
+   * by their digits.
+   */
+  _toDigit?(value: TOut): number;
+
+  /**
    * Whether the node can write `undefined`, which lets an object leave the
    * field's key out. Read off `_kinds`, and true when they are undeclared:
    * a custom node is trusted, matching the types, where a key is optional

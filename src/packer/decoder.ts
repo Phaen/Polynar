@@ -15,6 +15,8 @@ import {
 } from './constants';
 import { CorruptInputError } from './errors';
 import {
+  BIG_CHUNK_BITS,
+  bigRadix,
   outputAlphabet,
   validateBlockBits,
   validateChecksum,
@@ -32,6 +34,8 @@ import { MessageState } from './state';
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const MAX_SAFE_BIG = BigInt(MAX_SAFE);
 const ONE = 1 as Radix;
+const BIG_CHUNK_STATES = 2 ** BIG_CHUNK_BITS;
+const BIG_CHUNK_SHIFT = BigInt(BIG_CHUNK_BITS);
 /** The radices of a term's slots: its first, the rest of a run, and the payload digits. */
 const TERM_FIRST_RADIX = (TERM_BASE + 2) as Radix;
 const TERM_RUN_RADIX = (TERM_BASE + 1) as Radix;
@@ -252,6 +256,25 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
    */
   parse(radix: number): number {
     return this.parseRadix(radixOf(radix, 'Radix'));
+  }
+
+  /**
+   * Read one value composed by `composeBig` in `radix`. An index the low
+   * chunks assemble at or past `radix` was never written.
+   */
+  parseBig(radix: bigint): bigint {
+    if (radix < 1n) {
+      throw new RangeError(`Radix ${radix} is not positive`);
+    }
+    const { chunks, top } = bigRadix(radix);
+    let index = BigInt(this.parse(top));
+    for (const chunk of this.parseMany(BIG_CHUNK_STATES, chunks)) {
+      index = (index << BIG_CHUNK_SHIFT) | BigInt(chunk);
+    }
+    if (index >= radix) {
+      throw new CorruptInputError('Index is outside its radix');
+    }
+    return index;
   }
 
   /** `parse` past its radix check. */

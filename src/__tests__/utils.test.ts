@@ -5,6 +5,8 @@
 
 import {
   Alphabet,
+  BIG_CHUNK_BITS,
+  bigRadix,
   bitLength,
   checksumOf,
   digitChunk,
@@ -101,6 +103,42 @@ describe('bitLength', () => {
     expect(bitLength(-1n)).toBe(1);
     expect(bitLength(-256n)).toBe(9);
     expect(bitLength(-(2n ** 64n))).toBe(65);
+  });
+});
+
+describe('bigRadix', () => {
+  const MAX = BigInt(Number.MAX_SAFE_INTEGER);
+
+  it('keeps a safe radix whole', () => {
+    expect(bigRadix(1n)).toEqual({ chunks: 0, top: 1 });
+    expect(bigRadix(MAX)).toEqual({ chunks: 0, top: Number.MAX_SAFE_INTEGER });
+  });
+
+  it('splits off the fewest chunks that leave a safe top of at least 2^32', () => {
+    expect(bigRadix(MAX + 1n)).toEqual({ chunks: 1, top: 2 ** 32 });
+    expect(bigRadix(MAX + 2n)).toEqual({ chunks: 1, top: 2 ** 32 + 1 });
+    // 2^74 − 1 tops at ceil(2^53 − 2^-21) = 2^53 with one chunk, one past
+    // the safe integers, so it takes two.
+    expect(bigRadix(2n ** 74n - 1n)).toEqual({ chunks: 2, top: 2 ** 32 });
+  });
+
+  it('lays every radix out within the bounds', () => {
+    for (let bits = 54; bits < 400; bits += 7) {
+      for (const radix of [
+        2n ** BigInt(bits) - 1n,
+        2n ** BigInt(bits),
+        2n ** BigInt(bits) + 12345n,
+      ]) {
+        const { chunks, top } = bigRadix(radix);
+        const shift = BigInt(BIG_CHUNK_BITS * chunks);
+        expect(top).toBeGreaterThanOrEqual(2 ** 32);
+        expect(top).toBeLessThanOrEqual(Number.MAX_SAFE_INTEGER);
+        expect(BigInt(top)).toBe((radix + (1n << shift) - 1n) >> shift);
+        // One chunk fewer would leave an unsafe top.
+        const fewer = BigInt(BIG_CHUNK_BITS * (chunks - 1));
+        expect((radix + (1n << fewer) - 1n) >> fewer > MAX).toBe(true);
+      }
+    }
   });
 });
 

@@ -3,7 +3,7 @@
  * like an array's, read back into a Map, a plain object or a Set.
  */
 
-import { p, Encoder } from '../../index';
+import { p, Encoder, CorruptInputError } from '../../index';
 import { mulberry32, trip } from '../support';
 
 /** A wire of `count`, then each of `keys` written by `write`. */
@@ -252,5 +252,106 @@ describe('p.set adaptive', () => {
     const cdf = new TypeError('p.set adaptive takes weights, not a cdf');
     expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
     expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
+  });
+});
+
+describe('Unordered collections', () => {
+  const tones = ['c', 'd', 'e', 'f', 'g', 'a', 'b', 'h'] as const;
+
+  it('prices a set of distinct keys at log2 C(n, k) plus the count', () => {
+    // C(8, 4) = 70 sets of four: 7 bits with a fixed count; with counts 0–8
+    // in 9 states, 9 · 70 states are 10 bits.
+    const chord = new Set(['g', 'c', 'e', 'b'] as const);
+    const node = p.set(p.enum(tones)).unordered();
+    expect(node.length(4).encode(chord)).toHaveLength(1);
+    expect(node.max(8).encode(chord)).toHaveLength(2);
+    expect([...trip(node, chord)]).toEqual(['c', 'e', 'g', 'b']);
+  });
+
+  it('writes map values in ascending key order', () => {
+    const node = p.map(p.int().min(0).max(999), p.string()).unordered();
+    const value = new Map([
+      [500, 'x'],
+      [3, 'y'],
+      [70, 'z'],
+    ]);
+    expect([...trip(node, value)]).toEqual([
+      [3, 'y'],
+      [70, 'z'],
+      [500, 'x'],
+    ]);
+    expect(trip(node, new Map())).toEqual(new Map());
+    const digits = p.map(p.enum(tones), p.int().min(0).max(9)).unordered();
+    expect(() =>
+      digits.encode(
+        new Map([
+          ['g', 1],
+          ['c', 10],
+        ])
+      )
+    ).toThrow(new RangeError('c: Value 10 is above the maximum 9'));
+    expect(() =>
+      p
+        .set(p.int().min(0).max(9))
+        .unordered()
+        .encode(new Set([1, 10]))
+    ).toThrow(new RangeError('[1]: Value 10 is above the maximum 9'));
+  });
+
+  it('rejects two keys with one digit', () => {
+    const day = 86_400_000;
+    const node = p
+      .set(
+        p
+          .date()
+          .min(0)
+          .max(day * 9)
+          .precision('day')
+      )
+      .unordered();
+    expect(trip(node, new Set([new Date(day * 2), new Date(0)]))).toEqual(
+      new Set([new Date(0), new Date(day * 2)])
+    );
+    expect(() => node.encode(new Set([new Date(day), new Date(day + 1)]))).toThrow(
+      new RangeError('[1]: Value "1970-01-02T00:00:00.001Z" repeats an earlier one')
+    );
+  });
+
+  it('keeps unordered through the count methods', () => {
+    const value = new Set([4, 1]);
+    for (const node of [
+      p.set(p.int().min(0).max(9)).unordered().min(1),
+      p.set(p.int().min(0).max(9)).unordered().length(2),
+      p.set(p.int().min(0).max(9)).max(3).unordered().weights([1, 1, 5, 1]),
+      p
+        .set(p.int().min(0).max(9))
+        .unordered()
+        .max(3)
+        .cdf((n) => n * 2),
+      p.set(p.int().min(0).max(9)).unordered().max(3).adaptive(),
+    ]) {
+      expect([...trip(node, value)]).toEqual([1, 4]);
+    }
+  });
+
+  it('rejects more keys than the key has values as corrupt', () => {
+    const count = p.int().min(0).encode(3);
+    expect(() => p.set(p.bool()).unordered().decode(count)).toThrow(CorruptInputError);
+  });
+
+  it('is set once, on keys that have digits', () => {
+    const node = p.set(p.int().min(0).max(9));
+    expect(() => node.unordered().unordered()).toThrow(
+      new TypeError('p.set unordered is already set')
+    );
+    expect(() => p.set(p.int()).unordered()).toThrow(
+      new TypeError(
+        'p.set unordered requires items of bounded p.int, p.date or p.decimal, or of p.enum or p.bool, without weights or adaptive'
+      )
+    );
+    expect(() => p.map(p.enum(['a']).weights([1]), p.int()).unordered()).toThrow(
+      'p.map unordered requires keys of'
+    );
+    expect(() => p.record(p.int()).unordered()).toThrow('p.record unordered requires keys of');
   });
 });

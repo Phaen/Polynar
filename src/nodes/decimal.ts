@@ -86,6 +86,10 @@ export class PDecimal extends PNode<number> {
     if (fromDigit !== undefined) {
       this._fromDigit = (digit) => this._decode(fromDigit(digit));
     }
+    const toDigit = this._range.toDigit;
+    if (toDigit !== undefined) {
+      this._toDigit = (value) => toDigit(this._index(value), () => valueSubject(value));
+    }
   }
 
   min(n: number): PDecimal {
@@ -139,12 +143,15 @@ export class PDecimal extends PNode<number> {
   }
 
   _write(enc: Encoder, value: number): void {
+    this._range.write(enc, this._index(value), () => valueSubject(value));
+  }
+
+  /** The step multiple `value` is, refused unless it is a finite number on the grid. */
+  private _index(value: number): number {
     if (!Number.isFinite(value)) {
       throw new TypeError(`p.decimal expected a finite number, got ${describe(value)}`);
     }
-    const k = this._multiple(value, valueSubject);
-
-    this._range.write(enc, k, () => valueSubject(value));
+    return this._multiple(value, valueSubject);
   }
 
   _read(dec: Decoder): number {

@@ -52,6 +52,17 @@ describe('Schema enum', () => {
   });
 });
 
+describe('p.enum digits', () => {
+  it('map members to their list position and back, throwing as a write does', () => {
+    const node = p.enum(['a', 'b', 'c']);
+    expect(node._toDigit('c')).toBe(2);
+    expect(node._fromDigit(node._toDigit('b'))).toBe('b');
+    expect(() => node._toDigit('d' as 'a')).toThrow(
+      new RangeError('Value "d" is not one of "a", "b", "c"')
+    );
+  });
+});
+
 describe('p.enum adaptive', () => {
   const plain = p.enum(['a', 'b', 'c', 'd']);
   const weights = [17, 1, 1, 1];

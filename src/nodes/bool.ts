@@ -44,7 +44,7 @@ export class PBool extends PNode<boolean> {
   }
 
   _write(enc: Encoder, value: boolean): void {
-    this._members.write(enc, value ? 0 : 1);
+    this._members.write(enc, this._toDigit(value));
   }
 
   _read(dec: Decoder): boolean {
@@ -54,5 +54,10 @@ export class PBool extends PNode<boolean> {
   /** `digit` lies in `[0, _radix)`, as a digit read in `_radix` does. */
   _fromDigit(digit: number): boolean {
     return digit === 0;
+  }
+
+  /** True is member 0, as the weights list it first. */
+  _toDigit(value: boolean): number {
+    return value ? 0 : 1;
   }
 }

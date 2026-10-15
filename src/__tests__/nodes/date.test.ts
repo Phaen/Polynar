@@ -227,6 +227,27 @@ describe('Digit reads', () => {
     expect(p.date().min(day)._fromDigit).toBeUndefined();
     expect(bounded.weights([1, 1, 1])._fromDigit).toBeUndefined();
   });
+
+  it('map a value to its digit only with both bounds and no prior, throwing as a write does', () => {
+    const day = new Date('2020-01-01Z');
+    const bounded = p.date().min(day).max(new Date('2020-01-03Z')).precision('day');
+    expect(bounded._toDigit?.(new Date('2020-01-02T18:00Z'))).toBe(1);
+    expect(() => bounded._toDigit?.(new Date(NaN))).toThrow(
+      new TypeError('p.date expected a valid Date, got Invalid Date')
+    );
+    expect(() => bounded._toDigit?.(new Date('2020-01-04Z'))).toThrow(
+      new RangeError('Date 2020-01-04T00:00:00.000Z is above the maximum 2020-01-03T00:00:00.000Z')
+    );
+    // A first bucket inside the Date range leaves the earliest Dates in one
+    // that starts before it.
+    const late = p.date().min(-8.6e15).max(0).precision('week');
+    expect(() => late._toDigit?.(new Date(-8.64e15))).toThrow(
+      'falls in a bucket that starts before the earliest Date'
+    );
+    expect(p.date()._toDigit).toBeUndefined();
+    expect(bounded.weights([1, 1, 1])._toDigit).toBeUndefined();
+    expect(p.date().min(-8.64e15).max(-8.6e15).precision('week')._toDigit).toBeUndefined();
+  });
 });
 
 describe('p.date adaptive', () => {
