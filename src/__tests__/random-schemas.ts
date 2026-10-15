@@ -156,6 +156,33 @@ const hotGen = <T>(draw: () => T): (() => T) => {
   return () => (rand() < 0.8 ? pick(hot) : draw());
 };
 
+/** A method a node may declare: `.delta()`, `.recall()` or `.repeats()`. */
+type Method = 'delta' | 'recall' | 'repeats';
+
+/**
+ * `c` with each of `methods` declared a third of the time, in the order
+ * listed, after its other refinements. Under a recall the values come
+ * mostly from three drawn up front, so some recur.
+ */
+const withMethods = (c: Case, methods: readonly Method[]): Case => {
+  const chosen = methods.filter(() => rand() < 1 / 3);
+  if (chosen.length === 0) {
+    return c;
+  }
+  return {
+    ...c,
+    build: (m) => chosen.reduce((n, method) => n[method](), c.build(m)),
+    gen: chosen.includes('recall') ? hotGen(c.gen) : c.gen,
+    src: `${c.src}${chosen.map((method) => `.${method}()`).join('')}`,
+  };
+};
+
+/** The methods of a number: the difference from the previous value, and recall. */
+const NUMBER_METHODS: readonly Method[] = ['delta', 'recall'];
+
+/** The methods of a string or binary: those of a number, and repeats. */
+const SEQUENCE_METHODS: readonly Method[] = ['delta', 'recall', 'repeats'];
+
 const intCase = (): Case => {
   const lo = randInt(-1000, 0);
   const hi = lo + randInt(0, rand() < 0.5 ? 300 : 2000);
@@ -163,9 +190,16 @@ const intCase = (): Case => {
   const base = `p.int().min(${lo}).max(${hi})`;
   switch (randInt(0, 5)) {
     case 0:
-      return { build: (m) => m.p.int().min(lo).max(hi), gen: any, src: base };
+      return withMethods(
+        { build: (m) => m.p.int().min(lo).max(hi), gen: any, src: base },
+        NUMBER_METHODS
+      );
     case 5:
-      return adaptiveCase((m) => m.p.int().min(lo).max(hi), base, hotGen(any), hi - lo + 1);
+      // Declared weights take no delta.
+      return withMethods(
+        adaptiveCase((m) => m.p.int().min(lo).max(hi), base, hotGen(any), hi - lo + 1),
+        ['recall']
+      );
     case 1: {
       const w = randWeights(hi - lo + 1, 1000);
       return {
@@ -213,35 +247,45 @@ const intCase = (): Case => {
   }
 };
 
-const unboundedIntCase = (): Case => ({
-  build: (m) => m.p.int(),
-  gen: () => {
-    const r = rand();
-    return r < 0.2
-      ? randInt(-(2 ** 53) + 1, 2 ** 53 - 1)
-      : r < 0.6
-        ? randInt(-(2 ** 40), 2 ** 40)
-        : randInt(-1e6, 1e6);
-  },
-  src: 'p.int()',
-});
+// Adaptive now and then, on the learned magnitude scale.
+const unboundedIntCase = (): Case => {
+  const a = rand() < 0.25 ? randAdaptive(2) : undefined;
+  return withMethods(
+    {
+      build: (m) => (a ? a.apply(m.p.int()) : m.p.int()),
+      gen: () => {
+        const r = rand();
+        return r < 0.2
+          ? randInt(-(2 ** 53) + 1, 2 ** 53 - 1)
+          : r < 0.6
+            ? randInt(-(2 ** 40), 2 ** 40)
+            : randInt(-1e6, 1e6);
+      },
+      src: `p.int()${a ? a.src : ''}`,
+    },
+    NUMBER_METHODS
+  );
+};
 
 // One bound only: the offset rides the term encoding, counting away from the
 // bound. Large offsets cross into the escaped term form.
 const halfBoundedIntCase = (): Case => {
   const bound = randInt(-1e6, 1e6);
   const offset = (): number => (rand() < 0.5 ? randInt(0, 1e4) : randInt(0, 2 ** 44));
-  return rand() < 0.5
-    ? {
-        build: (m) => m.p.int().min(bound),
-        gen: () => bound + offset(),
-        src: `p.int().min(${bound})`,
-      }
-    : {
-        build: (m) => m.p.int().max(bound),
-        gen: () => bound - offset(),
-        src: `p.int().max(${bound})`,
-      };
+  return withMethods(
+    rand() < 0.5
+      ? {
+          build: (m) => m.p.int().min(bound),
+          gen: () => bound + offset(),
+          src: `p.int().min(${bound})`,
+        }
+      : {
+          build: (m) => m.p.int().max(bound),
+          gen: () => bound - offset(),
+          src: `p.int().max(${bound})`,
+        },
+    NUMBER_METHODS
+  );
 };
 
 const decimalCase = (): Case => {
@@ -259,30 +303,44 @@ const decimalCase = (): Case => {
   const kLo = randInt(-100000, 0);
   const kHi = kLo + randInt(0, rand() < 0.5 ? 2000 : 200000);
   switch (randInt(0, 3)) {
-    case 0:
-      return {
-        build: (m) => m.p.decimal(step),
-        gen: () => grid(randInt(-100000, 100000)),
-        src: `p.decimal(${step})`,
-      };
+    case 0: {
+      const a = rand() < 0.25 ? randAdaptive(2) : undefined;
+      return withMethods(
+        {
+          build: (m) => (a ? a.apply(m.p.decimal(step)) : m.p.decimal(step)),
+          gen: () => grid(randInt(-100000, 100000)),
+          src: `p.decimal(${step})${a ? a.src : ''}`,
+        },
+        NUMBER_METHODS
+      );
+    }
     case 1:
-      return {
-        build: (m) => m.p.decimal(step).min(grid(kLo)),
-        gen: () => grid(kLo + randInt(0, 200000)),
-        src: `p.decimal(${step}).min(${grid(kLo)})`,
-      };
+      return withMethods(
+        {
+          build: (m) => m.p.decimal(step).min(grid(kLo)),
+          gen: () => grid(kLo + randInt(0, 200000)),
+          src: `p.decimal(${step}).min(${grid(kLo)})`,
+        },
+        NUMBER_METHODS
+      );
     case 2:
-      return {
-        build: (m) => m.p.decimal(step).max(grid(kHi)),
-        gen: () => grid(kHi - randInt(0, 200000)),
-        src: `p.decimal(${step}).max(${grid(kHi)})`,
-      };
+      return withMethods(
+        {
+          build: (m) => m.p.decimal(step).max(grid(kHi)),
+          gen: () => grid(kHi - randInt(0, 200000)),
+          src: `p.decimal(${step}).max(${grid(kHi)})`,
+        },
+        NUMBER_METHODS
+      );
     default: {
       const src = `p.decimal(${step}).min(${grid(kLo)}).max(${grid(kHi)})`;
       const gen = (): number => grid(randInt(kLo, kHi));
       const r = rand();
       if (r < 1 / 3) {
-        return { build: (m) => m.p.decimal(step).min(grid(kLo)).max(grid(kHi)), gen, src };
+        return withMethods(
+          { build: (m) => m.p.decimal(step).min(grid(kLo)).max(grid(kHi)), gen, src },
+          NUMBER_METHODS
+        );
       }
       if (r < 2 / 3) {
         // An adaptive prior takes at most 65536 grid points.
@@ -324,11 +382,14 @@ const learnsCharacters = (c: Case, members = LADDER_FIRST): Case => {
 const stringCase = (): Case => {
   switch (randInt(0, 3)) {
     case 0:
-      return learnsCharacters({
-        build: (m) => m.p.string(),
-        gen: () => randString(10),
-        src: 'p.string()',
-      });
+      return withMethods(
+        learnsCharacters({
+          build: (m) => m.p.string(),
+          gen: () => (rand() < 0.5 ? randString(10) : `pre${randString(3)}`),
+          src: 'p.string()',
+        }),
+        SEQUENCE_METHODS
+      );
     case 1: {
       // A bounded length packs as a radix slot instead of a term; a floor
       // half the time, which the prefix then counts up from.
@@ -346,7 +407,10 @@ const stringCase = (): Case => {
         };
         return adaptiveCase(build, src, gen, max - min + 1, LADDER_FIRST);
       }
-      return { build, gen: () => 'x'.repeat(min) + randString(max - min), src };
+      return withMethods(
+        { build, gen: () => 'x'.repeat(min) + randString(max - min), src },
+        SEQUENCE_METHODS
+      );
     }
     case 2: {
       // English half the time, else a model counted from random text.
@@ -369,16 +433,19 @@ const stringCase = (): Case => {
       if (rand() < 0.5) {
         const name = pick(STRING_CHARSETS);
         const alphabet = lib.CharSets[name];
-        return learnsCharacters(
-          {
-            build: (m) => m.p.string().charset(m.CharSets[name]),
-            gen: () =>
-              Array.from({ length: randInt(0, 10) }, () =>
-                alphabet.charAt(randInt(0, alphabet.length - 1))
-              ).join(''),
-            src: `p.string().charset(CharSets.${name})`,
-          },
-          alphabet.length
+        return withMethods(
+          learnsCharacters(
+            {
+              build: (m) => m.p.string().charset(m.CharSets[name]),
+              gen: () =>
+                Array.from({ length: randInt(0, 10) }, () =>
+                  alphabet.charAt(randInt(0, alphabet.length - 1))
+                ).join(''),
+              src: `p.string().charset(CharSets.${name})`,
+            },
+            alphabet.length
+          ),
+          SEQUENCE_METHODS
         );
       }
       const lo = randInt(0, 50000);
@@ -528,12 +595,15 @@ const binaryCase = (): Case => {
   if (rand() < 0.5) {
     const name = pick(['Int16Array', 'Float64Array', 'BigUint64Array'] as const);
     const type = globalThis[name];
-    return {
-      build: (m) => m.p.binary(type as typeof Int16Array).max(max),
-      gen: () =>
-        new type(randBytes(randInt(0, max) * type.BYTES_PER_ELEMENT).buffer as ArrayBuffer),
-      src: `p.binary(${name}).max(${max})`,
-    };
+    return withMethods(
+      {
+        build: (m) => m.p.binary(type as typeof Int16Array).max(max),
+        gen: () =>
+          new type(randBytes(randInt(0, max) * type.BYTES_PER_ELEMENT).buffer as ArrayBuffer),
+        src: `p.binary(${name}).max(${max})`,
+      },
+      SEQUENCE_METHODS
+    );
   }
   switch (randInt(0, 3)) {
     case 3: {
@@ -545,18 +615,26 @@ const binaryCase = (): Case => {
         max + 1
       );
     }
-    case 0:
-      return {
-        build: (m) => m.p.binary(),
-        gen: () => randBytes(randInt(0, max)),
-        src: 'p.binary()',
-      };
+    case 0: {
+      const a = rand() < 0.25 ? randAdaptive(256) : undefined;
+      return withMethods(
+        {
+          build: (m) => (a ? a.apply(m.p.binary()) : m.p.binary()),
+          gen: () => randBytes(randInt(0, max)),
+          src: `p.binary()${a ? a.src : ''}`,
+        },
+        SEQUENCE_METHODS
+      );
+    }
     case 1:
-      return {
-        build: (m) => m.p.binary().max(max),
-        gen: () => randBytes(randInt(0, max)),
-        src: `p.binary().max(${max})`,
-      };
+      return withMethods(
+        {
+          build: (m) => m.p.binary().max(max),
+          gen: () => randBytes(randInt(0, max)),
+          src: `p.binary().max(${max})`,
+        },
+        SEQUENCE_METHODS
+      );
     default:
       // A fixed count spends nothing on the prefix.
       return {
@@ -590,16 +668,25 @@ const dateCase = (): Case => {
   const step = unit === 'minute' && rand() < 0.2 ? 15 : randInt(1, 4);
   const ms = step * DATE_MS[unit];
   const base = `p.date().precision('${unit}', ${step})`;
-  const withNode = (build: (m: Lib) => Node, src: string, ts: () => number): Case => {
+  // Without a cdf, any of the methods of a number.
+  const withNode = (
+    build: (m: Lib) => Node,
+    src: string,
+    ts: () => number,
+    methods = NUMBER_METHODS
+  ): Case => {
     let local: Node;
-    return {
-      build,
-      src,
-      gen: () => {
-        local ??= build(lib);
-        return local.decode(local.encode(new Date(ts())));
+    return withMethods(
+      {
+        build,
+        src,
+        gen: () => {
+          local ??= build(lib);
+          return local.decode(local.encode(new Date(ts())));
+        },
       },
-    };
+      methods
+    );
   };
   switch (randInt(0, 3)) {
     case 0:
@@ -660,7 +747,8 @@ const dateCase = (): Case => {
       return withNode(
         (m) => m.p.date().precision(unit, step).min(min).max(max).cdf(cdf.fn),
         `${src}.cdf(${cdf.src})`,
-        () => randInt(min, max)
+        () => randInt(min, max),
+        ['recall']
       );
     }
   }
@@ -851,15 +939,60 @@ export const anyValue = (depth: number, top = false): unknown => {
   }
 };
 
-// Plain or adaptive; an adaptive window covers the 27 type tags.
+/**
+ * Hints `p.any` may take, some of which change values they write (`-0`,
+ * an unsorted array, a non-boolean item), which a hint then refuses.
+ * Strings recur, so a recall has repeats.
+ */
+const ANY_HINTS: readonly Case[] = [
+  { build: (m) => m.p.string().max(3), gen: () => randString(3), src: 'p.string().max(3)' },
+  {
+    build: (m) => m.p.string().charset(m.CharSets.hex),
+    gen: () => pick(['c0ffee', 'beef', '']),
+    src: 'p.string().charset(CharSets.hex)',
+  },
+  {
+    build: (m) => m.p.enum(['on', 'off']),
+    gen: () => pick(['on', 'off']),
+    src: "p.enum(['on', 'off'])",
+  },
+  { build: (m) => m.p.float(), gen: randFloat, src: 'p.float()' },
+  { build: (m) => m.p.null(), gen: () => null, src: 'p.null()' },
+  {
+    build: (m) => m.p.array(m.p.bool()).max(3),
+    gen: () => Array.from({ length: randInt(0, 3) }, () => rand() < 0.5),
+    src: 'p.array(p.bool()).max(3)',
+  },
+  { build: (m) => m.p.int(), gen: () => pick([0, -0, randInt(-9, 9)]), src: 'p.int()' },
+  {
+    build: (m) => m.p.array(m.p.int().min(0).max(9)).unordered(),
+    gen: () => Array.from({ length: randInt(0, 3) }, () => randInt(0, 9)),
+    src: 'p.array(p.int().min(0).max(9)).unordered()',
+  },
+  {
+    build: (m) => m.p.object({ id: m.p.string(), n: m.p.float() }),
+    gen: () => ({ id: randString(2), n: randFloat() }),
+    src: 'p.object({ id: p.string(), n: p.float() })',
+  },
+];
+
+// Plain or adaptive, with hints now and then; an adaptive window covers the
+// 27 type tags and the hints.
 const anyCase = (): Case => {
-  const a = rand() < 0.5 ? randAdaptive(27) : undefined;
+  const hints = rand() < 0.3 ? ANY_HINTS.filter(() => rand() < 0.4) : [];
+  const a = rand() < 0.5 ? randAdaptive(28 + hints.length) : undefined;
+  const any = (m: Lib): Node =>
+    hints.length === 0 ? m.p.any() : m.p.any(hints.map((h) => h.build(m)));
   return {
-    build: (m) => (a ? a.apply(m.p.any()) : m.p.any()),
+    build: (m) => (a ? a.apply(any(m)) : any(m)),
     // Most values nest two levels, some up to six; a container holds fewer
-    // than one container on average, so deep values stay small.
-    gen: () => anyValue(rand() < 0.2 ? randInt(3, 6) : 2, true),
-    src: `p.any()${a ? a.src : ''}`,
+    // than one container on average, so deep values stay small. Now and
+    // then a value one of the hints takes.
+    gen: () =>
+      hints.length > 0 && rand() < 0.3
+        ? pick(hints).gen()
+        : anyValue(rand() < 0.2 ? randInt(3, 6) : 2, true),
+    src: `p.any(${hints.length === 0 ? '' : `[${hints.map((h) => h.src).join(', ')}]`})${a ? a.src : ''}`,
   };
 };
 
@@ -901,6 +1034,7 @@ const countSteps = (length: number): Step[] => {
     steps.push({ src, apply });
   };
   let free = false;
+  let open = true;
   let lo = 0;
   let hi = 0;
   switch (randInt(0, 3)) {
@@ -908,9 +1042,11 @@ const countSteps = (length: number): Step[] => {
       hi = length + randInt(0, 3);
       add(`.max(${hi})`, (n) => n.max(hi));
       free = true;
+      open = false;
       break;
     case 2:
       add(`.length(${length})`, (n) => n.length(length));
+      open = false;
       break;
     case 3:
       // A raised floor packs the count as its offset from the minimum.
@@ -920,8 +1056,13 @@ const countSteps = (length: number): Step[] => {
         hi = length + randInt(0, 3);
         add(`.max(${hi})`, (n) => n.max(hi));
         free = true;
+        open = false;
       }
       break;
+  }
+  // Without a max, a count learns on the magnitude scale now and then.
+  if (open && rand() < 0.25) {
+    steps.push(randAdaptive(2));
   }
   // A count prior needs a max and a free length.
   if (free && rand() < 0.5) {
@@ -951,12 +1092,15 @@ const arrayCase = (depth: number): Case => {
   const long = (): number => (rand() < 0.5 ? randInt(100, 3000) : 256 * randInt(1, 8));
   const length = depth === 1 && rand() < 0.15 ? long() : randInt(0, 4);
   const steps = countSteps(length);
-  return {
-    build: (m) => withSteps(m.p.array(item.build(m)), steps),
-    migrates: item.migrates,
-    gen: () => Array.from({ length }, () => item.gen()),
-    src: `p.array(${item.src})${steps.map((s) => s.src).join('')}`,
-  };
+  return withMethods(
+    {
+      build: (m) => withSteps(m.p.array(item.build(m)), steps),
+      migrates: item.migrates,
+      gen: () => Array.from({ length }, () => item.gen()),
+      src: `p.array(${item.src})${steps.map((s) => s.src).join('')}`,
+    },
+    ['recall']
+  );
 };
 
 // Keys and items come from nodes with far more values than a collection
@@ -978,7 +1122,10 @@ const fill = <T>(into: T, size: (c: T) => number, length: number, add: (c: T) =>
 
 // One map, record or set over random keys, values and count methods. A
 // record's keys include integer-like ones, which an object lists first.
-const collectionCase = (depth: number): Case => {
+const collectionCase = (depth: number): Case => withMethods(collectionOf(depth), ['recall']);
+
+// One map, record or set, before its methods.
+const collectionOf = (depth: number): Case => {
   const length = randInt(0, 4);
   const steps = countSteps(length);
   const value = randomCase(depth - 1);
@@ -1063,6 +1210,15 @@ const objectCase = (depth: number): Case => {
     f.mode === 'plain'
       ? f.c.src
       : `p.${f.mode}(${f.c.src})${f.w ? `.weights(${json(f.w)})` : ''}${f.adaptive?.src ?? ''}`;
+  return withMethods(objectOf(fields, wrap, fieldSrc), ['recall']);
+};
+
+/** The object of `fields`, before its methods. */
+const objectOf = (
+  fields: readonly Field[],
+  wrap: (m: Lib, f: Field) => Node,
+  fieldSrc: (f: Field) => string
+): Case => {
   return {
     build: (m) => m.p.object(Object.fromEntries(fields.map((f) => [f.key, wrap(m, f)]))),
     migrates: fields.some((f) => f.c.migrates),

@@ -16,7 +16,7 @@
  */
 
 import type { Encoder, Decoder, ScaledRatio } from '../packer';
-import { AdaptivePrior, checkAdaptation, type AdaptiveOptions } from './adaptive';
+import { AdaptivePrior, checkAdaptation, lineageOf, type AdaptiveOptions } from './adaptive';
 import { Exclusion } from './excluded';
 
 const TWO_32 = 2 ** 32;
@@ -240,6 +240,15 @@ export function sideWeights(extra: number): number[] {
   return weights;
 }
 
+/** The starting weights of an unsigned learned scale: one side at the term code's prices. */
+const UNSIGNED_WEIGHTS: readonly number[] = sideWeights(0);
+
+/**
+ * The starting weights of a signed learned scale: the upper side, then the
+ * lower one from 1, each a bit dearer for the sign.
+ */
+const SIGNED_WEIGHTS: readonly number[] = ((side) => [...side, ...side.slice(1)])(sideWeights(1));
+
 /**
  * The learned magnitude scale: a symbol per distance below `DIRECT` and per
  * class past it, then the tail, the symbols under an adaptive prior that
@@ -260,9 +269,8 @@ export class LearnedMagnitude implements Magnitude {
     private readonly who: string
   ) {
     const { window } = checkAdaptation(adaptive, who);
-    const side = sideWeights(signed ? 1 : 0);
-    const weights = signed ? [...side, ...side.slice(1)] : side;
-    this.prior = new AdaptivePrior([weights], weights.length, window, who);
+    const weights = signed ? SIGNED_WEIGHTS : UNSIGNED_WEIGHTS;
+    this.prior = new AdaptivePrior([weights], weights.length, window, who, lineageOf(adaptive));
   }
 
   /** `check`, and for an unsigned scale an interval starting at the origin. */

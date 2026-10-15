@@ -192,7 +192,8 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * bytes before it, as the message so far has followed them, falling back
    * to a prior over the bytes that learns too; a stretch of bytes that
    * already occurred in the message is referred back to instead of spelled
-   * again; and the element count learns when there is a max. The bytes
+   * again; and the element count learns, on the magnitude scale from the
+   * min when there is no max. The bytes
    * learn together with those of every other adaptive binary of the message
    * with the same window, whatever its element type, unless `separate`. The
    * declared

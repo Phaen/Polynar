@@ -8,6 +8,7 @@ import {
   AdaptivePrior,
   checkAdaptation,
   checkAdaptiveMembers,
+  lineageOf,
   type AdaptiveOptions,
 } from './adaptive';
 import { buildWeights, readTable, writeTable, type WeightTable } from './weights';
@@ -95,7 +96,7 @@ class AdaptiveMembers implements Members {
     adaptation: AdaptiveOptions,
     who: string
   ) {
-    this.prior = new AdaptivePrior(rows, count, adaptation.window, who);
+    this.prior = new AdaptivePrior(rows, count, adaptation.window, who, lineageOf(adaptation));
   }
 
   write(enc: Encoder, pos: number, row = 0): void {
@@ -130,9 +131,10 @@ export function members(count: number, prior: MemberPrior | undefined, who: stri
   }
   const rows = given ?? (weights === undefined ? undefined : [weights]);
   if (prior?.adaptive !== undefined) {
-    const adaptation = checkAdaptation(prior.adaptive, who);
+    checkAdaptation(prior.adaptive, who);
     checkAdaptiveMembers(count, who);
-    return new AdaptiveMembers(count, rows ?? [new Array<number>(count).fill(1)], adaptation, who);
+    const ones = [new Array<number>(count).fill(1)];
+    return new AdaptiveMembers(count, rows ?? ones, prior.adaptive, who);
   }
   if (rows !== undefined) {
     return new WeightedMembers(count, rows, who);

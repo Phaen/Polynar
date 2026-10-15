@@ -170,8 +170,12 @@ export const p = {
   },
   /** A schema that can change after data has been written: `p.versioned(V1, [V2, migrate])`. */
   versioned,
-  /** Self-describing escape hatch. */
-  any(): PAny {
-    return new PAny();
+  /**
+   * Self-describing escape hatch; `hints` are nodes some values are
+   * expected to fit, each value at any depth taking the first that gives
+   * it back unchanged.
+   */
+  any(hints?: readonly PNode<any>[]): PAny {
+    return new PAny(hints);
   },
 };

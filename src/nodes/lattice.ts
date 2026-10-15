@@ -5,6 +5,7 @@ import {
   MAX_ADAPTIVE_MEMBERS,
   checkAdaptation,
   checkAdaptiveMembers,
+  lineageOf,
   type AdaptiveOptions,
 } from './adaptive';
 import { LearnedMagnitude, magnitude, type Magnitude } from './magnitude';
@@ -181,7 +182,9 @@ export class IndexRange {
         const n = hi - lo + 1;
         checkAdaptiveMembers(n, who);
         const weights = prior ?? new Array<number>(n).fill(1);
-        this.learned = new LearnedMembers(new AdaptivePrior([weights], n, window, who));
+        this.learned = new LearnedMembers(
+          new AdaptivePrior([weights], n, window, who, lineageOf(adaptive))
+        );
       } else {
         const scale = new LearnedMagnitude(lo === undefined, adaptive, who);
         this.learned = new LearnedOffsets(scale, this.low, this.high);
@@ -559,9 +562,6 @@ export function lengthRange(bounds: LengthBounds, who: string, noun: string): In
   const { prior, adaptive } = bounds;
   if (prior !== undefined && max === undefined) {
     throw new TypeError(`${who} ${priorKind(prior)} requires a max ${noun}`);
-  }
-  if (adaptive !== undefined && max === undefined) {
-    throw new TypeError(`${who} adaptive requires a max ${noun}`);
   }
   return new IndexRange(who, min ?? 0, max, prior, adaptive);
 }

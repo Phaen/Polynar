@@ -489,10 +489,10 @@ describe('lengthRange', () => {
     expect(lengthRange({ max: 1, prior: [1, 3] }, 'w', 'count').prior?.declared).toEqual([1, 3]);
   });
 
-  it('takes an adaptation only with a max, passing it through', () => {
-    expect(() => lengthRange({ min: 1, adaptive: adaptation }, 'w', 'length')).toThrow(
-      new TypeError('w adaptive requires a max length')
-    );
+  it('takes an adaptation, passing it through, and learns without a max from the min', () => {
+    const open = lengthRange({ min: 1, adaptive: adaptation }, 'w', 'length');
+    expect([open.lo, open.hi, open.adaptive]).toEqual([1, undefined, adaptation]);
+    expect(roundTrip(open, [1, 2, 900, 2])).toEqual([1, 2, 900, 2]);
     expect(() => lengthRange({ prior: [1], adaptive: adaptation }, 'w', 'count')).toThrow(
       new TypeError('w weights requires a max count')
     );

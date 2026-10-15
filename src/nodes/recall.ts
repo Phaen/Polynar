@@ -180,18 +180,19 @@ export class Recall<T> {
 }
 
 /**
- * A value spelled by its place among the distinct values this node has
- * coded so far in the message, or as a new value through `inner`, under
- * learned odds. `key` gives the identity values are matched under.
+ * A value spelled by its place among the distinct values coded so far in
+ * the message through `recall`, or as a new value through `inner`, under
+ * learned odds. `key` gives the identity values are matched under. A
+ * recall of its own unless given one, which nodes with different spellings
+ * may share, so a value one of them coded recalls through any of them.
  */
 export class PRecall<T> extends PNode<T> {
   readonly _kinds?: readonly Kind[];
-  private readonly recall = new Recall<T>(true);
 
   constructor(
     private readonly inner: PNode<T>,
     private readonly key: (value: T) => string,
-    private readonly who: string
+    private readonly recall = new Recall<T>(true)
   ) {
     super();
     this._kinds = inner._kinds;

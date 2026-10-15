@@ -187,6 +187,18 @@ describe('p.array adaptive', () => {
     }
   });
 
+  it('learns a count without a max on the magnitude scale from the min', () => {
+    const values = run(300, 5).map((value) => [1, ...value, ...value]);
+    const open = p.array(p.int().min(0).max(3)).min(1);
+    expect(trip(p.array(open.adaptive()), values)).toEqual(values);
+    expect(p.array(open.adaptive()).encode(values).length).toBeLessThan(
+      p.array(open).encode(values).length
+    );
+    expect(() => open.adaptive().encode([])).toThrow(
+      new RangeError('Array length 0 is below the minimum 1')
+    );
+  });
+
   it('refuses bad options', () => {
     expect(() => plain.adaptive({ window: 0 })).toThrow(
       new RangeError('p.array adaptive window must be a positive integer, got 0')
@@ -198,9 +210,6 @@ describe('p.array adaptive', () => {
       new RangeError(
         'p.array adaptive prior 16 and window 1024 overflow with weights totalling 35184372088839'
       )
-    );
-    expect(() => p.array(p.int()).adaptive()).toThrow(
-      new TypeError('p.array adaptive requires a max count')
     );
     const cdf = new TypeError('p.array adaptive takes weights, not a cdf');
     expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);

@@ -234,6 +234,15 @@ describe('p.set adaptive', () => {
     }
   });
 
+  it('learns a count without a max on the magnitude scale', () => {
+    const values = run(300, 5);
+    const open = p.set(p.int().min(0).max(9));
+    expect(trip(p.array(open.adaptive()), values)).toEqual(values);
+    expect(p.array(open.adaptive()).encode(values).length).toBeLessThan(
+      p.array(open).encode(values).length
+    );
+  });
+
   it('refuses bad options', () => {
     expect(() => plain.adaptive({ window: 0 })).toThrow(
       new RangeError('p.set adaptive window must be a positive integer, got 0')
@@ -245,9 +254,6 @@ describe('p.set adaptive', () => {
       new RangeError(
         'p.set adaptive prior 16 and window 1024 overflow with weights totalling 35184372088839'
       )
-    );
-    expect(() => p.set(p.int()).adaptive()).toThrow(
-      new TypeError('p.set adaptive requires a max count')
     );
     const cdf = new TypeError('p.set adaptive takes weights, not a cdf');
     expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);

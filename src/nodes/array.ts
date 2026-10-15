@@ -103,8 +103,9 @@ export class PArray<TItem> extends PNode<TItem[]> {
    * before they halve, so the newest weigh most (1024 when left out, and raised
    * to the number of values it counts when smaller). From its second value on,
    * the node spends one bit to stay static, or a few to name the learning rate
-   * that paid off. Requires a max and takes weights, not a cdf; part of the
-   * wire format, like the weights.
+   * that paid off. Without a max, the count learns on the magnitude scale
+   * from the min instead: by its distance's bit-length class. Takes weights,
+   * not a cdf; part of the wire format, like the weights.
    */
   adaptive(options?: AdaptiveOptions): PArray<TItem> {
     return this._with({ ...this._bounds, adaptive: options ?? {} });

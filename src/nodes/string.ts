@@ -333,7 +333,8 @@ export class PString extends PNode<string> {
    * three characters before it, as the message so far has followed them,
    * falling back to a prior over the characters that learns too; a stretch
    * that already occurred in the message is referred back to instead of
-   * spelled again; and the length learns when there is a max. The
+   * spelled again; and the length learns, on the magnitude scale from the
+   * min when there is no max. The
    * characters learn together with those of every other adaptive string
    * of the message with the same charset, prose model or ladder and the same
    * window, unless `separate`. The declared

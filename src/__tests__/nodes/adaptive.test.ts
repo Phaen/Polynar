@@ -9,13 +9,17 @@ import { Encoder, Decoder } from '../../packer';
 import {
   AdaptivePrior,
   AdaptiveTable,
+  BLEND_SHARE,
   DEFAULT_ADAPTIVE_WINDOW,
+  Lineage,
   LiveCounts,
   LADDER,
   MAX_ADAPTIVE_MEMBERS,
   checkAdaptation,
   checkAdaptiveMembers,
+  lineageOf,
   readLive,
+  withLineage,
   writeLive,
 } from '../../nodes/adaptive';
 import { Exclusion, excludedBucket } from '../../nodes/excluded';
@@ -889,5 +893,160 @@ describe('AdaptivePrior estimate', () => {
     expect(() => prior.estimate(enc, 5)).toThrow(new RangeError('Position 5 is outside [0, 5)'));
     expect(() => prior.estimate(enc, 0.5)).toThrow(new TypeError('Position 0.5 is not an integer'));
     expect(() => prior.estimate(enc, 0, 2)).toThrow(new RangeError('Row 2 is outside [0, 2)'));
+  });
+});
+
+describe('Lineage', () => {
+  const rows = (members: number, count = 1) => Array.from({ length: count }, () => ones(members));
+  const prior = (members: number, count = 1, lineage?: Lineage) =>
+    new AdaptivePrior(rows(members, count), members, undefined, 'w', lineage);
+
+  it('pairs each prior a later node builds with the root prior built at the same place', () => {
+    const root = new Lineage();
+    const first = prior(3, 1, root);
+    const second = prior(5, 2, root);
+    const later = new Lineage(root);
+    expect(later.pair(3, rows(3), 'w')).toBe(first);
+    later.join(prior(3));
+    expect(later.pair(5, rows(5, 2), 'w')).toBe(second);
+    expect(new Lineage().pair(3, rows(3), 'w')).toBeUndefined();
+  });
+
+  it('refuses a prior past the root, or of other members or weights', () => {
+    const root = new Lineage();
+    prior(3, 1, root);
+    const refusal = (at: number) =>
+      new TypeError(`w adaptive prior ${at} does not match its lineage's`);
+    const later = new Lineage(root);
+    expect(() => later.pair(4, rows(4), 'w')).toThrow(refusal(0));
+    expect(() => later.pair(3, rows(3, 2), 'w')).toThrow(refusal(0));
+    expect(() => later.pair(3, [[1, 1]], 'w')).toThrow(refusal(0));
+    expect(() => later.pair(3, [[1, 2, 1]], 'w')).toThrow(refusal(0));
+    later.join(prior(3));
+    expect(() => later.pair(3, rows(3), 'w')).toThrow(refusal(1));
+  });
+
+  it('takes a prior only once it is built', () => {
+    const root = new Lineage();
+    expect(() => new AdaptivePrior([[1, 0]], 2, undefined, 'w', root)).toThrow(TypeError);
+    const first = prior(2, 1, root);
+    expect(new Lineage(root).pair(2, rows(2), 'w')).toBe(first);
+  });
+
+  it('rides on adaptive options', () => {
+    const lineage = new Lineage();
+    const options = withLineage({ window: 5 }, lineage);
+    expect(options.window).toBe(5);
+    expect(lineageOf(options)).toBe(lineage);
+    expect(lineageOf({ window: 5 })).toBeUndefined();
+    expect(lineageOf(undefined)).toBeUndefined();
+  });
+});
+
+describe('AdaptivePrior in a lineage', () => {
+  const weights = [[5, 3, 2, 1, 1], ones(5)];
+  const kin = (window?: number) => {
+    const root = new Lineage();
+    const gatherer = new AdaptivePrior(weights, 5, window, 'w', root);
+    const node = () => new AdaptivePrior(weights, 5, window, 'w', new Lineage(root));
+    return { gatherer, node };
+  };
+
+  /** The gathered table of row 0 after `values`, by hand, at the second rung's prior. */
+  const gathered = (gatherer: AdaptivePrior, values: readonly number[], window = 1024) => {
+    const live = new LiveCounts(buildWeights(weights[0], 5, 'w'), gatherer.rungs[1], window);
+    values.forEach((value) => live.learn(value));
+    return live;
+  };
+
+  it('starts from what its kin learned, its own values counting on top', () => {
+    const { gatherer, node } = kin();
+    const [a, b] = [node(), node()];
+    const enc = new Encoder();
+    const first = [0, 1, 0, 2];
+    first.forEach((value) => a.write(enc, value));
+    const all = gathered(gatherer, first);
+    // Nothing of its own yet: the gathered table, counted as BLEND_SHARE observations.
+    for (let pos = 0; pos < 5; pos++) {
+      const [cum, freq, total] = all.bucket(pos);
+      expect(b.estimate(enc, pos)).toEqual([
+        cum * BLEND_SHARE,
+        freq * BLEND_SHARE,
+        total * BLEND_SHARE,
+      ]);
+    }
+    b.write(enc, 3);
+    b.learn(enc, 3);
+    const after = gathered(gatherer, [...first, 3, 3]);
+    const [cum, freq] = after.bucket(3);
+    expect(b.estimate(enc, 3)).toEqual([
+      cum * BLEND_SHARE,
+      freq * BLEND_SHARE + 2 * after.total,
+      after.total * (BLEND_SHARE + 2),
+    ]);
+  });
+
+  it('decodes what it encodes, rows, exclusions and learned values included', () => {
+    const { node } = kin(8);
+    const script = sequence(4, 300, 5, 0.5);
+    const encoders = [node(), node()];
+    const enc = new Encoder();
+    const lone = new Exclusion(5);
+    [1, 2, 3, 4].forEach((pos) => lone.add(pos));
+    const some = new Exclusion(5);
+    some.add(4);
+    const step = (i: number) => ({
+      row: i % 3 === 0 ? 1 : 0,
+      excluded: i % 7 === 0 ? some : undefined,
+    });
+    script.forEach((value, i) => {
+      const { row, excluded } = step(i);
+      const prior = encoders[i % 2];
+      if (value === 4) {
+        prior.learn(enc, value, row);
+      } else {
+        prior.write(enc, value, row, excluded);
+      }
+    });
+    encoders[0].write(enc, 0, 0, lone);
+    const decoders = [encoders[0], encoders[1]];
+    const dec = new Decoder(enc.output());
+    script.forEach((value, i) => {
+      const { row, excluded } = step(i);
+      const prior = decoders[i % 2];
+      if (value === 4) {
+        prior.learn(dec, value, row);
+      } else {
+        expect(prior.read(dec, row, excluded)).toBe(value);
+      }
+    });
+    expect(decoders[0].read(dec, 0, lone)).toBe(0);
+    dec.finalize();
+  });
+
+  it('halves its own counts past its window, and writes nothing for a lone member', () => {
+    const { gatherer, node } = kin();
+    const prior = node();
+    const enc = new Encoder();
+    for (let i = 0; i < 1100; i++) prior.write(enc, 0);
+    const all = gathered(gatherer, Array<number>(1100).fill(0));
+    // 1025 own observations halve to 512, then 75 more.
+    expect(prior.estimate(enc, 0)[2]).toBe(all.total * (BLEND_SHARE + 587));
+    const root = new Lineage();
+    new AdaptivePrior([[1]], 1, undefined, 'w', root);
+    const lone = new AdaptivePrior([[1]], 1, undefined, 'w', new Lineage(root));
+    const quiet = new Encoder();
+    lone.write(quiet, 0);
+    expect(quiet.output()).toEqual(new Encoder().output());
+  });
+
+  it('refuses a root whose gathered table, counted with its own, overflows', () => {
+    const root = new Lineage();
+    new AdaptivePrior([[2 ** 33, 1]], 2, undefined, 'w', root);
+    expect(() => new AdaptivePrior([[2 ** 33, 1]], 2, undefined, 'w', new Lineage(root))).toThrow(
+      new RangeError(
+        'w adaptive prior 2 and window 1024 overflow with weights totalling 8830452761604'
+      )
+    );
   });
 });

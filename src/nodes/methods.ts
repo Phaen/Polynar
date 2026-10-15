@@ -9,7 +9,7 @@
  */
 
 import { type Encoder, type Decoder, ScaledRatio } from '../packer';
-import { AdaptivePrior, checkAdaptation, type AdaptiveOptions } from './adaptive';
+import { AdaptivePrior, checkAdaptation, lineageOf, type AdaptiveOptions } from './adaptive';
 import { Exclusion } from './excluded';
 
 /**
@@ -92,7 +92,8 @@ export class ModeChoice<T> {
     if (adaptive !== undefined) {
       const { window } = checkAdaptation(adaptive, who);
       const n = methods.length;
-      this.prior = new AdaptivePrior([new Array<number>(n).fill(1)], n, window, who);
+      const ones = [new Array<number>(n).fill(1)];
+      this.prior = new AdaptivePrior(ones, n, window, who, lineageOf(adaptive));
     }
   }
 

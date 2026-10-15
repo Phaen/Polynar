@@ -7,9 +7,8 @@ import { p, Encoder, Decoder, CorruptInputError, type PNode } from '../../index'
 import { PRecall, Recall, copy, identity } from '../../nodes/recall';
 import { mulberry32 } from '../support';
 
-const strings = () => new PRecall<string>(p.string(), (s) => s, 'test string');
-const keyLists = () =>
-  new PRecall<string[]>(p.array(p.string()), (keys) => JSON.stringify(keys), 'test shape');
+const strings = () => new PRecall<string>(p.string(), (s) => s);
+const keyLists = () => new PRecall<string[]>(p.array(p.string()), (keys) => JSON.stringify(keys));
 
 /** Writes every value through `node` into one message and reads them back. */
 const tripAll = <T>(node: PRecall<T>, values: readonly T[]): { bytes: Uint8Array; back: T[] } => {
@@ -73,6 +72,26 @@ describe('PRecall', () => {
     expect(back).toEqual(values);
     // A recalled value is the one first decoded, not a copy.
     expect(back[2]).toBe(back[0]);
+  });
+
+  it('shares a recall it is given, so a value one node spelled recalls through another', () => {
+    const shared = new Recall<string>(true);
+    const upper = new PRecall<string>(p.string().charset('AB'), (s) => s, shared);
+    const lower = new PRecall<string>(p.string(), (s) => s, shared);
+    const enc = new Encoder();
+    upper._write(enc, 'AB');
+    lower._write(enc, 'AB');
+    lower._write(enc, 'ab');
+    const dec = new Decoder(enc.output());
+    expect([upper._read(dec), lower._read(dec), lower._read(dec)]).toEqual(['AB', 'AB', 'ab']);
+    dec.finalize();
+    const twice = (second: PNode<string>) => {
+      const out = new Encoder();
+      upper._write(out, 'AB');
+      second._write(out, 'AB');
+      return out.output().length;
+    };
+    expect(twice(lower)).toBeLessThan(twice(strings()));
   });
 
   it('writes nothing for the first value beyond its spelling', () => {
@@ -366,11 +385,7 @@ describe('.recall()', () => {
     const learned = inOne(plain.adaptive().recall(), values);
     expect(learned.back).toEqual(values);
     const spelled = plain.adaptive();
-    const model = new PRecall<number[]>(
-      spelled,
-      (v) => identity((enc) => spelled._write(enc, v)),
-      'model'
-    );
+    const model = new PRecall<number[]>(spelled, (v) => identity((enc) => spelled._write(enc, v)));
     expect(learned.bytes).toEqual(inOne(model, values).bytes);
   });
 
@@ -397,10 +412,8 @@ describe('.recall()', () => {
     const node = p.set(item).max(3).adaptive().recall();
     const values = [new Set([1]), new Set([1]), new Set([1]), new Set([2])];
     const spelled = p.set(item).max(3).adaptive();
-    const model = new PRecall<Set<number>>(
-      spelled,
-      (v) => identity((enc) => spelled._write(enc, v)),
-      'model'
+    const model = new PRecall<Set<number>>(spelled, (v) =>
+      identity((enc) => spelled._write(enc, v))
     );
     expect(inOne(node, values).bytes).toEqual(inOne(model, values).bytes);
   });
