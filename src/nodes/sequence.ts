@@ -38,7 +38,7 @@ import {
   type Table,
 } from './excluded';
 import { IndexRange, lengthRange, type LengthBounds } from './lattice';
-import { LearnedMagnitude } from './magnitude';
+import { GAMMA_MAGNITUDE, LearnedMagnitude, type Magnitude } from './magnitude';
 import { members, type Members } from './members';
 import { ModeChoice, type Method, type Spelling } from './methods';
 import { Recall } from './recall';
@@ -53,6 +53,7 @@ import {
   type RepeatCoding,
 } from './repeats';
 import { buildWeights, checkIndex } from './weights';
+import type { Run } from './base';
 
 /**
  * The items at the start of a repeat that still train the context model:
@@ -122,6 +123,13 @@ export interface Symbols<T> {
   row(item: number): number;
   /** The value of the items. */
   build(items: number[]): T;
+  /**
+   * The least symbol of an item that a value above another in UTF-16 code
+   * unit order can hold where the two first differ, `item` being the
+   * other's there; left out, or undefined for an item, where the symbols
+   * do not follow that order.
+   */
+  above?(item: number): number | undefined;
   /** The value as a length error names it: `String length 7`. */
   subject(value: T): string;
   /**
@@ -340,6 +348,8 @@ export class StaticLiterals implements Literals {
  * known to both sides: the items spelled are those after it, `span` units
  * of them, and the first is priced as the item after `lead`. `kind` picks
  * the model the symbols are priced in, where a body keeps more than one.
+ * `first`, when given, is what is known of the first item's symbol, which
+ * the body rules out what it can of.
  */
 interface Body {
   write(
@@ -347,10 +357,26 @@ interface Body {
     items: readonly number[],
     span: number,
     lead: readonly number[],
-    kind: number
+    kind: number,
+    first?: First
   ): void;
   /** Reads items until their units reach `span`, and the units they add up to. */
-  read(dec: Decoder, span: number, lead: readonly number[], kind: number): [number[], number];
+  read(
+    dec: Decoder,
+    span: number,
+    lead: readonly number[],
+    kind: number,
+    first?: First
+  ): [number[], number];
+}
+
+/**
+ * What is known of the symbol of a value's first item after the start it
+ * shares with another: a symbol it is not, and the least it can be.
+ */
+interface First {
+  readonly except?: number;
+  readonly floor?: number;
 }
 
 /**
@@ -365,10 +391,17 @@ function bounded(count: number, span: number): void {
   }
 }
 
-/** The items one symbol each at the alphabet's static odds, each followed by its tail. */
+/**
+ * The items one symbol each at the alphabet's static odds, each followed by
+ * its tail. A first symbol with a floor is spelled among those from it
+ * where every symbol is alike, else one with a symbol ruled out among the
+ * rest at the same odds.
+ */
 class Spelled<T> implements Body {
   /** Set when a value's symbols read as one run: uniform and tailless. */
   private readonly fast: boolean;
+  /** The first symbols with one ruled out, built on first use. */
+  private excluding?: StaticLiterals;
 
   constructor(
     private readonly symbols: Symbols<T>,
@@ -377,20 +410,68 @@ class Spelled<T> implements Body {
     this.fast = symbols.tailless && spelling.radix !== undefined;
   }
 
-  write(enc: Encoder, items: readonly number[], _span: number, lead: readonly number[]): void {
+  private literals(): StaticLiterals {
+    return (this.excluding ??= new StaticLiterals(this.symbols));
+  }
+
+  /** Writes the first symbol, known as `first`, in `row`. */
+  private writeFirst(enc: Encoder, symbol: number, row: number, { except, floor }: First): void {
+    const { radix } = this.spelling;
+    if (floor !== undefined && radix !== undefined) {
+      enc.compose(symbol - floor, radix - floor);
+    } else if (except !== undefined) {
+      this.literals().write(enc, symbol, row, NONE, except);
+    } else {
+      this.spelling.write(enc, symbol, row);
+    }
+  }
+
+  /** Reads a first symbol `writeFirst` wrote. */
+  private readFirst(dec: Decoder, row: number, { except, floor }: First): number {
+    const { radix } = this.spelling;
+    if (floor !== undefined && radix !== undefined) {
+      if (floor >= radix) {
+        throw new CorruptInputError(`No symbol lies at or above ${floor}`);
+      }
+      return floor + dec.parse(radix - floor);
+    }
+    return except !== undefined
+      ? this.literals().read(dec, row, NONE, except)
+      : this.spelling.read(dec, row);
+  }
+
+  write(
+    enc: Encoder,
+    items: readonly number[],
+    _span: number,
+    lead: readonly number[],
+    _kind: number,
+    first?: First
+  ): void {
     const { symbols, spelling } = this;
     let row = rowAfter(symbols, lead);
-    for (const item of items) {
+    for (let k = 0; k < items.length; k++) {
+      const item = items[k];
       const symbol = symbols.symbol(item);
-      spelling.write(enc, symbol, row);
+      if (k === 0 && first !== undefined) {
+        this.writeFirst(enc, symbol, row, first);
+      } else {
+        spelling.write(enc, symbol, row);
+      }
       symbols.tail(enc, item, symbol);
       row = symbols.row(item);
     }
   }
 
-  read(dec: Decoder, span: number, lead: readonly number[]): [number[], number] {
+  read(
+    dec: Decoder,
+    span: number,
+    lead: readonly number[],
+    _kind: number,
+    first?: First
+  ): [number[], number] {
     const { symbols, spelling } = this;
-    if (this.fast) {
+    if (this.fast && first === undefined) {
       return [dec.parseMany(symbols.size, span), span];
     }
     const items: number[] = [];
@@ -398,7 +479,11 @@ class Spelled<T> implements Body {
     let row = rowAfter(symbols, lead);
     while (units < span) {
       bounded(items.length, span);
-      const item = symbols.untail(dec, spelling.read(dec, row));
+      const symbol =
+        items.length === 0 && first !== undefined
+          ? this.readFirst(dec, row, first)
+          : spelling.read(dec, row);
+      const item = symbols.untail(dec, symbol);
       items.push(item);
       units += symbols.units(item);
       row = symbols.row(item);
@@ -550,7 +635,8 @@ class Engine<T> implements Body {
     items: readonly number[],
     span: number,
     lead: readonly number[],
-    kind: number
+    kind: number,
+    first?: First
   ): void {
     const state = this.message(enc);
     const all = state.items;
@@ -563,13 +649,13 @@ class Engine<T> implements Body {
     }
     const walk = this.walk(enc, items, span, lead, base, this.model(kind));
     if (!possible(base, span, this.gate)) {
-      this.spell(enc, state, walk, items, false);
+      this.spell(enc, state, walk, items, false, first?.except);
       return;
     }
     const used =
       enc.decide(WITH_FIRST, this.used ? WITH_LAST : WITH_FIRST, (choice) => {
         this.repeats.writeUsed(enc, choice === 1);
-        this.spell(enc, state, walk, items, choice === 1);
+        this.spell(enc, state, walk, items, choice === 1, first?.except);
       }) === 1;
     this.used = used;
     if (!used) {
@@ -577,18 +663,21 @@ class Engine<T> implements Body {
     }
   }
 
-  /** Spells the items of `walk`, with repeats where they are decodable when `used`. */
+  /**
+   * Spells the items of `walk`, with repeats where they are decodable when
+   * `used`, the first literal ruling out `except`.
+   */
   private spell(
     enc: Encoder,
     state: Message,
     walk: Walk,
     items: readonly number[],
-    used: boolean
+    used: boolean,
+    except: number | undefined
   ): void {
     const { repeats } = this;
     const { model, base, span, syms, rows, histories, before } = walk;
     let context: FlagContext = 0;
-    let except: number | undefined;
     for (let k = 0; k < items.length; ) {
       const at = base + k;
       const limit = span - before[k];
@@ -796,7 +885,13 @@ class Engine<T> implements Body {
   }
 
   /** Reads the items of a value of `span` units after `lead`, and the units they add up to. */
-  read(dec: Decoder, span: number, lead: readonly number[], kind: number): [number[], number] {
+  read(
+    dec: Decoder,
+    span: number,
+    lead: readonly number[],
+    kind: number,
+    first?: First
+  ): [number[], number] {
     const { symbols, repeats } = this;
     const model = this.model(kind);
     const state = this.message(dec);
@@ -806,7 +901,7 @@ class Engine<T> implements Body {
     let units = 0;
     let [row, history] = opening(symbols, lead, (item) => this.symbol(dec, item));
     let context: FlagContext = 0;
-    let except: number | undefined;
+    let except = first?.except;
     const take = (item: number, sym: number): void => {
       all.push(item);
       units += symbols.units(item);
@@ -989,6 +1084,8 @@ export class Sequence<T> {
   private readonly body: Body;
   /** The learned length of the shared start under adaptive; every length alike otherwise. */
   private readonly shared?: LearnedMagnitude;
+  /** The shared start of a run's value: on the gamma scale, learned apart under adaptive. */
+  private readonly front: Magnitude = GAMMA_MAGNITUDE;
   /** Whether the node keeps its previous value: when a delta may spell a value. */
   private readonly tracks: boolean;
   /** The learned choice of plain or delta, under adaptive without a declared delta. */
@@ -1025,6 +1122,7 @@ export class Sequence<T> {
       }
       const shared = new LearnedMagnitude(false, adaptive, who);
       this.shared = shared;
+      this.front = new LearnedMagnitude(false, adaptive, who, 'gamma');
       if (spelling.delta === undefined) {
         const methods = [this.plain(engine), this.delta(shared)];
         this.choice = new ModeChoice(methods, adaptive, who);
@@ -1171,9 +1269,9 @@ export class Sequence<T> {
     return lead.concat(this.readBody(dec, span - this.unitsOf(prev, shared), lead));
   }
 
-  /** Reads the items of `span` units after `lead`, refusing any that overrun it. */
-  private readBody(dec: Decoder, span: number, lead: readonly number[]): number[] {
-    const [items, units] = this.body.read(dec, span, lead, this.kind);
+  /** Reads the items of `span` units after `lead`, the first known as `first`, refusing any that overrun it. */
+  private readBody(dec: Decoder, span: number, lead: readonly number[], first?: First): number[] {
+    const [items, units] = this.body.read(dec, span, lead, this.kind, first);
     // An item wider than one unit in the final slot, or a repeat copying
     // past the span, can overshoot it; no value encodes that way.
     if (units > span) {
@@ -1211,8 +1309,8 @@ export class Sequence<T> {
     return value;
   }
 
-  /** Writes `value` in full: its length, then its items by the method the node takes for it. */
-  private spell(enc: Encoder, value: T): void {
+  /** Writes the length prefix of `value` and returns the span of its items. */
+  private writeLength(enc: Encoder, value: T): number {
     const symbols = this.symbols;
     const count = symbols.count(value);
     const subject = (): string => symbols.subject(value);
@@ -1222,8 +1320,25 @@ export class Sequence<T> {
       checkIndex(count, this.min, undefined, subject);
       this.lengths.write(enc, count, this.min, this.min, MAX_SAFE);
     }
-    const items = symbols.items(value);
-    const span = symbols.span(count);
+    return symbols.span(count);
+  }
+
+  /** Reads a length prefix `writeLength` wrote and returns the span of the items after it. */
+  private readLength(dec: Decoder): number {
+    const symbols = this.symbols;
+    const count =
+      this.lengths === undefined
+        ? this.length.read(dec)
+        : this.lengths.read(dec, this.min, this.min, MAX_SAFE);
+    symbols.check?.(count);
+    dec.charge(count);
+    return symbols.span(count);
+  }
+
+  /** Writes `value` in full: its length, then its items by the method the node takes for it. */
+  private spell(enc: Encoder, value: T): void {
+    const span = this.writeLength(enc, value);
+    const items = this.symbols.items(value);
     if (!this.tracks) {
       this.body.write(enc, items, span, NONE, this.kind);
       return;
@@ -1243,13 +1358,7 @@ export class Sequence<T> {
   /** Reads a value `spell` wrote. */
   private unspell(dec: Decoder): T {
     const symbols = this.symbols;
-    const count =
-      this.lengths === undefined
-        ? this.length.read(dec)
-        : this.lengths.read(dec, this.min, this.min, MAX_SAFE);
-    symbols.check?.(count);
-    dec.charge(count);
-    const span = symbols.span(count);
+    const span = this.readLength(dec);
     if (!this.tracks) {
       return symbols.build(this.readBody(dec, span, NONE));
     }
@@ -1266,4 +1375,134 @@ export class Sequence<T> {
     track.prev = items;
     return symbols.build(items);
   }
+
+  /** The items `value` is spelled in. */
+  items(value: T): number[] {
+    return this.symbols.items(value);
+  }
+
+  /** A run of values coded one after another as `writeNext` writes them, each after the one before. */
+  run(ascent: Ascent): Run<T> {
+    let prev: number[] | undefined;
+    return {
+      write: (enc, value) => {
+        prev = this.writeNext(enc, value, prev, ascent);
+      },
+      read: (dec) => {
+        const [value, items] = this.readNext(dec, prev, ascent);
+        prev = items;
+        return value;
+      },
+    };
+  }
+
+  /**
+   * Writes `value` as the value of a run after the one whose items are
+   * `prev`, none for the run's first, and returns its items. After the
+   * length prefix come how many items of `prev` the value starts with, out
+   * of the counts `ascent` leaves possible, on the gamma scale, which
+   * learns under adaptive apart from the delta's; then the items after them,
+   * priced as following that shared start. The first of those is not the
+   * item of `prev` after the start, whose symbol is ruled out where it
+   * stands for that item alone. A value the node already wrote is recalled
+   * as `write` recalls it. The node's previous value stays as it was.
+   */
+  writeNext(enc: Encoder, value: T, prev: readonly number[] | undefined, ascent: Ascent): number[] {
+    const symbols = this.symbols;
+    const items = symbols.items(value);
+    const spell = (): void => {
+      const span = this.writeLength(enc, value);
+      if (prev === undefined) {
+        this.body.write(enc, items, span, NONE, this.kind);
+        return;
+      }
+      const most = this.most(prev, span, ascent);
+      const shared = this.sharing(items, prev, most);
+      this.front.write(enc, shared, 0, 0, most);
+      const rest = span - this.unitsOf(prev, shared);
+      const first = this.first(prev, shared, ascent);
+      this.body.write(enc, items.slice(shared), rest, prev.slice(0, shared), this.kind, first);
+    };
+    const recall = this.recall;
+    if (recall === undefined) {
+      spell();
+    } else {
+      recall.write(enc, symbols.identity?.(value) ?? items.join(), spell);
+    }
+    return items;
+  }
+
+  /** Reads a value `writeNext` wrote after the same `prev`, and its items. */
+  readNext(dec: Decoder, prev: readonly number[] | undefined, ascent: Ascent): [T, number[]] {
+    const symbols = this.symbols;
+    let items: number[] = [];
+    const spell = (): T => {
+      const span = this.readLength(dec);
+      if (prev === undefined) {
+        items = this.readBody(dec, span, NONE);
+      } else {
+        const most = this.most(prev, span, ascent);
+        if (most < 0) {
+          throw new CorruptInputError('An empty value follows another in an ascending run');
+        }
+        const shared = this.front.read(dec, 0, 0, most);
+        const lead = prev.slice(0, shared);
+        const rest = span - this.unitsOf(prev, shared);
+        items = lead.concat(this.readBody(dec, rest, lead, this.first(prev, shared, ascent)));
+      }
+      return symbols.build(items);
+    };
+    const recall = this.recall;
+    if (recall === undefined) {
+      const value = spell();
+      return [value, items];
+    }
+    let spelled = false;
+    const value = recall.read(dec, () => {
+      spelled = true;
+      return spell();
+    });
+    return [value, spelled ? items : symbols.items(value)];
+  }
+
+  /**
+   * The most items of `prev` a run's value of `span` units can start with
+   * under `ascent`: as many as fit the span, less one where starting with
+   * all of them would make the value a start of `prev` that the ascent
+   * rules out, any shorter one sorting below it, and under `unique` the
+   * value equal to it. Below 0 only for an empty value that cannot follow.
+   */
+  private most(prev: readonly number[], span: number, ascent: Ascent): number {
+    const bound = this.reach(prev, span);
+    const whole = this.unitsOf(prev, bound) === span;
+    return ascent !== 'any' && whole && (ascent === 'unique' || bound < prev.length)
+      ? bound - 1
+      : bound;
+  }
+
+  /**
+   * What is known of the next item of a run's value that starts with
+   * `shared` items of `prev`, as the start shared is the longest: it is not
+   * `prev`'s next item, so not its symbol where that stands for it alone,
+   * and above it under an `ascent` that orders the values, so at least the
+   * alphabet's floor above it. Nothing past `prev`'s end.
+   */
+  private first(prev: readonly number[], shared: number, ascent: Ascent): First | undefined {
+    if (shared >= prev.length) {
+      return undefined;
+    }
+    const symbols = this.symbols;
+    const item = prev[shared];
+    const symbol = symbols.symbol(item);
+    return {
+      except: symbols.tails(item, symbol) === 1 ? symbol : undefined,
+      floor: ascent === 'any' ? undefined : symbols.above?.(item),
+    };
+  }
 }
+
+/**
+ * What a run's value is known to be against the one before it, by its
+ * items: nothing (`any`), not below it (`sorted`), or above it (`unique`).
+ */
+export type Ascent = 'any' | 'sorted' | 'unique';

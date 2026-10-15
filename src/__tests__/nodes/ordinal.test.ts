@@ -10,7 +10,7 @@ import {
   arrangementDigits,
   arrangementRanks,
   binomial,
-  checkOrdinal,
+  checkOrder,
   ordinalDigits,
   readOrdinal,
   restricts,
@@ -228,15 +228,16 @@ describe('writeOrdinal / readOrdinal', () => {
   });
 });
 
-describe('checkOrdinal / ordinalDigits / restricts', () => {
-  it('accepts only nodes that spell a value as one digit', () => {
-    expect(() => checkOrdinal(p.int().min(0).max(9), 'p.array', 'sorted', 'items')).not.toThrow();
-    expect(() => checkOrdinal(p.int(), 'p.array', 'sorted', 'items')).toThrow(
+describe('checkOrder / ordinalDigits / restricts', () => {
+  it('accepts only nodes that spell a value as one digit, or spell runs', () => {
+    expect(() => checkOrder(p.int().min(0).max(9), 'p.array', 'sorted', 'items')).not.toThrow();
+    expect(() => checkOrder(p.string(), 'p.array', 'sorted', 'items')).not.toThrow();
+    expect(() => checkOrder(p.int(), 'p.array', 'sorted', 'items')).toThrow(
       new TypeError(
-        'p.array sorted requires items of bounded p.int, p.date or p.decimal, or of p.enum or p.bool, without weights or adaptive'
+        'p.array sorted requires items of p.string, or of bounded p.int, p.date or p.decimal, p.enum or p.bool without weights or adaptive'
       )
     );
-    expect(() => checkOrdinal(p.bool().adaptive(), 'p.map', 'unordered', 'keys')).toThrow(
+    expect(() => checkOrder(p.bool().adaptive(), 'p.map', 'unordered', 'keys')).toThrow(
       'p.map unordered requires keys of'
     );
   });

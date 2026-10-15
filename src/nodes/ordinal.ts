@@ -32,26 +32,30 @@ export interface Order {
 export const restricts = (order: Order): boolean =>
   order.sorted !== undefined || order.unique !== undefined || order.unordered !== undefined;
 
+/** Whether `node` spells each value as one digit and maps values to digits. */
+export const ordinal = (node: PNode<any>): boolean =>
+  node._radix !== undefined && node._toDigit !== undefined;
+
 /**
- * Refuses a restriction `which` on values of `node` unless the node spells
- * each value as one digit and maps values to digits; `noun` names those
- * values, as in `p.array sorted requires items of …`.
+ * Refuses a restriction `which` on values of `node` unless the node is
+ * ordinal or spells runs (`./runs`); `noun` names those values, as in
+ * `p.array sorted requires items of …`.
  */
-export function checkOrdinal(
+export function checkOrder(
   node: PNode<any>,
   who: string,
   which: string,
   noun: 'items' | 'keys'
 ): void {
-  if (node._radix === undefined || node._toDigit === undefined) {
+  if (!ordinal(node) && node._run === undefined) {
     throw new TypeError(
-      `${who} ${which} requires ${noun} of bounded p.int, p.date or p.decimal, or of p.enum or p.bool, without weights or adaptive`
+      `${who} ${which} requires ${noun} of p.string, or of bounded p.int, p.date or p.decimal, p.enum or p.bool without weights or adaptive`
     );
   }
 }
 
 /**
- * The digits of `values` under `node`, which `checkOrdinal` accepted, in the
+ * The digits of `values` under `node`, which is ordinal, in the
  * order `writeOrdinal` takes them, with `at[i]` the position in `values` of
  * the i-th digit: ascending when the run is unordered, else as given. A
  * value `node` refuses, a repeat under `unique` and a descent under `sorted`

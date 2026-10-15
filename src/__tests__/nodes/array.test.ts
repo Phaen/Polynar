@@ -356,7 +356,7 @@ describe('Schema array order restrictions', () => {
     expect(() => node.unordered().sorted()).toThrow('not both');
     for (const item of [
       p.int(),
-      p.string(),
+      p.float(),
       p.enum(['a', 'b']).weights([1, 2]),
       p.bool().adaptive(),
     ]) {
@@ -366,7 +366,7 @@ describe('Schema array order restrictions', () => {
         (a: PArray<unknown>) => a.unordered(),
       ]) {
         expect(() => restrict(p.array(item as PNode<unknown>))).toThrow(
-          /^p\.array (sorted|unique|unordered) requires items of bounded p\.int/
+          /^p\.array (sorted|unique|unordered) requires items of p\.string, or of bounded p\.int/
         );
       }
     }

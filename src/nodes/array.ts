@@ -6,13 +6,16 @@ import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattic
 import type { Cdf } from './weights';
 import type { AdaptiveOptions } from './adaptive';
 import {
-  checkOrdinal,
+  checkOrder,
+  ordinal,
   ordinalDigits,
   readOrdinal,
   restricts,
   writeOrdinal,
   type Order,
 } from './ordinal';
+import { readRun, writeRun } from './runs';
+import { members, type Members } from './members';
 import { withMethod, type Spelling } from './methods';
 import { Recall, copy, identity } from './recall';
 
@@ -34,6 +37,11 @@ export class PArray<TItem> extends PNode<TItem[]> {
   private readonly _spelling: Spelling;
   /** Set by `.recall()`: learned when the count is adaptive. */
   private readonly _recall?: Recall<TItem[]>;
+  /**
+   * How distinct strings in their own order are spelled, see `./runs`:
+   * learned when the count is adaptive.
+   */
+  private readonly _choice: Members;
 
   constructor(
     item: PNode<TItem>,
@@ -53,6 +61,8 @@ export class PArray<TItem> extends PNode<TItem[]> {
     if (spelling.recall !== undefined) {
       this._recall = new Recall(bounds.adaptive !== undefined, copy);
     }
+    const { adaptive } = bounds;
+    this._choice = members(2, adaptive === undefined ? undefined : { adaptive }, 'p.array');
   }
 
   /** Require at least `n` items. A raised floor packs the count denser. */
@@ -113,26 +123,30 @@ export class PArray<TItem> extends PNode<TItem[]> {
 
   /**
    * Require the items in ascending order, by the item's value order: numbers
-   * and dates ascending, enum members in list order, true before false.
-   * Repeats stay allowed unless `.unique()` forbids them. The order then
-   * costs nothing: a sorted run of n items has n! fewer possible values.
-   * Takes items of bounded p.int, p.date or p.decimal, or of p.enum or
-   * p.bool, without weights or adaptive.
+   * and dates ascending, enum members in list order, true before false,
+   * strings by UTF-16 code units. Repeats stay allowed unless `.unique()`
+   * forbids them. The order then costs nothing: a sorted run of n items has
+   * n! fewer possible values, and each string is written after the start it
+   * shares with the one before. Takes items of p.string, or of bounded
+   * p.int, p.date or p.decimal, p.enum or p.bool without weights or
+   * adaptive.
    */
   sorted(): PArray<TItem> {
     checkUnset(this._order.sorted, 'p.array', 'sorted');
-    checkOrdinal(this._item, 'p.array', 'sorted', 'items');
+    checkOrder(this._item, 'p.array', 'sorted', 'items');
     return this._with(this._bounds, { ...this._order, sorted: true });
   }
 
   /**
    * Forbid repeated items. Each item is then coded among the values not yet
-   * used, so a shuffled deck costs log2 52! bits instead of 52 · log2 52.
-   * Takes the same items as `.sorted()`.
+   * used, so a shuffled deck costs log2 52! bits instead of 52 · log2 52;
+   * strings are written as they stand or ascending, as `.sorted()` writes
+   * them, and then their order, whichever is shorter, after a choice that
+   * learns when the count is adaptive. Takes the same items as `.sorted()`.
    */
   unique(): PArray<TItem> {
     checkUnset(this._order.unique, 'p.array', 'unique');
-    checkOrdinal(this._item, 'p.array', 'unique', 'items');
+    checkOrder(this._item, 'p.array', 'unique', 'items');
     return this._with(this._bounds, { ...this._order, unique: true });
   }
 
@@ -143,7 +157,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
    */
   unordered(): PArray<TItem> {
     checkUnset(this._order.unordered, 'p.array', 'unordered');
-    checkOrdinal(this._item, 'p.array', 'unordered', 'items');
+    checkOrder(this._item, 'p.array', 'unordered', 'items');
     return this._with(this._bounds, { ...this._order, unordered: true });
   }
 
@@ -186,7 +200,11 @@ export class PArray<TItem> extends PNode<TItem[]> {
     this._count.write(enc, count, () => `Array length ${count}`);
 
     if (restricts(this._order)) {
-      // checkOrdinal accepted the item when the order was set.
+      // checkOrder accepted the item when the order was set.
+      if (!ordinal(this._item)) {
+        writeRun(enc, this._item, value, this._order, (i) => i, this._choice);
+        return;
+      }
       const { digits } = ordinalDigits(this._item, value, this._order, (i) => i);
       writeOrdinal(enc, digits, this._item._radix as number, this._order);
       return;
@@ -224,6 +242,9 @@ export class PArray<TItem> extends PNode<TItem[]> {
         value.push(item._fromDigit(digit));
       }
       return value;
+    }
+    if (restricts(this._order)) {
+      return readRun(dec, item, count, this._order, this._choice) as TItem[];
     }
     for (let i = 0; i < count; i++) {
       value.push(item._read(dec));

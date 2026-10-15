@@ -10,11 +10,13 @@ import { AdaptivePrior } from '../../nodes/adaptive';
 import { Exclusion } from '../../nodes/excluded';
 import {
   DIRECT,
+  GAMMA_MAGNITUDE,
   LearnedMagnitude,
   MAX_CLASS,
   SIDE_SYMBOLS,
   STATIC_MAGNITUDE,
   classOf,
+  gammaWeights,
   magnitude,
   sideWeights,
   type Magnitude,
@@ -180,7 +182,65 @@ describe('static magnitude', () => {
   });
 });
 
+describe.each([
+  ['gamma', () => GAMMA_MAGNITUDE],
+  ['learned at gamma prices', () => new LearnedMagnitude(false, {}, 'Gamma', 'gamma')],
+])('%s magnitude, above its origin', (_name, make) => {
+  const up = (cases: readonly Case[]): Case[] =>
+    cases.filter(([value, origin, lo]) => lo === origin && value >= origin);
+
+  it('round-trips every value of small intervals and across the safe range', () => {
+    const cases = [...up(small), ...up(wide), [MAX, 0, 0, MAX], [MAX, -MAX, -MAX, MAX]] as Case[];
+    expect(tripAll(make, cases).back).toEqual(cases.map(([value]) => value));
+  });
+
+  it('writes nothing for an interval of one value, and reads -0 as 0', () => {
+    expect(tripAll(make, [[4, 4, 4, 4]]).bytes).toEqual(new Uint8Array(0));
+    const [back] = tripAll(make, [[0, -0, -0, 3]]).back;
+    expect(Object.is(back, 0)).toBe(true);
+  });
+
+  it('refuses an interval reaching below the origin, and arguments outside it', () => {
+    const scale = make();
+    const enc = new Encoder();
+    const dec = new Decoder(new Uint8Array(0));
+    const below = new RangeError('Gamma magnitude reaches below its origin 2 to 1');
+    expect(() => scale.write(enc, 3, 2, 1, 5)).toThrow(below);
+    expect(() => scale.read(dec, 2, 1, 5)).toThrow(below);
+    expect(() => scale.learn(enc, 3, 2, 1, 5)).toThrow(below);
+    expect(() => scale.write(enc, 6, 0, 0, 5)).toThrow(
+      new RangeError('Magnitude value 6 is outside [0, 5]')
+    );
+    expect(() => scale.learn(enc, 1.5, 0, 0, 5)).toThrow(TypeError);
+  });
+});
+
+describe('gamma magnitude', () => {
+  it('names the class in unary, stopping short of the farthest, then the tail', () => {
+    const at = (value: number) => tripAll(() => GAMMA_MAGNITUDE, [[value, 0, 0, 100]]).bytes;
+    expect(at(0)).toEqual(digits([0, 2]));
+    expect(at(1)).toEqual(digits([1, 2], [0, 2]));
+    expect(at(5)).toEqual(digits([1, 2], [1, 2], [1, 2], [0, 2], [1, 4]));
+    // Class 7 is the farthest [0, 100] reaches: no stop, and cut at 100.
+    const top: [number, number][] = new Array(7).fill([1, 2]);
+    expect(at(100)).toEqual(digits(...top, [36, 37]));
+  });
+});
+
 describe('learned magnitude', () => {
+  it('starts at the gamma prices when asked, each class half the one before', () => {
+    const side = gammaWeights(0);
+    expect(side).toHaveLength(SIDE_SYMBOLS);
+    expect(side.slice(0, 8)).toEqual([2048, 1024, 256, 256, 64, 64, 64, 64]);
+    expect(side.slice(DIRECT, DIRECT + 3)).toEqual([16, 8, 4]);
+    expect(side.slice(-20)).toEqual(new Array<number>(20).fill(1));
+    expect(gammaWeights(1).slice(0, 3)).toEqual([1024, 512, 128]);
+    const signed: Case[] = [-70, -1, 0, 3, 70].map((n) => [n, 0, -100, 100]);
+    expect(tripAll(() => new LearnedMagnitude(true, {}, 'test', 'gamma'), signed).back).toEqual(
+      signed.map(([n]) => n)
+    );
+  });
+
   it('starts at the term code prices, ported exactly', () => {
     const side = sideWeights(0);
     expect(side).toHaveLength(SIDE_SYMBOLS);

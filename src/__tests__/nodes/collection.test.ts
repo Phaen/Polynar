@@ -352,12 +352,12 @@ describe('Unordered collections', () => {
     );
     expect(() => p.set(p.int()).unordered()).toThrow(
       new TypeError(
-        'p.set unordered requires items of bounded p.int, p.date or p.decimal, or of p.enum or p.bool, without weights or adaptive'
+        'p.set unordered requires items of p.string, or of bounded p.int, p.date or p.decimal, p.enum or p.bool without weights or adaptive'
       )
     );
     expect(() => p.map(p.enum(['a']).weights([1]), p.int()).unordered()).toThrow(
       'p.map unordered requires keys of'
     );
-    expect(() => p.record(p.int()).unordered()).toThrow('p.record unordered requires keys of');
+    expect(() => p.record(p.int()).unordered()).not.toThrow();
   });
 });

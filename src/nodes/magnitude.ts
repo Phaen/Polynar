@@ -183,6 +183,58 @@ export const STATIC_MAGNITUDE: Magnitude = {
   },
 };
 
+/** `check`, and an interval starting at the origin, for a scale that reaches only above it; `who` names the scale. */
+function checkUp(
+  value: number | undefined,
+  origin: number,
+  lo: number,
+  hi: number,
+  who: string
+): void {
+  check(value, origin, lo, hi);
+  if (lo < origin) {
+    throw new RangeError(`${who} magnitude reaches below its origin ${origin} to ${lo}`);
+  }
+}
+
+/**
+ * The gamma scale, which reaches only above its origin: the class in unary,
+ * a bit for each class passed and one to stop short of the farthest class
+ * the interval reaches, then the tail. Class `c` costs `c + 1` bits and its
+ * tail `c - 1` more, so the smallest distances cost least whatever the
+ * interval's reach.
+ */
+export const GAMMA_MAGNITUDE: Magnitude = {
+  write(enc, value, origin, lo, hi) {
+    checkUp(value, origin, lo, hi, 'Gamma');
+    const placed = place(value, origin);
+    for (let cls = 0; cls < placed.cls; cls++) {
+      enc.compose(1, 2);
+    }
+    if (placed.cls < classOf(hi - origin)) {
+      enc.compose(0, 2);
+    }
+    if (placed.cls > 0) {
+      writeTail(enc, placed, value, origin, lo, hi);
+    }
+  },
+
+  read(dec, origin, lo, hi) {
+    checkUp(undefined, origin, lo, hi, 'Gamma');
+    const top = classOf(hi - origin);
+    let cls = 0;
+    while (cls < top && dec.parse(2) === 1) {
+      cls++;
+    }
+    // An origin of -0 reads back as 0.
+    return cls === 0 ? origin + 0 : readTail(dec, true, cls, origin, lo, hi);
+  },
+
+  learn(_side, value, origin, lo, hi) {
+    checkUp(value, origin, lo, hi, 'Gamma');
+  },
+};
+
 /** Distances below this are a symbol each on the learned scale; larger ones a symbol per class. */
 export const DIRECT = 64;
 /** The class of the first distance past the direct ones. */
@@ -222,23 +274,43 @@ export function sideWeights(extra: number): number[] {
   return weights;
 }
 
-/** The starting weights of an unsigned learned scale: one side at the term code's prices. */
-const UNSIGNED_WEIGHTS: readonly number[] = sideWeights(0);
+/**
+ * The starting weights of one side of the learned scale, as the gamma scale
+ * prices its distances, plus `extra` bits: each symbol weighs its
+ * distances' share of 2^12, at least 1.
+ */
+export function gammaWeights(extra: number): number[] {
+  const weights: number[] = [];
+  for (let symbol = 0; symbol < SIDE_SYMBOLS; symbol++) {
+    const cls = symbol < DIRECT ? classOf(symbol) : symbol - DIRECT + FIRST_CLASS;
+    // A class weighs 2^-(c+1), shared evenly by its distances when each is a symbol.
+    const share = symbol < DIRECT && cls > 0 ? cls - 1 : 0;
+    weights.push(Math.max(1, Math.round(2 ** (12 - extra - cls - 1 - share))));
+  }
+  return weights;
+}
+
+/** How a learned scale's starting weights price distances: as the term code or the gamma scale does. */
+export type Prices = 'term' | 'gamma';
 
 /**
- * The starting weights of a signed learned scale: the upper side, then the
- * lower one from 1, each a bit dearer for the sign.
+ * The starting weights of a learned scale by its prices: unsigned, one
+ * side; signed, the upper side, then the lower one from 1, each a bit
+ * dearer for the sign.
  */
-const SIGNED_WEIGHTS: readonly number[] = ((side) => [...side, ...side.slice(1)])(sideWeights(1));
+const WEIGHTS: Record<Prices, readonly [unsigned: number[], signed: number[]]> = {
+  term: [sideWeights(0), ((side) => [...side, ...side.slice(1)])(sideWeights(1))],
+  gamma: [gammaWeights(0), ((side) => [...side, ...side.slice(1)])(gammaWeights(1))],
+};
 
 /**
  * The learned magnitude scale: a symbol per distance below `DIRECT` and per
  * class past it, then the tail, the symbols under an adaptive prior that
- * starts at the term code's prices. A `signed` scale holds both sides, the
- * distances above the origin first, then those below it from 1; an
- * unsigned one only those above, and refuses an interval reaching below
- * its origin. Symbols the interval does not reach are ruled out, so they
- * cost nothing.
+ * starts at the term code's prices, or the gamma scale's when `prices` says
+ * so. A `signed` scale holds both sides, the distances above the origin
+ * first, then those below it from 1; an unsigned one only those above, and
+ * refuses an interval reaching below its origin. Symbols the interval does
+ * not reach are ruled out, so they cost nothing.
  */
 export class LearnedMagnitude implements Magnitude {
   private readonly prior: AdaptivePrior;
@@ -248,18 +320,20 @@ export class LearnedMagnitude implements Magnitude {
   constructor(
     readonly signed: boolean,
     adaptive: AdaptiveOptions,
-    private readonly who: string
+    private readonly who: string,
+    prices: Prices = 'term'
   ) {
     const { window } = checkAdaptation(adaptive, who);
-    const weights = signed ? SIGNED_WEIGHTS : UNSIGNED_WEIGHTS;
+    const weights = WEIGHTS[prices][signed ? 1 : 0];
     this.prior = new AdaptivePrior([weights], weights.length, window, who, lineageOf(adaptive));
   }
 
   /** `check`, and for an unsigned scale an interval starting at the origin. */
   private checkSide(value: number | undefined, origin: number, lo: number, hi: number): void {
-    check(value, origin, lo, hi);
-    if (!this.signed && lo < origin) {
-      throw new RangeError(`${this.who} magnitude reaches below its origin ${origin} to ${lo}`);
+    if (this.signed) {
+      check(value, origin, lo, hi);
+    } else {
+      checkUp(value, origin, lo, hi, this.who);
     }
   }
 

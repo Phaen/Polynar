@@ -1086,3 +1086,30 @@ describe('StaticLiterals', () => {
     return enc.output();
   }
 });
+
+describe('Sequence runs', () => {
+  // Ascending by items, every one after the first starting with some of the one before.
+  const run = [[], [0], [0, 1], [0, 1, 5], [0, 2], [1], [3, 4], [7], [7, 7]];
+
+  it.each(['any', 'sorted', 'unique'] as const)(
+    'round-trip a %s run, each value after the one before, recalling those written',
+    (ascent) => {
+      const make = () => new Sequence(toy(), { max: 12 }, { recall: true });
+      const writer = make();
+      const enc = new Encoder();
+      writer.write(enc, [0, 2]);
+      const written = writer.run(ascent);
+      for (const value of run) written.write(enc, value);
+      const reader = make();
+      const dec = new Decoder(enc.output());
+      expect(reader.read(dec)).toEqual([0, 2]);
+      const read = reader.run(ascent);
+      expect(run.map(() => read.read(dec))).toEqual(run);
+      dec.finalize();
+    }
+  );
+
+  it('list the items of a value', () => {
+    expect(new Sequence(toy(), {}).items([5, 1])).toEqual([5, 1]);
+  });
+});

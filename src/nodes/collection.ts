@@ -5,7 +5,15 @@ import type { Kind } from './guards';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
 import type { AdaptiveOptions } from './adaptive';
-import { checkOrdinal, ordinalDigits, readOrdinal, writeOrdinal, type Order } from './ordinal';
+import {
+  checkOrder,
+  ordinal,
+  ordinalDigits,
+  readOrdinal,
+  writeOrdinal,
+  type Order,
+} from './ordinal';
+import { readRun, writeRun } from './runs';
 import { withMethod, type Spelling } from './methods';
 import { Recall, copy, identity } from './recall';
 
@@ -164,13 +172,14 @@ export class PCollection<T> extends PNode<T> {
   /**
    * Let the insertion order go: entries encode in any order and decode in
    * ascending key order, by the key's value order, which saves what the
-   * order would cost. Takes keys (a set's items) of bounded p.int, p.date or
-   * p.decimal, or of p.enum or p.bool, without weights or adaptive.
+   * order would cost, as `p.array` orders its items under `.unordered()`.
+   * Takes keys (a set's items) of p.string, or of bounded p.int, p.date or
+   * p.decimal, p.enum or p.bool without weights or adaptive.
    */
   unordered(): PCollection<T> {
     const { who } = this._layout;
     checkUnset(this._unordered, who, 'unordered');
-    checkOrdinal(this._key, who, 'unordered', this._value === undefined ? 'items' : 'keys');
+    checkOrder(this._key, who, 'unordered', this._value === undefined ? 'items' : 'keys');
     return this._with(this._bounds, true);
   }
 
@@ -231,11 +240,16 @@ export class PCollection<T> extends PNode<T> {
     if (this._unordered !== undefined) {
       const entries = [...this._layout.entries(value)];
       const keys = entries.map(([key]) => key);
-      // checkOrdinal accepted the key when the collection was made unordered.
-      const { digits, at } = ordinalDigits(this._key, keys, UNORDERED, (j) =>
-        this._segment(keys[j], j)
-      );
-      writeOrdinal(enc, digits, this._key._radix as number, UNORDERED);
+      const segment = (j: number): string | number => this._segment(keys[j], j);
+      let at: number[];
+      // checkOrder accepted the key when the collection was made unordered.
+      if (ordinal(this._key)) {
+        const ordered = ordinalDigits(this._key, keys, UNORDERED, segment);
+        writeOrdinal(enc, ordered.digits, this._key._radix as number, UNORDERED);
+        at = ordered.at;
+      } else {
+        at = writeRun(enc, this._key, keys, UNORDERED, segment);
+      }
       for (const j of at) {
         try {
           this._value?._write(enc, entries[j][1]);
@@ -264,6 +278,12 @@ export class PCollection<T> extends PNode<T> {
     const entries = new Map<unknown, unknown>();
     if (this._unordered !== undefined) {
       const keys = this._key;
+      if (!ordinal(keys)) {
+        for (const key of readRun(dec, keys, count, UNORDERED)) {
+          entries.set(key, this._value?._read(dec));
+        }
+        return this._layout.build(entries);
+      }
       const fromDigit = keys._fromDigit as (digit: number) => unknown;
       for (const digit of readOrdinal(dec, keys._radix as number, count, UNORDERED)) {
         entries.set(fromDigit.call(keys, digit), this._value?._read(dec));

@@ -9,13 +9,14 @@
  */
 import { Encoder, Decoder, Alphabet, CorruptInputError, costUnits } from '../packer';
 import type { Charset } from '../packer';
-import { PNode } from './base';
+import { PNode, type Run } from './base';
 import { describe } from './path';
 import { checkUnset } from './lattice';
 import type { Cdf } from './weights';
 import type { SequenceAdaptiveOptions } from './adaptive';
 import type { Kind } from './guards';
 import {
+  TEXT_DIRECT_MAX,
   TEXT_FIRST_RADIX,
   codePointBand,
   codePointSymbol,
@@ -42,6 +43,7 @@ import { LOWER, MIXED, SHAPE_COUNT, SHAPE_WEIGHTS, plain, restore, shapesOf } fr
 import {
   Sequence,
   withRepeats,
+  type Ascent,
   type SequenceBounds,
   type SequenceSpelling,
   type Symbols,
@@ -139,6 +141,15 @@ class Ladder extends CodePoints implements Symbols<string> {
 
   row(): number {
     return 0;
+  }
+
+  /**
+   * The first slot keeps the order of the code points, ASCII one apiece;
+   * a string above another that holds an astral code point where they
+   * differ may hold any code unit above its lead surrogate there.
+   */
+  above(code: number): number {
+    return code <= TEXT_DIRECT_MAX ? code + 1 : codePointSymbol(Math.min(code, 0xd800));
   }
 }
 
@@ -420,12 +431,26 @@ class CharsetText extends Text implements Symbols<string> {
   /** The charset, a range by its ends: the same charset is the same alphabet. */
   readonly pool: string;
 
+  /** Whether the digits follow the characters' code units: a range, or a charset listed ascending. */
+  private readonly ascending: boolean;
+
   constructor(private readonly alphabet: Alphabet) {
     super();
     this.size = alphabet.size;
     const charset = alphabet.charset;
     this.pool =
       typeof charset === 'string' ? `charset ${charset}` : `range ${charset[0]} ${charset[1]}`;
+    let ascending = true;
+    if (typeof charset === 'string') {
+      for (let i = 1; i < charset.length; i++) {
+        ascending &&= charset.charCodeAt(i) > charset.charCodeAt(i - 1);
+      }
+    }
+    this.ascending = ascending;
+  }
+
+  above(digit: number): number | undefined {
+    return this.ascending ? digit + 1 : undefined;
   }
 
   items(value: string): number[] {
@@ -482,6 +507,8 @@ class CharsetText extends Text implements Symbols<string> {
 interface TextCodec {
   write(enc: Encoder, value: string): void;
   read(dec: Decoder): string;
+  /** A run of strings, each after the start it shares with the one before. */
+  run(ascent: Ascent): Run<string>;
 }
 
 /** The cost, in `COST_UNITS`, of each symbol in each row of a pool's static tables, row by row. */
@@ -598,19 +625,31 @@ export class ProseText implements TextCodec {
   }
 
   write(enc: Encoder, value: string): void {
+    this.shape(enc, value, (shape, text) => this.spell(enc, shape, text));
+  }
+
+  /**
+   * Writes `value` by `spell` of a shape that restores it and its text,
+   * and returns those.
+   */
+  private shape(
+    enc: Encoder,
+    value: string,
+    spell: (shape: number, text: string) => void
+  ): readonly [number, string] {
     if (plain(value)) {
-      this.spell(enc, LOWER, value);
-      return;
+      spell(LOWER, value);
+      return [LOWER, value];
     }
     const known = value.length <= PICKED_LENGTH ? this.picks.get(value) : undefined;
     if (known !== undefined) {
-      this.spell(enc, known[0], known[1]);
-      return;
+      spell(known[0], known[1]);
+      return known;
     }
     const shapes = shapesOf(value);
     if (shapes.length === 1) {
-      this.spell(enc, shapes[0][0], shapes[0][1]);
-      return;
+      spell(shapes[0][0], shapes[0][1]);
+      return shapes[0];
     }
     if (this.priced) {
       const pick = this.cheapest(shapes);
@@ -620,16 +659,46 @@ export class ProseText implements TextCodec {
         }
         this.picks.set(value, pick);
       }
-      this.spell(enc, pick[0], pick[1]);
-      return;
+      spell(pick[0], pick[1]);
+      return pick;
     }
     const priority = shapes.map((_, i) => i);
     const first = shapes.findIndex(([shape]) => shape === this.last);
     const order = first > 0 ? [first, ...priority.filter((i) => i !== first)] : priority;
     const picked = enc.decide(priority, order, (i) => {
-      this.spell(enc, shapes[i][0], shapes[i][1]);
+      spell(shapes[i][0], shapes[i][1]);
     });
     this.last = shapes[picked][0];
+    return shapes[picked];
+  }
+
+  /**
+   * A run of strings, each a shape and its text, the text after the start
+   * it shares with the text of the run's previous string spelled by the same
+   * sequence. The order of the strings says nothing of the order of their
+   * texts, so the run of texts is one of `any` ascent.
+   */
+  run(): Run<string> {
+    const prev = new Map<Sequence<string>, number[]>();
+    const sequence = (shape: number): Sequence<string> =>
+      shape === MIXED ? this.mixed : this.words;
+    return {
+      write: (enc, value) => {
+        const [shape, text] = this.shape(enc, value, (s, t) => {
+          this.shapes.write(enc, s);
+          sequence(s).writeNext(enc, t, prev.get(sequence(s)), 'any');
+        });
+        const spelled = sequence(shape);
+        prev.set(spelled, spelled.items(text));
+      },
+      read: (dec) => {
+        const shape = this.shapes.read(dec);
+        const spelled = sequence(shape);
+        const [text, items] = spelled.readNext(dec, prev.get(spelled), 'any');
+        prev.set(spelled, items);
+        return shape === MIXED ? text : restore(shape, text);
+      },
+    };
   }
 
   /**
@@ -864,6 +933,15 @@ export class PString extends PNode<string> {
 
   _write(enc: Encoder, value: string): void {
     this._text.write(enc, value);
+  }
+
+  /**
+   * A run of strings ascending by UTF-16 code units: each value after the
+   * start it shares with the one before it, spelled as the node spells its
+   * strings.
+   */
+  _run(unique: boolean): Run<string> {
+    return this._text.run(unique ? 'unique' : 'sorted');
   }
 
   _read(dec: Decoder): string {

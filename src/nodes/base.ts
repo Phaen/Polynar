@@ -20,6 +20,12 @@ import type { Kind } from './guards';
 import type { AdaptiveOptions } from './adaptive';
 import { members, type MemberPrior, type Members } from './members';
 
+/** One run of values, written or read one after another, each against the ones before it. */
+export interface Run<T> {
+  write(enc: Encoder, value: T): void;
+  read(dec: Decoder): T;
+}
+
 /** Base class for every schema node. `_t` is a phantom carrying the output type. */
 export abstract class PNode<TOut> {
   declare readonly _t: TOut;
@@ -49,6 +55,14 @@ export abstract class PNode<TOut> {
    * by their digits.
    */
   _toDigit?(value: TOut): number;
+
+  /**
+   * A run of the node's values, which containers code ascending by JS `<`
+   * when their order is restricted, each value written against the run's
+   * earlier ones; distinct by `<` and `>` when `unique`. Present on nodes
+   * that spell such a run in less than its values one by one.
+   */
+  _run?(unique: boolean): Run<TOut>;
 
   /**
    * Whether the node can write `undefined`, which lets an object leave the
