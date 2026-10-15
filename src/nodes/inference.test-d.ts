@@ -269,7 +269,7 @@ Digit.decode(digitText, textOptions);
 Digit.decode(digitBytes, textOptions);
 
 // Options without a type fit encode and decode of either form.
-const shared: CodecOptions = { charset: '0123456789', blockBits: 4096 };
+const shared: CodecOptions = { charset: '0123456789', checksum: 8 };
 const _sharedEncode: Uint8Array = Digit.encode(5, shared);
 Digit.decode(digitBytes, shared);
 Digit.decode(digitText, shared);

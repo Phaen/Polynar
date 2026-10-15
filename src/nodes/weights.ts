@@ -16,8 +16,6 @@ export interface WeightTable {
   readonly total: number;
   /** Bucket lookup for `parseWeighted`: the index owning the residual. */
   readonly locate: (residual: number) => Bucket;
-  /** Member count and direct lookup for `parseWeighted`: the bucket of the i-th index. */
-  readonly position: { readonly count: number; readonly at: (i: number) => Bucket };
 }
 
 /**
@@ -63,9 +61,7 @@ export function buildWeights(weights: readonly number[], states: number, who: st
     }
     return [lo, cums[lo], freqs[lo]];
   };
-  // An index that names no entry owns no weight: an empty bucket at the end.
-  const at = (i: number): Bucket => [i, cums[i] ?? total, freqs[i] ?? 0];
-  return { cums, freqs, total, locate, position: { count: cums.length, at } };
+  return { cums, freqs, total, locate };
 }
 
 /** Write the `pos`-th entry of a weight table as one weighted symbol. */
@@ -73,15 +69,12 @@ export function writeTable(enc: Encoder, table: WeightTable, pos: number): void 
   if (table.freqs[pos] === undefined) {
     throw new RangeError(`Position ${pos} is not one of the table's ${table.freqs.length} entries`);
   }
-  enc.composeWeighted(table.cums[pos], table.freqs[pos], table.total, {
-    index: pos,
-    count: table.cums.length,
-  });
+  enc.composeWeighted(table.cums[pos], table.freqs[pos], table.total);
 }
 
 /** Read one weighted symbol written by `writeTable`: the entry's position. */
 export function readTable(dec: Decoder, table: WeightTable): number {
-  return dec.parseWeighted(table.total, table.locate, table.position);
+  return dec.parseWeighted(table.total, table.locate);
 }
 
 /**
@@ -218,11 +211,6 @@ export class RangePrior {
    * unreachable.
    */
   private readonly locate: (residual: number) => Bucket;
-  /**
-   * Direct lookup for `parseWeighted`, which passes an index in
-   * `[0, count)`: the bucket of the i-th value from `lo`.
-   */
-  private readonly position: { readonly count: number; readonly at: (i: number) => Bucket };
 
   constructor(
     declared: Prior,
@@ -253,24 +241,17 @@ export class RangePrior {
       const v = this.bisect((mid) => cdf(mid) <= residual);
       return [v, cdf(v), cdf(v + 1) - cdf(v)];
     };
-    this.position = {
-      count: hi - lo + 1,
-      at: (i) => [lo + i, cdf(lo + i), cdf(lo + i + 1) - cdf(lo + i)],
-    };
   }
 
   /** `subject` names the value in an error, as in `Value 3`. */
   write(enc: Encoder, v: number, subject: () => string): void {
     checkIndex(v, this.lo, this.hi, subject, this.show);
     const [cum, freq] = this.bucket(v, subject);
-    enc.composeWeighted(cum, freq, this.total, {
-      index: v - this.lo,
-      count: this.hi - this.lo + 1,
-    });
+    enc.composeWeighted(cum, freq, this.total);
   }
 
   read(dec: Decoder): number {
-    return dec.parseWeighted(this.total, this.locate, this.position);
+    return dec.parseWeighted(this.total, this.locate);
   }
 
   /**

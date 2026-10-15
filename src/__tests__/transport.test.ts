@@ -1,10 +1,8 @@
 /**
- * Output options: text or bytes, the charset that spells the digits and the
- * block size, on `encode`/`decode` and on `Encoder.output`/`new Decoder`.
+ * Output options: text or bytes and the charset that spells the digits, on `encode`/`decode` and on `Encoder.output`/`new Decoder`.
  */
 
 import { p, Encoder, Decoder, CharSets, CorruptInputError } from '../index';
-import { powersOf } from '../packer/bound';
 
 const composed = (value = 123, radix = 1001): Encoder => {
   const encoder = new Encoder();
@@ -19,9 +17,9 @@ describe('Text output', () => {
   });
 
   it('defaults to Base64 on both ends', () => {
-    expect(composed().output({ type: 'text' })).toBe('7B');
-    expect(composed().output({ type: 'text', charset: CharSets.base64 })).toBe('7B');
-    expect(new Decoder('7B').parse(1001)).toBe(123);
+    expect(composed().output({ type: 'text' })).toBe('B7');
+    expect(composed().output({ type: 'text', charset: CharSets.base64 })).toBe('B7');
+    expect(new Decoder('B7').parse(1001)).toBe(123);
   });
 
   it('spells an empty message as the empty string and no bytes', () => {
@@ -125,8 +123,11 @@ describe('Text charset validation', () => {
   });
 
   it('rejects a character absent from the charset', () => {
-    expect(() => new Decoder('!', { charset: CharSets.digit })).toThrow(/is not in the charset/);
-    expect(() => new Decoder('a', { charset: '一丁' })).toThrow(
+    // A character is checked when the decoder reads it.
+    expect(() => new Decoder('!', { charset: CharSets.digit }).parse(10)).toThrow(
+      /is not in the charset/
+    );
+    expect(() => new Decoder('a', { charset: '一丁' }).parse(2)).toThrow(
       'Character at 0 is not in the charset'
     );
     // '[' (code 91) is one beyond the maximum of the [65, 90] range.
@@ -179,8 +180,8 @@ describe('Byte output', () => {
   it('writes a string charset as the code of each character', () => {
     const node = p.int().min(0).max(1000);
     const bytes = node.encode(737, { charset: '01' });
-    // 737 is 1011100001 in binary, written lowest digit first.
-    expect(String.fromCharCode(...bytes)).toBe('1000011101');
+    // 737 is 1011100001 in binary, written most significant digit first.
+    expect(String.fromCharCode(...bytes)).toBe('1011100001');
     expect(node.decode(bytes, { charset: '01' })).toBe(737);
   });
 
@@ -215,13 +216,13 @@ describe('Byte output', () => {
   });
 
   it('throws when a byte is not in the charset', () => {
-    expect(() => new Decoder(Uint8Array.of(10, 200), { charset: [0, 100] })).toThrow(
+    expect(() => new Decoder(Uint8Array.of(10, 200), { charset: [0, 100] }).parse(1000)).toThrow(
       'Byte at 1 is not in the charset'
     );
   });
 });
 
-describe('Block size', () => {
+describe('Long messages', () => {
   const Reading = p.object({
     level: p
       .int()
@@ -238,51 +239,19 @@ describe('Block size', () => {
     on: i % 3 === 0,
   }));
 
-  it.each([128, 2048])('round-trips a multi-block message at %i bits', (blockBits) => {
-    const bytes = Log.encode(log, { blockBits });
-    expect(bytes.length).toBeGreaterThan(powersOf(256, blockBits).blockDigits);
-    expect(Log.decode(bytes, { blockBits })).toEqual(log);
+  it('round-trips a long message through bytes and text', () => {
+    const bytes = Log.encode(log);
+    expect(Log.decode(bytes)).toEqual(log);
 
-    const options = { type: 'text' as const, charset: CharSets.urlSafe, blockBits };
+    const options = { type: 'text' as const, charset: CharSets.urlSafe };
     const text = Log.encode(log, options);
-    expect(text.length).toBeGreaterThan(powersOf(66, blockBits).blockDigits);
     expect(Log.decode(text, options)).toEqual(log);
   });
 
-  it('defaults to 2048 bits', () => {
-    expect(Log.encode(log)).toEqual(Log.encode(log, { blockBits: 2048 }));
-    expect(Log.encode(log, { type: 'text' })).toBe(
-      Log.encode(log, { type: 'text', blockBits: 2048 })
-    );
-  });
-
-  it('takes a byte charset and the block size together', () => {
-    const range = { charset: [32, 126] as [number, number], blockBits: 128 };
+  it('spells a long message in a byte charset of its own', () => {
+    const range = { charset: [32, 126] as [number, number] };
     const bytes = Log.encode(log.slice(0, 50), range);
     expect(bytes.every((b) => b >= 32 && b <= 126)).toBe(true);
     expect(Log.decode(bytes, range)).toEqual(log.slice(0, 50));
-
-    const node = p.array(p.int().min(0).max(1000)).max(100);
-    const value = Array.from({ length: 60 }, (_, i) => (i * 37) % 1001);
-    const alphabet = { charset: CharSets.alphanumeric, blockBits: 128 };
-    const spelled = node.encode(value, alphabet);
-    expect(spelled).not.toEqual(node.encode(value, { charset: CharSets.alphanumeric }));
-    expect(node.decode(spelled, alphabet)).toEqual(value);
-  });
-
-  it('rejects a block size that is not an integer in [128, 65536]', () => {
-    const enc = composed(1, 2);
-    expect(() => enc.output({ blockBits: 100.5 })).toThrow(
-      new TypeError('Block size must be an integer number of bits, got 100.5')
-    );
-    expect(() => enc.output({ type: 'text', blockBits: NaN })).toThrow(TypeError);
-    expect(() => enc.output({ type: 'text', blockBits: 127 })).toThrow(
-      new RangeError('Block size 127 bits is outside [128, 65536]')
-    );
-    expect(() => enc.output({ blockBits: 65537 })).toThrow(RangeError);
-    expect(() => new Decoder('A', { blockBits: 32 })).toThrow(RangeError);
-    expect(() => new Decoder(Uint8Array.of(1), { blockBits: 1e6 })).toThrow(RangeError);
-    expect(() => p.bool().encode(true, { blockBits: 0 })).toThrow(RangeError);
-    expect(() => p.bool().decode('A', { blockBits: 128.5 })).toThrow(TypeError);
   });
 });

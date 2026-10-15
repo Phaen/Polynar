@@ -145,9 +145,8 @@ export function excludedBucket(
 }
 
 /**
- * Writes member `pos` under the exclusion as one weighted symbol, placed at
- * index `pos` among the table's `size` members; a bucket holding every
- * state writes nothing. Without an exclusion it writes what `writeLive`
+ * Writes member `pos` under the exclusion as one weighted symbol; a bucket
+ * holding every state writes nothing. Without an exclusion it writes what `writeLive`
  * writes for a live table.
  */
 export function writeExcluded(
@@ -157,22 +156,16 @@ export function writeExcluded(
   pos: number
 ): void {
   const [cum, freq, total] = excludedBucket(table, exclusion, pos);
-  enc.composeWeighted(cum, freq, total, { index: pos, count: table.size });
+  enc.composeWeighted(cum, freq, total);
 }
 
 /**
  * Reads a member written by `writeExcluded`. A residual belongs to the
  * largest member whose bucket starts at or below it: the starts never fall,
  * and members with empty buckets share the start of the next one, so the
- * bisection lands past them. An index naming an excluded member owns no
- * states, which `parseWeighted` refuses as corrupt.
+ * bisection lands past them.
  */
 export function readExcluded(dec: Decoder, table: Table, exclusion: Exclusion | undefined): number {
-  const at = (pos: number): readonly [number, number, number] => [
-    pos,
-    excludedCum(table, exclusion, pos),
-    excludedFreq(table, exclusion, pos),
-  ];
   const locate = (residual: number): readonly [number, number, number] => {
     let lo = 0;
     let hi = table.size - 1;
@@ -181,10 +174,7 @@ export function readExcluded(dec: Decoder, table: Table, exclusion: Exclusion | 
       if (excludedCum(table, exclusion, mid) <= residual) lo = mid;
       else hi = mid - 1;
     }
-    return at(lo);
+    return [lo, excludedCum(table, exclusion, lo), excludedFreq(table, exclusion, lo)];
   };
-  return dec.parseWeighted(excludedTotal(table, exclusion), locate, {
-    count: table.size,
-    at,
-  });
+  return dec.parseWeighted(excludedTotal(table, exclusion), locate);
 }

@@ -1017,6 +1017,7 @@ export class Sequence<T> {
         ? this.length.read(dec)
         : this.lengths.read(dec, this.min, this.min, MAX_SAFE);
     symbols.check?.(count);
+    dec.charge(count);
     const span = symbols.span(count);
     if (!this.tracks) {
       return symbols.build(this.readBody(dec, span, NONE));

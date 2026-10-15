@@ -213,6 +213,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
     if (count > MAX_ARRAY_LENGTH) {
       throw new CorruptInputError(`Array length ${count} is above the largest possible array`);
     }
+    dec.charge(count);
     const item = this._item;
     const value: TItem[] = [];
     if (item._radix !== undefined && item._fromDigit !== undefined) {

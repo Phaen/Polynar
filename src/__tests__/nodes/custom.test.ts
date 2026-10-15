@@ -6,6 +6,7 @@
  */
 
 import { p, PNode, Encoder, Decoder } from '../../index';
+import type { CodecOptions } from '../../index';
 import { trip } from '../support';
 
 class PRgb extends PNode<[number, number, number]> {
@@ -16,6 +17,15 @@ class PRgb extends PNode<[number, number, number]> {
   }
   _read(dec: Decoder): [number, number, number] {
     return [dec.parse(256), dec.parse(256), dec.parse(256)];
+  }
+}
+
+/** Reads one channel more than `PRgb` writes. */
+class PRgbOverRead extends PRgb {
+  _read(dec: Decoder): [number, number, number] {
+    const rgb = super._read(dec);
+    dec.parse(256);
+    return rgb;
   }
 }
 
@@ -68,5 +78,16 @@ describe('Custom nodes', () => {
       readonly _kinds = ['string', 'undefined'] as const;
     }
     expect(Object.keys(trip(p.object({ w: new PMaybeWordWithKinds() }), {}))).toEqual([]);
+  });
+
+  it('read 0 when _read reads a value past the last digit', () => {
+    const node = new PRgbOverRead();
+    const layouts: CodecOptions[] = [{}, { checksum: 8 }, { charset: [0, 99] }];
+    for (const options of layouts) {
+      const bytes = node.encode([1, 2, 3], options);
+      expect(node.decode(bytes, options)).toEqual([1, 2, 3]);
+      const text = node.encode([1, 2, 3], { ...options, type: 'text' });
+      expect(node.decode(text, options)).toEqual([1, 2, 3]);
+    }
   });
 });

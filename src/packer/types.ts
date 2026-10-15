@@ -23,10 +23,17 @@ export interface CodecOptions<T extends OutputType = never> {
   type?: T;
   /** The symbols of the output: bytes 0–255 for binary and Base64 for text when omitted. */
   charset?: Charset;
-  /** Block size in bits, 2048 when omitted. */
-  blockBits?: number;
   /** Width of the checksum in bits, 1 to 32; none when omitted. */
   checksum?: number;
+}
+
+/** What decoding takes: the message's layout, and how much it may read past its end. */
+export interface DecodeOptions<T extends OutputType = never> extends CodecOptions<T> {
+  /**
+   * How many values a decode may read after its input runs out, where every
+   * value reads as zero for free; 2^26 when omitted, `Infinity` for no limit.
+   */
+  limit?: number;
 }
 
 declare const radixBrand: unique symbol;

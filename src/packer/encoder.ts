@@ -1,18 +1,19 @@
 /**
  * The write-side packer primitive. Values are pushed as (integer, radix)
  * pairs via `compose`/`composeTerm`, or as weighted symbols via
- * `composeWeighted`; `output` folds them into mixed-radix blocks and emits
- * digits. Schema nodes drive this — it knows nothing about
- * types.
+ * `composeWeighted`, into a log of buckets; `output` folds the log into
+ * digits. Schema nodes drive this — it knows nothing about types.
  *
- * The fold is a big-integer rANS: a weighted symbol owning `freq` of `total`
- * states costs exactly log2(total/freq) bits, because the position inside
- * its bucket carries the next value's information instead of being wasted.
- * A uniform slot is the special case freq = 1, which reduces the update to
- * plain multiply-add, which is mixed-radix arithmetic.
+ * The fold is the streaming rANS of `StreamWriter`: a weighted symbol owning
+ * `freq` of `total` states costs log2(total/freq) bits, because the position
+ * inside its bucket carries the next value's information instead of being
+ * wasted. A uniform slot is the case freq = 1, which reduces the update to
+ * plain multiply-add, which is mixed-radix arithmetic. The log keeps each
+ * symbol's bucket and whether it is uniform or weighted, which is all the
+ * fold needs; until `output`, a slot can still be patched.
  */
 
-import type { Base, Bucket, CodecOptions, OutputType, Radix } from './types';
+import type { Bucket, CodecOptions, OutputType, Radix } from './types';
 import {
   TERM_BASE,
   TERM_ESCAPE_MIN,
@@ -24,78 +25,14 @@ import {
   ScaledRatio,
   bigRadix,
   outputAlphabet,
-  validateBlockBits,
   validateChecksum,
   checksumOf,
-  digitChunk,
-  SHIFTS,
-  type DigitChunk,
 } from './utils';
-import { BlockBound } from './bound';
+import { StreamWriter } from './stream';
 import { MessageState, checkKey } from './state';
 
-const MAX_SAFE = Number.MAX_SAFE_INTEGER;
-const TWO_53 = 2 ** 53;
 const ONE = 1 as Radix;
 const BIG_CHUNK_STATES = 2 ** BIG_CHUNK_BITS;
-
-/**
- * Append the lowest `count` digits of `value` in the chunk's base, lowest
- * first; digits above them are dropped. A big value sheds a chunk of digits
- * per division, split further in Number arithmetic. A negative or
- * fractional value or count throws.
- */
-export function emitDigits(
-  digits: number[],
-  value: bigint | number,
-  count: number,
-  chunk: DigitChunk
-): void {
-  if (!Number.isInteger(count)) {
-    throw new TypeError(`Digit count must be an integer, got ${count}`);
-  }
-  if (count < 0) {
-    throw new RangeError(`Digit count ${count} is negative`);
-  }
-  let big: bigint | undefined;
-  let num = 0;
-  if (typeof value === 'bigint') {
-    big = value;
-  } else if (!Number.isInteger(value)) {
-    throw new TypeError(`Value must be an integer, got ${value}`);
-  } else if (value > MAX_SAFE) {
-    // Float division is exact only below 2^53.
-    big = BigInt(value);
-  } else {
-    num = value;
-  }
-  if (value < 0) {
-    throw new RangeError(`Value ${value} is negative`);
-  }
-  const size = chunk.size;
-  const shift = chunk.bits === 0 ? undefined : SHIFTS[chunk.bits];
-  while (count > 0) {
-    let run = count;
-    if (big !== undefined) {
-      num = shift === undefined ? Number(big % chunk.big) : Number(BigInt.asUintN(chunk.bits, big));
-      if (count > chunk.digits) {
-        big = shift === undefined ? big / chunk.big : big >> shift;
-        run = chunk.digits;
-      } else {
-        big = undefined;
-      }
-    }
-    count -= run;
-    for (let d = 0; d < run; d++) {
-      // Below 2^53 the float quotient rounds to the exact integer part: the
-      // integer part is itself a double, and the quotient would have to be
-      // closer to the next integer, which the value's size rules out.
-      const quotient = Math.floor(num / size);
-      digits.push(num - quotient * size);
-      num = quotient;
-    }
-  }
-}
 
 /** Rejects a bucket `[cum, cum + freq)` that does not lie in `[0, total)` or is empty. */
 function checkBucket(cum: number, freq: number, total: number): void {
@@ -113,46 +50,20 @@ function checkBucket(cum: number, freq: number, total: number): void {
   }
 }
 
-/**
- * The member count a symbol `position` gives a bucket of `total` states,
- * which is at most `total`; rejects a position whose index lies outside it.
- */
-function membersOf(position: { index: number; count: number }, total: number): number {
-  const { index, count } = position;
-  if (!Number.isInteger(index) || !Number.isInteger(count) || count < 1) {
-    throw new TypeError(`Symbol position must be integers, got index ${index}, count ${count}`);
-  }
-  // A node with at least as many members as states gains nothing from an
-  // index, so its symbols stay buckets and the index goes unused; the
-  // decoder clamps identically.
-  const members = Math.min(count, total);
-  if (members < total && (index < 0 || index >= members)) {
-    throw new RangeError(`Index ${index} is outside [0, ${members})`);
-  }
-  return members;
-}
-
 /** A symbol written as one of its group's alternative buckets, waiting for the group's choice. */
 interface Alternative {
   /** The symbol's slot in the buffer. */
   at: number;
   group: object;
   buckets: readonly Bucket[];
-  position?: { index: number; count: number };
 }
 
 export class Encoder {
   private cums: number[] = [];
   private freqs: Radix[] = [];
   private totals: Radix[] = [];
-  /**
-   * The last recorded symbol's position among its node's `lastCount`
-   * symbols, in bucket order; only the message's last symbol is ever
-   * written as this index.
-   */
-  private lastIndex = 0;
-  /** The last recorded symbol's count: a uniform slot's radix, or a weighted node's member count. */
-  private lastCount = ONE;
+  /** Whether each symbol is weighted, read by `parseWeighted`, rather than a uniform slot. */
+  private weighted: boolean[] = [];
   private readonly states = new MessageState();
   /**
    * The groups opened by `composeSelector`: the selector's slot in the
@@ -187,8 +98,8 @@ export class Encoder {
     if (integer < 0 || integer >= radix) {
       throw new RangeError(`Digit ${integer} is outside [0, ${radix})`);
     }
-    // A radix-1 digit carries nothing. Recording it would make it the
-    // message's last symbol and cost the one before it its index form.
+    // A radix-1 digit carries nothing, and the fold takes no bucket that
+    // holds every state.
     if (radix === 1) {
       return;
     }
@@ -196,8 +107,7 @@ export class Encoder {
     this.cums.push(integer);
     this.freqs.push(ONE);
     this.totals.push(states);
-    this.lastIndex = integer;
-    this.lastCount = states;
+    this.weighted.push(false);
   }
 
   /**
@@ -227,38 +137,19 @@ export class Encoder {
    * states. Costs log2(total/freq) bits — fractional, exact. The decoder
    * recovers the symbol from which bucket the residual lands in, so both
    * sides must derive identical integer tables.
-   *
-   * `position` places the symbol at `index` among the node's `count`
-   * members in bucket order. It lets the message's last symbol be written as
-   * a plain index: a weighted bucket borrows its fractional bits from the
-   * symbols after it, and the last one has none to borrow, so as a bucket it
-   * would cost log2(total) bits. Without it the symbol is always written as
-   * a bucket.
    */
-  composeWeighted(
-    cum: number,
-    freq: number,
-    total: number,
-    position?: { index: number; count: number }
-  ): void {
+  composeWeighted(cum: number, freq: number, total: number): void {
     checkBucket(cum, freq, total);
-    let index = 0;
-    let members = total;
-    if (position !== undefined) {
-      index = position.index;
-      members = membersOf(position, total);
-    }
     // A bucket holding every state carries nothing, like a radix-1 digit.
     if (freq === total) {
       return;
     }
 
-    // Total is a radix, and freq and the member count lie in [1, total].
+    // Total is a radix, and freq lies in [1, total).
     this.cums.push(cum);
     this.freqs.push(freq as Radix);
     this.totals.push(total as Radix);
-    this.lastIndex = members < total ? index : 0;
-    this.lastCount = members as Radix;
+    this.weighted.push(true);
   }
 
   /**
@@ -266,7 +157,7 @@ export class Encoder {
    * symbols more than one way (a static prior and an adaptive one, say).
    * `choices[i]` is the bucket the selector is written as under coding i;
    * the buckets share one total, and coding i is member i among
-   * `choices.length` for the index form. The node writes the selector once,
+   * `choices.length`. The node writes the selector once,
    * before the group's first symbol, then each symbol through
    * `composeAlternatives` as the bucket every coding gives it. At `output`
    * the encoder keeps the coding whose selector and symbols cost the fewest
@@ -296,11 +187,9 @@ export class Encoder {
     // The placeholder is the selector for coding 0; `resolve` patches in the
     // choice. A lone coding whose bucket holds every state records nothing,
     // like any radix-1 digit.
-    // Coding i is index i of `count`, inside the members its index form
-    // counts, so the selector needs no position check.
     const before = this.totals.length;
     const [cum, freq] = choices[0];
-    this.composeWeighted(cum, freq, total, { index: 0, count });
+    this.composeWeighted(cum, freq, total);
     this.groups.set(group, { at: this.totals.length > before ? before : -1, choices });
   }
 
@@ -308,14 +197,9 @@ export class Encoder {
    * Push one symbol of the group opened by `composeSelector`, as the bucket
    * each coding gives it: `buckets[i]` is the symbol under coding i. Every
    * bucket carries information, so the symbol takes a slot whichever coding
-   * wins. `position` places the symbol among its node's members, as for
-   * `composeWeighted`, under every coding.
+   * wins.
    */
-  composeAlternatives(
-    group: object,
-    buckets: readonly Bucket[],
-    position?: { index: number; count: number }
-  ): void {
+  composeAlternatives(group: object, buckets: readonly Bucket[]): void {
     const opened = this.groups.get(group);
     if (opened === undefined) {
       throw new TypeError('Group has no selector');
@@ -330,9 +214,6 @@ export class Encoder {
       if (freq === total) {
         throw new RangeError(`Alternative bucket [${cum}, ${cum + freq}) holds every state`);
       }
-      if (position !== undefined) {
-        membersOf(position, total);
-      }
     }
 
     // The placeholder carries coding 0's bucket until `resolve` patches in the choice.
@@ -340,15 +221,14 @@ export class Encoder {
     this.cums.push(cum);
     this.freqs.push(freq as Radix);
     this.totals.push(total as Radix);
-    this.pending.push({ at: this.totals.length - 1, group, buckets, position });
+    this.weighted.push(true);
+    this.pending.push({ at: this.totals.length - 1, group, buckets });
   }
 
   /**
    * Settle every group with alternatives pending: pick its cheapest coding,
-   * patch the choice into its selector and its symbols' slots, and give the
-   * message's last symbol, when it is one of them, the index form the
-   * chosen spelling would have given it. Groups without alternatives keep
-   * coding 0, which their selector already holds.
+   * patch the choice into its selector and its symbols' slots. Groups
+   * without alternatives keep coding 0, which their selector already holds.
    */
   private resolve(): void {
     const symbols = new Map<object, Alternative[]>();
@@ -360,7 +240,6 @@ export class Encoder {
         list.push(alternative);
       }
     }
-    const last = this.totals.length - 1;
     for (const [group, { at, choices }] of this.groups) {
       const list = symbols.get(group);
       if (list === undefined) {
@@ -388,30 +267,17 @@ export class Encoder {
         }
       }
 
-      // The group's symbols follow its selector, so the selector is never
-      // the message's last symbol here; a selector that is keeps coding 0,
-      // whose index form `composeSelector` already recorded.
       if (at >= 0) {
         const [cum, freq, total] = choices[chosen];
         this.cums[at] = cum;
         this.freqs[at] = freq as Radix;
         this.totals[at] = total as Radix;
       }
-      for (const { at: slot, buckets, position } of list) {
+      for (const { at: slot, buckets } of list) {
         const [cum, freq, total] = buckets[chosen];
         this.cums[slot] = cum;
         this.freqs[slot] = freq as Radix;
         this.totals[slot] = total as Radix;
-        if (slot === last) {
-          let index = 0;
-          let members = total;
-          if (position !== undefined) {
-            index = position.index;
-            members = Math.min(position.count, total);
-          }
-          this.lastIndex = members < total ? index : 0;
-          this.lastCount = members as Radix;
-        }
       }
     }
     this.pending = [];
@@ -475,193 +341,31 @@ export class Encoder {
   }
 
   /**
-   * Pack the buffer into base-`size` digits, lowest digit first, as a run of
-   * mixed-radix blocks of at most `blockBits` bits of state each. Within a
-   * block, values fold into one big integer — in reverse, so the decoder can
-   * peel them off front-to-back, which it needs because later radices can
-   * depend on earlier decoded values (e.g. an array's length prefix). A value
-   * whose total would push the block's state
-   * bound past the block cap starts the next block instead. Full blocks span
-   * exactly `digits` digits, so the decoder finds the boundaries by position
-   * alone; only the final block rounds up to a whole digit, so a message that
-   * fits one block is always the information-theoretic minimum length:
-   * ceil(log_size(digit bound)).
+   * The log folded into base-`size` digits by `StreamWriter`, in reverse,
+   * so the decoder can peel the values off front to back, which it needs
+   * because later radices can depend on earlier decoded values (an array's
+   * length prefix, say).
    *
-   * The state bound is the rational V/den, with U/den the running density
-   * factor: per symbol V' = (V + U·(total−freq))·freq, U' = U·total,
-   * den' = den·freq. Folding a symbol onto a state below x yields a state
-   * below x·total/freq + (total − freq), so V/den covers the reverse fold in
-   * wire order even though the per-symbol exact bound is not
-   * order-commutative. The candidate V + U·(total−1) needs only `total`, so
-   * the decoder makes the identical block-boundary decision before it has
-   * decoded the symbol; the final digit count then covers the largest such
-   * candidate the block saw (S/den), because the decoder tells an index-form
-   * tail from a bucket by whether the bucket's candidate fits the digits.
-   * S pays the freq-blind slack once per block, for the symbol with the most
-   * of it, while V would pay it once per symbol. With every freq at 1, V and
-   * S both equal the radix product: the plain mixed-radix wire format, byte for byte.
-   * `BlockBound` carries these rationals for both sides.
-   *
-   * A checksum of `sum` bits is the first block's first symbol, a uniform
-   * slot of 2^sum states that the bound reserves like any other, so the
-   * block layout does not depend on the checksum's value. It covers the
-   * first block's other symbols and every digit after that block, so it is
-   * taken once the rest is spelled out, and the first block is emitted last.
-   * A message with a checksum always has a first block, even an empty one.
+   * A checksum of `sum` bits is the message's first symbol, a uniform slot
+   * of 2^sum states, so it is folded last. Its value covers the state it
+   * folds onto and every digit emitted before it, which is everything the
+   * decoder reads after it; emitting for it does not depend on its value, so
+   * it is taken once that emission is done.
    */
-  private toDigits(size: Base, blockBits: number, sum: number): number[] {
-    const bound = new BlockBound(size, blockBits);
-    const chunk = digitChunk(size);
-    const digits: number[] = [];
-    const totals = this.totals;
-    const n = totals.length;
-    const sumRadix = (2 ** sum) as Radix;
-    let head: { value: bigint | number; count: number } | undefined;
-
-    let start = 0;
-    while (start < n || (sum > 0 && head === undefined)) {
-      // The block extends while the freq-blind bound stays within the cap.
-      bound.reset();
-      if (sum > 0 && start === 0) {
-        bound.update(sumRadix, ONE, sumRadix);
-      }
-      // The message's last symbol has nothing after it to fill the fractional
-      // part of its bucket, so as a bucket it needs log2(total) bits of state.
-      // When that does not fit the digits its plain index needs, it is
-      // written as the index instead. The decoder sees the same digit count
-      // and makes the same call.
-      let indexed = false;
-      let count = 0;
-      let end = start;
-      while (end < n) {
-        const total = totals[end];
-        if (bound.exceedsCap(total)) {
-          break;
-        }
-        // Only the last symbol's member count matters on this side: for any
-        // other symbol it feeds just the decoder's tight bound.
-        let members = total;
-        if (end === n - 1) {
-          members = this.lastCount;
-          if (members < total) {
-            const decision = bound.indexDecision(total, members);
-            indexed = decision.indexed;
-            count = decision.digits;
-          }
-        }
-        bound.update(total, this.freqs[end], members);
-        end++;
-      }
-
-      // A full block spans every digit of the block, filled or not, since
-      // more values follow; the final block spans the minimum digits its
-      // digit bound needs.
-      if (end < n) {
-        count = bound.blockDigits;
-      } else if (!indexed) {
-        count = bound.digitsForS();
-      }
-
-      const tail = indexed ? { index: this.lastIndex, count: this.lastCount } : undefined;
-      const value = this.fold(start, end, tail);
-      if (sum > 0 && start === 0) {
-        head = { value, count };
-      } else {
-        emitDigits(digits, value, count, chunk);
-      }
-      start = end;
+  private toDigits(size: number, sum: number): number[] {
+    const { cums, freqs, totals, weighted } = this;
+    const writer = new StreamWriter(size);
+    for (let i = totals.length - 1; i >= 0; i--) {
+      writer.push(cums[i], freqs[i], totals[i], weighted[i]);
     }
-
-    if (head === undefined) {
-      return digits;
+    if (sum > 0) {
+      const radix = 2 ** sum;
+      writer.renormalise(1, radix);
+      const count = writer.count;
+      const h = checksumOf(sum, writer.state, count, (i) => writer.emittedAt(i));
+      writer.push(h, 1, radix, false);
     }
-    const h = checksumOf(
-      sum,
-      head.value,
-      head.count + digits.length,
-      digits.length,
-      (i) => digits[i]
-    );
-    const value = head.value;
-    const sealed =
-      typeof value === 'number' && value * sumRadix + h <= MAX_SAFE
-        ? value * sumRadix + h
-        : (BigInt(value) << SHIFTS[sum]) + BigInt(h);
-    const first: number[] = [];
-    emitDigits(first, sealed, head.count, chunk);
-    return first.concat(digits);
-  }
-
-  /**
-   * The block's values folded into one integer, in reverse. A run of uniform
-   * slots is an affine step `value·product + offset` that accumulates in
-   * Number arithmetic while the product stays below 2^53, so the big integer
-   * grows once per run rather than once per value; a weighted slot folds the
-   * exact value, which stays a Number until it outgrows one.
-   *
-   * The symbols are those in [start, end) of the buffer. A `tail` stands in
-   * for the last of them, written as `index` among `count` members, with
-   * `index` in [0, count) and `count` below that symbol's total.
-   */
-  private fold(
-    start: number,
-    end: number,
-    tail?: { index: number; count: number }
-  ): bigint | number {
-    const { cums, freqs, totals } = this;
-    let big: bigint | undefined;
-    /** The pending affine step on `big`: `big·product + offset`, offset below product. */
-    let product = 1;
-    let offset = 0;
-    let i = end - 1;
-    if (tail !== undefined) {
-      product = tail.count;
-      offset = tail.index;
-      i--;
-    }
-    for (; i >= start; i--) {
-      const total = totals[i];
-      const freq = freqs[i];
-      if (freq === 1) {
-        const grown = product * total;
-        // A true product above 2^53 can round down to 2^53 itself, so only a
-        // result below it is known exact.
-        if (grown < TWO_53) {
-          product = grown;
-          offset = offset * total + cums[i];
-          continue;
-        }
-        big = big === undefined ? BigInt(offset) : big * BigInt(product) + BigInt(offset);
-        product = total;
-        offset = cums[i];
-        continue;
-      }
-      if (big === undefined) {
-        const rem = offset % freq;
-        const quotient = (offset - rem) / freq;
-        const next = quotient * total + (cums[i] + rem);
-        if (next <= MAX_SAFE) {
-          product = next + 1;
-          offset = next;
-          continue;
-        }
-        big = BigInt(quotient) * BigInt(total) + BigInt(cums[i] + rem);
-      } else {
-        if (product !== 1) {
-          big = big * BigInt(product) + BigInt(offset);
-        }
-        const freqBig = BigInt(freq);
-        const quotient = big / freqBig;
-        const rem = big - quotient * freqBig;
-        big = quotient * BigInt(total) + BigInt(cums[i] + Number(rem));
-      }
-      product = 1;
-      offset = 0;
-    }
-    if (big === undefined) {
-      return offset;
-    }
-    return product === 1 ? big : big * BigInt(product) + BigInt(offset);
+    return writer.digits();
   }
 
   /** The message as bytes, or as text when `type` is `'text'`. */
@@ -672,11 +376,7 @@ export class Encoder {
     const type = options.type ?? 'binary';
     const alphabet = outputAlphabet(type, options.charset);
     this.resolve();
-    const digits = this.toDigits(
-      alphabet.size,
-      validateBlockBits(options.blockBits),
-      validateChecksum(options.checksum)
-    );
+    const digits = this.toDigits(alphabet.size, validateChecksum(options.checksum));
 
     if (type === 'text') {
       let str = '';

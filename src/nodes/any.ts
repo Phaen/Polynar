@@ -168,8 +168,9 @@ class AnyBigInt extends PNode<bigint> {
     if (length === 0) {
       return 0n;
     }
-    // Digits are read before the bigint is built, so a corrupt bit count
-    // runs out of input instead of building an absurd number.
+    dec.charge(length);
+    // Digits are read before the bigint is built, and a bit count no input
+    // backs meets the decode limit first, so it never builds an absurd number.
     let bits = '0b1';
     for (let at = 1; at < length; at += BIGINT_CHUNK) {
       const width = Math.min(BIGINT_CHUNK, length - at);

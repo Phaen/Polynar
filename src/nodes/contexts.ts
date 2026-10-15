@@ -238,7 +238,7 @@ export class ContextModel {
       const cell = this.cell(state, i, context, exclusion);
       if (cell !== undefined) {
         const [cum, freq, total] = decision(cell, !has);
-        enc.composeWeighted(cum, freq, total, { index: has ? 0 : 1, count: 2 });
+        enc.composeWeighted(cum, freq, total);
         if (has) {
           writeExcluded(enc, context, exclusion, sym);
         }
@@ -274,13 +274,9 @@ export class ContextModel {
       const context = pricing[i];
       const cell = this.cell(state, i, context, exclusion);
       if (cell !== undefined) {
-        const at = (pos: number): readonly [boolean, number, number] => {
-          const [cum, freq] = decision(cell, pos === 1);
-          return [pos === 1, cum, freq];
-        };
-        const escaped = dec.parseWeighted(cell[0] + cell[1], (r) => at(r < cell[0] ? 0 : 1), {
-          count: 2,
-          at,
+        const escaped = dec.parseWeighted(cell[0] + cell[1], (r) => {
+          const [cum, freq] = decision(cell, r >= cell[0]);
+          return [r >= cell[0], cum, freq];
         });
         learnCell(cell, escaped);
         if (!escaped) {

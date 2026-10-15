@@ -9,11 +9,16 @@
  * instances, so neither sees the other's module state.
  *
  * Both sides are fed the same random cases: schemas with values (priors,
- * prose, charsets, block sizes, plus corrupted inputs: truncated, padded,
- * flipped, out-of-charset) and raw packer symbol sequences aimed at
- * block-boundary ties. Encode output, decode results and thrown errors (class,
- * name and message) must match. Any divergence prints with its seed, iteration
- * and a readable schema, and the exit code is 1.
+ * prose, charsets, plus corrupted inputs: truncated, padded, flipped,
+ * out-of-charset) and raw packer symbol sequences aimed at the streaming
+ * coder's edges: totals at its windows' renormalisation thresholds, at the
+ * switch to a BigInt state and up to 2^53, wide buckets folded through the
+ * spread map at the message's end, final states on a digit boundary, empty
+ * and single-symbol messages, and trailing zeros read past the input against
+ * the decode limit. Encode output, decode results and thrown errors (class,
+ * name and message) must match. Any
+ * divergence prints with its seed, iteration and a readable schema, and the
+ * exit code is 1.
  *
  * A side whose API predates the working tree's is reported and nothing is
  * compared (exit code 0). Bad arguments print the usage and exit with 2. Under
@@ -27,6 +32,7 @@ import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { parseArgs } from 'util';
 import * as current from '../src/index';
+import { ransWindow } from '../src/packer/constants';
 import * as published from 'polynar-published';
 import { version as publishedVersion } from 'polynar-published/package.json';
 import { mulberry32 } from '../src/__tests__/support';
@@ -51,22 +57,22 @@ interface Side {
   encode(node: Node, value: unknown, o: Opts): Uint8Array | string;
   decode(node: Node, input: Uint8Array | string, o: Opts): unknown;
   output(enc: any, o: Opts): Uint8Array | string;
-  decoder(input: Uint8Array | string, o: Opts): any;
+  decoder(input: Uint8Array | string, o: Opts, limit?: number): any;
 }
 
 const side = (label: string, mod: Mod): Side => {
-  const opts = (o: Opts) => ({ type: o.type, charset: o.charset, blockBits: o.blockBits });
+  const opts = (o: Opts) => ({ type: o.type, charset: o.charset });
   return {
     label,
     mod,
     encode: (node, value, o) => node.encode(value, opts(o)),
     decode: (node, input, o) => node.decode(input, opts(o)),
     output: (enc, o) => enc.output(opts(o)),
-    decoder: (input, o) => new mod.Decoder(input, opts(o)),
+    decoder: (input, o, limit) =>
+      new mod.Decoder(input, limit === undefined ? opts(o) : { ...opts(o), limit }),
   };
 };
 
-/** Working-tree API the release lacks: runtime exports, and the options-taking `Encoder#output`. */
 /**
  * The codec API both sides need for any comparison at all. Factories added
  * since don't count here: a schema that uses one is skipped on its own.
@@ -128,8 +134,7 @@ const showInput = (input: Uint8Array | string): string =>
 type Sym =
   | { k: 'u'; v: number; r: number }
   | { k: 't'; v: number }
-  | { k: 'w'; cum: number; freq: number; total: number; index: number; count: number };
-type Bucket = readonly [number, number, number];
+  | { k: 'w'; cum: number; freq: number; total: number };
 
 const MAX = Number.MAX_SAFE_INTEGER;
 const TOTALS = [
@@ -166,38 +171,21 @@ const TOTALS = [
   28059810762433,
 ];
 
-/** Decode-side lookups for a weighted symbol: unit buckets around its own. */
-const lookupsOf = (w: Extract<Sym, { k: 'w' }>) => {
-  const { cum, freq, total } = w;
-  const members = Math.min(w.count, total);
-  if (members >= total) {
-    const locate = (r: number): Bucket =>
-      r < cum ? [0, 0, cum] : r < cum + freq ? [1, cum, freq] : [2, cum + freq, total - cum - freq];
-    return { locate, at: (i: number): Bucket => [i, i, 1] };
-  }
-  const index = w.index;
-  const after = members - index - 1;
-  const afterStart = cum + freq;
-  const firstWidth = total - afterStart - (after - 1);
-  const at = (i: number): Bucket => {
-    if (i < index) return i < index - 1 ? [i, i, 1] : [i, index - 1, cum - (index - 1)];
-    if (i === index) return [i, cum, freq];
-    if (i === index + 1) return [i, afterStart, firstWidth];
-    return [i, afterStart + firstWidth + (i - index - 2), 1];
-  };
-  const locate = (r: number): Bucket => {
-    if (r < cum) return at(Math.min(r, index - 1));
-    if (r < cum + freq) return at(index);
-    const k = r - afterStart;
-    return k < firstWidth ? at(index + 1) : at(index + 2 + (k - firstWidth));
-  };
-  return { locate, at };
-};
+/** Decode-side lookup for a weighted symbol: the buckets below, at and above its own. */
+const locateOf =
+  ({ cum, freq, total }: Extract<Sym, { k: 'w' }>) =>
+  (r: number): readonly [number, number, number] =>
+    r < cum ? [0, 0, cum] : r < cum + freq ? [1, cum, freq] : [2, cum + freq, total - cum - freq];
 
-const genUniform = (): Sym => {
-  const r = rand() < 0.5 ? pick(TOTALS) : randInt(2, rand() < 0.5 ? 1000 : MAX);
-  const v = rand() < 0.3 ? r - 1 : rand() < 0.3 ? 0 : randInt(0, r - 1);
-  return { k: 'u', v, r };
+const clampTotal = (t: bigint): number => Number(t < 2n ? 2n : t > BigInt(MAX) ? BigInt(MAX) : t);
+
+/** A value of `r` states, at either end more often than inside. */
+const valueIn = (r: number): number =>
+  rand() < 0.3 ? r - 1 : rand() < 0.3 ? 0 : randInt(0, r - 1);
+
+const genUniform = (r?: number): Sym => {
+  r ??= rand() < 0.5 ? pick(TOTALS) : randInt(2, rand() < 0.5 ? 1000 : MAX);
+  return { k: 'u', v: valueIn(r), r };
 };
 
 const genWeighted = (total?: number): Sym => {
@@ -214,13 +202,7 @@ const genWeighted = (total?: number): Sym => {
             ? Math.max(1, Math.floor(total / 2))
             : randInt(1, total);
   const cum = rand() < 0.3 ? 0 : rand() < 0.3 ? total - freq : randInt(0, total - freq);
-  let count = total;
-  let index = cum;
-  if (rand() < 0.5) {
-    index = randInt(0, Math.min(cum, 50));
-    count = index + 1 + randInt(0, Math.min(total - cum - freq, 50));
-  }
-  return { k: 'w', cum, freq, total, index, count };
+  return { k: 'w', cum, freq, total };
 };
 
 const genTerm = (): Sym => ({
@@ -228,80 +210,145 @@ const genTerm = (): Sym => ({
   v: rand() < 0.6 ? randInt(0, 100) : rand() < 0.5 ? randInt(0, 2 ** 32) : randInt(0, MAX),
 });
 
-/** Exact block-bound tracker, used only to aim symbol totals at ties. */
-class Oracle {
-  V = 1n;
-  U = 1n;
-  den = 1n;
-  constructor(readonly cap: bigint) {}
-  reset(): void {
-    this.V = 1n;
-    this.U = 1n;
-    this.den = 1n;
+const genAny = (): Sym => pick([() => genUniform(), () => genWeighted(), genTerm])();
+
+/**
+ * The windows the coder opens for a sequence's symbols in base `size`,
+ * mirrored in BigInt to aim totals at their edges: k = max(1, ⌊L/T⌋, ⌈B/T⌉),
+ * B = k·f of the last coded symbol. `limit` is the largest A = k·T for which
+ * size·A is a safe integer; past it the state is a BigInt.
+ */
+class Windows {
+  readonly L: bigint;
+  readonly limit: bigint;
+  B = 0n;
+  last = 2n;
+
+  constructor(readonly size: number) {
+    this.L = BigInt(ransWindow(size));
+    this.limit = BigInt(Math.floor(MAX / size));
   }
-  fits(total: number): boolean {
-    return this.V + this.U * BigInt(total - 1) <= this.cap * this.den;
-  }
-  update(total: number, freq: number): void {
+
+  k(total: number): bigint {
     const t = BigInt(total);
-    const f = BigInt(freq);
-    if (f === 1n) this.V = this.V + this.U * (t - 1n);
-    else {
-      this.V = (this.V + this.U * (t - f)) * f;
-      this.den *= f;
-    }
-    this.U *= t;
+    const up = (this.B + t - 1n) / t;
+    const kL = this.L / t;
+    const k = up > kL ? up : kL;
+    return k > 1n ? k : 1n;
   }
-  totalFor(target: bigint, exact: boolean): number | undefined {
-    const num = target * this.den - this.V;
-    if (num < 0n || (exact && num % this.U !== 0n)) return undefined;
-    const t = num / this.U + 1n;
-    if (t < 1n) return undefined;
-    return Number(t > BigInt(MAX) ? BigInt(MAX) : t);
+
+  /**
+   * Steps past a symbol. A bucket holding every state is never coded and
+   * leaves B as it is. A term is several slots, of which only the last
+   * total is known here, so after one B is approximate.
+   */
+  step(s: Sym): void {
+    const [total, freq] = s.k === 'u' ? [s.r, 1] : s.k === 'w' ? [s.total, s.freq] : [4, 1];
+    if (freq < total) this.B = this.k(total) * BigInt(freq);
+    this.last = BigInt(total);
+  }
+
+  /**
+   * A total within a few states of an edge: where ⌊L/T⌋ steps (L/j), where
+   * T times the last total passes L, where size·A passes 2^53 (`limit`/j),
+   * where ⌈B/T⌉ takes the window over (B/j), around 2^52, where k = 2 can
+   * carry B past 2^53, and at the top of the safe range.
+   */
+  edgeTotal(): number {
+    const { L, limit, B } = this;
+    const j = BigInt(pick([1, 2, 3, 7, this.size]));
+    const anchors = [L / j, L / this.last, limit / j, 1n << 52n, BigInt(MAX)];
+    if (B > 0n) anchors.push(B / j, (B + j - 1n) / j);
+    return clampTotal(pick(anchors) + BigInt(randInt(-2, 2)));
   }
 }
 
-const genSequence = (base: number, cap: bigint, digits: number): Sym[] => {
-  const n = randInt(1, pick([5, 30, 200, 1500]));
-  const syms: Sym[] = [];
-  const oracle = new Oracle(cap);
-  const style = rand();
-  const half = (): Sym =>
-    rand() < 0.5
-      ? { k: 'w', cum: 0, freq: 2, total: 4, index: 0, count: 4 }
-      : { k: 'u', v: randInt(0, 1), r: 2 };
-  for (let i = 0; i < n; i++) {
-    let s: Sym;
-    if (style < 0.25 && rand() < 0.6) {
-      const target = rand() < 0.5 ? cap : BigInt(base) ** BigInt(randInt(0, digits));
-      const which = rand();
-      let t = oracle.totalFor(target, which < 0.4);
-      if (t !== undefined && which >= 0.7 && t < MAX) t += 1;
-      s =
-        t === undefined || t < 2
-          ? half()
-          : rand() < 0.5
-            ? { k: 'u', v: randInt(0, t - 1), r: t }
-            : genWeighted(t);
-    } else if (style < 0.5) {
-      s = pick([genUniform, () => genWeighted(), genTerm])();
-    } else if (style < 0.75) {
-      s = rand() < 0.8 ? half() : genWeighted();
-    } else {
-      s = rand() < 0.85 ? genUniform() : rand() < 0.5 ? genWeighted() : genTerm();
-    }
-    syms.push(s);
-    if (s.k !== 't') {
-      const total = s.k === 'u' ? s.r : s.total;
-      if (!oracle.fits(total)) oracle.reset();
-      oracle.update(total, s.k === 'u' ? 1 : s.freq);
-    }
-  }
-  return syms;
+/**
+ * A wide weighted symbol for the message's end, where the encoder's state is
+ * still below `freq` and folds through the spread map: totals at power-of-two
+ * edges, where the bit-reversed visiting order gains a bit, and up to 2^53.
+ */
+const spreadSym = (w: Windows): Sym => {
+  const total =
+    rand() < 0.2
+      ? w.edgeTotal()
+      : clampTotal((1n << BigInt(randInt(1, 53))) + BigInt(randInt(-1, 1)));
+  const freq = Math.max(
+    1,
+    pick([total - 1, total - 2, Math.ceil(total / 2), randInt(1, total - 1)])
+  );
+  const cum = rand() < 0.3 ? 0 : rand() < 0.5 ? total - freq : randInt(0, total - freq);
+  return { k: 'w', cum, freq, total };
 };
 
-const plainWeighted = (s: Extract<Sym, { k: 'w' }>): boolean =>
-  s.count === s.total && s.index === s.cum;
+/**
+ * A one-symbol message whose final state is size^j − 1, size^j or
+ * size^j + 1, size^j a safe integer: the output ends on a digit boundary or
+ * one digit past it.
+ */
+const boundarySym = (size: number): Sym => {
+  const powers = [1];
+  while (powers[powers.length - 1] * size < MAX) powers.push(powers[powers.length - 1] * size);
+  const v = Math.min(MAX - 1, Math.max(0, pick(powers) + randInt(-1, 1)));
+  return { k: 'u', v, r: rand() < 0.5 ? v + 1 : randInt(v + 1, MAX) };
+};
+
+/**
+ * A symbol that folds state 0 onto itself: a message ending in these emits
+ * nothing for them, and the decoder reads them past its input, against its
+ * limit.
+ */
+const zeroSym = (): Sym => {
+  const total = pick(TOTALS);
+  return pick<Sym>([
+    { k: 'u', v: 0, r: total },
+    { k: 't', v: 0 },
+    { k: 'w', cum: 0, freq: randInt(1, total - 1), total },
+  ]);
+};
+
+/** A sequence aimed at one of the coder's edges, and the decode limit to read it under, if any. */
+const genSequence = (size: number): { syms: Sym[]; limit?: number } => {
+  const w = new Windows(size);
+  const syms: Sym[] = [];
+  const push = (s: Sym): void => {
+    syms.push(s);
+    w.step(s);
+  };
+  const body = (n: number): void => {
+    for (let i = 0; i < n; i++) {
+      push(rand() < 0.85 ? genUniform() : rand() < 0.5 ? genWeighted() : genTerm());
+    }
+  };
+  // One message in ten reads under a tight limit, whatever it holds.
+  let limit = rand() < 0.1 ? pick([0, 1, 2, Infinity]) : undefined;
+  const style = rand();
+  if (style < 0.3) {
+    // Renormalisation: totals at the windows' edges, between random symbols.
+    const n = randInt(1, pick([5, 30, 200]));
+    for (let i = 0; i < n; i++) {
+      if (rand() < 0.6) {
+        const t = w.edgeTotal();
+        push(rand() < 0.5 ? genUniform(t) : genWeighted(t));
+      } else push(genAny());
+    }
+  } else if (style < 0.45) {
+    body(randInt(0, 10));
+    for (let i = randInt(1, 8); i > 0; i--) push(spreadSym(w));
+  } else if (style < 0.55) {
+    push(boundarySym(size));
+  } else if (style < 0.6) {
+    if (rand() < 0.5) push(genAny());
+  } else if (style < 0.75) {
+    body(randInt(0, 10));
+    const m = pick([1, 2, 3, randInt(4, 100), 1000]);
+    for (let i = 0; i < m; i++) push(zeroSym());
+    limit = pick([0, Math.max(0, m - 1), m, m + 1, Infinity]);
+  } else {
+    body(randInt(1, pick([5, 30, 200, 1500])));
+  }
+  return { syms, limit };
+};
 
 /** One sequence written through a side's packer into a message. */
 const packEncodeRaw = (sd: Side, syms: Sym[], o: Opts): Uint8Array | string => {
@@ -309,8 +356,7 @@ const packEncodeRaw = (sd: Side, syms: Sym[], o: Opts): Uint8Array | string => {
   for (const s of syms) {
     if (s.k === 'u') enc.compose(s.v, s.r);
     else if (s.k === 't') enc.composeTerm(s.v);
-    else if (plainWeighted(s)) enc.composeWeighted(s.cum, s.freq, s.total);
-    else enc.composeWeighted(s.cum, s.freq, s.total, { index: s.index, count: s.count });
+    else enc.composeWeighted(s.cum, s.freq, s.total);
   }
   return sd.output(enc, o);
 };
@@ -318,19 +364,22 @@ const packEncodeRaw = (sd: Side, syms: Sym[], o: Opts): Uint8Array | string => {
 const packEncode = (sd: Side, syms: Sym[], o: Opts): Outcome =>
   attempt(() => packEncodeRaw(sd, syms, o));
 
-const packDecode = (sd: Side, input: Uint8Array | string, syms: Sym[], o: Opts): Outcome[] => {
+const packDecode = (
+  sd: Side,
+  input: Uint8Array | string,
+  syms: Sym[],
+  o: Opts,
+  limit: number | undefined
+): Outcome[] => {
   let dec: any;
-  const opened = attempt(() => (dec = sd.decoder(input, o)));
+  const opened = attempt(() => (dec = sd.decoder(input, o, limit)));
   if (opened.startsWith('throw')) return [opened];
   const out: Outcome[] = [];
   for (const s of syms) {
     const r = attempt(() => {
       if (s.k === 'u') return dec.parse(s.r);
       if (s.k === 't') return dec.parseTerm();
-      const { locate, at } = lookupsOf(s);
-      return plainWeighted(s)
-        ? dec.parseWeighted(s.total, locate)
-        : dec.parseWeighted(s.total, locate, { count: s.count, at });
+      return dec.parseWeighted(s.total, locateOf(s));
     });
     out.push(r);
     if (r.startsWith('throw')) return out;
@@ -347,7 +396,7 @@ const shrink = (syms: Sym[], diverges: (s: Sym[]) => boolean): Sym[] => {
     for (let chunk = Math.max(1, cur.length >> 1); chunk >= 1; chunk >>= 1) {
       for (let i = 0; i + chunk <= cur.length; ) {
         const cand = [...cur.slice(0, i), ...cur.slice(i + chunk)];
-        if (cand.length > 0 && diverges(cand)) {
+        if (diverges(cand)) {
           cur = cand;
           changed = true;
         } else i += chunk;
@@ -357,6 +406,11 @@ const shrink = (syms: Sym[], diverges: (s: Sym[]) => boolean): Sym[] => {
   return cur;
 };
 
+/**
+ * Output bases, as code ranges from 0: powers of two and not, each side of
+ * 256 and of a window step, up to 55296, the widest range below the
+ * surrogates and among the bases with the narrowest window, 2^36.
+ */
 const BASES = [2, 3, 4, 5, 7, 8, 10, 16, 36, 64, 100, 127, 128, 255, 256, 1000, 4096, 55295, 55296];
 
 // ---------- driver ----------
@@ -573,21 +627,12 @@ const compare = (old: Side, seed: number, iterations: number): number => {
   for (let it = 0; it < iterations; it++) {
     reseed(seed, it, 2);
     const base = pick(BASES);
-    const blockBits = pick([undefined, undefined, 128, 512]);
-    const bits = BigInt(blockBits ?? 2048);
-    let digits = 1;
-    let cap = BigInt(base);
-    while (cap * BigInt(base) <= 1n << bits) {
-      cap *= BigInt(base);
-      digits++;
-    }
     const type = base <= 256 && rand() < 0.5 ? 'binary' : 'text';
     const o: Opts = {
       type,
       charset: type === 'binary' && base === 256 && rand() < 0.5 ? undefined : [0, base - 1],
-      blockBits,
     };
-    const syms = genSequence(base, cap, digits);
+    const { syms, limit } = genSequence(base);
     const encodes = [cur, old].map((sd) => packEncode(sd, syms, o));
     const encDiverges = (s: Sym[]) => packEncode(cur, s, o) !== packEncode(old, s, o);
     if (encodes[0] !== encodes[1]) {
@@ -612,8 +657,8 @@ const compare = (old: Side, seed: number, iterations: number): number => {
       ...corruptions(encoded, o),
     ]) {
       decodes++;
-      const a = packDecode(cur, input, syms, o);
-      const b = packDecode(old, input, syms, o);
+      const a = packDecode(cur, input, syms, o, limit);
+      const b = packDecode(old, input, syms, o, limit);
       if (JSON.stringify(a) !== JSON.stringify(b)) {
         const step = a.findIndex((x, i) => x !== b[i]);
         divergences.push({
@@ -625,7 +670,7 @@ const compare = (old: Side, seed: number, iterations: number): number => {
             b[step]
           ),
           detail: [
-            `options ${JSON.stringify(o)}`,
+            `options ${JSON.stringify(o)}${limit === undefined ? '' : `, decode limit ${limit}`}`,
             `symbols ${JSON.stringify(syms.length > 40 ? syms.slice(0, step + 1) : syms)}${syms.length > 40 ? ` (first ${step + 1} of ${syms.length})` : ''}`,
             `input   ${what}: ${showInput(input).slice(0, 400)}`,
             `step    ${step}`,

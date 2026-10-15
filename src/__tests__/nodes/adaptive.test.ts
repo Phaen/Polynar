@@ -196,15 +196,12 @@ describe('AdaptiveTable', () => {
     expect([live.learned.count(1), live.learned.total]).toEqual([4, 4]);
   });
 
-  it('gives its live table one positions object, each position its located bucket', () => {
+  it('gives each member of its live table its located bucket', () => {
     const table = new AdaptiveTable([2, 1, 5], 3, 3, 100, 'w');
     const live = table.live(new Encoder());
     live.learn(2);
-    expect(live.positions).toBe(live.positions);
-    expect(live.positions.count).toBe(3);
     for (let i = 0; i < 3; i++) {
-      expect(live.positions.at(i)).toEqual([i, live.cum(i), live.freq(i)]);
-      expect(live.located(i)).toEqual(live.positions.at(i));
+      expect(live.located(i)).toEqual([i, live.cum(i), live.freq(i)]);
       expect(live.bucket(i)).toEqual([live.cum(i), live.freq(i), live.total]);
     }
   });
@@ -321,8 +318,8 @@ describe('AdaptiveTable', () => {
     };
     const small = run([9, 1]);
     const large = run([9000, 1000]);
-    // The symbols cost the same bits; wider totals only shift where the
-    // packer's blocks break, which costs a byte or two either way.
+    // The symbols cost the same bits; wider totals only change how the
+    // message ends, which costs a byte or two either way.
     expect(Math.abs(large.bytes.length - small.bytes.length)).toBeLessThanOrEqual(2);
     expect(large.learned).toEqual(small.learned);
     // Every bucket is the same fraction of its total: scaled by 1000 throughout.
@@ -396,7 +393,7 @@ const forge = (
         written === 0 || coding === 0
           ? cut((pos) => [base.cums[pos], base.freqs[pos], base.total], symbol, out)
           : cut((pos) => model(row).bucket(pos), symbol, out);
-      enc.composeWeighted(cum, freq, total, { index: symbol, count: prior.members });
+      enc.composeWeighted(cum, freq, total);
       written++;
     }
     if (coding > 0) {
@@ -601,7 +598,7 @@ describe('AdaptivePrior', () => {
       const bytes = encodeAll(prior, symbols);
       const chosen = selector(prior, bytes);
       expect(bytes).toEqual(forged[chosen]);
-      // Fewest bits, give or take where the packer's blocks break.
+      // Fewest bits, give or take how the message ends.
       for (const other of forged) {
         expect(bytes.length).toBeLessThanOrEqual(other.length + 1);
       }
@@ -643,7 +640,7 @@ describe('AdaptivePrior', () => {
     const small = new AdaptivePrior([[9, 1]], 2, 32, 'w');
     const large = new AdaptivePrior([[9000, 1000]], 2, 32, 'w');
     const bytes = encodeAll(large, symbols);
-    // Wider totals only shift where the packer's blocks break.
+    // Wider totals only change how the message ends.
     expect(Math.abs(bytes.length - encodeAll(small, symbols).length)).toBeLessThanOrEqual(2);
     expect(decodeAll(large, bytes, zeros(symbols.length))).toEqual(symbols);
   });

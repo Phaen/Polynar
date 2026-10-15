@@ -54,7 +54,7 @@ describe('Schema float', () => {
     [-0, 1],
     [1, 1],
     [1.5, 2],
-    [1 / 3, 3],
+    [1 / 3, 2],
     [0.1, 2],
     [3.14, 4],
     [Math.PI, 8],
@@ -62,7 +62,7 @@ describe('Schema float', () => {
     [0.1 + 0.2, 8],
     // The five realm carries the decimal exponent's 5-adic half, so a typed
     // decimal never pays for the fives its binary exponent cannot absorb.
-    [1e-300, 5],
+    [1e-300, 4],
     [6.02e23, 5],
     [8.17e-285, 7],
     // An integer's denominator is a power of two, spelled by its exponent
@@ -436,12 +436,14 @@ describe('termRunStates', () => {
     expect(termRunStates(n)).toBe(states);
   });
 
-  it('matches what the encoder spends', () => {
-    // A lone term fills one block, so its states set the output length.
+  it('bounds what the encoder spends', () => {
+    // A lone term is the whole message, so its states bound the output length.
     for (const n of [0n, 7n, 3n ** 21n - 1n, 3n ** 21n, 8n ** 12n, 2n ** 52n]) {
       const enc = new Encoder();
       enc.composeTerm(Number(n));
-      expect(enc.output()).toHaveLength(Math.ceil(Math.log2(Number(termRunStates(n))) / 8));
+      expect(enc.output().length).toBeLessThanOrEqual(
+        Math.ceil(Math.log2(Number(termRunStates(n))) / 8)
+      );
     }
   });
 

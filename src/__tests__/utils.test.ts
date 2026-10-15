@@ -9,20 +9,15 @@ import {
   bigRadix,
   bitLength,
   checksumOf,
-  digitChunk,
-  log2Exact,
   outputAlphabet,
   radixOf,
   stringAlphabet,
-  validateBlockBits,
   validateChecksum,
 } from '../packer/utils';
-import type { Radix } from '../packer/types';
 import { ScaledRatio } from '../packer';
 import { mulberry32 } from './support';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
-const radix = (n: number) => n as Radix;
 
 describe('radixOf', () => {
   it('passes every integer in [1, 2^53)', () => {
@@ -46,46 +41,6 @@ describe('radixOf', () => {
       new RangeError('Total -3 is not a positive safe integer')
     );
     expect(() => radixOf(2 ** 53, 'Radix')).toThrow(RangeError);
-  });
-});
-
-describe('digitChunk', () => {
-  it('spans the most digits that stay within 2^53', () => {
-    expect(digitChunk(radix(2))).toEqual({
-      size: 2,
-      digits: 53,
-      num: 2 ** 53,
-      big: 2n ** 53n,
-      bits: 53,
-    });
-    expect(digitChunk(radix(10))).toEqual({
-      size: 10,
-      digits: 15,
-      num: 1e15,
-      big: 10n ** 15n,
-      bits: 0,
-    });
-    expect(digitChunk(radix(256))).toMatchObject({ digits: 6, num: 2 ** 48, bits: 48 });
-    expect(digitChunk(radix(2 ** 52))).toMatchObject({ digits: 1, num: 2 ** 52, bits: 52 });
-    expect(digitChunk(radix(MAX_SAFE))).toMatchObject({ digits: 1, num: MAX_SAFE, bits: 0 });
-  });
-
-  it('rejects base 1, whose digits hold nothing', () => {
-    expect(() => digitChunk(radix(1))).toThrow(new RangeError('Digit base 1 is below 2'));
-  });
-});
-
-describe('log2Exact', () => {
-  it('names the exponent of a power of two', () => {
-    for (let e = 0; e < 53; e++) {
-      expect(log2Exact(radix(2 ** e))).toBe(e);
-    }
-  });
-
-  it('answers -1 for any other radix, on both sides of 2^31', () => {
-    for (const n of [3, 6, 1001, 2 ** 31 - 1, 2 ** 31 + 1, 3 * 2 ** 40, 2 ** 52 + 1, MAX_SAFE]) {
-      expect(log2Exact(radix(n))).toBe(-1);
-    }
   });
 });
 
@@ -138,32 +93,6 @@ describe('bigRadix', () => {
         const fewer = BigInt(BIG_CHUNK_BITS * (chunks - 1));
         expect((radix + (1n << fewer) - 1n) >> fewer > MAX).toBe(true);
       }
-    }
-  });
-});
-
-describe('validateBlockBits', () => {
-  it('defaults to 2048 and passes the span [128, 65536]', () => {
-    expect(validateBlockBits()).toBe(2048);
-    expect(validateBlockBits(undefined)).toBe(2048);
-    for (const bits of [128, 129, 4096, 65536]) {
-      expect(validateBlockBits(bits)).toBe(bits);
-    }
-  });
-
-  it('rejects a size that is no integer with a TypeError', () => {
-    for (const bits of [128.5, NaN, Infinity, -Infinity]) {
-      expect(() => validateBlockBits(bits)).toThrow(
-        new TypeError(`Block size must be an integer number of bits, got ${bits}`)
-      );
-    }
-  });
-
-  it('rejects an integer outside the span with a RangeError', () => {
-    for (const bits of [0, -128, 127, 65537]) {
-      expect(() => validateBlockBits(bits)).toThrow(
-        new RangeError(`Block size ${bits} bits is outside [128, 65536]`)
-      );
     }
   });
 });
@@ -361,18 +290,18 @@ describe('validateChecksum', () => {
 
 describe('checksumOf', () => {
   const digits = [3, 1, 4, 1, 5];
-  const sum = (bits: number, value: bigint | number, rest: number[], length = rest.length + 7) =>
-    checksumOf(bits, value, length, rest.length, (i) => rest[i]);
+  const sum = (bits: number, value: bigint, rest: number[]) =>
+    checksumOf(bits, value, rest.length, (i) => rest[i]);
 
   it('is deterministic', () => {
     expect(sum(32, 123456789n, digits)).toBe(sum(32, 123456789n, digits));
   });
 
-  it('differs when the value, a rest digit or the length changes', () => {
-    const base = sum(32, 1000, digits);
-    expect(sum(32, 1001, digits)).not.toBe(base);
-    expect(sum(32, 1000, [3, 1, 4, 1, 6])).not.toBe(base);
-    expect(sum(32, 1000, digits, digits.length + 8)).not.toBe(base);
+  it('differs when the value, a rest digit or the digit count changes', () => {
+    const base = sum(32, 1000n, digits);
+    expect(sum(32, 1001n, digits)).not.toBe(base);
+    expect(sum(32, 1000n, [3, 1, 4, 1, 6])).not.toBe(base);
+    expect(sum(32, 1000n, [...digits, 0])).not.toBe(base);
   });
 
   it('separates values that differ only in the high bits of a high limb', () => {
@@ -382,15 +311,11 @@ describe('checksumOf', () => {
   it('stays below 2^bits', () => {
     for (const bits of [1, 8, 32]) {
       for (let v = 0; v < 50; v++) {
-        const h = sum(bits, v * 7919, digits);
+        const h = sum(bits, BigInt(v * 7919), digits);
         expect(h).toBeGreaterThanOrEqual(0);
         expect(h).toBeLessThan(2 ** bits);
       }
     }
-  });
-
-  it('hashes a Number and the same BigInt alike', () => {
-    expect(sum(32, 123456, digits)).toBe(sum(32, 123456n, digits));
   });
 });
 

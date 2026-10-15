@@ -117,8 +117,8 @@ describe('Schema priors', () => {
         .min(0)
         .max(n - 1)
         .cdf((v) => sums[v]);
-      // Both alone, so its symbol is the message's last, and after an int
-      // that may leave it at a block boundary.
+      // Alone, so its symbol is the message's last, and after an int that
+      // leaves the state anywhere.
       const schema = p.object({
         a: p
           .int()
@@ -126,21 +126,20 @@ describe('Schema priors', () => {
           .max(2 ** randInt(4, 40)),
         b: node,
       });
-      const blockBits = [16, 32, 64, 2048][randInt(0, 3)];
       for (const [target, value] of [
         [node, randInt(0, n - 1)],
         [schema, { a: randInt(0, 2 ** 4), b: randInt(0, n - 1) }],
       ] as const) {
         let bytes: Uint8Array;
         try {
-          bytes = (target as typeof node).encode(value as number, { blockBits });
+          bytes = (target as typeof node).encode(value as number);
         } catch (e) {
           // The cdf fails along the probes, or the value has no weight.
           expect([TypeError, RangeError]).toContain((e as Error).constructor);
           continue;
         }
         encoded++;
-        expect((target as typeof node).decode(bytes, { blockBits })).toEqual(value);
+        expect((target as typeof node).decode(bytes)).toEqual(value);
       }
     }
     expect(encoded).toBeGreaterThan(300);
@@ -242,11 +241,11 @@ describe('Schema priors', () => {
   });
 
   it('a weighted prior spends fractional bits on likely values', () => {
-    // 100 draws of a 90% member cost ~15 bits; the uniform enum pays
-    // log2(3) per slot for the same array.
+    // 99 draws of a 90% member and a 9% one cost ~19 bits; the uniform enum
+    // pays log2(3) per slot for the same array up to its last nonzero one.
     const heavy = p.array(p.enum(['ok', 'warn', 'error']).weights([90, 9, 1])).length(100);
     const flat = p.array(p.enum(['ok', 'warn', 'error'])).length(100);
-    const all = Array<'ok'>(100).fill('ok');
+    const all = [...Array<'ok'>(99).fill('ok'), 'warn' as const];
     expect(heavy.encode(all).length).toBeLessThanOrEqual(4);
     expect(flat.encode(all).length).toBeGreaterThan(18);
   });
@@ -342,7 +341,6 @@ describe('buildWeights', () => {
 
   it('lays out running totals', () => {
     expect([table.cums, table.freqs, table.total]).toEqual([[0, 1, 3], [1, 2, 5], 8]);
-    expect(table.position.count).toBe(3);
   });
 
   it('refuses a state count that is not a positive integer', () => {
@@ -378,13 +376,6 @@ describe('buildWeights', () => {
     expect(table.locate(NaN)[0]).toBe(0);
     expect(table.locate(8)[0]).toBe(2);
     expect(table.locate(Infinity)[0]).toBe(2);
-  });
-
-  it('looks up a bucket by index, an index outside the table owning no weight', () => {
-    expect(table.position.at(1)).toEqual([1, 1, 2]);
-    for (const i of [-1, 3, 0.5, NaN]) {
-      expect(table.position.at(i)).toEqual([i, 8, 0]);
-    }
   });
 });
 

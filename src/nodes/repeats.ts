@@ -161,7 +161,6 @@ function restricted(live: LiveCounts, top: number): LiveTable {
   const table: LiveTable = {
     size: count,
     total: live.cum(top) + live.freq(top),
-    positions: { count, at: (i) => live.located(i) },
     cum: (pos) => live.cum(pos),
     freq: (pos) => live.freq(pos),
     locate(residual) {

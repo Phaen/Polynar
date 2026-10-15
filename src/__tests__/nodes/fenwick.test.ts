@@ -76,20 +76,15 @@ describe('Fenwick', () => {
     expect(() => Fenwick.zeros(-1)).toThrow(new RangeError('Fenwick size -1 is negative'));
   });
 
-  it('locates members as a live table, its one positions object following every push', () => {
+  it('locates members as a live table, following every push', () => {
     const tree = new Fenwick([3, 0, 2]);
-    const { positions } = tree;
-    expect(positions.count).toBe(3);
-    expect([0, 1, 2].map((i) => positions.at(i))).toEqual([
+    expect([0, 1, 2].map((i) => tree.located(i))).toEqual([
       [0, 0, 3],
       [1, 3, 0],
       [2, 3, 2],
     ]);
-    expect(tree.located(2)).toEqual([2, 3, 2]);
     tree.push(4);
-    expect(tree.positions).toBe(positions);
-    expect(positions.count).toBe(4);
-    expect(positions.at(3)).toEqual([3, 5, 4]);
+    expect(tree.located(3)).toEqual([3, 5, 4]);
     expect(() => tree.located(4)).toThrow(RangeError);
   });
 

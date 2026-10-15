@@ -15,7 +15,7 @@
  * a valid `p.union` member too.
  */
 import { Encoder, Decoder } from '../packer';
-import type { CodecOptions, OutputType } from '../packer';
+import type { CodecOptions, DecodeOptions, OutputType } from '../packer';
 import type { Kind } from './guards';
 import type { AdaptiveOptions } from './adaptive';
 import { members, type MemberPrior, type Members } from './members';
@@ -79,7 +79,9 @@ export abstract class PNode<TOut> {
   /** Decode bytes or text produced by `encode` with the same options. */
   decode<I extends Uint8Array | string>(
     input: I,
-    options?: CodecOptions<I extends string ? 'text' : I extends Uint8Array ? 'binary' : OutputType>
+    options?: DecodeOptions<
+      I extends string ? 'text' : I extends Uint8Array ? 'binary' : OutputType
+    >
   ): TOut {
     const dec = new Decoder(input, options);
     const value = this._read(dec);

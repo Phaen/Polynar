@@ -1,21 +1,17 @@
 /**
  * The Encoder/Decoder API that every node builds on: uniform digits and
- * `parseMany` runs, terms, weighted symbols, and the corruption checks that
- * run while reading and at `finalize`. Block boundaries and digit counts,
- * which BlockBound decides, live in bound.test.ts; output options (charsets,
- * text or bytes, block size) in transport.test.ts. Seeded, so failures
- * reproduce.
+ * `parseMany` runs, terms, weighted symbols, the checksum, and the
+ * corruption checks that cost nothing. The streaming coder underneath lives
+ * in stream.test.ts; output options (charsets, text or bytes) in
+ * transport.test.ts. Seeded, so failures reproduce.
  */
 
 import { Encoder, Decoder, CorruptInputError, p } from '../index';
 import * as root from '../index';
 import type { CodecOptions, OutputType } from '../index';
-import { emitDigits } from '../packer/encoder';
 import { MessageState } from '../packer/state';
 import * as packer from '../packer';
 import type { Bucket } from '../packer';
-import type { Radix } from '../packer/types';
-import { digitChunk } from '../packer/utils';
 import { members } from '../nodes/members';
 import { buildWeights, writeTable } from '../nodes/weights';
 import { mulberry32 } from './support';
@@ -114,14 +110,12 @@ const BUCKETS: readonly (readonly [number, number, number])[] = [
   [2, 3, 1],
 ];
 const locate = (r: number): readonly [number, number, number] => BUCKETS[r < 1 ? 0 : r < 3 ? 1 : 2];
-const position = { count: 3, at: (i: number) => BUCKETS[i] };
 
 const RADICES = [2, 3, 7, 10, 16, 64, 100, 255, 256, 257, 1000, 65536, 99991, 2 ** 31, 2 ** 40 + 1];
 const LAYOUTS: Options[] = [
   {},
-  { blockBits: 128 },
   { type: 'text' },
-  { type: 'text', charset: '0123456789ABCDEF', blockBits: 128 },
+  { type: 'text', charset: '0123456789ABCDEF' },
   { charset: [0, 1] },
   { type: 'text', charset: '0123456789' },
 ];
@@ -227,13 +221,19 @@ describe('compose / parse / parseMany', () => {
   });
 
   it('packs to the information-theoretic minimum length', () => {
-    // Four base-1001 slots span 1001^4 ≈ 1.004e12 states. That needs 5 bytes
-    // (256^5 ≈ 1.100e12) and 7 Base64 chars (64^7 ≈ 4.398e12; 6 are too few).
+    // Four base-1001 slots span 1001^4 ≈ 1.004e12 states. The largest needs 5
+    // bytes (256^5 ≈ 1.100e12) and 7 Base64 chars (64^7 ≈ 4.398e12; 6 are too
+    // few); a smaller value needs only its own digits.
     const encoder = new Encoder();
-    composeAll(encoder, [1000, 0, 999, 1]);
+    composeAll(encoder, [1000, 1000, 1000, 1000]);
     expect(encoder.output().length).toBe(5);
     expect(encoder.output({ type: 'text' }).length).toBe(7);
-    expect(parseAll(new Decoder(encoder.output()), 4)).toEqual([1000, 0, 999, 1]);
+    expect(parseAll(new Decoder(encoder.output()), 4)).toEqual([1000, 1000, 1000, 1000]);
+    const small = new Encoder();
+    composeAll(small, [1000, 0, 999, 1]);
+    // 1000 + 999·1001² + 1001³ < 256^4
+    expect(small.output().length).toBe(4);
+    expect(parseAll(new Decoder(small.output()), 4)).toEqual([1000, 0, 999, 1]);
   });
 
   it('packs 40 booleans into exactly 40 bits', () => {
@@ -246,7 +246,7 @@ describe('compose / parse / parseMany', () => {
     expect(encoder.output().length).toBe(5);
   });
 
-  it('parseMany reads what repeated parse reads, across radices, layouts and blocks', () => {
+  it('parseMany reads what repeated parse reads, across radices and layouts', () => {
     for (const o of LAYOUTS) {
       for (const radix of RADICES) {
         for (const count of [0, 1, 2, 5, 31, 200, 1000]) {
@@ -260,38 +260,15 @@ describe('compose / parse / parseMany', () => {
   it('parseMany reads the largest radix, power of two or not', () => {
     for (const radix of [2 ** 53 - 1, 2 ** 52, 2 ** 53 - 111]) {
       const digits = [0, radix - 1, 12345, radix - 2, 1, 7];
-      const o = { blockBits: 128 };
+      const o = {};
       expect(agree(message(radix, digits, o), o, radix, digits.length)).toEqual({
         values: digits,
       });
     }
   });
 
-  it('parseMany folds a run whose first power overshoots its bit-length estimate', () => {
-    // After 2^52 - 1 and 2^52 + 1 the room left in the 208-bit block is
-    // 2^104 + 1. Math.log2(2^52 + 1) rounds to 52, so the estimate takes two
-    // more digits, whose product 2^104 + 2^53 + 1 does not fit; one does.
-    const o = { charset: [0, 1] as [number, number], blockBits: 208 };
-    const radix = 2 ** 52 + 1;
-    const digits = [radix - 1, 0, 12345];
-    const enc = new Encoder();
-    enc.compose(2 ** 52 - 2, 2 ** 52 - 1);
-    enc.compose(7, radix);
-    for (const d of digits) {
-      enc.compose(d, radix);
-    }
-    const input = enc.output(o);
-    // A full 208-digit block, then the last two digits in the 105 digits of
-    // (2^52 + 1)^2.
-    expect(input.length).toBe(208 + 105);
-    const outcome = agree(input, o, radix, digits.length, (dec, values) => {
-      values.push(dec.parse(2 ** 52 - 1), dec.parse(radix));
-    });
-    expect(outcome).toEqual({ values: [2 ** 52 - 2, 7, ...digits] });
-  });
-
   it('parseMany splits a run between reads of other radices', () => {
-    const o = { blockBits: 128 };
+    const o = {};
     const digits = digitsIn(10, 300);
     const enc = new Encoder();
     enc.compose(5, 7);
@@ -319,7 +296,7 @@ describe('compose / parse / parseMany', () => {
   });
 
   it('parseMany continues after weighted symbols', () => {
-    for (const o of [{}, { blockBits: 128 }, { charset: [0, 1] as [number, number] }]) {
+    for (const o of [{}, { charset: [0, 1] as [number, number] }]) {
       for (const radix of [2, 10, 256, 1000]) {
         const weighted = Array.from({ length: 40 }, () => randInt(0, 2));
         const digits = digitsIn(radix, 500);
@@ -340,7 +317,7 @@ describe('compose / parse / parseMany', () => {
     }
   });
 
-  it('parseMany interleaves with weighted symbols inside one block', () => {
+  it('parseMany interleaves with weighted symbols', () => {
     const enc = new Encoder();
     const expected: unknown[] = [];
     for (let i = 0; i < 30; i++) {
@@ -366,20 +343,16 @@ describe('compose / parse / parseMany', () => {
     expect(read(true)).toEqual({ values: expected });
   });
 
-  it('parseMany stops right before an indexed last symbol', () => {
-    for (const o of [
-      {},
-      { blockBits: 128 },
-      { type: 'text' as const, charset: '0123456789ABCDEF' },
-    ]) {
+  it('parseMany stops right before a weighted last symbol', () => {
+    for (const o of [{}, { type: 'text' as const, charset: '0123456789ABCDEF' }]) {
       for (const count of [0, 1, 17, 100, 333]) {
         for (const last of [0, 1, 2]) {
           const digits = digitsIn(256, count);
           const input = message(256, digits, o, (enc) =>
-            enc.composeWeighted(BUCKETS[last][1], BUCKETS[last][2], 4, { index: last, count: 3 })
+            enc.composeWeighted(BUCKETS[last][1], BUCKETS[last][2], 4)
           );
           const outcome = agree(input, o, 256, count, undefined, (dec, values) =>
-            values.push(dec.parseWeighted(4, locate, position))
+            values.push(dec.parseWeighted(4, locate))
           );
           expect(outcome).toEqual({ values: [...digits, last] });
         }
@@ -387,7 +360,7 @@ describe('compose / parse / parseMany', () => {
     }
   });
 
-  it('parseMany fails like repeated parse on truncated, padded and corrupted input', () => {
+  it('parseMany reads truncated, padded and corrupted input like repeated parse', () => {
     for (const o of LAYOUTS) {
       for (const radix of [2, 10, 256, 1000, 2 ** 31]) {
         const count = 150;
@@ -422,9 +395,10 @@ describe('compose / parse / parseMany', () => {
     }
   });
 
-  it('parseMany reports truncation like repeated parse when the run outlasts the input', () => {
-    expect(agree(message(10, digitsIn(10, 50), {}), {}, 10, 5000)).toEqual({
-      error: ['CorruptInputError', 'Unexpected end of input while parsing: truncated or corrupted'],
+  it('parseMany reads zeros like repeated parse when the run outlasts the input', () => {
+    const digits = digitsIn(10, 50);
+    expect(agree(message(10, digits, {}), {}, 10, 5000)).toEqual({
+      values: [...digits, ...Array<number>(4950).fill(0)],
     });
   });
 
@@ -482,7 +456,7 @@ describe('composeBig / parseBig', () => {
     // 3^5000 spans 7924.8 bits, so 991 bytes.
     const encoder = new Encoder();
     encoder.composeBig(3n ** 5000n - 1n, 3n ** 5000n);
-    expect(encoder.output({ blockBits: 16384 })).toHaveLength(991);
+    expect(encoder.output()).toHaveLength(991);
   });
 
   it('rejects an invalid radix or index', () => {
@@ -584,6 +558,24 @@ describe('composeTerm / parseTerm', () => {
     );
   });
 
+  it('rejects an escaped term no double represents', () => {
+    // 2^53 + 1 in 18 base-8 digits: the escape, the count 18 - 12 = 6 as a
+    // run (digit 0, digit 2, end), the 17 low digits, then the top one less 1.
+    const value = 2n ** 53n + 1n;
+    const encoder = new Encoder();
+    encoder.compose(4, 5);
+    encoder.compose(1, 4);
+    encoder.compose(3, 4);
+    encoder.compose(0, 4);
+    for (let i = 0n; i < 17n; i++) {
+      encoder.compose(Number((value >> (3n * i)) & 7n), 8);
+    }
+    encoder.compose(Number(value >> 51n) - 1, 7);
+    expect(() => new Decoder(encoder.output()).parseTerm()).toThrow(
+      new CorruptInputError('Escaped term is not an exactly representable integer')
+    );
+  });
+
   it('reads an escaped term inside the inline range as its value', () => {
     // The encoder escapes only values >= 3^21; a smaller value behind the
     // escape still names that value.
@@ -664,7 +656,9 @@ describe('composeWeighted / parseWeighted', () => {
     }
   });
 
-  it('is byte-identical to compose when every frequency is one', () => {
+  it('is byte-identical to compose when every frequency is one, before a uniform end', () => {
+    // A symbol folded onto a state below its frequency takes the spread map,
+    // so only a nonzero uniform slot at the end makes the spellings meet.
     for (let run = 0; run < 50; run++) {
       const uniform = new Encoder();
       const weighted = new Encoder();
@@ -676,32 +670,33 @@ describe('composeWeighted / parseWeighted', () => {
         weighted.composeWeighted(value, 1, radix);
         values.push([value, radix]);
       }
+      uniform.compose(1, 2);
+      weighted.compose(1, 2);
       expect(weighted.output()).toEqual(uniform.output());
 
       const dec = new Decoder(uniform.output());
       for (const [value, radix] of values) {
         expect(dec.parseWeighted(radix, (r) => [r, r, 1])).toBe(value);
       }
+      expect(dec.parse(2)).toBe(1);
       dec.finalize();
     }
   });
 
   it('spends fewer bytes on likelier symbols', () => {
-    // 1000 draws of the heavy symbol (f=15 of 16) cost ~93 bits; uniform
-    // base-16 slots cost 4000.
+    // 1000 draws of the heavy symbol (f=15 of 16) cost ~93 bits; nonzero
+    // uniform base-16 slots cost 4000.
     const heavy = new Encoder();
     const flat = new Encoder();
     for (let i = 0; i < 1000; i++) {
       heavy.composeWeighted(0, 15, 16);
-      flat.compose(0, 16);
+      flat.compose(1, 16);
     }
     expect(heavy.output().length).toBeLessThan(20);
     expect(flat.output().length).toBeGreaterThan(490);
   });
 
-  it('survives block boundaries under long weighted runs', () => {
-    // Enough state to cross several 2048-bit blocks, with freqs that make
-    // the true bound and the freq-blind boundary rule diverge.
+  it('round-trips long weighted runs', () => {
     const dist = randDistribution(8);
     const enc = new Encoder();
     const symbols: number[] = [];
@@ -717,76 +712,20 @@ describe('composeWeighted / parseWeighted', () => {
     dec.finalize();
   });
 
-  it('rejects corruption, truncation and padding on weighted payloads', () => {
-    const dist = randDistribution(16);
-    for (let run = 0; run < 100; run++) {
-      const enc = new Encoder();
-      const symbols = Array.from({ length: randInt(5, 200) }, () => randInt(0, 15));
-      for (const s of symbols) {
-        enc.composeWeighted(dist.cums[s], dist.freqs[s], dist.total);
-      }
-      const bytes = enc.output();
-
-      const decodeAll = (input: Uint8Array): number[] => {
-        const dec = new Decoder(input);
-        const out = symbols.map(() => dec.parseWeighted(dist.total, locateIn(dist)));
-        dec.finalize();
-        return out;
-      };
-
-      // One byte substituted: either it throws, or what it decodes to
-      // re-encodes to exactly the mutated bytes.
-      const at = randInt(0, bytes.length - 1);
-      const mutated = Uint8Array.from(bytes);
-      mutated[at] = (mutated[at] + randInt(1, 255)) % 256;
-      let decoded: number[] | undefined;
-      try {
-        decoded = decodeAll(mutated);
-      } catch (e) {
-        expect(e).toBeInstanceOf(CorruptInputError);
-      }
-      if (decoded !== undefined) {
-        const re = new Encoder();
-        for (const s of decoded) {
-          re.composeWeighted(dist.cums[s], dist.freqs[s], dist.total);
-        }
-        expect(re.output()).toEqual(mutated);
-      }
-
-      if (bytes.length > 0) {
-        expect(() => decodeAll(bytes.slice(0, bytes.length - 1))).toThrow(CorruptInputError);
-      }
-      expect(() => decodeAll(Uint8Array.of(...bytes, 0))).toThrow(CorruptInputError);
-    }
-  });
-
-  it('pays the freq-blind slack once per block, not once per symbol', () => {
-    // A run of the likely symbol (f = 99 of 100) shares log2(100/99) bits
-    // per draw. The digit count is that sum plus the slack of the one
-    // candidate with the most of it, under log2(2·total), however long the
-    // run: the run of 1000 costs 14.5 bits of shares, the run of 10 almost
-    // none, so they sit within log2(200) + 1 of their shares.
+  it('spends the information content on a likely run, plus at most its ending', () => {
+    // A run of the likely symbol (f = 99 of 100) shares log2(100/99) bits per
+    // draw. The last draws fold onto states below 99, which costs at most
+    // log2(100) bits however long the run, and the message rounds once.
     const bits = (n: number): number => {
       const enc = new Encoder();
       for (let i = 0; i < n; i++) {
-        enc.composeWeighted(1, 99, 100, { index: 1, count: 2 });
+        enc.composeWeighted(1, 99, 100);
       }
       return enc.output({ type: 'text', charset: '01' }).length;
     };
     const share = (n: number): number => n * Math.log2(100 / 99);
     for (const n of [2, 10, 100, 1000]) {
-      expect(bits(n)).toBeLessThanOrEqual(Math.ceil(share(n) + Math.log2(200)) + 1);
-    }
-    expect(bits(1000) - bits(10)).toBeLessThanOrEqual(Math.ceil(share(1000) - share(10)) + 1);
-  });
-
-  it('rejects a likely run padded to the digits its per-symbol slack would need', () => {
-    const node = p.array(p.bool().weights([99, 1])).length(100);
-    const text = node.encode(Array(100).fill(true), { type: 'text', charset: '01' });
-    expect(text).toHaveLength(9);
-    expect(node.decode(text, { charset: '01' })).toEqual(Array(100).fill(true));
-    for (const padding of ['0', '000000']) {
-      expect(() => node.decode(text + padding, { charset: '01' })).toThrow(CorruptInputError);
+      expect(bits(n)).toBeLessThanOrEqual(Math.ceil(share(n) + Math.log2(100)) + 1);
     }
   });
 
@@ -834,129 +773,29 @@ describe('composeWeighted / parseWeighted', () => {
   });
 });
 
-describe('composeWeighted / parseWeighted with an indexed last symbol', () => {
-  // Four members, weight k each: a bucket needs log2(4k) bits of state, the
-  // index two. Nothing follows the message's last symbol to fill the rest.
+describe('composeWeighted / parseWeighted at the end of the message', () => {
+  // Four members, weight k each: two bits of information each, however
+  // large the total.
   const four = (k: number) => ({ cums: [0, k, 2 * k, 3 * k], freqs: [k, k, k, k], total: 4 * k });
-  const atIndexIn = (d: Distribution) => (i: number) => [i, d.cums[i], d.freqs[i]] as const;
 
-  it('writes a lone weighted value as its index, whatever the total', () => {
+  it('writes a lone weighted value in the bits its weight gives it, whatever the total', () => {
     for (const k of [1, 1000, 1e6, 1e12]) {
       const dist = four(k);
       for (let s = 0; s < 4; s++) {
         const enc = new Encoder();
         enc.compose(5, 7);
-        enc.composeWeighted(dist.cums[s], dist.freqs[s], dist.total, { index: s, count: 4 });
+        enc.composeWeighted(dist.cums[s], dist.freqs[s], dist.total);
         const bytes = enc.output();
         expect(bytes.length).toBe(1);
         const dec = new Decoder(bytes);
         expect(dec.parse(7)).toBe(5);
-        expect(
-          dec.parseWeighted(dist.total, locateIn(dist), { count: 4, at: atIndexIn(dist) })
-        ).toBe(s);
+        expect(dec.parseWeighted(dist.total, locateIn(dist))).toBe(s);
         dec.finalize();
       }
     }
   });
 
-  it('rejects an invalid symbol position at the source', () => {
-    const error = (name: string, message: string) => expect.objectContaining({ name, message });
-    const enc = new Encoder();
-    expect(() => enc.composeWeighted(0, 2, 8, { index: 0.5, count: 4 })).toThrow(
-      error('TypeError', 'Symbol position must be integers, got index 0.5, count 4')
-    );
-    expect(() => enc.composeWeighted(0, 2, 8, { index: 0, count: 0 })).toThrow(
-      error('TypeError', 'Symbol position must be integers, got index 0, count 0')
-    );
-    expect(() => enc.composeWeighted(0, 2, 8, { index: 4, count: 4 })).toThrow(
-      error('RangeError', 'Index 4 is outside [0, 4)')
-    );
-    expect(() => enc.composeWeighted(0, 2, 8, { index: -1, count: 4 })).toThrow(
-      error('RangeError', 'Index -1 is outside [0, 4)')
-    );
-
-    const dist = four(1);
-    const dec = new Decoder(new Encoder().output());
-    for (const count of [0, 1.5]) {
-      expect(() =>
-        dec.parseWeighted(dist.total, locateIn(dist), { count, at: atIndexIn(dist) })
-      ).toThrow(error('TypeError', `Symbol count must be a positive integer, got ${count}`));
-    }
-  });
-
-  it('keeps the bucket form when the digits hold it anyway', () => {
-    // Base 55296: both forms fit one digit, so the bytes equal the plain call.
-    const dist = four(1000);
-    const plain = new Encoder();
-    plain.composeWeighted(dist.cums[2], dist.freqs[2], dist.total);
-    const indexed = new Encoder();
-    indexed.composeWeighted(dist.cums[2], dist.freqs[2], dist.total, { index: 2, count: 4 });
-    expect(indexed.output({ type: 'text', charset: [0, 0xd7ff] })).toBe(
-      plain.output({ type: 'text', charset: [0, 0xd7ff] })
-    );
-  });
-
-  it('is unchanged when the member count reaches the total', () => {
-    for (let run = 0; run < 50; run++) {
-      const dist = randDistribution(randInt(2, 8));
-      const plain = new Encoder();
-      const counted = new Encoder();
-      for (let i = 0; i < randInt(1, 30); i++) {
-        const s = randInt(0, dist.cums.length - 1);
-        plain.composeWeighted(dist.cums[s], dist.freqs[s], dist.total);
-        counted.composeWeighted(dist.cums[s], dist.freqs[s], dist.total, {
-          index: s,
-          count: dist.total + run,
-        });
-      }
-      expect(counted.output()).toEqual(plain.output());
-    }
-  });
-
-  it('rejects padding, truncation and reading past an indexed tail', () => {
-    const dist = four(1e12);
-    const enc = new Encoder();
-    for (let i = 0; i < 20; i++) {
-      enc.compose(i % 3, 3);
-    }
-    enc.composeWeighted(dist.cums[3], dist.freqs[3], dist.total, { index: 3, count: 4 });
-    const bytes = enc.output();
-    expect(bytes.length).toBe(5);
-
-    const readAll = (input: Uint8Array, extra = false) => {
-      const dec = new Decoder(input);
-      for (let i = 0; i < 20; i++) {
-        dec.parse(3);
-      }
-      dec.parseWeighted(dist.total, locateIn(dist), { count: 4, at: atIndexIn(dist) });
-      if (extra) {
-        dec.parse(2);
-      }
-      dec.finalize();
-    };
-    readAll(bytes);
-    expect(() => readAll(bytes, true)).toThrow(CorruptInputError);
-    expect(() => readAll(bytes.subarray(0, 4))).toThrow(CorruptInputError);
-    expect(() => readAll(Uint8Array.of(...bytes, 0))).toThrow(CorruptInputError);
-    // Padded to where the bucket form fits: the digit count gives it away.
-    expect(() => readAll(Uint8Array.of(...bytes, 0, 0))).toThrow(CorruptInputError);
-  });
-
-  it('reads a single-value tail that opens a block of its own', () => {
-    // A full block of 256 bytes, then a value with one member: its index
-    // takes no digits, so the new block it opens is empty.
-    const node = p.object({
-      a: p.array(p.int().min(0).max(255)).length(256),
-      b: p.int().min(7).max(7).weights([5]),
-    });
-    const value = { a: Array.from({ length: 256 }, (_, i) => i), b: 7 };
-    const bytes = node.encode(value);
-    expect(bytes.length).toBe(256);
-    expect(node.decode(bytes)).toEqual(value);
-    expect(() => node.decode(Uint8Array.of(...bytes, 0))).toThrow(CorruptInputError);
-  });
-
-  it('keeps the index form when a constant field ends the message', () => {
+  it('spends nothing on a constant field that ends the message', () => {
     const shape = { a: p.int().min(0).max(1000), flag: p.bool().weights([99, 1]) };
     const bits = p
       .object(shape)
@@ -976,33 +815,19 @@ describe('composeWeighted / parseWeighted with an indexed last symbol', () => {
     expect(text.length).toBe(bits);
     expect(node.decode(text, { charset: '01' })).toEqual({ a: true, b: 5 });
   });
-
-  it('rejects an index that points at a value with no weight', () => {
-    // Weights 500, 0, 1 over 0..2: the total needs two bytes as a bucket,
-    // so a lone value goes out as its index in one.
-    const node = p
-      .int()
-      .min(0)
-      .max(2)
-      .cdf((v) => [0, 500, 500, 501][v]);
-    expect(node.encode(2)).toEqual(Uint8Array.of(2));
-    expect(node.decode(Uint8Array.of(2))).toBe(2);
-    expect(() => node.decode(Uint8Array.of(1))).toThrow(CorruptInputError);
-  });
 });
 
 describe('Corruption detection', () => {
   it('finalize rejects a corrupted digit that oversaturates the input', () => {
-    // Two radix-50 values nearly fill two Base64 chars (2500 of 4096 states).
-    // A weighted symbol may legitimately leave value inside the last doubling
-    // of state space, so the leftover is only provably corrupt once the
-    // message ends.
+    // Two radix-50 values span 2500 of the 4096 states two Base64 chars hold.
+    // A top char that lifts the value past 2500 leaves state over once both
+    // are read, which is only provably corrupt once the message ends.
     const encoder = new Encoder();
     encoder.compose(10, 50);
     encoder.compose(20, 50);
     const str = encoder.output({ type: 'text' });
     expect(str).toHaveLength(2);
-    const decoder = new Decoder(str.slice(0, -1) + '/');
+    const decoder = new Decoder('/' + str.slice(1));
     decoder.parse(50);
     decoder.parse(50);
     expect(() => decoder.finalize()).toThrow('Unread or corrupted data at end of input');
@@ -1025,7 +850,32 @@ describe('Corruption detection', () => {
     encoder.compose(1, 2);
     const decoder = new Decoder(encoder.output({ type: 'text' }) + 'A');
     decoder.parse(2);
-    expect(() => decoder.finalize()).toThrow('Input is longer than its contents');
+    expect(() => decoder.finalize()).toThrow(CorruptInputError);
+  });
+
+  it('finalize throws on input a message without values never reads', () => {
+    expect(() => new Decoder('A').finalize()).toThrow('Input is longer than its contents');
+  });
+
+  it('reads 0 past the last value', () => {
+    // A trailing 0 folds onto state 0 and leaves it there, so writing it
+    // gives the same input: a read past the last value is a read of that 0,
+    // and nothing tells them apart.
+    const short = new Encoder();
+    short.compose(1, 2);
+    const long = new Encoder();
+    long.compose(1, 2);
+    long.compose(0, 2);
+    long.compose(0, 1001);
+    const str = short.output({ type: 'text' });
+    expect(long.output({ type: 'text' })).toBe(str);
+    const decoder = new Decoder(str);
+    expect(decoder.parse(2)).toBe(1);
+    expect(decoder.parse(2)).toBe(0);
+    expect(decoder.parse(1001)).toBe(0);
+    expect(decoder.parseWeighted(4, locate)).toBe(0);
+    decoder.finalize();
+    expect(new Decoder('').parse(1001)).toBe(0);
   });
 
   it('finalize throws when values remain unread', () => {
@@ -1035,15 +885,6 @@ describe('Corruption detection', () => {
     const decoder = new Decoder(encoder.output());
     decoder.parse(1001);
     expect(() => decoder.finalize()).toThrow('Unread or corrupted data at end of input');
-  });
-
-  it('throws when input ends mid-parse', () => {
-    const encoder = new Encoder();
-    encoder.compose(5, 1001);
-    const decoder = new Decoder(encoder.output());
-    decoder.parse(1001);
-    expect(() => decoder.parse(1001)).toThrow('Unexpected end of input while parsing');
-    expect(() => new Decoder('').parse(1001)).toThrow('Unexpected end of input while parsing');
   });
 });
 
@@ -1058,7 +899,6 @@ describe('Checksum', () => {
     { o: {}, base: 256 },
     { o: { type: 'text', charset: root.CharSets.urlSafe }, base: 66 },
     { o: { charset: [0, 1] }, base: 2 },
-    { o: { blockBits: 128 }, base: 256 },
   ];
 
   it('round-trips at every width, over every layout, for a few digits', () => {
@@ -1082,11 +922,8 @@ describe('Checksum', () => {
   });
 
   it('rejects empty input', () => {
-    const message = 'Input is too short to hold its checksum';
-    expect(() => User.decode(new Uint8Array(0), { checksum: 8 })).toThrow(
-      new CorruptInputError(message)
-    );
-    expect(() => User.decode('', { checksum: 8, type: 'text' })).toThrow(message);
+    expect(() => User.decode(new Uint8Array(0), { checksum: 8 })).toThrow(CorruptInputError);
+    expect(() => User.decode('', { checksum: 8, type: 'text' })).toThrow(CorruptInputError);
   });
 
   it('rejects one corrupted digit of a 32-bit checksum', () => {
@@ -1127,8 +964,8 @@ describe('Checksum', () => {
     new Decoder(bytes, { checksum: 8 }).finalize();
   });
 
-  it('covers every block of a multi-block message', () => {
-    const o = { blockBits: 128, checksum: 32 };
+  it('covers every digit of a long message', () => {
+    const o = { checksum: 32 };
     const encoder = new Encoder();
     for (let i = 0; i < 3000; i++) {
       encoder.compose(i % 1000, 1000);
@@ -1146,7 +983,7 @@ describe('Checksum', () => {
     }
   });
 
-  it('seals a first block too big for a double', () => {
+  it('seals a state too big for a double', () => {
     const o = { checksum: 32 };
     const encoder = new Encoder();
     for (const v of [5, 77, 1000]) {
@@ -1157,63 +994,6 @@ describe('Checksum', () => {
       5, 77, 1000,
     ]);
     decoder.finalize();
-  });
-});
-
-describe('emitDigits', () => {
-  const emit = (value: bigint | number, count: number, size: number): number[] => {
-    const digits: number[] = [];
-    emitDigits(digits, value, count, digitChunk(size as Radix));
-    return digits;
-  };
-
-  it('writes a value lowest digit first, padded to the count', () => {
-    expect(emit(123, 5, 10)).toEqual([3, 2, 1, 0, 0]);
-    expect(emit(123n, 5, 10)).toEqual([3, 2, 1, 0, 0]);
-    expect(emit(0, 3, 2)).toEqual([0, 0, 0]);
-    expect(emit(Number.MAX_SAFE_INTEGER, 53, 2)).toEqual(Array(53).fill(1));
-  });
-
-  it('writes nothing for a count of zero', () => {
-    expect(emit(0, 0, 10)).toEqual([]);
-    expect(emit(10n ** 40n, 0, 10)).toEqual([]);
-  });
-
-  it('splits a big value a chunk at a time, by division or by shift', () => {
-    const value = 10n ** 40n + 12345n;
-    const decimal = emit(value, 41, 10);
-    expect(decimal.slice(0, 6)).toEqual([5, 4, 3, 2, 1, 0]);
-    expect(decimal[40]).toBe(1);
-    const bits = emit(2n ** 100n + 5n, 101, 2);
-    expect(bits.slice(0, 3)).toEqual([1, 0, 1]);
-    expect(bits[100]).toBe(1);
-    expect(bits.reduce((a, b) => a + b, 0)).toBe(3);
-  });
-
-  it('keeps only the lowest digits when the count is short of the value', () => {
-    expect(emit(123, 2, 10)).toEqual([3, 2]);
-    expect(emit(10n ** 30n + 987n, 3, 10)).toEqual([7, 8, 9]);
-    expect(emit(2n ** 80n + 6n, 3, 2)).toEqual([0, 1, 1]);
-    expect(emit(10n ** 30n + 987n, 20, 10).slice(0, 4)).toEqual([7, 8, 9, 0]);
-  });
-
-  it('writes a Number above 2^53 exactly', () => {
-    expect(emit(2 ** 60 + 2 ** 10, 61, 2).filter((d) => d === 1)).toHaveLength(2);
-    expect(emit(1e20, 21, 10)).toEqual([...Array(20).fill(0), 1]);
-  });
-
-  it('rejects a count or value that is negative or no integer', () => {
-    expect(() => emit(1, -1, 10)).toThrow(new RangeError('Digit count -1 is negative'));
-    expect(() => emit(1, 1.5, 10)).toThrow(
-      new TypeError('Digit count must be an integer, got 1.5')
-    );
-    expect(() => emit(1, NaN, 10)).toThrow(TypeError);
-    expect(() => emit(1, Infinity, 10)).toThrow(TypeError);
-    expect(() => emit(-1, 2, 10)).toThrow(new RangeError('Value -1 is negative'));
-    expect(() => emit(-1n, 2, 10)).toThrow(new RangeError('Value -1 is negative'));
-    expect(() => emit(1.5, 2, 10)).toThrow(new TypeError('Value must be an integer, got 1.5'));
-    expect(() => emit(NaN, 2, 10)).toThrow(TypeError);
-    expect(() => emit(Infinity, 2, 10)).toThrow(TypeError);
   });
 });
 
@@ -1287,7 +1067,7 @@ describe('composeSelector / composeAlternatives', () => {
       } else if (step[0] === 's') {
         enc.composeSelector(step[1], step[2]);
       } else {
-        enc.composeAlternatives(step[1], step[2], step[3]);
+        enc.composeAlternatives(step[1], step[2]);
       }
     }
     return enc;
@@ -1302,10 +1082,10 @@ describe('composeSelector / composeAlternatives', () => {
       } else if (step[0] === 's') {
         const index = chosen.get(step[1]) ?? 0;
         const [cum, freq, total] = step[2][index];
-        enc.composeWeighted(cum, freq, total, { index, count: step[2].length });
+        enc.composeWeighted(cum, freq, total);
       } else {
         const [cum, freq, total] = step[2][chosen.get(step[1]) ?? 0];
-        enc.composeWeighted(cum, freq, total, step[3]);
+        enc.composeWeighted(cum, freq, total);
       }
     }
     return enc;
@@ -1314,7 +1094,8 @@ describe('composeSelector / composeAlternatives', () => {
   /**
    * Reads the script back: the selector as a weighted symbol over its
    * choices, which partition their total, each symbol in its
-   * group's coding. A symbol with a position lies among equal-width members.
+   * group's coding. A symbol with a position is read as one of equal-width
+   * members.
    */
   const read = (input: Uint8Array | string, script: readonly Step[], o: Options): void => {
     const dec = new Decoder(input, o);
@@ -1326,10 +1107,7 @@ describe('composeSelector / composeAlternatives', () => {
         const choices = step[2];
         const at = (i: number) => [i, choices[i][0], choices[i][1]] as const;
         const locate = (r: number) => at(choices.findIndex(([c, f]) => c <= r && r < c + f));
-        chosen.set(
-          step[1],
-          dec.parseWeighted(choices[0][2], locate, { count: choices.length, at })
-        );
+        chosen.set(step[1], dec.parseWeighted(choices[0][2], locate));
       } else {
         const [cum, freq, total] = step[2][chosen.get(step[1]) ?? 0];
         const position = step[3];
@@ -1344,10 +1122,7 @@ describe('composeSelector / composeAlternatives', () => {
           expect(symbol).toBe('hit');
         } else {
           const member = (i: number) => [i, i * freq, freq] as const;
-          const symbol = dec.parseWeighted(total, (r) => member(Math.floor(r / freq)), {
-            count: position.count,
-            at: member,
-          });
+          const symbol = dec.parseWeighted(total, (r) => member(Math.floor(r / freq)));
           expect(symbol).toBe(position.index);
         }
       }
@@ -1466,9 +1241,9 @@ describe('composeSelector / composeAlternatives', () => {
     check(script, new Map([[g, 0]]));
   });
 
-  it('writes the last symbol as the plain spelling would, as an index or a bucket', () => {
-    // The first symbol settles the coding; the last needs 42 bits as a coding
-    // 0 bucket and 4 as a coding 1 bucket, 2 as an index in either.
+  it('writes the last symbol as the plain spelling would', () => {
+    // The first symbol settles the coding; the last is a quarter of the
+    // states under coding 0 and a half under coding 1.
     for (const [first, choice] of [
       [[0, 1, 8], 1],
       [[0, 7, 8], 0],
@@ -1641,7 +1416,7 @@ describe('composeSelector / composeAlternatives', () => {
     expect(enc.output()).toEqual(direct.output());
   });
 
-  it('writes a weighted selector that ends the message as the index of coding 0', () => {
+  it('writes a weighted selector that ends the message as coding 0', () => {
     for (const choices of [
       [
         [0, 3, 6],
@@ -1737,23 +1512,85 @@ describe('composeSelector / composeAlternatives', () => {
       expect(() => enc.composeAlternatives(g, [ok, bucket])).toThrow(error(name, message));
       expect(() => enc.composeAlternatives(g, [bucket, ok])).toThrow(error(name, message));
     }
-    expect(() => enc.composeAlternatives(g, [ok, [0, 1, 8]], { index: 0.5, count: 4 })).toThrow(
-      error('TypeError', 'Symbol position must be integers, got index 0.5, count 4')
-    );
-    expect(() => enc.composeAlternatives(g, [ok, [0, 1, 8]], { index: 0, count: 0 })).toThrow(
-      error('TypeError', 'Symbol position must be integers, got index 0, count 0')
-    );
-    // Six members fill coding 0's four states, which leaves the index unchecked
-    // there, but not coding 1's eight.
-    for (const buckets of [
-      [ok, [0, 1, 8]],
-      [[0, 1, 8], ok],
-    ] as const) {
-      expect(() => enc.composeAlternatives(g, buckets, { index: 7, count: 6 })).toThrow(
-        error('RangeError', 'Index 7 is outside [0, 6)')
-      );
-    }
     // Nothing failed was recorded: the message is the selector alone.
     expect(enc.output()).toEqual(plain([['s', g, uniform(2)]], new Map()).output());
+  });
+});
+
+describe('Decode limit', () => {
+  const Digits = p.array(p.int().min(0).max(9));
+  /** A length of `count` and nothing after it: every item reads past the input. */
+  const claim = (count: number) => p.int().min(0).encode(count);
+  const time = (fn: () => unknown): number => {
+    const start = performance.now();
+    try {
+      fn();
+    } catch {
+      // timed either way
+    }
+    return performance.now() - start;
+  };
+
+  it('reads zeros past the input up to the limit, and no further', () => {
+    expect(Digits.decode(claim(5000))).toEqual(Array<number>(5000).fill(0));
+    expect(Digits.decode(claim(5000), { limit: Infinity })).toEqual(Array<number>(5000).fill(0));
+    expect(() => Digits.decode(claim(5000), { limit: 4999 })).toThrow(
+      new CorruptInputError(
+        'Input decodes to more values past its end than the decode limit allows'
+      )
+    );
+  });
+
+  it('counts the items a length announced once the input runs out', () => {
+    // The length and the first item are read while the input still backs
+    // them; the items after them are not, and count as soon as it runs out.
+    const Pair = p.object({ n: p.int().min(1).max(9), digits: Digits });
+    const bytes = Pair.encode({ n: 7, digits: [] });
+    const enc = new Encoder();
+    enc.compose(6, 9);
+    enc.composeTerm(4000);
+    enc.compose(5, 10);
+    const input = enc.output();
+    const digits = [5, ...Array<number>(3999).fill(0)];
+    expect(Pair.decode(input)).toEqual({ n: 7, digits });
+    const reads = jest.spyOn(Decoder.prototype as unknown as { read(): void }, 'read');
+    expect(() => Pair.decode(input, { limit: 3997 })).toThrow(CorruptInputError);
+    // It throws on the first read past the input, not item by item.
+    expect(reads.mock.calls.length).toBeGreaterThan(0);
+    expect(reads.mock.calls.length).toBeLessThan(20);
+    reads.mockRestore();
+    // The empty length is a zero read past the input: one value.
+    expect(Pair.decode(bytes, { limit: 1 })).toEqual({ n: 7, digits: [] });
+    expect(() => Pair.decode(bytes, { limit: 0 })).toThrow(CorruptInputError);
+  });
+
+  it('throws at once on a length no input backs', () => {
+    expect(time(() => p.binary().decode(claim(2 ** 40)))).toBeLessThan(1000);
+    expect(() => p.binary().decode(claim(2 ** 40))).toThrow(CorruptInputError);
+    expect(() => p.array(p.null()).decode(claim(2 ** 31))).toThrow(CorruptInputError);
+    // Damaged bytes whose prose text runs on past the input.
+    const bomb = Uint8Array.of(171, 1, 105, 182, 128, 148, 192, 161, 132, 33, 47);
+    const Prose = p.versioned(p.string().prose());
+    expect(time(() => Prose.decode(bomb))).toBeLessThan(1000);
+    expect(() => Prose.decode(bomb)).toThrow(CorruptInputError);
+  });
+
+  it('never limits values the input backs', () => {
+    const rand = mulberry32(0x11417);
+    const Nonzero = p.array(p.int().min(1).max(9));
+    const value = Array.from({ length: 100_000 }, () => 2 + Math.floor(rand() * 8));
+    expect(Nonzero.decode(Nonzero.encode(value), { limit: 0 })).toEqual(value);
+    const text = 'abcdefghij'.repeat(20_000);
+    expect(p.string().decode(p.string().encode(text), { limit: 0 })).toBe(text);
+  });
+
+  it('refuses a limit that is no non-negative integer or Infinity', () => {
+    expect(() => new Decoder('', { limit: -1 })).toThrow(
+      new RangeError('Decode limit -1 is negative')
+    );
+    expect(() => new Decoder('', { limit: 1.5 })).toThrow(
+      new TypeError('Decode limit must be an integer or Infinity, got 1.5')
+    );
+    expect(() => new Decoder('', { limit: NaN })).toThrow(TypeError);
   });
 });

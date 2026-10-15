@@ -3,7 +3,7 @@
  * taken out, and the weighted symbols written and read under it.
  */
 
-import { Encoder, Decoder, CorruptInputError } from '../../packer';
+import { Encoder, Decoder } from '../../packer';
 import { AdaptiveTable, writeLive } from '../../nodes/adaptive';
 import {
   Exclusion,
@@ -185,20 +185,5 @@ describe('writeExcluded and readExcluded', () => {
     const exclusion = new Exclusion(3);
     exclusion.add(1);
     expect(() => writeExcluded(new Encoder(), table, exclusion, 1)).toThrow(RangeError);
-  });
-
-  it('refuses the index of an excluded member as corrupt', () => {
-    // A total past one byte as a bucket: a lone value goes out as its index.
-    const table = staticTable(buildWeights([500, 1, 1], 3, 'w'));
-    const enc = new Encoder();
-    writeExcluded(enc, table, undefined, 1);
-    const bytes = enc.output();
-    expect(bytes).toEqual(Uint8Array.of(1));
-    expect(readExcluded(new Decoder(bytes), table, undefined)).toBe(1);
-    const exclusion = new Exclusion(3);
-    exclusion.add(1);
-    expect(() => readExcluded(new Decoder(enc.output()), table, exclusion)).toThrow(
-      new CorruptInputError('Index of a value with no weight')
-    );
   });
 });

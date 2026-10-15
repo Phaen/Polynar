@@ -260,6 +260,7 @@ export class PCollection<T> extends PNode<T> {
   /** Reads a collection `_spell` wrote. */
   private _unspell(dec: Decoder): T {
     const count = this._count.read(dec);
+    dec.charge(count);
     const entries = new Map<unknown, unknown>();
     if (this._unordered !== undefined) {
       const keys = this._key;

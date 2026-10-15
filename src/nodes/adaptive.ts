@@ -107,12 +107,6 @@ export function checkAdaptiveMembers(n: number, who: string): void {
   }
 }
 
-/** A live table's members in bucket order, as `parseWeighted` reads them. */
-export interface LivePositions {
-  readonly count: number;
-  readonly at: (index: number) => readonly [number, number, number];
-}
-
 /**
  * A table of `size` members whose buckets change as a message goes on:
  * member `pos` owns `[cum(pos), cum(pos) + freq(pos))` of `total`, and
@@ -121,8 +115,6 @@ export interface LivePositions {
 export interface LiveTable {
   readonly size: number;
   readonly total: number;
-  /** The members in bucket order, the same object on every call while `size` holds. */
-  readonly positions: LivePositions;
   cum(pos: number): number;
   freq(pos: number): number;
   locate(residual: number): number;
@@ -136,7 +128,7 @@ export function writeLive(enc: Encoder, table: LiveTable, pos: number): void {
     return;
   }
   const freq = table.freq(pos);
-  enc.composeWeighted(table.cum(pos), freq, table.total, { index: pos, count: table.size });
+  enc.composeWeighted(table.cum(pos), freq, table.total);
 }
 
 /** Reads a member written by `writeLive`. */
@@ -144,11 +136,7 @@ export function readLive(dec: Decoder, table: LiveTable): number {
   if (table.size === 1) {
     return 0;
   }
-  return dec.parseWeighted(
-    table.total,
-    (residual) => table.located(table.locate(residual)),
-    table.positions
-  );
+  return dec.parseWeighted(table.total, (residual) => table.located(table.locate(residual)));
 }
 
 /**
@@ -162,7 +150,6 @@ export function readLive(dec: Decoder, table: LiveTable): number {
 export class LiveCounts implements LiveTable {
   /** The observations of each member, halved past the window. */
   readonly learned: Fenwick;
-  readonly positions: LivePositions;
 
   constructor(
     private readonly base: WeightTable,
@@ -170,7 +157,6 @@ export class LiveCounts implements LiveTable {
     private readonly window: number
   ) {
     this.learned = Fenwick.zeros(base.freqs.length);
-    this.positions = { count: this.learned.size, at: (i) => this.located(i) };
   }
 
   get size(): number {
@@ -589,8 +575,7 @@ export class AdaptivePrior {
         }
         enc.composeAlternatives(
           this,
-          [table, ...this.rowLives(state, base, row)].map((t) => excludedBucket(t, excluded, pos)),
-          { index: pos, count: this.members }
+          [table, ...this.rowLives(state, base, row)].map((t) => excludedBucket(t, excluded, pos))
         );
       }
       state.written++;

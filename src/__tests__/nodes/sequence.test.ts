@@ -134,7 +134,8 @@ describe('Sequence', () => {
     const flat = new Sequence(toy([rows[1], rows[1]]), { max: 12 });
     // Row 1 throughout: only odd items lead, so both price alike.
     expect(encode(tables, [1, 1, 5])).toEqual(encode(flat, [1, 1, 5]));
-    const zeros = Array<number>(12).fill(0);
+    // Zeros, then an item that keeps them from ending the message for free.
+    const zeros = [...Array<number>(11).fill(0), 2];
     expect(encode(tables, zeros).length).toBeGreaterThan(encode(flat, zeros).length);
   });
 
@@ -345,8 +346,9 @@ describe('Sequence', () => {
     });
 
     it('flags no repeat where more units are left than a repeat is coded under', () => {
-      // A corrupt prefix of 2^33 units: every item reads as a literal until
-      // the input runs out.
+      // A corrupt prefix of 2^33 units: every item reads as a literal, past
+      // the input too without a decode limit, so the read is cut off after
+      // the written ones.
       const enc = new Encoder();
       lengths()(enc, 2 ** 33);
       new Repeats('toy').writeUsed(enc, true);
@@ -361,9 +363,26 @@ describe('Sequence', () => {
         model.write(enc, sym, 0, history);
         history = [sym, history[0], history[1]];
       }
-      expect(() => new Sequence(toy(), { adaptive: {} }).read(new Decoder(enc.output()))).toThrow(
-        CorruptInputError
-      );
+      const read = ContextModel.prototype.read;
+      let literals = 0;
+      const literal = jest.spyOn(ContextModel.prototype, 'read').mockImplementation(function (
+        this: ContextModel,
+        ...args
+      ) {
+        if (++literals > 3) {
+          throw new Error('cut off');
+        }
+        return read.apply(this, args);
+      });
+      const flag = jest.spyOn(Repeats.prototype, 'readFlag');
+      try {
+        const dec = new Decoder(enc.output(), { limit: Infinity });
+        expect(() => new Sequence(toy(), { adaptive: {} }).read(dec)).toThrow('cut off');
+        expect(flag).not.toHaveBeenCalled();
+      } finally {
+        literal.mockRestore();
+        flag.mockRestore();
+      }
     });
 
     it('refuses a repeat that grows the items past the largest array', () => {
@@ -841,13 +860,6 @@ describe('Sequence methods', () => {
         expect(roundTrip(sequence, values)).toEqual(values);
       }
     });
-
-    it('refuses truncated input', () => {
-      const bytes = message(new Sequence(toy(), { max: 100, adaptive: {} }), [a, b]);
-      const sequence = new Sequence(toy(), { max: 100, adaptive: {} });
-      const dec = new Decoder(bytes.subarray(0, bytes.length - 2));
-      expect(() => [sequence.read(dec), sequence.read(dec)]).toThrow(CorruptInputError);
-    });
   });
 
   describe('adaptive lengths without a max', () => {
@@ -946,9 +958,9 @@ describe('Sequence methods', () => {
           [6, 13],
           [1, 2],
         ]);
-        enc.composeWeighted(0, 1, 4, { index: 0, count: 4 });
+        enc.composeWeighted(0, 1, 4);
         digits(enc, [[0, 2]]);
-        enc.composeWeighted(2, 1, 4, { index: 2, count: 4 });
+        enc.composeWeighted(2, 1, 4);
         // A match at distance 2 of at most 2, of 4 items of at most 4.
         digits(enc, [
           [1, 2],
@@ -1000,7 +1012,7 @@ describe('Sequence methods', () => {
           [5, 13],
           [1, 2],
         ]);
-        enc.composeWeighted(1, 1, 4, { index: 1, count: 4 });
+        enc.composeWeighted(1, 1, 4);
         // Three copies of item 1, two units each.
         digits(enc, [
           [1, 2],
@@ -1033,8 +1045,8 @@ describe('StaticLiterals', () => {
     literals.write(enc, 2, 0, history, 1);
     literals.write(enc, 2, 1, history);
     const expected = hand((h) => {
-      h.composeWeighted(1, 1, 3, { index: 2, count: 4 });
-      h.composeWeighted(9, 4, 15, { index: 2, count: 4 });
+      h.composeWeighted(1, 1, 3);
+      h.composeWeighted(9, 4, 15);
     });
     expect(enc.output()).toEqual(expected);
     const dec = new Decoder(enc.output());
@@ -1052,7 +1064,7 @@ describe('StaticLiterals', () => {
     literals.learn();
     expect(literals.hitTop()).toBe(false);
     literals.write(enc, 0, 0, history);
-    expect(enc.output()).toEqual(hand((h) => h.composeWeighted(0, 1, 4, { index: 0, count: 4 })));
+    expect(enc.output()).toEqual(hand((h) => h.composeWeighted(0, 1, 4)));
   });
 
   it('refuses a row outside its rows', () => {

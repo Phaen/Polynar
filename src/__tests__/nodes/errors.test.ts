@@ -96,7 +96,6 @@ describe('CorruptInputError', () => {
     const padded = Uint8Array.of(...bytes, 0);
     expect(() => node.decode(corrupted)).toThrow(CorruptInputError);
     expect(() => node.decode(padded)).toThrow(CorruptInputError);
-    expect(() => node.decode(new Uint8Array(0))).toThrow(CorruptInputError);
     expect(() => node.decode('!', { charset: CharSets.digit })).toThrow(CorruptInputError);
     expect(() => node.decode(padded)).toThrow(
       expect.objectContaining({ name: 'CorruptInputError' })

@@ -5,7 +5,7 @@
  * halving every count rebuilds in O(size).
  */
 
-import type { LivePositions, LiveTable } from './adaptive';
+import type { LiveTable } from './adaptive';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 
@@ -52,7 +52,6 @@ export class Fenwick implements LiveTable {
   private readonly counts: number[] = [];
   private readonly tree: number[] = [0];
   private sum = 0;
-  private readonly members: { count: number; readonly at: LivePositions['at'] };
 
   /** Each count a non-negative safe integer, summing to a safe integer; empty is legal. */
   constructor(counts: readonly number[]) {
@@ -63,7 +62,6 @@ export class Fenwick implements LiveTable {
       this.counts.push(count);
     }
     this.rebuild();
-    this.members = { count: this.counts.length, at: (i) => this.located(i) };
   }
 
   /** `size` counts of 0, `size` a non-negative integer. */
@@ -119,11 +117,6 @@ export class Fenwick implements LiveTable {
     return [pos, this.cum(pos), this.freq(pos)];
   }
 
-  /** The members in bucket order; `push` keeps its count current. */
-  get positions(): LivePositions {
-    return this.members;
-  }
-
   /** Adds `delta` to the count at `i`; the count stays non-negative and the total safe. */
   add(i: number, delta: number): void {
     checkPosition(i, this.size, 'index');
@@ -176,7 +169,6 @@ export class Fenwick implements LiveTable {
     this.counts.push(count);
     this.tree.push(count + partial);
     this.sum += count;
-    this.members.count = this.counts.length;
   }
 
   /** Every count becomes `floor(count / 2)`. */

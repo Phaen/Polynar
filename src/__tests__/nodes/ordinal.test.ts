@@ -186,19 +186,21 @@ describe('writeOrdinal / readOrdinal', () => {
     return bytes;
   };
 
-  it('spend the ceiling of the exact log2 count', () => {
-    // 52! is 225.6 bits; C(2^32, 1000) is 23469 bits, 2934 bytes, plus at
-    // most one unfilled chunk per block.
+  it('spend at most the ceiling of the exact log2 count', () => {
+    // 52! is 225.6 bits; C(2^32, 1000) is 23469 bits, 2934 bytes. A value
+    // low among the count spends fewer.
     const deck = Array.from({ length: 52 }, (_, i) => (i * 7) % 52);
-    expect(trip(deck, 52, { unique: true })).toHaveLength(29);
+    expect(trip(deck, 52, { unique: true }).length).toBeLessThanOrEqual(29);
     expect(trip([1, 3, 4, 6], 8, { sorted: true, unique: true })).toHaveLength(1);
     // C(256, 3) = 2763520 is 21.4 bits; C(258, 3) = 2829056 too.
-    expect(trip([0, 100, 255], 256, { unordered: true, unique: true })).toHaveLength(3);
-    expect(trip([7, 7, 7], 256, { sorted: true })).toHaveLength(3);
+    expect(trip([0, 100, 255], 256, { unordered: true, unique: true }).length).toBeLessThanOrEqual(
+      3
+    );
+    expect(trip([7, 7, 7], 256, { sorted: true }).length).toBeLessThanOrEqual(3);
     const ids = distinct(1000, 2 ** 32);
     const bytes = trip(ids, 2 ** 32, { sorted: true, unique: true }).length;
-    expect(bytes).toBeGreaterThanOrEqual(2934);
-    expect(bytes).toBeLessThan(2934 * 1.01);
+    expect(bytes).toBeLessThanOrEqual(2934);
+    expect(bytes).toBeGreaterThan(2934 * 0.99);
   });
 
   it('meet the performance targets', () => {

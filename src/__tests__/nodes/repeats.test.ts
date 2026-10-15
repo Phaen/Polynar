@@ -217,15 +217,15 @@ describe('writeBucketed and readBucketed', () => {
       const b = 31 - Math.clz32(v);
       const lo = 2 ** b;
       const hand = new Encoder();
-      hand.composeWeighted(2 * b, 2, 2 * (top + 1), { index: b, count: top + 1 });
+      hand.composeWeighted(2 * b, 2, 2 * (top + 1));
       hand.compose(v - lo, Math.min(2 * lo - 1, max) - lo + 1);
       expect(enc.output()).toEqual(hand.output());
     }
   });
 
-  it('reads a bucket written as its index at the end of a message', () => {
-    // Value 1 is bucket 0 with no offset after it, and some message length
-    // ends a block right at it.
+  it('reads a bucket that ends a message', () => {
+    // Value 1 is bucket 0 with no offset after it, folded onto the state 0
+    // the message ends in.
     const random = mulberry32(21);
     for (let n = 1; n < 60; n++) {
       const values = Array.from({ length: n }, () => 1 + Math.floor(random() * 1000));
@@ -244,7 +244,7 @@ describe('writeBucketed and readBucketed', () => {
     const enc = new Encoder();
     writeBucketed(enc, bucketTable(), 9, 9);
     const hand = new Encoder();
-    hand.composeWeighted(6, 2, 8, { index: 3, count: 4 });
+    hand.composeWeighted(6, 2, 8);
     hand.compose(1, 2);
     expect(enc.output()).toEqual(hand.output());
   });
@@ -255,7 +255,7 @@ describe('writeBucketed and readBucketed', () => {
     const fixed = new Encoder();
     for (let i = 0; i < 64; i++) {
       writeBucketed(learning, table, 5, 1000);
-      fixed.composeWeighted(4, 2, 20, { index: 2, count: 10 });
+      fixed.composeWeighted(4, 2, 20);
       fixed.compose(1, 4);
     }
     expect(learning.output().length).toBeLessThan(fixed.output().length);
@@ -399,18 +399,18 @@ describe('Repeats', () => {
     repeats.writeMatch(enc, { distance: 9, length: 3, rep: 1 }, 10, 5);
     repeats.writeMatch(enc, { distance: 9, length: 3 }, 10, 5);
     const hand = new Encoder();
-    hand.composeWeighted(2, 2, 4, { index: 1, count: 2 });
-    hand.composeWeighted(0, 2, 4, { index: 0, count: 2 });
-    hand.composeWeighted(4, 2, 6, { index: 1, count: 2 });
-    hand.composeWeighted(2, 2, 4, { index: 1, count: 2 });
-    hand.composeWeighted(0, 2, 4, { index: 0, count: 2 });
-    hand.composeWeighted(2, 2, 10, { index: 1, count: 5 });
-    hand.composeWeighted(2, 2, 6, { index: 1, count: 3 });
+    hand.composeWeighted(2, 2, 4);
+    hand.composeWeighted(0, 2, 4);
+    hand.composeWeighted(4, 2, 6);
+    hand.composeWeighted(2, 2, 4);
+    hand.composeWeighted(0, 2, 4);
+    hand.composeWeighted(2, 2, 10);
+    hand.composeWeighted(2, 2, 6);
     hand.compose(0, 2);
-    hand.composeWeighted(8 + 5, 2, 10 + 5, { index: 4, count: 5 });
-    hand.composeWeighted(6, 2, 8, { index: 3, count: 4 });
+    hand.composeWeighted(8 + 5, 2, 10 + 5);
+    hand.composeWeighted(6, 2, 8);
     hand.compose(1, 3);
-    hand.composeWeighted(0, 2, 4, { index: 0, count: 2 });
+    hand.composeWeighted(0, 2, 4);
     hand.compose(0, 1);
     expect(enc.output()).toEqual(hand.output());
   });

@@ -266,12 +266,10 @@ describe('ContextModel', () => {
       model.price(enc, step.sym, step.row, step.history, priced);
       const coded = new ScaledRatio();
       const compose = enc.composeWeighted.bind(enc);
-      const spy = jest
-        .spyOn(enc, 'composeWeighted')
-        .mockImplementation((cum, freq, total, position) => {
-          coded.multiply(freq, total);
-          compose(cum, freq, total, position);
-        });
+      const spy = jest.spyOn(enc, 'composeWeighted').mockImplementation((cum, freq, total) => {
+        coded.multiply(freq, total);
+        compose(cum, freq, total);
+      });
       const estimated = jest
         .spyOn(prior, 'write')
         .mockImplementation((side, pos, row, excluded) => {
@@ -314,8 +312,8 @@ describe('ContextModel', () => {
     // Only the order-2 escape and the prior, still static on its first
     // written value, write anything: 4 holds 1 of the 9 states 2 and 3 leave.
     expect(spy.mock.calls).toEqual([
-      [4, 2, 6, { index: 1, count: 2 }],
-      [8, 1, 9, { index: 4, count: 5 }],
+      [4, 2, 6],
+      [8, 1, 9],
     ]);
     expect(spy).toHaveBeenCalledTimes(2);
     spy.mockRestore();
@@ -419,18 +417,16 @@ describe('ContextModel', () => {
     model.price(enc, step.sym, step.row, step.history, priced, 3);
     const coded = new ScaledRatio();
     const compose = enc.composeWeighted.bind(enc);
-    const spy = jest
-      .spyOn(enc, 'composeWeighted')
-      .mockImplementation((cum, freq, total, position) => {
-        coded.multiply(freq, total);
-        compose(cum, freq, total, position);
-      });
+    const spy = jest.spyOn(enc, 'composeWeighted').mockImplementation((cum, freq, total) => {
+      coded.multiply(freq, total);
+      compose(cum, freq, total);
+    });
     model.write(enc, step.sym, step.row, step.history, 3);
     // One symbol of count 1 left at index 1: cell 100, a hit at 4 of 6,
     // then the symbol, which holds every state left.
     expect(spy.mock.calls).toEqual([
-      [0, 4, 6, { index: 0, count: 2 }],
-      [0, 1, 1, { index: 2, count: 5 }],
+      [0, 4, 6],
+      [0, 1, 1],
     ]);
     spy.mockRestore();
     expect(same(priced, coded)).toBe(true);

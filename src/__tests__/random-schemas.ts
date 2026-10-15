@@ -1087,8 +1087,8 @@ const withSteps = (node: Node, steps: Step[]): Node => steps.reduce((n, s) => s.
 
 const arrayCase = (depth: number): Case => {
   const item = randomCase(depth - 1);
-  // Now and then a long run of leaf items, which crosses block boundaries;
-  // a multiple of 256 puts a run of bits exactly on a 256-bit scale step.
+  // Now and then a long run of leaf items, which renormalises the stream
+  // many times over; a multiple of 256 a run of bits a whole number of bytes.
   const long = (): number => (rand() < 0.5 ? randInt(100, 3000) : 256 * randInt(1, 8));
   const length = depth === 1 && rand() < 0.15 ? long() : randInt(0, 4);
   const steps = countSteps(length);
@@ -1325,7 +1325,6 @@ export const randomCase = (depth: number): Case => {
 export interface Opts {
   type: 'binary' | 'text';
   charset?: Charset;
-  blockBits?: number;
 }
 
 // Digit bases from 3 to 1000 symbols, both charset kinds, beside the defaults.
@@ -1348,13 +1347,11 @@ const BYTE_CHARSETS: readonly (Charset | undefined)[] = [
   [32, 126],
   lib.CharSets.asciiSafe,
 ];
-const BLOCK_BITS = [undefined, undefined, 128, 256, 1000, 4096, 65536];
 
-/** A random message layout: `type` when given, else either, at a random charset and block size. */
+/** A random message layout: `type` when given, else either, at a random charset. */
 export const randOpts = (type: Opts['type'] = rand() < 0.5 ? 'binary' : 'text'): Opts => ({
   type,
   charset: pick(type === 'text' ? TEXT_CHARSETS : BYTE_CHARSETS),
-  blockBits: pick(BLOCK_BITS),
 });
 
 // ---------- corruptions ----------

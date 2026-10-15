@@ -139,8 +139,9 @@ describe('Ranges', () => {
     (_who, node, values) => {
       for (const value of values) {
         expect(trip(node, value)).toEqual(value);
-        expect(node.encode(value)).toHaveLength(7);
+        expect(node.encode(value).length).toBeLessThanOrEqual(7);
       }
+      expect(node.encode(values[values.length - 1])).toHaveLength(7);
     }
   );
 });

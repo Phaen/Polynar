@@ -45,8 +45,8 @@ const LEARNING_VALUE = {
   big: -12n,
 };
 const LEARNING_BYTES = [
-  237, 15, 59, 137, 67, 228, 133, 187, 251, 198, 169, 23, 132, 112, 49, 85, 60, 146, 255, 136, 252,
-  225, 211, 242, 21, 36, 69, 181, 109, 85, 176, 28, 145, 125, 10, 118, 7, 20, 242, 250, 84, 87, 21,
+  21, 87, 84, 250, 242, 20, 7, 118, 10, 125, 145, 28, 56, 86, 88, 234, 181, 195, 58, 234, 162, 212,
+  47, 194, 152, 120, 185, 68, 158, 251, 129, 29, 15, 184, 62, 50, 30, 101, 238, 118, 142, 192, 245,
 ];
 
 /** The tags of the kinds the hand-built messages use. */
@@ -407,17 +407,13 @@ describe('Schema any', () => {
     [0n, 2],
     [-1n, 2],
     [100n, 3],
-    [2n ** 64n, 11],
-    [2n ** 200n, 28],
+    // A bit count and a top bit: the zero bits below it end the message.
+    [2n ** 64n, 3],
+    [2n ** 64n - 1n, 11],
+    [2n ** 200n, 3],
+    [2n ** 200n - 1n, 28],
   ])('packs the bigint %p into %p bytes', (value, bytes) => {
     expect(p.any().encode(value)).toHaveLength(bytes);
-  });
-
-  it('rejects a bigint bit count that outruns the input', () => {
-    const enc = new Encoder();
-    tags().write(enc, TAG.BIGINT);
-    enc.composeTerm(1000);
-    expect(() => p.any().decode(enc.output())).toThrow(CorruptInputError);
   });
 
   it.each([
@@ -510,7 +506,7 @@ describe('Schema any', () => {
   });
 
   it.each([
-    [0, 2],
+    [0, 1],
     [-(2 ** 53 - 1), 9],
     [2 ** 53 - 1, 9],
     [-0, 2],

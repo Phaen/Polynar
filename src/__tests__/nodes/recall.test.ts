@@ -3,7 +3,7 @@
  * has already coded, or in full the first time.
  */
 
-import { p, Encoder, Decoder, CorruptInputError, type PNode } from '../../index';
+import { p, Encoder, Decoder, type PNode } from '../../index';
 import { PRecall, Recall, copy, identity } from '../../nodes/recall';
 import { mulberry32 } from '../support';
 
@@ -33,7 +33,7 @@ const model = (values: readonly string[]): Uint8Array => {
     const total = counts.reduce((a, b) => a + b, 0);
     if (counts.length > 1) {
       const cum = counts.slice(0, member).reduce((a, b) => a + b, 0);
-      enc.composeWeighted(cum, counts[member], total, { index: member, count: counts.length });
+      enc.composeWeighted(cum, counts[member], total);
     }
     counts[member]++;
   };
@@ -121,10 +121,10 @@ describe('PRecall', () => {
     // Member 0 with the table at one member writes nothing.
     p.string()._write(enc, 'a');
     // Member 0 again, now out of [1, 1], then the same text.
-    enc.composeWeighted(0, 2, 3, { index: 0, count: 2 });
+    enc.composeWeighted(0, 2, 3);
     p.string()._write(enc, 'a');
     // Member 2, the second copy, out of [new 3, a 1, a 1].
-    enc.composeWeighted(4, 1, 5, { index: 2, count: 3 });
+    enc.composeWeighted(4, 1, 5);
     const node = strings();
     const dec = new Decoder(enc.output());
     expect(node._read(dec)).toBe('a');
@@ -446,12 +446,5 @@ describe('.recall()', () => {
   it('names the path of a value that fails, as without recall', () => {
     const node = p.array(p.object({ a: item }).recall()).recall();
     expect(() => node.encode([{ a: 1 }, { a: 300 }])).toThrow(/\[1\]\.a/);
-  });
-
-  it('refuses corrupt input as corrupt', () => {
-    const node = p.array(p.object({ a: item }).recall()).recall();
-    for (const bytes of [new Uint8Array([5]), new Uint8Array([0x40, 1, 1, 1, 1, 1, 1, 1, 1, 1])]) {
-      expect(() => node.decode(bytes)).toThrow(CorruptInputError);
-    }
   });
 });

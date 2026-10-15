@@ -1,19 +1,18 @@
 /**
  * Property fuzz over randomly generated schemas and values: round-trip
- * identity (decode(encode(v)) equals v), canonical closure (bytes that decode
- * at all re-encode to exactly themselves, but for a migration or an adaptive
- * prior's selector, which re-encode to bytes of the same value), and agreement of the block bound's fast regimes with its exact
- * one (the same bytes when every block is bounded with exact arithmetic from
- * its first symbol). Checked over bytes and text in charsets of unusual
- * sizes and at several block sizes, and against corrupted inputs (truncation,
- * padding, a replaced code, a code outside the charset). The cases come from
+ * identity (decode(encode(v)) equals v) and canonical closure (bytes that
+ * decode at all re-encode to exactly themselves, but for a migration or an
+ * adaptive prior's selector, which re-encode to bytes of the same value).
+ * Checked over bytes and text in charsets of unusual sizes. The decoder
+ * does not verify its input, so corrupted inputs (truncation, padding, a
+ * replaced code, a code outside the charset) are checked under a checksum,
+ * which rejects them. The cases come from
  * ./random-schemas under a fixed seed, so every run exercises the same cases
  * and a failure is reproducible. FUZZ scales the iteration counts.
  */
 
 import * as lib from '../index';
 import type { CodecOptions, PNode } from '../index';
-import { setExactOnly } from '../packer/bound';
 import { mulberry32 } from './support';
 import { corruptions, rand, randOpts, randomCase, useRng } from './random-schemas';
 import type { Opts } from './random-schemas';
@@ -44,31 +43,10 @@ const decodeWith = (node: PNode<unknown>, input: Uint8Array | string, o: Opts): 
     ? node.decode(input, o as CodecOptions<'text'>)
     : node.decode(input, o as CodecOptions<'binary'>);
 
-/** Runs `fn` with every block bounded by exact arithmetic from its first symbol. */
-const exactly = <T>(fn: () => T): T => {
-  setExactOnly(true);
-  try {
-    return fn();
-  } finally {
-    setExactOnly(false);
-  }
-};
-
-/**
- * Corrupted input either throws or decodes to a value the schema can
- * encode: the value's own bytes decode to it unchanged. A second spelling
- * of a value is read as that value, so the bytes themselves need not match.
- */
-const expectRejectedOrOwned = ({ node }: Fuzzed, encoded: Uint8Array | string, o: Opts) => {
+/** Every corruption of `encoded` throws a CorruptInputError. */
+const expectRejected = ({ node }: Fuzzed, encoded: Uint8Array | string, o: Opts) => {
   for (const { input } of corruptions(encoded, o)) {
-    let decoded: unknown;
-    try {
-      decoded = decodeWith(node, input, o);
-    } catch (e) {
-      expect(e).toBeInstanceOf(Error);
-      continue;
-    }
-    expect(decodeWith(node, encodeWith(node, decoded, o), o)).toEqual(decoded);
+    expect(() => decodeWith(node, input, o)).toThrow(lib.CorruptInputError);
   }
 };
 
@@ -112,27 +90,18 @@ describe('Property fuzz', () => {
     }
   });
 
-  it('writes the bytes of the exact block bound, over every transport and block size', () => {
+  it('round-trips over every transport', () => {
     for (let i = 0; i < runs(600); i++) {
       const { node, gen } = randomNode();
       const value = gen();
       const o = randOpts();
       const output = encodeWith(node, value, o);
-      expect(exactly(() => encodeWith(node, value, o))).toEqual(output);
       expect(decodeWith(node, output, o)).toEqual(value);
-      expect(exactly(() => decodeWith(node, output, o))).toEqual(value);
+      expect(encodeWith(node, value, o)).toEqual(output);
     }
   });
 
-  it('corrupted bytes either throw or decode to something that owns those bytes', () => {
-    for (let i = 0; i < runs(1000); i++) {
-      const c = randomNode();
-      const o: Opts = { type: 'binary' };
-      expectRejectedOrOwned(c, encodeWith(c.node, c.gen(), o), o);
-    }
-  });
-
-  it('round-trips through the text transport and rejects corrupted text', () => {
+  it('round-trips through the text transport and re-encodes canonically', () => {
     for (let i = 0; i < runs(500); i++) {
       const c = randomNode();
       const { node } = c;
@@ -142,11 +111,10 @@ describe('Property fuzz', () => {
       const decoded = decodeWith(node, str, o);
       expect(decoded).toEqual(value);
       expect(encodeWith(node, decoded, o)).toBe(str);
-      expectRejectedOrOwned(c, str, o);
     }
   });
 
-  it('checksummed messages round-trip, re-encode canonically and reject or own corrupted input', () => {
+  it('checksummed messages round-trip and re-encode canonically', () => {
     for (let i = 0; i < runs(400); i++) {
       const c = randomNode();
       const o = { ...randOpts(), checksum: 1 + Math.floor(rand() * 32) };
@@ -155,7 +123,14 @@ describe('Property fuzz', () => {
       const decoded = decodeWith(c.node, output, o);
       expect(decoded).toEqual(value);
       expect(encodeWith(c.node, decoded, o)).toEqual(output);
-      expectRejectedOrOwned(c, output, o);
+    }
+  });
+
+  it('rejects corrupted bytes and text under a 32-bit checksum', () => {
+    for (let i = 0; i < runs(1000); i++) {
+      const c = randomNode();
+      const o = { ...randOpts(), checksum: 32 };
+      expectRejected(c, encodeWith(c.node, c.gen(), o), o);
     }
   });
 

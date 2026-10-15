@@ -3,10 +3,10 @@
  * Protobuf, Avro and Polynar (text and raw bytes), averaged over 250
  * seeded random payloads per row so no single lucky value flatters anyone.
  * Other formats' cells read "plain (brotli)"; Polynar's output is already
- * entropy coded, so its cells read "regular (adaptive)" instead: `p.any()`
- * and `p.any().adaptive()` in the self-describing table, and the precise
- * node without and with `.adaptive()` on every node that takes it in the
- * schema table. Prints the two tables from the README: self-describing
+ * entropy coded, so its cells read "regular (tuned)" instead: `p.any()`
+ * and `p.any().adaptive()` in the self-describing table, and in the schema
+ * table the precise node without and with the priors and methods its
+ * generator calls for. Prints the two tables from the README: self-describing
  * formats against `p.any()`, which also writes keys and type tags and also
  * gets ascii-safe text to match JSON, and schema formats against the
  * precise Polynar node.
@@ -16,7 +16,7 @@ import { brotliCompressSync } from 'node:zlib';
 import { encode as msgpackEncode } from '@msgpack/msgpack';
 import avro from 'avsc';
 import protobuf from 'protobufjs';
-import { p, CharSets, type AnyValue, type CodecOptions, type PNode } from 'polynar';
+import { p, CharSets, type AnyValue, type PNode } from 'polynar';
 
 const SAMPLES = 250;
 
@@ -99,9 +99,9 @@ interface Row {
   /** Rows hold nodes of unrelated value types. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   node: PNode<any>;
-  /** The same schema with `.adaptive()` on the nodes that can learn. */
+  /** The same schema with the priors and methods the generator calls for. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  adaptive?: PNode<any>;
+  tuned?: PNode<any>;
   proto: string;
   avro: avro.Schema;
   /**
@@ -110,8 +110,6 @@ interface Row {
    */
   gen: () => { value: AnyValue; protoValue?: unknown; avroValue?: unknown };
   samples?: number;
-  /** Codec options on every Polynar encode of the row; the charset is set per column. */
-  options?: CodecOptions;
 }
 
 const ROWS: Row[] = [
@@ -123,11 +121,16 @@ const ROWS: Row[] = [
       role: p.enum(['admin', 'member', 'guest']),
       active: p.bool(),
     }),
-    adaptive: p.object({
-      name: p.string().max(40).adaptive(),
-      age: p.int().min(0).max(120).adaptive(),
-      role: p.enum(['admin', 'member', 'guest']).adaptive(),
-      active: p.bool().adaptive(),
+    tuned: p.object({
+      name: p.string().max(40).prose(),
+      // Even odds from 16 to 95.
+      age: p
+        .int()
+        .min(0)
+        .max(120)
+        .cdf((v) => Math.min(Math.max(v - 16, 0), 80)),
+      role: p.enum(['admin', 'member', 'guest']).weights([500, 8075, 1425]),
+      active: p.bool().weights([4, 1]),
     }),
     proto: `syntax = "proto3";
       message UserProfile {
@@ -169,8 +172,7 @@ const ROWS: Row[] = [
 
   {
     label: 'GPS position',
-    // Each coordinate spans millions of grid points, above the adaptive
-    // limit of 65536 values, so nothing here can learn.
+    // Uniform over the bounds, so nothing beyond them applies.
     node: p.object({
       lat: p.decimal(0.00001).min(-90).max(90),
       lng: p.decimal(0.00001).min(-180).max(180),
@@ -205,13 +207,8 @@ const ROWS: Row[] = [
       sentAt: p.date(),
       text: p.string().max(500).prose(),
     }),
-    // `from` and `sentAt` are unbounded, so only the text learns: its length
-    // and its characters.
-    adaptive: p.object({
-      from: p.int().min(0),
-      sentAt: p.date(),
-      text: p.string().max(500).prose().adaptive(),
-    }),
+    // Even ids and timestamps, one sentence per message: nothing beyond
+    // `.prose()` applies.
     proto: `syntax = "proto3";
       message ChatMessage {
         uint32 from = 1;
@@ -242,11 +239,12 @@ const ROWS: Row[] = [
       battery: p.int().min(0).max(100),
       ok: p.bool(),
     }),
-    adaptive: p.object({
-      id: p.int().min(0).max(65535).adaptive(),
-      temperature: p.decimal(0.1).min(-40).max(125).adaptive(),
-      battery: p.int().min(0).max(100).adaptive(),
-      ok: p.bool().adaptive(),
+    // Only `ok` is skewed; the rest is uniform over its bounds.
+    tuned: p.object({
+      id: p.int().min(0).max(65535),
+      temperature: p.decimal(0.1).min(-40).max(125),
+      battery: p.int().min(0).max(100),
+      ok: p.bool().weights([19, 1]),
     }),
     proto: `syntax = "proto3";
       message SensorReading {
@@ -287,16 +285,21 @@ const ROWS: Row[] = [
         })
       )
       .max(20),
-    adaptive: p
+    tuned: p
       .array(
         p.object({
-          // 100000 products is above the adaptive limit of 65536 values.
           product: p.int().min(0).max(99999),
-          qty: p.int().min(1).max(99).adaptive(),
+          // 1: 45%, 2: 33%, 3: 11%, the other 11% spread evenly.
+          qty: p
+            .int()
+            .min(1)
+            .max(99)
+            .weights([4320, 3168, 1056, ...Array<number>(96).fill(11)]),
         })
       )
       .max(20)
-      .adaptive(),
+      // Even odds from 1 to 8 items.
+      .cdf((n) => Math.min(Math.max(n - 1, 0), 8)),
     proto: `syntax = "proto3";
       message ShoppingCart {
         message Item { uint32 product = 1; uint32 qty = 2; }
@@ -327,7 +330,7 @@ const ROWS: Row[] = [
   {
     label: 'Status feed',
     node: p.array(p.enum(['ok', 'warn', 'error'])).length(100),
-    adaptive: p.array(p.enum(['ok', 'warn', 'error']).adaptive()).length(100),
+    tuned: p.array(p.enum(['ok', 'warn', 'error']).weights([90, 9, 1])).length(100),
     proto: `syntax = "proto3";
       message StatusFeed {
         enum Status { OK = 0; WARN = 1; ERROR = 2; }
@@ -353,7 +356,8 @@ const ROWS: Row[] = [
   {
     label: 'Lorem ipsum',
     node: p.string().prose(),
-    adaptive: p.string().prose().adaptive(),
+    // Free text has no distribution to declare, so it learns.
+    tuned: p.string().prose().adaptive(),
     proto: `syntax = "proto3";
       message LoremIpsum {
         string text = 1;
@@ -361,8 +365,6 @@ const ROWS: Row[] = [
     avro: 'string',
     gen: () => ({ value: LOREM_IPSUM, protoValue: { text: LOREM_IPSUM }, avroValue: LOREM_IPSUM }),
     samples: 1,
-    // One block avoids the per-block slack on a message this long.
-    options: { blockBits: 65536 },
   },
 ];
 
@@ -386,19 +388,18 @@ const asciiSafe = { type: 'text', charset: CharSets.asciiSafe } as const;
 
 function measure({
   node,
-  adaptive,
+  tuned,
   proto,
   avro: avroSchema,
   gen,
   samples = SAMPLES,
-  options = {},
 }: Row): Cells {
   const Message = protobuf.parse(proto).root.lookupType(/message (\w+)/.exec(proto)![1]);
   const AvroType = avro.Type.forSchema(avroSchema);
   const any = p.any();
   const anyAdaptive = p.any().adaptive();
   const sums = Object.fromEntries(KEYS.map((k) => [k, 0])) as Record<Key, number>;
-  const learned = Object.fromEntries(KEYS.map((k) => [k, 0])) as Record<Key, number>;
+  const second = Object.fromEntries(KEYS.map((k) => [k, 0])) as Record<Key, number>;
   const brotli = Object.fromEntries(KEYS.map((k) => [k, 0])) as Record<Key, number>;
 
   for (let i = 0; i < samples; i++) {
@@ -406,16 +407,16 @@ function measure({
     const cells: Record<Key, Uint8Array> = {
       json: Buffer.from(JSON.stringify(value)),
       msgpack: msgpackEncode(value),
-      anyUrlSafe: Buffer.from(any.encode(value, { ...urlSafe, ...options })),
-      anyAsciiSafe: Buffer.from(any.encode(value, { ...asciiSafe, ...options })),
-      anyBinary: any.encode(value, options),
+      anyUrlSafe: Buffer.from(any.encode(value, urlSafe)),
+      anyAsciiSafe: Buffer.from(any.encode(value, asciiSafe)),
+      anyBinary: any.encode(value),
       proto: Message.encode(
         Message.fromObject((protoValue ?? value) as Record<string, unknown>)
       ).finish(),
       avro: AvroType.toBuffer(avroValue ?? protoValue ?? value),
-      urlSafe: Buffer.from(node.encode(value, { ...urlSafe, ...options })),
-      asciiSafe: Buffer.from(node.encode(value, { ...asciiSafe, ...options })),
-      binary: node.encode(value, options),
+      urlSafe: Buffer.from(node.encode(value, urlSafe)),
+      asciiSafe: Buffer.from(node.encode(value, asciiSafe)),
+      binary: node.encode(value),
     };
     for (const key of KEYS) {
       sums[key] += cells[key].length;
@@ -423,13 +424,13 @@ function measure({
         brotli[key] += brotliCompressSync(cells[key]).length;
       }
     }
-    learned.anyUrlSafe += anyAdaptive.encode(value, { ...urlSafe, ...options }).length;
-    learned.anyAsciiSafe += anyAdaptive.encode(value, { ...asciiSafe, ...options }).length;
-    learned.anyBinary += anyAdaptive.encode(value, options).length;
-    const learner = adaptive ?? node;
-    learned.urlSafe += learner.encode(value, { ...urlSafe, ...options }).length;
-    learned.asciiSafe += learner.encode(value, { ...asciiSafe, ...options }).length;
-    learned.binary += learner.encode(value, options).length;
+    second.anyUrlSafe += anyAdaptive.encode(value, urlSafe).length;
+    second.anyAsciiSafe += anyAdaptive.encode(value, asciiSafe).length;
+    second.anyBinary += anyAdaptive.encode(value).length;
+    const precise = tuned ?? node;
+    second.urlSafe += precise.encode(value, urlSafe).length;
+    second.asciiSafe += precise.encode(value, asciiSafe).length;
+    second.binary += precise.encode(value).length;
   }
 
   // A single sample is an exact size, not a mean.
@@ -438,7 +439,7 @@ function measure({
   const cell = (key: Key): string =>
     OTHER.has(key)
       ? `${size(sums[key])} (${size(brotli[key])})`
-      : `${size(sums[key])} (${size(learned[key])})`;
+      : `${size(sums[key])} (${size(second[key])})`;
   return Object.fromEntries(KEYS.map((k) => [k, cell(k)])) as Cells;
 }
 

@@ -3,7 +3,7 @@
  */
 
 import type { Base, Charset, OutputType, Radix } from './types';
-import { DEFAULT_BLOCK_BITS, DEFAULT_CHARSET } from './constants';
+import { DEFAULT_CHARSET } from './constants';
 
 const MAX_SAFE_BIG = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -19,51 +19,6 @@ export function radixOf(value: number, name: 'Radix' | 'Total'): Radix {
     throw new RangeError(`${name} ${value} is not a positive safe integer`);
   }
   return value as Radix;
-}
-
-/**
- * The longest run of base-`size` digits whose values stay below 2^53:
- * `digits` of them span `num` = size^digits ≤ 2^53 states, so a run folds in
- * Number arithmetic and crosses into BigInt once per chunk, not per digit.
- * A digit splits off by a float division: for a < 2^53 the float quotient
- * fl(a/b) lies in [q, q+1) around the integer quotient q, so its floor is q.
- */
-export interface DigitChunk {
-  readonly size: Radix;
-  readonly digits: number;
-  readonly num: number;
-  readonly big: bigint;
-  /** log2 of `num` when the size is a power of two, so a chunk is a shift; else 0. */
-  readonly bits: number;
-}
-
-/** The chunk of base-`size` digits. A base-1 digit holds nothing, so size 1 is a RangeError. */
-export function digitChunk(size: Radix): DigitChunk {
-  if (size < 2) {
-    throw new RangeError(`Digit base ${size} is below 2`);
-  }
-  let digits = 1;
-  let num: number = size;
-  while (num * size <= 2 ** 53) {
-    num *= size;
-    digits++;
-  }
-  const exponent = log2Exact(size);
-  return { size, digits, num, big: BigInt(num), bits: exponent < 0 ? 0 : exponent * digits };
-}
-
-/**
- * The exponent of a radix that is a power of two, else -1. Below 2^31 a bit
- * test answers, several times faster than a logarithm on the decoder's
- * per-symbol path; above, the rounded logarithm is checked against the power
- * it names, and the logarithm of a power of two below 2^53 is exact.
- */
-export function log2Exact(n: Radix): number {
-  if (n < 2 ** 31) {
-    return (n & (n - 1)) === 0 ? 31 - Math.clz32(n) : -1;
-  }
-  const exponent = Math.round(Math.log2(n));
-  return 2 ** exponent === n ? exponent : -1;
 }
 
 /** Bit length of the magnitude of a BigInt: 0 for 0n, the same for x and -x. */
@@ -100,32 +55,6 @@ export function bigRadix(radix: bigint): { chunks: number; top: number } {
   }
 }
 
-/** Shift amounts as BigInts, so a power-of-two digit is a mask and a shift. */
-export const SHIFTS = Array.from({ length: 54 }, (_, i) => BigInt(i));
-
-/**
- * The block sizes a message may choose. A block's cap exceeds
- * 2^blockBits / base, so with bases up to 2^16 the floor keeps it above
- * 2^112, and any first symbol, with fewer than 2^53 states, fits a fresh
- * block even after a checksum of up to 2^32 states. The ceiling keeps one
- * block's BigInt arithmetic cheap.
- */
-const MIN_BLOCK_BITS = 128;
-const MAX_BLOCK_BITS = 65536;
-
-/** A message's block size in bits: an integer within the allowed span. */
-export function validateBlockBits(bits: number = DEFAULT_BLOCK_BITS): number {
-  if (!Number.isInteger(bits)) {
-    throw new TypeError(`Block size must be an integer number of bits, got ${bits}`);
-  }
-  if (bits < MIN_BLOCK_BITS || bits > MAX_BLOCK_BITS) {
-    throw new RangeError(
-      `Block size ${bits} bits is outside [${MIN_BLOCK_BITS}, ${MAX_BLOCK_BITS}]`
-    );
-  }
-  return bits;
-}
-
 /** The widest checksum: the hash behind it is 32 bits. */
 const MAX_CHECKSUM_BITS = 32;
 
@@ -143,28 +72,44 @@ export function validateChecksum(bits?: number): number {
   return bits;
 }
 
+/** The values a decode reads past its input when it sets no limit of its own. */
+const DEFAULT_LIMIT = 2 ** 20;
+
+/** A decode's limit on values read past its input: a non-negative integer, or `Infinity`. */
+export function validateLimit(limit: number = DEFAULT_LIMIT): number {
+  if (limit === Infinity) {
+    return limit;
+  }
+  if (!Number.isInteger(limit)) {
+    throw new TypeError(`Decode limit must be an integer or Infinity, got ${limit}`);
+  }
+  if (limit < 0) {
+    throw new RangeError(`Decode limit ${limit} is negative`);
+  }
+  return limit;
+}
+
 /** One FNV-1a step over a 32-bit word. */
 function mix(h: number, x: number): number {
   return Math.imul(h ^ x, 0x01000193);
 }
 
 /**
- * The `bits`-bit checksum of a message: the value of its first block before
- * the checksum is folded in, its digit count, and the `rest` digits after
- * the first block, read through `digitAt`. FNV-1a over 32-bit limbs ends in
- * murmur3's finaliser, so every input bit reaches every output bit, and the
- * top `bits` bits are the checksum. Everything is 32-bit integer arithmetic,
- * which every engine computes exactly.
+ * The `bits`-bit checksum of a message: the state its checksum folds onto
+ * and the `rest` digits read after the checksum, through `digitAt`, with
+ * their count. FNV-1a over 32-bit limbs ends in murmur3's finaliser, so
+ * every input bit reaches every output bit, and the top `bits` bits are the
+ * checksum. Everything is 32-bit integer arithmetic, which every engine
+ * computes exactly.
  */
 export function checksumOf(
   bits: number,
-  value: bigint | number,
-  length: number,
+  value: bigint,
   rest: number,
   digitAt: (i: number) => number
 ): number {
-  let h = mix(0x811c9dc5, length);
-  let v = BigInt(value);
+  let h = mix(0x811c9dc5, rest);
+  let v = value;
   let limbs = 0;
   while (v > 0n) {
     h = mix(h, Number(BigInt.asUintN(32, v)));

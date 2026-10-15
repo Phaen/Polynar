@@ -56,11 +56,12 @@ export const TERM_PAYLOAD_MIN_DIGITS = (() => {
 export const TERM_COUNT_RUN_DIGITS = 6;
 
 /**
- * State-space cap per packed block, in bits, unless a message sets its own.
- * Values fold into one arbitrary-precision integer only until the block's
- * radix product would exceed this, then the block flushes and a fresh one
- * starts. The cap bounds every BigInt operation, keeping encode/decode
- * linear in message size (one uncapped integer would make them quadratic),
- * at a worst-case cost of one unfilled digit per block boundary.
+ * The window of the streaming coder. Before a symbol of `total` states is
+ * read, the decoder's state is at least ⌊RANS_L/total⌋·total, unless the
+ * input has run out. The renormalisation is exact when, for every symbol and
+ * the one after it in the message, RANS_L ≥ total·next total: the encoder's
+ * state after emitting for a symbol then never falls below the window of the
+ * next, so the decoder stops reading exactly where the encoder started
+ * emitting. Totals stay below 2^53, so 2^106 meets it for every pair.
  */
-export const DEFAULT_BLOCK_BITS = 2048;
+export const RANS_L = 1n << 106n;
