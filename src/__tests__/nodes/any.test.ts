@@ -5,6 +5,7 @@
 import { p, Encoder, CorruptInputError, type AnyValue, type PNode, type PAny } from '../../index';
 import { MAX_DEPTH, MAX_KEYS, TAG_TIERS, sameValue, treeKey } from '../../nodes/any';
 import { members } from '../../nodes/members';
+import { Scope } from '../../nodes/companion';
 import { mulberry32, trip } from '../support';
 
 /** The static tag table inside a plain `p.any`. */
@@ -121,7 +122,7 @@ describe('Schema any', () => {
    */
   const tooDeep = (node: PNode<AnyValue>, value: AnyValue): Uint8Array => {
     const enc = new Encoder();
-    enc.state(node, () => ({ depth: -1, children: new Map() }));
+    enc.state(node, () => ({ depth: -1, children: new Map(), scope: new Scope() }));
     node._write(enc, value);
     return enc.output();
   };
@@ -668,7 +669,7 @@ describe('p.any hints', () => {
       new RangeError(`p.any nests deeper than ${MAX_DEPTH} levels`)
     );
     const enc = new Encoder();
-    enc.state(Any, () => ({ depth: -1, children: new Map() }));
+    enc.state(Any, () => ({ depth: -1, children: new Map(), scope: new Scope() }));
     Any._write(enc, deep);
     expect(() => Any.decode(enc.output())).toThrow(
       new CorruptInputError(`p.any input nests deeper than ${MAX_DEPTH} levels`)
@@ -890,7 +891,11 @@ describe('p.any().adaptive() key cap', () => {
     const mark = tried.mark();
     node._write(tried, many);
     tried.rollback(mark);
-    const state = tried.state(node, () => ({ children: new Map(), overflow: undefined })) as {
+    const state = tried.state(node, () => ({
+      children: new Map(),
+      overflow: undefined,
+      scope: new Scope(),
+    })) as {
       children: Map<string, unknown>;
       overflow?: unknown;
     };

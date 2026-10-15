@@ -166,6 +166,41 @@ describe('PRecall', () => {
     expect(enc.output()).toEqual(model(['a', 'b', 'a', 'b', 'e', 'a']));
   });
 
+  /** `n` values, each new one time in five, else one of the four latest new ones. */
+  const recent = (seed: number, n: number): string[] => {
+    const rand = mulberry32(seed);
+    const made: string[] = [];
+    return Array.from({ length: n }, () => {
+      if (made.length === 0 || rand() < 0.2) {
+        made.push(`v${made.length}`);
+        return made[made.length - 1];
+      }
+      return made[Math.max(0, made.length - 1 - Math.floor(rand() * 4))];
+    });
+  };
+
+  it('spells a seen value by its recency once that costs less than its count', () => {
+    const values = recent(8, 400);
+    const { bytes, back } = tripAll(strings(), values);
+    expect(back).toEqual(values);
+    expect(bytes.length).toBeLessThan(model(values).length - 40);
+  });
+
+  it('takes back what a rolled-back write learned of recency', () => {
+    const node = strings();
+    const before = recent(9, 200);
+    const after = recent(10, 100).map((value) => `${value}x`);
+    const enc = new Encoder();
+    for (const value of before) node._write(enc, value);
+    const mark = enc.mark();
+    for (const value of recent(11, 150)) node._write(enc, value);
+    enc.rollback(mark);
+    for (const value of after) node._write(enc, value);
+    const { bytes, back } = tripAll(strings(), [...before, ...after]);
+    expect(back).toEqual([...before, ...after]);
+    expect(enc.output()).toEqual(bytes);
+  });
+
   it('keeps a separate pool per node in one message', () => {
     const first = strings();
     const second = strings();

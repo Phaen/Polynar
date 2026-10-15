@@ -74,6 +74,10 @@ export class PUnion<T> extends PNode<T> {
     });
   }
 
+  get _exact(): boolean {
+    return this._members.every((member) => member._exact);
+  }
+
   _write(enc: Encoder, value: T): void {
     const kind = kindOf(value);
     const pos = this._byKind.get(kind);

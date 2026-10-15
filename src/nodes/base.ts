@@ -74,6 +74,16 @@ export abstract class PNode<TOut> {
     return this._kinds === undefined ? true : this._kinds.includes('undefined');
   }
 
+  /**
+   * Whether every value the node writes reads back as the same value, -0
+   * as 0 aside, so a field's companions may take a value as the decoder
+   * will get it without reading it back. False unless a node says so, as
+   * one that rounds, floors or otherwise changes values must not.
+   */
+  get _exact(): boolean {
+    return false;
+  }
+
   /** Validate one value and write its digits. The whole codec for this type. */
   abstract _write(enc: Encoder, value: TOut): void;
 
@@ -132,6 +142,10 @@ export class POptional<TOut> extends PNode<TOut | undefined> {
     }
     this._prior = prior;
     this._members = members(2, prior, 'p.optional');
+  }
+
+  get _exact(): boolean {
+    return this.inner._exact;
   }
 
   _takesUndefined(): boolean {

@@ -129,6 +129,10 @@ export class PInt extends PNode<number> {
     return new PInt(lo, hi, declared, adaptive, withMethod(this._spelling, 'recall', 'p.int'));
   }
 
+  get _exact(): boolean {
+    return true;
+  }
+
   _write(enc: Encoder, value: number): void {
     // -0 packs as 0 on the lattice wire.
     this._methods.write(enc, checkInteger(value), () => `Value ${value}`);

@@ -200,6 +200,10 @@ export class PDecimal extends PNode<number> {
     );
   }
 
+  get _exact(): boolean {
+    return true;
+  }
+
   _write(enc: Encoder, value: number): void {
     this._methods.write(enc, this._index(value), () => valueSubject(value));
   }

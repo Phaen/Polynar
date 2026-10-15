@@ -70,6 +70,10 @@ export class PEnum<T> extends PNode<T> {
     });
   }
 
+  get _exact(): boolean {
+    return true;
+  }
+
   _write(enc: Encoder, value: T): void {
     this._members.write(enc, this._toDigit(value));
   }

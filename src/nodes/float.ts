@@ -664,6 +664,10 @@ export class PFloat extends PNode<number> {
     return new PFloat(undefined, this._declared, options ?? {});
   }
 
+  get _exact(): boolean {
+    return true;
+  }
+
   _write(enc: Encoder, value: number): void {
     if (this._learned === undefined) {
       this._double(enc, value);

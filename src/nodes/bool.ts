@@ -43,6 +43,10 @@ export class PBool extends PNode<boolean> {
     return new PBool({ ...this._prior, adaptive: options ?? {} });
   }
 
+  get _exact(): boolean {
+    return true;
+  }
+
   _write(enc: Encoder, value: boolean): void {
     this._members.write(enc, this._toDigit(value));
   }

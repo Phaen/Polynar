@@ -992,6 +992,10 @@ export class PString extends PNode<string> {
     return this._with(this._bounds, undefined, undefined, spelling);
   }
 
+  get _exact(): boolean {
+    return true;
+  }
+
   _write(enc: Encoder, value: string): void {
     this._text.write(enc, value);
   }

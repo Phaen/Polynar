@@ -146,7 +146,7 @@ const SCALE_WINDOW = 1024;
  * learned counts, the classes the interval does not reach owning no
  * states, then the distance within its class, every one alike.
  */
-class FieldScale implements Magnitude {
+export class FieldScale implements Magnitude {
   private table(side: Encoder | Decoder): Fenwick {
     return side.state(this, () => new Fenwick(SCALE_START, side.journal));
   }

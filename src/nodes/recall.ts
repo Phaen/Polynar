@@ -6,11 +6,12 @@
  * record shapes this way.
  */
 
-import { Encoder, Decoder, type Journal } from '../packer';
+import { Encoder, Decoder, COST_UNITS, costUnits, log2Units, type Journal } from '../packer';
 import { PNode } from './base';
 import type { Kind } from './guards';
 import { Fenwick } from './fenwick';
 import { readLive, writeLive } from './adaptive';
+import { MAX_CLASS, classOf } from './magnitude';
 
 /**
  * How many `identity` calls are running. Inside one, every recall writes
@@ -51,6 +52,20 @@ export function identity(write: (enc: Encoder) => void): string {
     key += weighted[i] ? `${cums[i]}+${freqs[i]}/${totals[i]},` : `${cums[i]}/${totals[i]},`;
   }
   return key;
+}
+
+/**
+ * Runs `run` as outside every `identity`, so the recalls it writes through
+ * write values as a message does, for a write that is read back.
+ */
+export function unmeasured<T>(run: () => T): T {
+  const outer = measuring;
+  measuring = 0;
+  try {
+    return run();
+  } finally {
+    measuring = outer;
+  }
 }
 
 /**
@@ -128,13 +143,46 @@ const FLAG_STEP = 32;
 const FLAG_WINDOW = 1024;
 
 /**
+ * What each recency class adds to its count per recall; the share of each
+ * spelling's past costs every later recall keeps, 1 - 2^-`EVIDENCE_DECAY`;
+ * and by how much less, in `COST_UNITS`, recency must have cost to spell
+ * the next recall, 6 bits, so values that recur at random keep their
+ * counts rather than follow the noise.
+ */
+const CLASS_STEP = 2;
+const EVIDENCE_DECAY = 4;
+const MARGIN = 6 * COST_UNITS;
+
+/**
  * The learned odds of one message's recall: whether the value is new or
- * seen, by the counts above; and, for a seen value, which one, each
- * counting 1 when first coded and 1 more each time it is recalled.
+ * seen, by the counts above; and, for a seen value, which one, spelled one
+ * of two ways. By count, each member counting 1 when first coded and 1
+ * more each time it is recalled; or by recency, its rank among the seen
+ * values by when each was last coded, the latest 0, as the bit-length
+ * class of the rank under learned counts and then the rank within the
+ * class, every one alike. Both spellings price every recall, and a recall
+ * goes by recency only while the recent recalls cost less so by `MARGIN`,
+ * so a field whose values come back in runs or rotations codes them by
+ * recency and one whose values recur at steady rates keeps its counts.
+ * An open recall keeps to counts.
  */
 interface Learning {
   readonly fresh: Fenwick;
   readonly counts: Fenwick;
+  readonly recency?: Recency;
+}
+
+/** What spells a seen value by recency, and what picks it. */
+interface Recency {
+  /** A 1 at each member's latest turn, a turn being a value coded. */
+  readonly turns: Fenwick;
+  /** Per turn, its member; per member, its latest turn. */
+  readonly owners: number[];
+  readonly latest: number[];
+  /** The counts of the recency classes, from class 0, rank 0. */
+  readonly classes: Fenwick;
+  /** The decayed past costs, in `COST_UNITS`, by count and by recency. */
+  readonly evidence: Float64Array;
 }
 
 /** What the encoder knows of one message's recall: each value's member by identity, and the live counts when learned. */
@@ -149,9 +197,94 @@ interface Reading<T> {
   readonly learning?: Learning;
 }
 
-/** Fresh learned odds, recording their changes in `journal` when given. */
-function learning(journal?: Journal): Learning {
-  return { fresh: new Fenwick([1, 1], journal), counts: Fenwick.zeros(0, journal) };
+/** Fresh learned odds, with `recency` too when given, recording their changes in `journal` when given. */
+function learning(recency: boolean, journal?: Journal): Learning {
+  return {
+    fresh: new Fenwick([1, 1], journal),
+    counts: Fenwick.zeros(0, journal),
+    recency: recency
+      ? {
+          turns: Fenwick.zeros(0, journal),
+          owners: [],
+          latest: [],
+          classes: new Fenwick(new Array<number>(MAX_CLASS + 1).fill(1), journal),
+          evidence: new Float64Array(2),
+        }
+      : undefined,
+  };
+}
+
+/** Whether `recency` spells the next recall: the recent recalls cost less so, by `MARGIN`. */
+const byRecency = (recency: Recency | undefined): recency is Recency =>
+  recency !== undefined && recency.evidence[1] + MARGIN < recency.evidence[0];
+
+/** The rank of seen value `seen`, from 0, by when each was last coded, the latest first. */
+function rankOf({ turns, latest }: Recency, seen: number): number {
+  return turns.total - turns.prefix(latest[seen] + 1);
+}
+
+/** The first rank of recency class `cls`, past 0, and how many ranks of `n` it holds. */
+function classSpan(cls: number, n: number): [start: number, width: number] {
+  const start = 2 ** (cls - 1);
+  return [start, Math.min(start, n - start)];
+}
+
+/** Lists seen value `seen` as the one coded last, recording the change in `journal`. */
+function touch({ turns, owners, latest }: Recency, seen: number, journal?: Journal): void {
+  const active = journal?.active === true;
+  const turn = turns.size;
+  turns.push(1);
+  if (active) {
+    journal.truncate(owners, turn);
+  }
+  owners.push(seen);
+  if (seen === latest.length) {
+    if (active) {
+      journal.truncate(latest, seen);
+    }
+    latest.push(turn);
+  } else {
+    if (active) {
+      journal.set(latest, seen, latest[seen]);
+    }
+    turns.add(latest[seen], -1);
+    latest[seen] = turn;
+  }
+}
+
+/** Lists a new value in `learning`. */
+function learnNew({ counts, recency }: Learning, journal?: Journal): void {
+  counts.push(1);
+  if (recency !== undefined) {
+    touch(recency, counts.size - 1, journal);
+  }
+}
+
+/**
+ * Learns the recall of seen value `seen`: it counts once more, and by
+ * recency, what each spelling would have cost joins its evidence and the
+ * value becomes the latest.
+ */
+function learnSeen({ counts, recency }: Learning, seen: number, journal?: Journal): void {
+  if (recency !== undefined) {
+    const { classes, evidence } = recency;
+    const n = counts.size;
+    const cls = classOf(rankOf(recency, seen));
+    let units = costUnits(classes.freq(cls), classes.prefix(classOf(n - 1) + 1));
+    if (cls > 0) {
+      units += log2Units(classSpan(cls, n)[1]);
+    }
+    const costs = [costUnits(counts.freq(seen), counts.total), units];
+    for (let k = 0; k < 2; k++) {
+      if (journal?.active === true) {
+        journal.set(evidence, k, evidence[k]);
+      }
+      evidence[k] = evidence[k] - Math.floor(evidence[k] / 2 ** EVIDENCE_DECAY) + costs[k];
+    }
+    classes.add(cls, CLASS_STEP);
+    touch(recency, seen, journal);
+  }
+  counts.add(seen, 1);
 }
 
 /** Counts one more value as new (0) or seen (1). */
@@ -173,9 +306,10 @@ const CHOICES: readonly number[] = [RECALLED, 0];
  * values seen any member costs log2(n + 1) bits, and a new value then its
  * spelling. `learned`, a value first costs whether it is new or seen,
  * learned as the message goes on, and a seen one then its member among
- * the seen values by how often each was coded, so a field whose values
- * never recur soon pays next to nothing for the escape and a value that
- * keeps coming back costs well under a bit. The message's first value
+ * the seen values by how often each was coded, or, once that has cost
+ * more lately, by how recently, so a field whose values never recur soon
+ * pays next to nothing for the escape and a value that keeps coming back
+ * costs well under a bit. The message's first value
  * meets a table of one member, which costs nothing. The encoder matches
  * values by an identity string, `identity` unless the caller has a cheaper
  * one; the decoder needs none.
@@ -184,7 +318,10 @@ const CHOICES: readonly number[] = [RECALLED, 0];
  * it, the recall is learned and is only one of the node's methods: the
  * encoder spells a value it has seen in full instead when that costs less,
  * as a new value the decoder then lists again, so a node whose own
- * spelling already prices its repeats well loses next to nothing.
+ * spelling already prices its repeats well loses next to nothing. It
+ * keeps to counts: a choice made value by value would take recency's
+ * cheap recalls over a spelling, such as a difference, that learns more
+ * from the value.
  */
 export class Recall<T> {
   readonly learned: boolean;
@@ -201,14 +338,14 @@ export class Recall<T> {
   private writing(enc: Encoder): Writing {
     return enc.state(this, () => ({
       index: new Map(),
-      learning: this.learned ? learning(enc.journal) : undefined,
+      learning: this.learned ? learning(!this.open, enc.journal) : undefined,
     }));
   }
 
   private reading(dec: Decoder): Reading<T> {
     return dec.state(this, () => ({
       values: [],
-      learning: this.learned ? learning() : undefined,
+      learning: this.learned ? learning(!this.open) : undefined,
     }));
   }
 
@@ -255,11 +392,24 @@ export class Recall<T> {
       enc.compose(member, index.size + 1);
       return;
     }
-    const { fresh, counts } = learning;
+    const { fresh, counts, recency } = learning;
     writeLive(enc, fresh, 1);
     learn(fresh, 1);
-    writeLive(enc, counts, member - 1);
-    counts.add(member - 1, 1);
+    const seen = member - 1;
+    const n = counts.size;
+    if (!byRecency(recency)) {
+      writeLive(enc, counts, seen);
+    } else if (n > 1) {
+      const { classes } = recency;
+      const rank = rankOf(recency, seen);
+      const cls = classOf(rank);
+      enc.composeWeighted(classes.cum(cls), classes.freq(cls), classes.prefix(classOf(n - 1) + 1));
+      if (cls > 0) {
+        const [start, width] = classSpan(cls, n);
+        enc.compose(rank - start, width);
+      }
+    }
+    learnSeen(learning, seen, enc.journal);
   }
 
   /**
@@ -280,7 +430,9 @@ export class Recall<T> {
       learn(learning.fresh, 0);
     }
     spell();
-    learning?.counts.push(1);
+    if (learning !== undefined) {
+      learnNew(learning, enc.journal);
+    }
     if (!index.has(key)) {
       index.set(key, seen + 1);
       if (enc.journal.active) {
@@ -299,12 +451,26 @@ export class Recall<T> {
     if (learning === undefined) {
       member = dec.parse(values.length + 1);
     } else if (values.length > 0) {
-      const { fresh, counts } = learning;
+      const { fresh, counts, recency } = learning;
       const recalled = readLive(dec, fresh);
       learn(fresh, recalled);
       if (recalled === 1) {
-        member = readLive(dec, counts) + 1;
-        counts.add(member - 1, 1);
+        const n = counts.size;
+        let seen = 0;
+        if (!byRecency(recency)) {
+          seen = readLive(dec, counts);
+        } else if (n > 1) {
+          const { classes, turns, owners } = recency;
+          const cls = dec.parseMember(classes.prefix(classOf(n - 1) + 1), classes);
+          let rank = 0;
+          if (cls > 0) {
+            const [start, width] = classSpan(cls, n);
+            rank = start + dec.parse(width);
+          }
+          seen = owners[turns.locate(turns.total - 1 - rank)];
+        }
+        learnSeen(learning, seen);
+        member = seen + 1;
       }
     }
     if (member > 0) {
@@ -312,7 +478,9 @@ export class Recall<T> {
       return this.copy === undefined ? value : this.copy(value);
     }
     const value = spell();
-    learning?.counts.push(1);
+    if (learning !== undefined) {
+      learnNew(learning);
+    }
     values.push(value);
     return value;
   }

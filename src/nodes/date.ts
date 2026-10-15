@@ -286,6 +286,11 @@ export class PDate extends PNode<Date> {
     return this._with({ spelling: withMethod(this._spelling, 'recall', 'p.date') });
   }
 
+  /** Only to the millisecond: a coarser bucket reads back as its start. */
+  get _exact(): boolean {
+    return this._unit === 'millisecond' && this._step === 1;
+  }
+
   _write(enc: Encoder, value: Date): void {
     this._methods.write(enc, this._bucket(value), () => `Date ${value.toISOString()}`);
   }

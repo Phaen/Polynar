@@ -23,6 +23,7 @@ import {
 import { members, type Members } from './members';
 import { PRecall, Recall, copy } from './recall';
 import { Fenwick } from './fenwick';
+import { Companion, Scope } from './companion';
 
 /**
  * Every value `p.any` encodes: the JSON-like scalars plus `undefined`,
@@ -490,9 +491,12 @@ class Trees {
  * its tag comes up. There, `local` is set too: a whole array or record
  * equal to one coded in full earlier takes the tag past the hints, then
  * its place among those this key recalled, or an escape and its place
- * among all.
+ * among all. A key's own codec there has a companion too, whose flag,
+ * when offered, comes first and on a hit stands for the whole value.
  */
 class AnyCodec extends PNode<AnyValue> {
+  companion?: Companion;
+
   constructor(
     private readonly any: PAny,
     private readonly tags: Members,
@@ -509,6 +513,28 @@ class AnyCodec extends PNode<AnyValue> {
   }
 
   _write(enc: Encoder, value: AnyValue): void {
+    const { companion } = this;
+    if (companion === undefined) {
+      this.writeValue(enc, value);
+      return;
+    }
+    const turn = companion.write(enc, value, () => this.writeValue(enc, value));
+    companion.learn(turn, value, enc.journal);
+  }
+
+  _read(dec: Decoder): AnyValue {
+    const { companion } = this;
+    if (companion === undefined) {
+      return this.readValue(dec);
+    }
+    const turn = companion.read(dec);
+    const value = turn.hit ? (turn.prediction as AnyValue) : this.readValue(dec);
+    companion.learn(turn, value);
+    return value;
+  }
+
+  /** Writes `value` by its tag, or as a recalled container. */
+  private writeValue(enc: Encoder, value: AnyValue): void {
     const { any, local } = this;
     const trees = any._trees;
     if (trees !== undefined && local !== undefined) {
@@ -516,6 +542,7 @@ class AnyCodec extends PNode<AnyValue> {
       if (member !== undefined) {
         this.tags.write(enc, this.nodes.length);
         trees.write(enc, local, member);
+        any._recalled(enc, value);
         return;
       }
     }
@@ -527,12 +554,15 @@ class AnyCodec extends PNode<AnyValue> {
     }
   }
 
-  _read(dec: Decoder): AnyValue {
+  /** Reads a value `writeValue` wrote. */
+  private readValue(dec: Decoder): AnyValue {
     const { any, local } = this;
     const trees = any._trees;
     const tag = this.tags.read(dec);
     if (trees !== undefined && local !== undefined && tag === this.nodes.length) {
-      return trees.read(dec, local) as AnyValue;
+      const value = trees.read(dec, local) as AnyValue;
+      any._recalled(dec, value);
+      return value;
     }
     const value = any._nest(dec, tag, () => this.node(tag)._read(dec) as AnyValue);
     if (trees !== undefined && (tag === TAG_ARRAY || tag === TAG_OBJECT)) {
@@ -556,11 +586,11 @@ class AnyKey extends PNode<AnyValue> {
   }
 
   _write(enc: Encoder, value: AnyValue): void {
-    this.any._child(enc, this.key)._write(enc, value);
+    this.any._scoped(enc, () => this.any._child(enc, this.key)._write(enc, value));
   }
 
   _read(dec: Decoder): AnyValue {
-    return this.any._child(dec, this.key)._read(dec);
+    return this.any._scoped(dec, () => this.any._child(dec, this.key)._read(dec));
   }
 }
 
@@ -629,6 +659,8 @@ interface Message {
   readonly children: Map<string, AnyCodec>;
   /** Under `.adaptive()`, the codec every later key shares, built on first sight. */
   overflow?: AnyCodec;
+  /** Under `.adaptive()`, the values a key's companion may be predicted from. */
+  readonly scope: Scope;
 }
 
 /**
@@ -810,7 +842,10 @@ export class PAny extends PNode<AnyValue> {
    * places; strings, key lists and whole arrays and records equal to an earlier one
    * are recalled, from the key's own first, then from every key's, and the
    * characters of new strings and keys learn across the whole message, as
-   * under `p.string().adaptive()`. Hints are used in their own adaptive
+   * under `p.string().adaptive()`. A value a key had the last time an
+   * earlier key of its record, or of a record around it, had its current
+   * value, or that is that key's value, costs a learned flag once the key's
+   * own values show that earlier key predicting it. Hints are used in their own adaptive
    * form where they have one, and a hint taking only strings recalls them
    * as `p.any` does its own. `window` is how many observations each table
    * holds before its counts halve, so the newest weigh most (1024 when left
@@ -823,7 +858,7 @@ export class PAny extends PNode<AnyValue> {
 
   /** This message's state on `side`. */
   private _message(side: Encoder | Decoder): Message {
-    return side.state(this, () => ({ depth: 0, children: new Map() }));
+    return side.state(this, () => ({ depth: 0, children: new Map(), scope: new Scope() }));
   }
 
   /**
@@ -839,6 +874,7 @@ export class PAny extends PNode<AnyValue> {
       const { journal } = side;
       if (key !== undefined && children.size < MAX_KEYS) {
         child = this._build(key);
+        child.companion = new Companion(message.scope, journal);
         children.set(key, child);
         if (journal?.active === true) {
           journal.drop(children, key);
@@ -943,12 +979,60 @@ export class PAny extends PNode<AnyValue> {
     }
   }
 
+  /**
+   * Runs `code`, the coding under `.adaptive()` of a value standing on its
+   * own: an array item, a map entry's key or value, a set item or a
+   * top-level value, whose values leave the scope when it is done.
+   */
+  _scoped<T>(side: Encoder | Decoder, code: () => T): T {
+    const { scope } = this._message(side);
+    const base = scope.open();
+    const result = code();
+    scope.close(base, side.journal);
+    return result;
+  }
+
+  /**
+   * Puts the strings and numbers of `value`, a recalled container, in the
+   * scope under their keys as if coded one by one: those of a record and
+   * of the records in it.
+   */
+  _recalled(side: Encoder | Decoder, value: unknown): void {
+    if (Array.isArray(value)) {
+      return;
+    }
+    const { scope } = this._message(side);
+    const record = value as { [key: string]: unknown };
+    for (const key of Object.keys(record)) {
+      const item = record[key];
+      if (typeof item === 'string' || typeof item === 'number') {
+        const codec = this._child(side, key);
+        if (codec.companion !== undefined) {
+          scope.push(codec.companion, item, side.journal);
+        }
+      } else if (isPlainObject(item)) {
+        this._recalled(side, item);
+      }
+    }
+  }
+
+  get _exact(): boolean {
+    return true;
+  }
+
   _write(enc: Encoder, value: AnyValue): void {
-    (this._codec ?? this._child(enc, ''))._write(enc, value);
+    if (this._codec !== undefined) {
+      this._codec._write(enc, value);
+    } else {
+      this._scoped(enc, () => this._child(enc, '')._write(enc, value));
+    }
   }
 
   _read(dec: Decoder): AnyValue {
-    return (this._codec ?? this._child(dec, ''))._read(dec);
+    if (this._codec !== undefined) {
+      return this._codec._read(dec);
+    }
+    return this._scoped(dec, () => this._child(dec, '')._read(dec));
   }
 
   /**

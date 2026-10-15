@@ -62,6 +62,10 @@ export class PNullable<T> extends PNode<T | null> {
     });
   }
 
+  get _exact(): boolean {
+    return this.inner._exact;
+  }
+
   _write(enc: Encoder, value: T | null): void {
     this._members.write(enc, value === null ? 1 : 0);
     if (value !== null) {
