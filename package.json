@@ -26,7 +26,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node scripts/esm-wrapper.cjs",
     "clean": "rm -rf dist",
     "lint": "eslint '{src,scripts}/**/*.ts'",
     "lint:fix": "eslint '{src,scripts}/**/*.ts' --fix",
