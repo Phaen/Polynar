@@ -1,23 +1,27 @@
 import { Encoder, Decoder } from '../packer';
-import { PNode } from './base';
 import type { Kind } from './guards';
-import type { AdaptiveOptions, Learning } from './adaptive';
+import type { LearningOptions } from './adaptive';
 import { members, type MemberPrior, type Members } from './members';
+import { MethodNode, PRIOR_METHODS, learningOf, type MethodSet } from './methods';
 
 /** Boolean. `p.bool`. */
-export class PBool extends PNode<boolean> {
+export class PBool extends MethodNode<boolean> {
   readonly _kinds: readonly Kind[] = ['boolean'];
 
   /** The prior as declared, `[true, false]`, for the rebuilds. */
   private readonly _prior?: MemberPrior;
+  readonly _methodNames = PRIOR_METHODS;
   /** Member 0 is true, as the weights list it first. */
   private readonly _members: Members;
   declare readonly _radix?: number;
 
-  constructor(prior?: MemberPrior) {
+  constructor(
+    prior?: MemberPrior,
+    readonly _methods: MethodSet = {}
+  ) {
     super();
     this._prior = prior;
-    this._members = members(2, prior, 'p.bool');
+    this._members = members(2, { ...prior, learn: learningOf(_methods) }, 'p.bool');
     this._radix = this._members.radix;
   }
 
@@ -26,25 +30,39 @@ export class PBool extends PNode<boolean> {
    * constraint, and part of the wire format.
    */
   weights(w: readonly number[]): PBool {
-    return new PBool({ ...this._prior, weights: w });
+    return new PBool({ ...this._prior, weights: w }, this._methods);
   }
 
   /**
    * Let the prior learn from the message: the declared weights, or even ones
-   * when none are, are the starting point, and each value coded counts as one
+   * when none are, are where it starts, and each value coded counts as one
    * observation, so a value that keeps recurring gets cheaper as the message
-   * goes on. `window` is how many observations the counts hold before they
-   * halve, so the newest weigh most (1024 when left out, and raised to the
-   * number of values it counts when smaller). From its second value on, the
-   * node spends one bit to stay static, or a few to name the learning rate that
-   * paid off. Part of the wire format, like the weights.
+   * goes on. From its second value on, the node spends one bit to stay static,
+   * or a few to name the learning rate that paid off. Part of the wire format,
+   * like the weights.
    */
-  adaptive(options?: AdaptiveOptions): PBool {
-    return new PBool({ ...this._prior, adaptive: options ?? {} });
+  learn(): PBool {
+    return this._declare('learn', 'p.bool');
   }
 
-  _open(options: Learning): PBool {
-    return this.adaptive(options);
+  /**
+   * What the node's learning goes by: `window` is how many observations the
+   * counts hold before they halve, so the newest weigh most (1024 when left
+   * out, and raised to the number of values counted when smaller), and
+   * `separate` keeps it from starting where other nodes of its kind and window
+   * got to. Set once; it applies once something learns.
+   */
+  learning(options: LearningOptions): PBool {
+    return this._learning(options, 'p.bool');
+  }
+
+  /** Learn with every method the node has, here `.learn()`, under `options` as `.learning()` takes them. */
+  adaptive(options?: LearningOptions): PBool {
+    return this._adapt(options, 'p.bool');
+  }
+
+  _withMethods(methods: MethodSet): PBool {
+    return new PBool(this._prior, methods);
   }
 
   get _exact(): boolean {

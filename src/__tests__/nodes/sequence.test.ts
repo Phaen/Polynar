@@ -16,11 +16,12 @@ import {
 import { buildWeights, writeTable } from '../../nodes/weights';
 import { costUnits } from '../../packer';
 import type { LengthBounds } from '../../nodes/lattice';
-import { AdaptivePrior, type Learning } from '../../nodes/adaptive';
+import { AdaptivePrior, DEFAULT_ADAPTIVE_WINDOW, type Learning } from '../../nodes/adaptive';
 import { opened, type MethodSet } from '../../nodes/methods';
-import { ContextModel } from '../../nodes/contexts';
+import { ContextModel, WARMUP } from '../../nodes/contexts';
+import { Recall } from '../../nodes/recall';
 import { Repeats, type Match } from '../../nodes/repeats';
-import { LearnedMagnitude } from '../../nodes/magnitude';
+import { GAMMA_MAGNITUDE, LearnedMagnitude } from '../../nodes/magnitude';
 import { mulberry32 } from '../support';
 import { rolledBack } from '../rolled-back';
 
@@ -244,7 +245,7 @@ describe('Sequence', () => {
       encode(new Sequence(toy(), {}), repeated).length / 4
     );
     expect(() => new Sequence(toy(), {}, learns({ window: 0 }))).toThrow(
-      new RangeError('toy adaptive window must be a positive integer, got 0')
+      new RangeError('toy learning window must be a positive integer, got 0')
     );
     expect(() => new Sequence(toy(), { prior: [1, 1] })).toThrow(
       new TypeError('toy weights requires a max length')
@@ -764,6 +765,19 @@ describe('Sequence methods', () => {
     return enc.output();
   };
 
+  /** Writes a shared start of `count` of at most `bound` items, then `rest`, and learns the start. */
+  const share = (
+    enc: Encoder,
+    scale: LearnedMagnitude,
+    count: number,
+    bound: number,
+    rest: () => void
+  ): void => {
+    scale.write(enc, count, 0, 0, bound);
+    rest();
+    scale.learn(enc, count, 0, 0, bound);
+  };
+
   /** Composes each `[digit, radix]`. */
   const digits = (enc: Encoder, list: readonly (readonly [number, number])[]): void => {
     for (const [digit, radix] of list) {
@@ -780,45 +794,49 @@ describe('Sequence methods', () => {
         [1, 0],
       ];
       const sequence = () => new Sequence(toy(), { max: 12 }, { delta: 'declared' });
-      const expected = hand((enc) =>
+      const shared = new LearnedMagnitude(false, {}, 'toy');
+      const expected = hand((enc) => {
+        // [0, 2, 3]: the length, then the items in full.
         digits(enc, [
-          // [0, 2, 3]: the length, then the items in full.
           [3, 13],
           [0, 4],
           [2, 4],
           [3, 4],
           [0, 10],
-          // [0, 2, 5]: two of at most three items shared, then item 5.
-          [3, 13],
-          [2, 4],
-          [3, 4],
-          [2, 10],
-          // [1, 1], four units: all three items of the last value fit, none shared.
-          [4, 13],
-          [0, 4],
-          [1, 4],
-          [1, 4],
-          // [1, 0], three units: only the first item 1, of two units, fits, and is shared.
-          [3, 13],
-          [1, 2],
-          [0, 4],
-        ])
-      );
+        ]);
+        // [0, 2, 5]: two of at most three items shared, then item 5.
+        digits(enc, [[3, 13]]);
+        share(enc, shared, 2, 3, () =>
+          digits(enc, [
+            [3, 4],
+            [2, 10],
+          ])
+        );
+        // [1, 1], four units: all three items of the last value fit, none shared.
+        digits(enc, [[4, 13]]);
+        share(enc, shared, 0, 3, () =>
+          digits(enc, [
+            [1, 4],
+            [1, 4],
+          ])
+        );
+        // [1, 0], three units: only the first item 1, of two units, fits, and is shared.
+        digits(enc, [[3, 13]]);
+        share(enc, shared, 1, 1, () => digits(enc, [[0, 4]]));
+      });
       expect(message(sequence(), values)).toEqual(expected);
       expect(roundTrip(sequence(), values)).toEqual(values);
     });
 
     it('prices the first item after the shared start in the row of the last shared one', () => {
       const tables = rows.map((weights) => buildWeights(weights, 4, 'toy'));
+      const shared = new LearnedMagnitude(false, {}, 'toy');
       const expected = hand((enc) => {
         digits(enc, [[2, 13]]);
         writeTable(enc, tables[1], 0);
         writeTable(enc, tables[0], 0);
-        digits(enc, [
-          [2, 13],
-          [1, 3],
-        ]);
-        writeTable(enc, tables[0], 2);
+        digits(enc, [[2, 13]]);
+        share(enc, shared, 1, 2, () => writeTable(enc, tables[0], 2));
       });
       const values = [
         [0, 0],
@@ -846,16 +864,16 @@ describe('Sequence methods', () => {
     });
 
     it('refuses items after the shared start that overrun the length prefix', () => {
-      const bytes = hand((enc) =>
+      const bytes = hand((enc) => {
         digits(enc, [
           [1, 13],
           [0, 4],
           // One unit, none shared, then item 1 of two units.
           [1, 13],
-          [0, 2],
-          [1, 4],
-        ])
-      );
+        ]);
+        new LearnedMagnitude(false, {}, 'toy').write(enc, 0, 0, 0, 1);
+        digits(enc, [[1, 4]]);
+      });
       const sequence = new Sequence(toy(), { max: 12 }, { delta: 'declared' });
       const dec = new Decoder(bytes);
       expect(sequence.read(dec)).toEqual([0]);
@@ -957,19 +975,24 @@ describe('Sequence methods', () => {
   describe('recall', () => {
     it('spells a value already written by its place among those seen, and a new one in full', () => {
       const values = [[0, 2], [3], [0, 2]];
-      const expected = hand((enc) =>
-        digits(enc, [
-          [0, 1],
-          [2, 13],
-          [0, 4],
-          [2, 4],
-          [0, 2],
-          [1, 13],
-          [3, 4],
-          [0, 10],
-          [1, 3],
-        ])
-      );
+      const recall = new Recall<number[]>();
+      const expected = hand((enc) => {
+        recall.write(enc, '0,2', () =>
+          digits(enc, [
+            [2, 13],
+            [0, 4],
+            [2, 4],
+          ])
+        );
+        recall.write(enc, '3', () =>
+          digits(enc, [
+            [1, 13],
+            [3, 4],
+            [0, 10],
+          ])
+        );
+        recall.write(enc, '0,2', () => {});
+      });
       const sequence = () => new Sequence(toy(), { max: 12 }, { recall: 'declared' });
       expect(message(sequence(), values)).toEqual(expected);
       expect(roundTrip(sequence(), values)).toEqual(values);
@@ -977,29 +1000,41 @@ describe('Sequence methods', () => {
 
     it('measures a delta against the previous value, recalled or spelled', () => {
       const values = [[0, 2, 4], [5], [0, 2, 4], [0, 2, 6]];
-      const expected = hand((enc) =>
-        digits(enc, [
-          [3, 13],
-          [0, 4],
-          [2, 4],
-          [3, 4],
-          [1, 10],
-          // [5]: new, then nothing shared of the one item that fits.
-          [0, 2],
-          [1, 13],
-          [0, 2],
-          [3, 4],
-          [2, 10],
-          // [0, 2, 4] recalled.
-          [1, 3],
-          // [0, 2, 6]: new, two items shared with the recalled value.
-          [0, 3],
-          [3, 13],
-          [2, 4],
-          [3, 4],
-          [3, 10],
-        ])
-      );
+      const recall = new Recall<number[]>();
+      const shared = new LearnedMagnitude(false, {}, 'toy');
+      const expected = hand((enc) => {
+        recall.write(enc, '0,2,4', () =>
+          digits(enc, [
+            [3, 13],
+            [0, 4],
+            [2, 4],
+            [3, 4],
+            [1, 10],
+          ])
+        );
+        // [5]: new, then nothing shared of the one item that fits.
+        recall.write(enc, '5', () => {
+          digits(enc, [[1, 13]]);
+          shared.write(enc, 0, 0, 0, 1);
+          digits(enc, [
+            [3, 4],
+            [2, 10],
+          ]);
+        });
+        shared.learn(enc, 0, 0, 0, 1);
+        // [0, 2, 4] recalled, its shared start with [5] learned all the same.
+        recall.write(enc, '0,2,4', () => {});
+        shared.learn(enc, 0, 0, 0, 1);
+        // [0, 2, 6]: new, two items shared with the recalled value.
+        recall.write(enc, '0,2,6', () => {
+          digits(enc, [[3, 13]]);
+          shared.write(enc, 2, 0, 0, 3);
+          digits(enc, [
+            [3, 4],
+            [3, 10],
+          ]);
+        });
+      });
       const sequence = () =>
         new Sequence(toy(), { max: 12 }, { recall: 'declared', delta: 'declared' });
       expect(message(sequence(), values)).toEqual(expected);
@@ -1028,34 +1063,41 @@ describe('Sequence methods', () => {
     });
   });
 
+  describe('an open end without contexts', () => {
+    it('learns the end from values that spelled their length, at the learned odds alone', () => {
+      const random = mulberry32(14);
+      const values = Array.from({ length: 40 }, (_, i) =>
+        Array.from({ length: (i % 5) * 3 }, () => Math.floor(random() * 13))
+      );
+      for (const methods of [
+        { learn: 'declared', terminated: 'open' },
+        { learn: 'declared', repeats: 'declared', terminated: 'open' },
+      ] as const) {
+        expect(roundTrip(new Sequence(toy(rows), {}, methods), values)).toEqual(values);
+        expect(roundTrip(new Sequence(toy(), { max: 20 }, methods), values)).toEqual(values);
+      }
+    });
+  });
+
   describe('repeats without adaptive', () => {
-    it('copies a stretch at fixed odds', () => {
-      const expected = hand((enc) => {
-        digits(enc, [
-          [6, 13],
-          [1, 2],
-        ]);
-        enc.composeWeighted(0, 1, 4);
-        digits(enc, [[0, 2]]);
-        enc.composeWeighted(2, 1, 4);
-        // A match at distance 2 of at most 2, of 4 items of at most 4.
-        digits(enc, [
-          [1, 2],
-          [1, 2],
-          [0, 1],
-          [1, 2],
-          [0, 1],
-        ]);
-      });
-      const sequence = () => new Sequence(toy(), { max: 12 }, { repeats: 'declared' });
-      const value = [0, 2, 0, 2, 0, 2];
-      expect(encode(sequence(), value)).toEqual(expected);
-      expect(roundTrip(sequence(), [value])).toEqual([value]);
+    const stretch = [5, 0, 7, 2, 9, 3, 12, 0, 4, 6];
+
+    it('copy nothing until the message holds WARMUP items, costing nothing before', () => {
+      const short = [0, 2, 0, 2, 0, 2];
+      const sequence = () => new Sequence(toy(), { max: 100 }, { repeats: 'declared' });
+      expect(encode(sequence(), short)).toHaveLength(
+        encode(new Sequence(toy(), { max: 100 }), short).length
+      );
+      expect(roundTrip(sequence(), [short])).toEqual([short]);
+      const long = Array.from({ length: 7 }, () => stretch).flat();
+      expect(long.length).toBeGreaterThan(WARMUP);
+      expect(encode(sequence(), long).length).toBeLessThan(
+        encode(new Sequence(toy(), { max: 100 }), long).length * 0.6
+      );
     });
 
     it('round-trips repetitive and random values, with rows, tails and a delta', () => {
       const random = mulberry32(12);
-      const stretch = [5, 0, 7, 2, 9, 3, 12, 0, 4, 6];
       const values = [
         [...stretch, ...stretch, 1, ...stretch],
         Array.from({ length: 40 }, () => Math.floor(random() * 13)),
@@ -1063,6 +1105,7 @@ describe('Sequence methods', () => {
         [2],
         stretch,
         [...stretch, 8, 8, 8, 8],
+        [...stretch, ...stretch, ...stretch],
       ];
       for (const [given, spelling] of [
         [undefined, { repeats: 'declared' as const }],
@@ -1073,37 +1116,32 @@ describe('Sequence methods', () => {
       }
       const symbols = { ...plain, count: (v: number[]) => v.length, span: (n: number) => n };
       const tailless = [
+        Array.from({ length: 80 }, (_, i) => i % 4),
         [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 0],
         [3, 3, 3, 3, 3, 3],
       ];
       expect(roundTrip(new Sequence(symbols, {}, { repeats: 'declared' }), tailless)).toEqual(
         tailless
       );
-      const repetitive = [...stretch, ...stretch, ...stretch];
-      expect(
-        encode(new Sequence(toy(), {}, { repeats: 'declared' }), repetitive).length
-      ).toBeLessThan(encode(new Sequence(toy(), {}), repetitive).length * 0.6);
     });
 
     it('refuses copied items that overrun the length prefix', () => {
-      const bytes = hand((enc) => {
-        digits(enc, [
-          [5, 13],
-          [1, 2],
-        ]);
-        enc.composeWeighted(1, 1, 4);
-        // Three copies of item 1, two units each.
-        digits(enc, [
-          [1, 2],
-          [0, 1],
-          [0, 1],
-          [0, 1],
-          [0, 1],
-        ]);
-      });
-      expect(() =>
-        new Sequence(toy(), { max: 12 }, { repeats: 'declared' }).read(new Decoder(bytes))
-      ).toThrow(new CorruptInputError('Toy items overrun the length prefix'));
+      const sequence = () => new Sequence(toy(), { max: 200 }, { repeats: 'declared' });
+      const enc = new Encoder();
+      const warm = Array<number>(WARMUP).fill(1);
+      sequence().write(enc, warm);
+      // Five units, then three copies of item 1, two units each.
+      enc.compose(5, 201);
+      const repeats = new Repeats({ pool: 'toy', window: DEFAULT_ADAPTIVE_WINDOW });
+      repeats.writeUsed(enc, true);
+      repeats.writeFlag(enc, true, 0);
+      repeats.writeMatch(enc, { distance: 1, length: 3 }, WARMUP, 5);
+      const reader = sequence();
+      const dec = new Decoder(enc.output());
+      expect(reader.read(dec)).toEqual(warm);
+      expect(() => reader.read(dec)).toThrow(
+        new CorruptInputError('Toy items overrun the length prefix')
+      );
     });
   });
 });
@@ -1129,7 +1167,7 @@ describe('StaticLiterals', () => {
 
   it('learns nothing and never hits a context', () => {
     const enc = new Encoder();
-    literals.learn();
+    literals.learn(enc, 0, 0);
     expect(literals.hitTop()).toBe(false);
     literals.write(enc, 0, 0, history);
     expect(enc.output()).toEqual(hand((h) => h.composeWeighted(0, 1, 4)));
@@ -1173,5 +1211,54 @@ describe('Sequence runs', () => {
 
   it('list the items of a value', () => {
     expect(new Sequence(toy(), {}).items([5, 1])).toEqual([5, 1]);
+  });
+
+  describe('over a uniform alphabet that knows the symbols above an item', () => {
+    /** Symbols 0–3 as themselves, one unit each, ascending as the items do. */
+    const ordered: Symbols<number[]> = {
+      ...plain,
+      count: (value) => value.length,
+      span: (count) => count,
+      above: (item) => item + 1,
+    };
+    const sorted = [[0, 1], [0, 2], [0, 2, 3], [1], [3, 3]];
+
+    it.each(['sorted', 'unique'] as const)(
+      'round-trip a %s run, the first item after the shared start spelled from above it',
+      (ascent) => {
+        const make = () => new Sequence(ordered, { max: 3 });
+        const enc = new Encoder();
+        const written = make().run(ascent);
+        for (const value of sorted) written.write(enc, value);
+        const dec = new Decoder(enc.output());
+        const read = make().run(ascent);
+        expect(sorted.map(() => read.read(dec))).toEqual(sorted);
+        dec.finalize();
+      }
+    );
+
+    it('refuse a first item above every symbol', () => {
+      // [3], then one item, none shared, above 3.
+      const enc = new Encoder();
+      new Sequence(ordered, { max: 3 }).run('sorted').write(enc, [3]);
+      enc.compose(1, 4);
+      GAMMA_MAGNITUDE.write(enc, 0, 0, 0, 1);
+      const read = new Sequence(ordered, { max: 3 }).run('sorted');
+      const dec = new Decoder(enc.output());
+      expect(read.read(dec)).toEqual([3]);
+      expect(() => read.read(dec)).toThrow(new CorruptInputError('No symbol lies at or above 4'));
+    });
+
+    it('refuse an empty value after another in a unique run', () => {
+      const enc = new Encoder();
+      enc.compose(0, 4);
+      enc.compose(0, 4);
+      const read = new Sequence(ordered, { max: 3 }).run('unique');
+      const dec = new Decoder(enc.output());
+      expect(read.read(dec)).toEqual([]);
+      expect(() => read.read(dec)).toThrow(
+        new CorruptInputError('An empty value follows another in an ascending run')
+      );
+    });
   });
 });

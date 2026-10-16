@@ -4,14 +4,7 @@
  * per flag context, and matches at a new or a cached distance.
  */
 
-import {
-  Encoder,
-  Decoder,
-  COST_UNITS,
-  CorruptInputError,
-  costUnits,
-  log2Units,
-} from '../../packer';
+import { Encoder, Decoder, COST_UNITS, CorruptInputError, costUnits } from '../../packer';
 import { AdaptiveTable } from '../../nodes/adaptive';
 import {
   CHAIN_DEPTH,
@@ -19,7 +12,6 @@ import {
   MIN_MATCH,
   REPS,
   REP_MIN,
-  EVEN_REPEATS,
   Repeats,
   type FlagContext,
   readBucketed,
@@ -534,23 +526,22 @@ describe('Repeats', () => {
 
   it('prices a match as its head and its length', () => {
     const random = mulberry32(3);
-    for (const repeats of [new Repeats(), EVEN_REPEATS]) {
-      const enc = new Encoder();
-      for (let i = 0; i < 50; i++) {
-        const maxDistance = 1 + Math.floor(random() * 5000);
-        const maxLength = MIN_MATCH + Math.floor(random() * 300);
-        const distance = 1 + Math.floor(random() * maxDistance);
-        const length = MIN_MATCH + Math.floor(random() * (maxLength - MIN_MATCH + 1));
-        const rep = repeats.cached && random() < 0.5 ? Math.floor(random() * REPS) : undefined;
-        const match: Match = rep === undefined ? { distance, length } : { distance, length, rep };
-        const context = Math.floor(random() * 3) as FlagContext;
-        expect(
-          repeats.priceHead(enc, match, maxDistance, context) +
-            repeats.priceLength(enc, match, maxLength)
-        ).toBe(repeats.priceMatch(enc, match, maxDistance, maxLength, context));
-        repeats.writeFlag(enc, true, context);
-        repeats.writeMatch(enc, match, maxDistance, maxLength);
-      }
+    const repeats = new Repeats();
+    const enc = new Encoder();
+    for (let i = 0; i < 50; i++) {
+      const maxDistance = 1 + Math.floor(random() * 5000);
+      const maxLength = MIN_MATCH + Math.floor(random() * 300);
+      const distance = 1 + Math.floor(random() * maxDistance);
+      const length = MIN_MATCH + Math.floor(random() * (maxLength - MIN_MATCH + 1));
+      const rep = random() < 0.5 ? Math.floor(random() * REPS) : undefined;
+      const match: Match = rep === undefined ? { distance, length } : { distance, length, rep };
+      const context = Math.floor(random() * 3) as FlagContext;
+      expect(
+        repeats.priceHead(enc, match, maxDistance, context) +
+          repeats.priceLength(enc, match, maxLength)
+      ).toBe(repeats.priceMatch(enc, match, maxDistance, maxLength, context));
+      repeats.writeFlag(enc, true, context);
+      repeats.writeMatch(enc, match, maxDistance, maxLength);
     }
   });
 
@@ -615,93 +606,6 @@ describe('Repeats', () => {
       expect(() => repeats.writeMatch(enc, match, 5, 8)).toThrow(error);
       expect(() => repeats.priceMatch(enc, match, 5, 8, 0)).toThrow(error);
     }
-  });
-});
-
-describe('Repeats priceUsed', () => {});
-
-describe('EVEN_REPEATS', () => {
-  it('names no cached distance', () => {
-    expect(EVEN_REPEATS.cached).toBe(false);
-  });
-
-  it('spells the branch and every flag as one even bit, whatever the context', () => {
-    const enc = new Encoder();
-    EVEN_REPEATS.writeUsed(enc, true);
-    EVEN_REPEATS.writeUsed(enc, false);
-    EVEN_REPEATS.writeFlag(enc, true, 2);
-    EVEN_REPEATS.writeFlag(enc, false, 1);
-    const hand = new Encoder();
-    for (const digit of [1, 0, 1, 0]) {
-      hand.compose(digit, 2);
-    }
-    expect(enc.output()).toEqual(hand.output());
-    const dec = new Decoder(enc.output());
-    expect([
-      EVEN_REPEATS.readUsed(dec),
-      EVEN_REPEATS.readUsed(dec),
-      EVEN_REPEATS.readFlag(dec, 0),
-      EVEN_REPEATS.readFlag(dec, 2),
-    ]).toEqual([true, false, true, false]);
-    dec.finalize();
-    expect(EVEN_REPEATS.priceFlag(enc, false, 1)).toBe(COST_UNITS);
-  });
-
-  it('spells a match as its distance and length, each an even bucket and offset', () => {
-    // Distance 17 of 40: bucket 4 of 6, offset 1 of 16; length 9 of 30 as
-    // 7 of 28: bucket 2 of 5, offset 3 of 4.
-    const enc = new Encoder();
-    EVEN_REPEATS.writeMatch(enc, { distance: 17, length: 9 }, 40, 30);
-    const hand = new Encoder();
-    for (const [digit, radix] of [
-      [4, 6],
-      [1, 16],
-      [2, 5],
-      [3, 4],
-    ]) {
-      hand.compose(digit, radix);
-    }
-    expect(enc.output()).toEqual(hand.output());
-    const priced = EVEN_REPEATS.priceMatch(enc, { distance: 17, length: 9 }, 40, 30, 2);
-    const odds = COST_UNITS + log2Units(6) + log2Units(16) + log2Units(5) + log2Units(4);
-    expect(priced).toBe(odds);
-  });
-
-  it('round-trips random matches under random bounds, the cache unread', () => {
-    const random = mulberry32(5);
-    const draw = (lo: number, hi: number): number => lo + Math.floor(random() * (hi - lo + 1));
-    const cases = Array.from({ length: 300 }, () => {
-      const maxDistance = draw(1, 2 ** draw(0, 32) - 1 || 1);
-      const maxLength = draw(MIN_MATCH, Math.max(MIN_MATCH, 2 ** draw(2, 32) - 1));
-      const match = { distance: draw(1, maxDistance), length: draw(MIN_MATCH, maxLength) };
-      return { match, maxDistance, maxLength };
-    });
-    const enc = new Encoder();
-    for (const { match, maxDistance, maxLength } of cases) {
-      EVEN_REPEATS.writeMatch(enc, match, maxDistance, maxLength);
-    }
-    const dec = new Decoder(enc.output());
-    for (const { match, maxDistance, maxLength } of cases) {
-      expect(EVEN_REPEATS.readMatch(dec, maxDistance, maxLength, [])).toEqual(match);
-    }
-    dec.finalize();
-  });
-
-  it('refuses a match at a cached distance, and bounds and matches outside them', () => {
-    const enc = new Encoder();
-    const rep = { distance: 1, length: 3, rep: 0 };
-    expect(() => EVEN_REPEATS.writeMatch(enc, rep, 4, 4)).toThrow(
-      new TypeError('Repeats at fixed odds name no cached distance')
-    );
-    expect(() => EVEN_REPEATS.priceMatch(enc, rep, 4, 4, 0)).toThrow(
-      new TypeError('Repeats at fixed odds name no cached distance')
-    );
-    expect(() => EVEN_REPEATS.writeMatch(enc, { distance: 5, length: 3 }, 4, 4)).toThrow(
-      new RangeError('Match distance 5 is above the maximum 4')
-    );
-    expect(() => EVEN_REPEATS.readMatch(new Decoder(new Uint8Array(4)), 0, 4, [])).toThrow(
-      new RangeError('Maximum distance 0 is below the minimum 1')
-    );
   });
 });
 

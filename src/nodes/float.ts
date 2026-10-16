@@ -12,16 +12,18 @@ import {
   AdaptivePrior,
   checkAdaptation,
   lineageOf,
-  type AdaptiveOptions,
+  type LearningOptions,
   type Learning,
 } from './adaptive';
 import { decimalPlaces } from './decimal';
 import { Delta, IndexRange } from './lattice';
-import { magnitude } from './magnitude';
+import { LearnedMagnitude } from './magnitude';
 import {
   ModeChoice,
   Previous,
-  learningOf,
+  chooses,
+  learns,
+  optionsOf,
   MethodNode,
   type Method,
   type MethodName,
@@ -509,13 +511,16 @@ interface Decimal {
  */
 class LearnedDecimal {
   private readonly places: AdaptivePrior;
-  private readonly delta: Delta;
-  private readonly mode: ModeChoice<number>;
+  /** The difference from the previous decimal and the mode choosing it, where the node picks between spellings. */
+  private readonly delta?: Delta;
+  private readonly mode?: ModeChoice<number>;
+  /** The plain magnitude, the range's learned odds. */
+  private readonly plain: Method<number> & ValueProvider<number>;
   /** What the digits of every decimal teach, in order. */
   private readonly providers: readonly ValueProvider<number>[];
   private readonly previous = new Previous<Decimal>();
 
-  constructor(learning: Learning, who: string) {
+  constructor(learning: Learning, who: string, differs: boolean) {
     const { window } = checkAdaptation(learning, who);
     const symbols = AS_DOUBLE + 1;
     this.places = new AdaptivePrior(
@@ -526,11 +531,17 @@ class LearnedDecimal {
       lineageOf(learning)
     );
     const range = new IndexRange(who, undefined, undefined, undefined, learning);
-    this.delta = new Delta(magnitude(learning, true, who), range.low, range.high);
     // An unbounded adaptive range always learns.
     const plain = range.learned as Method<number> & ValueProvider<number>;
-    this.mode = new ModeChoice([plain, this.delta], learning, who);
-    this.providers = [plain, this.delta];
+    this.plain = plain;
+    if (differs) {
+      const delta = new Delta(new LearnedMagnitude(true, learning, who), range.low, range.high);
+      this.delta = delta;
+      this.mode = new ModeChoice([plain, delta], learning, who);
+      this.providers = [plain, delta];
+    } else {
+      this.providers = [plain];
+    }
   }
 
   /**
@@ -542,7 +553,7 @@ class LearnedDecimal {
    */
   private aim(side: Encoder | Decoder, places: number): void {
     const previous = this.previous.get(side);
-    if (previous !== undefined && previous.places !== places) {
+    if (this.delta !== undefined && previous !== undefined && previous.places !== places) {
       const origin = Math.round(previous.value * POWERS[places]) + 0;
       this.delta.from(side, Math.max(-MAX_SAFE, Math.min(MAX_SAFE, origin)));
     }
@@ -587,7 +598,11 @@ class LearnedDecimal {
     }
     this.aim(enc, symbol);
     const digits = digitsAt(value, symbol) as number;
-    this.mode.write(enc, digits);
+    if (this.mode === undefined) {
+      this.plain.write(enc, digits);
+    } else {
+      this.mode.write(enc, digits);
+    }
     this.after(enc, value, symbol, digits);
   }
 
@@ -599,15 +614,19 @@ class LearnedDecimal {
       return double();
     }
     this.aim(dec, places);
-    const digits = this.mode.read(dec);
+    const digits = this.mode === undefined ? this.plain.read(dec) : this.mode.read(dec);
     const value = digits / POWERS[places];
     this.after(dec, value, places, digits);
     return value;
   }
 }
 
-/** The methods of a float, which `.adaptive()` opens: learning, which spells decimals. */
-export const FLOAT_METHODS: readonly MethodName[] = ['learn'];
+/**
+ * The methods of a float, which `.adaptive()` opens: learning, which spells
+ * decimals, and the difference from the previous decimal, which only
+ * `.adaptive()` opens.
+ */
+export const FLOAT_METHODS: readonly MethodName[] = ['learn', 'delta'];
 
 /**
  * IEEE-754 double, bit-exact apart from NaN payloads. The significand
@@ -640,9 +659,12 @@ export class PFloat extends MethodNode<number> {
   ) {
     super();
     this._methods = methods;
-    const learning = learningOf(methods);
-    if (learning !== undefined) {
-      this._learned = new LearnedDecimal(learning, 'p.float');
+    if (learns(methods)) {
+      this._learned = new LearnedDecimal(
+        optionsOf(methods),
+        'p.float',
+        chooses(methods, ['delta'])
+      );
     }
     const resolved = { ...base };
     for (const key of FLOAT_WEIGHT_KEYS) {
@@ -673,16 +695,35 @@ export class PFloat extends MethodNode<number> {
 
   /**
    * Let the node learn the message's numbers: each value names its decimal
-   * places, learned, then its digits as an integer, plainly or as the
-   * difference from the previous decimal at the same places, whichever the
-   * encoder prices cheaper, each on a learned magnitude scale. A value with
-   * no exact decimal form within 15 places, -0, NaN and the infinities name
-   * the double instead and are spelled as without. `window` is how many
-   * observations the counts hold before they halve (1024 when left out).
-   * Part of the wire format.
+   * places, learned, then its digits as an integer on a learned magnitude
+   * scale. A value with no exact decimal form within 15 places, -0, NaN and
+   * the infinities name the double instead and are spelled as without. Part
+   * of the wire format.
    */
-  adaptive(options?: AdaptiveOptions): PFloat {
-    return this._open(options ?? {});
+  learn(): PFloat {
+    return this._declare('learn', 'p.float');
+  }
+
+  /**
+   * What the node's learning goes by, for `.learn()` and the methods that
+   * learn: `window` is how many observations a table's counts hold before
+   * they halve, so the newest weigh most (1024 when left out, and raised to
+   * the number of values counted when smaller), and `separate` keeps its
+   * tables from starting where other nodes of its kind and window got to.
+   * Set once.
+   */
+  learning(options: LearningOptions): PFloat {
+    return this._learning(options, 'p.float');
+  }
+
+  /**
+   * Learn with every method the node has: `.learn()`, and per value the
+   * plain digits or their difference from the previous decimal at the same
+   * places, whichever the encoder prices cheaper, under `options` as
+   * `.learning()` takes them.
+   */
+  adaptive(options?: LearningOptions): PFloat {
+    return this._adapt(options, 'p.float');
   }
 
   /** This node with `methods` in place of its own. */

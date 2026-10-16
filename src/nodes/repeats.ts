@@ -14,7 +14,6 @@ import {
   type Encoder,
   type Decoder,
   type Journal,
-  COST_UNITS,
   costUnits,
   log2Units,
   type Undoable,
@@ -272,42 +271,6 @@ function checkMatch(match: Match, maxDistance: number, maxLength: number): void 
   }
 }
 
-/**
- * How a sequence spells its repeats: whether a value spells any, the match
- * flag at each position a repeat is decodable at, and each match. `price*`
- * are the cost, in `COST_UNITS`, the matching `write*` would give its
- * symbols now, learning nothing.
- */
-export interface RepeatCoding {
-  /** Whether a match may name one of the cached distances again. */
-  readonly cached: boolean;
-  writeUsed(enc: Encoder, used: boolean): void;
-  readUsed(dec: Decoder): boolean;
-  writeFlag(enc: Encoder, match: boolean, context: FlagContext): void;
-  readFlag(dec: Decoder, context: FlagContext): boolean;
-  priceFlag(side: Encoder | Decoder, match: boolean, context: FlagContext): number;
-  /** Learns the flag as `writeFlag` would write it, writing nothing: where the flag learns. */
-  learnFlag?(side: Encoder | Decoder, match: boolean, context: FlagContext): void;
-  writeMatch(enc: Encoder, match: Match, maxDistance: number, maxLength: number): void;
-  readMatch(dec: Decoder, maxDistance: number, maxLength: number, reps: readonly number[]): Match;
-  priceMatch(
-    side: Encoder | Decoder,
-    match: Match,
-    maxDistance: number,
-    maxLength: number,
-    context: FlagContext
-  ): number;
-  /** The part of `priceMatch` before the length: the flag, the kind and a new distance. */
-  priceHead(
-    side: Encoder | Decoder,
-    match: Match,
-    maxDistance: number,
-    context: FlagContext
-  ): number;
-  /** The part of `priceMatch` for the length: `priceMatch` less `priceHead`. */
-  priceLength(side: Encoder | Decoder, match: Match, maxLength: number): number;
-}
-
 /** The weights of the repeat tables, every member alike: a flag's, the match kinds', the log2 buckets'. */
 const FLAG_WEIGHTS = buildWeights([1, 1], 2, 'repeats');
 const KIND_WEIGHTS = buildWeights(new Array<number>(REPS + 1).fill(1), REPS + 1, 'repeats');
@@ -353,12 +316,14 @@ const REPEATS: ProviderKind<Pool | undefined, Statistics> = {
 };
 
 /**
- * Learned repeats: every branch, flag, match kind and bucket through a
- * live table of the repeat statistics, learned per message, shared within
- * `pool`, else the node's own.
+ * How a sequence spells its repeats: whether a value spells any, the match
+ * flag at each position a repeat is decodable at, and each match, every
+ * branch, flag, match kind and bucket through a live table of the repeat
+ * statistics, learned per message, shared within `pool`, else the node's
+ * own. `price*` are the cost, in `COST_UNITS`, the matching `write*` would
+ * give its symbols now, learning nothing.
  */
-export class Repeats implements RepeatCoding {
-  readonly cached = true;
+export class Repeats {
   private readonly statistics: ProviderRef<Pool | undefined, Statistics>;
 
   constructor(pool?: Pool) {
@@ -505,93 +470,3 @@ export class Repeats implements RepeatCoding {
       : priceBucketed(stats.repLength, match.length - REP_MIN + 1, maxLength - REP_MIN + 1);
   }
 }
-
-/** Writes `v`, an integer in `[1, max]`, as its log2 bucket among those `max` allows and its offset in the bucket, each uniformly. */
-function writeEven(enc: Encoder, v: number, max: number): void {
-  checkMax(max);
-  checkInteger(v, 1, max, 'Value');
-  const b = bucketOf(v);
-  enc.compose(b, bucketOf(max) + 1);
-  enc.compose(v - 2 ** b, widthOf(b, max));
-}
-
-/** Reads a value written by `writeEven` under the same `max`. */
-function readEven(dec: Decoder, max: number): number {
-  checkMax(max);
-  const b = dec.parse(bucketOf(max) + 1);
-  return 2 ** b + dec.parse(widthOf(b, max));
-}
-
-/** The cost, in `COST_UNITS`, `writeEven` gives `v`. */
-function priceEven(v: number, max: number): number {
-  return log2Units(bucketOf(max) + 1) + log2Units(widthOf(bucketOf(v), max));
-}
-
-/** Refuses a match naming a cached distance, which fixed-odds repeats never do. */
-function checkNew(match: Match, maxDistance: number, maxLength: number): void {
-  checkMatch(match, maxDistance, maxLength);
-  if (match.rep !== undefined) {
-    throw new TypeError('Repeats at fixed odds name no cached distance');
-  }
-}
-
-/**
- * Repeats at fixed odds, for a node that declares them without learning:
- * the branch and every flag one even bit, a match its distance and length
- * as `Repeats` codes a new distance's, each bucket among those the bound
- * allows equally likely. There is no cache of distances, so every match
- * names its distance.
- */
-export const EVEN_REPEATS: RepeatCoding = {
-  cached: false,
-
-  writeUsed(enc, used) {
-    enc.compose(used ? 1 : 0, 2);
-  },
-
-  readUsed(dec) {
-    return dec.parse(2) === 1;
-  },
-
-  writeFlag(enc, match) {
-    enc.compose(match ? 1 : 0, 2);
-  },
-
-  readFlag(dec) {
-    return dec.parse(2) === 1;
-  },
-
-  priceFlag() {
-    return COST_UNITS;
-  },
-
-  writeMatch(enc, match, maxDistance, maxLength) {
-    checkNew(match, maxDistance, maxLength);
-    writeEven(enc, match.distance, maxDistance);
-    writeEven(enc, match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1);
-  },
-
-  readMatch(dec, maxDistance, maxLength) {
-    checkBounds(maxDistance, maxLength);
-    const distance = readEven(dec, maxDistance);
-    const length = readEven(dec, maxLength - MIN_MATCH + 1) + MIN_MATCH - 1;
-    return { distance, length };
-  },
-
-  priceMatch(_side, match, maxDistance, maxLength) {
-    checkNew(match, maxDistance, maxLength);
-    return (
-      COST_UNITS +
-      priceEven(match.distance, maxDistance) +
-      priceEven(match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1)
-    );
-  },
-
-  priceHead(_side, match, maxDistance) {
-    return COST_UNITS + priceEven(match.distance, maxDistance);
-  },
-
-  priceLength(_side, match, maxLength) {
-    return priceEven(match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1);
-  },
-};

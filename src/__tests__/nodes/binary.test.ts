@@ -214,17 +214,17 @@ describe('p.binary adaptive', () => {
 
   it('refuses bad options', () => {
     expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.binary adaptive window must be a positive integer, got 0')
+      new RangeError('p.binary learning window must be a positive integer, got 0')
     );
     expect(() => plain.adaptive({ window: 1.5 })).toThrow(
-      new TypeError('p.binary adaptive window must be a positive integer, got 1.5')
+      new TypeError('p.binary learning window must be a positive integer, got 1.5')
     );
     expect(() => plain.weights([2 ** 45, ...Array<number>(7).fill(1)]).adaptive()).toThrow(
       new RangeError(
         'p.binary adaptive prior 16 and window 1024 overflow with weights totalling 35184372088839'
       )
     );
-    const cdf = new TypeError('p.binary adaptive takes weights, not a cdf');
+    const cdf = new TypeError('p.binary learn takes weights, not a cdf');
     expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
     expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
   });

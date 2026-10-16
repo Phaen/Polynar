@@ -144,7 +144,9 @@ const GROWN: ProviderKind<Pool | undefined, Admitted> = {
  * item is `base + 1 + i`, up to `size`. The counts of the admitted items
  * halve, rounding up, once they pass `window`, or twice the items admitted
  * when more. The admitted items are learned per message, shared within
- * `pool`, else the alphabet's own.
+ * `pool`, else the alphabet's own. An alphabet that `admits` none of its
+ * own still spells those its pool admitted as their symbols, and its new
+ * items by their offsets among the rest.
  */
 export class GrownAlphabet {
   /** The symbols: the alphabet's, the prior's for an admitted item, and room for every admitted one. */
@@ -156,6 +158,7 @@ export class GrownAlphabet {
     readonly base: number,
     private readonly window: number,
     private readonly range: Range,
+    readonly admits: boolean,
     pool?: Pool
   ) {
     this.size = base + 1 + MAX_ADMITTED;
@@ -185,11 +188,12 @@ export class GrownAlphabet {
 
   /**
    * Admits `item`, which is not admitted yet and which the alphabet's
-   * `symbol` spells with a tail, while there is room.
+   * `symbol` spells with a tail, while there is room, where the alphabet
+   * admits items.
    */
   admit(side: Encoder | Decoder, item: number, symbol: number): void {
     const { symbols, items, counts, offsets, journal } = this.message(side);
-    if (items.length === MAX_ADMITTED) {
+    if (!this.admits || items.length === MAX_ADMITTED) {
       return;
     }
     const sorted = (offsets[symbol] ??= []);

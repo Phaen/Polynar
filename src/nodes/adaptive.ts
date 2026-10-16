@@ -31,21 +31,19 @@ import { buildWeights, readTable, type WeightTable } from './weights';
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 
 /**
- * The options of a node's `.adaptive()`: `window` is how many observations
- * the learned counts hold before they halve, raised to the member count of
- * a table with more members, and `DEFAULT_ADAPTIVE_WINDOW` when undefined.
+ * What a node's learned tables learn under, as `.learning()` and
+ * `.adaptive()` take it: `window` is how many observations the learned
+ * counts hold before they halve, raised to the member count of a table
+ * with more members, and `DEFAULT_ADAPTIVE_WINDOW` when undefined.
  * `separate` keeps the node learning on its own: otherwise its tables may
  * start from what its kin learned, every node of its kind and window in the
  * message (see `AdaptivePrior`), and a string's characters or a binary's
  * bytes learn with every other node of its alphabet and window.
  */
-export interface AdaptiveOptions {
+export interface LearningOptions {
   readonly window?: number;
   readonly separate?: boolean;
 }
-
-/** What `p.string` and `p.binary`'s `.adaptive()` take, as every node's does. */
-export type SequenceAdaptiveOptions = AdaptiveOptions;
 
 /**
  * What a prior learns with besides its own values: a lineage, or `KIN`,
@@ -61,7 +59,7 @@ export const KIN: unique symbol = Symbol('kin');
  * `p.any` builds the node, the lineage every adaptive prior it builds
  * joins instead of its kin, through every rebuild that passes them on.
  */
-export interface Learning extends AdaptiveOptions {
+export interface Learning extends LearningOptions {
   readonly lineage?: Lineage;
 }
 
@@ -109,9 +107,9 @@ export const MAX_ADAPTIVE_MEMBERS = 65536;
  */
 export const LADDER: readonly number[] = [1 / 32, 1 / 8, 1 / 2, 2];
 
-/** Refuses a count that is not a positive safe integer, as `${who} adaptive ${what}`. */
+/** Refuses a count that is not a positive safe integer, as `${who} learning ${what}`. */
 function checkPositive(n: number, who: string, what: string): void {
-  const message = `${who} adaptive ${what} must be a positive integer, got ${n}`;
+  const message = `${who} learning ${what} must be a positive integer, got ${n}`;
   if (!Number.isInteger(n)) {
     throw new TypeError(message);
   }
@@ -122,9 +120,9 @@ function checkPositive(n: number, who: string, what: string): void {
 
 /** Validates a node's adaptive options, keeping only those declared. */
 export function checkAdaptation(
-  options: AdaptiveOptions | undefined,
+  options: LearningOptions | undefined,
   who: string
-): AdaptiveOptions {
+): LearningOptions {
   const window = options?.window;
   if (window === undefined) {
     return {};
@@ -137,7 +135,7 @@ export function checkAdaptation(
 export function checkAdaptiveMembers(n: number, who: string): void {
   if (n > MAX_ADAPTIVE_MEMBERS) {
     throw new RangeError(
-      `${who} adaptive prior spans ${n} values, above the limit ${MAX_ADAPTIVE_MEMBERS}`
+      `${who} learned prior spans ${n} values, above the limit ${MAX_ADAPTIVE_MEMBERS}`
     );
   }
 }

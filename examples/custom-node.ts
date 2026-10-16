@@ -12,7 +12,7 @@ import {
   Encoder,
   Decoder,
   members,
-  type AdaptiveOptions,
+  type LearningOptions,
   type Infer,
   type MemberPrior,
   type Members,
@@ -36,8 +36,8 @@ class PColor extends PNode<Color> {
     this.channel = members(256, prior, 'PColor');
   }
 
-  adaptive(options?: AdaptiveOptions): PColor {
-    return new PColor({ ...this.prior, adaptive: options ?? {} });
+  adaptive(options?: LearningOptions): PColor {
+    return new PColor({ ...this.prior, learn: options ?? {} });
   }
 
   _write(enc: Encoder, value: Color): void {

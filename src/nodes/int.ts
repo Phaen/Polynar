@@ -3,7 +3,7 @@ import { describe } from './path';
 import type { Kind } from './guards';
 import { INDEX_METHODS, IndexMethods, IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
-import type { AdaptiveOptions } from './adaptive';
+import type { LearningOptions } from './adaptive';
 import { learningOf, MethodNode, type MethodSet } from './methods';
 
 /**
@@ -76,33 +76,45 @@ export class PInt extends MethodNode<number> {
 
   /**
    * Let the prior over the bounded range learn from the message: the declared
-   * weights, or even ones when none are, are the starting point, and each value
-   * coded counts as one observation, so a value that keeps recurring gets
-   * cheaper as the message goes on. `window` is how many observations the
-   * counts hold before they halve, so the newest weigh most (1024 when left
-   * out, and raised to the number of values it counts when smaller). From its
-   * second value on, the node spends one bit to stay static, or a few to name
-   * the learning rate that paid off. Takes weights, not a cdf; part of the wire
-   * format, like the weights. A range unbounded or wider than 65536 values
-   * learns on the magnitude scale instead: distances from the min, else the
-   * max, else 0, by bit-length class. From the second value on, unless
-   * `.delta()` is declared, each value also spends a learned mode symbol
-   * naming whether it is spelled plainly or as its difference from the
-   * previous value, whichever the encoder prices cheaper.
-   * Unless `.recall()` is declared, a value the node already wrote may
-   * also be recalled as under it, at learned odds, whenever that costs
-   * less than spelling it.
+   * weights, or even ones when none are, are the starting point, and each
+   * value coded counts as one observation, so a value that keeps recurring
+   * gets cheaper as the message goes on. From its second value on, the node
+   * spends one bit to stay static, or a few to name the learning rate that
+   * paid off. Takes weights, not a cdf; part of the wire format, like the
+   * weights. A range unbounded or wider than 65536 values learns on the
+   * magnitude scale instead: distances from the min, else the max, else 0, by
+   * bit-length class.
    */
-  adaptive(options?: AdaptiveOptions): PInt {
-    return this._open(options ?? {});
+  learn(): PInt {
+    return this._declare('learn', 'p.int');
+  }
+
+  /**
+   * What the node's learning goes by, for `.learn()` and the methods that
+   * learn: `window` is how many observations a table's counts hold before
+   * they halve, so the newest weigh most (1024 when left out, and raised to
+   * the number of values counted when smaller), and `separate` keeps its
+   * tables from starting where other nodes of its kind and window got to.
+   * Set once.
+   */
+  learning(options: LearningOptions): PInt {
+    return this._learning(options, 'p.int');
+  }
+
+  /**
+   * Learn with every method the node has: `.learn()`, and `.delta()` and
+   * `.recall()` open to a learned choice per value unless declared, under
+   * `options` as `.learning()` takes them.
+   */
+  adaptive(options?: LearningOptions): PInt {
+    return this._adapt(options, 'p.int');
   }
 
   /**
    * Spell every value after the node's first in the message as its
    * difference from the previous one: its side, unless the bounds rule one
    * out, the bit-length class of its size among the classes the bounds
-   * reach, equally likely or learned under `.adaptive()`, then the low
-   * bits. Steady ids and counters cost a few bits each, bounded or not.
+   * reach, learned from the message, then the low bits. Steady ids and counters cost a few bits each, bounded or not.
    * The node's first value costs its plain spelling. Takes no weights or
    * cdf; values must lie within 2^53 - 1 of the min, else the max, else 0.
    */
@@ -114,8 +126,7 @@ export class PInt extends MethodNode<number> {
    * Spell a value this node already wrote in the message by its place
    * among the distinct values it wrote, and a new one as an escape and then
    * as the node otherwise spells it: with n values seen, a repeat costs
-   * log2(n + 1) bits, or under `.adaptive()` less the more often it
-   * recurs. The message's first value costs nothing extra.
+   * log2(n + 1) bits, less the more often it recurs. The message's first value costs nothing extra.
    */
   recall(): PInt {
     return this._declare('recall', 'p.int');

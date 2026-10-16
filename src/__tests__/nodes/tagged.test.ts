@@ -137,12 +137,37 @@ describe('p.tagged adaptive', () => {
     }
   });
 
+  it('learns by `.learn()`, spending what `.adaptive()` does', () => {
+    const values = run(300, 5);
+    const size = (node: typeof plain) => p.array(node).encode(values);
+    expect(size(plain.learn())).toEqual(size(plain.adaptive()));
+    expect(size(plain.weights(weights).learn())).toEqual(size(plain.weights(weights).adaptive()));
+    expect(size(plain.learn().weights(weights))).toEqual(size(plain.weights(weights).adaptive()));
+    expect(size(plain.learning({ window: 8 }).learn())).toEqual(
+      size(plain.adaptive({ window: 8 }))
+    );
+    expect(size(plain.learn())).not.toEqual(size(plain));
+  });
+
+  it('sets its learning once and each method once', () => {
+    expect(() => plain.learning({}).learning({})).toThrow(
+      new TypeError('p.tagged learning is already set')
+    );
+    expect(() => plain.learn().learn()).toThrow(new TypeError('p.tagged learn is already set'));
+    expect(() => plain.learning({ window: 8 }).adaptive({ window: 8 })).toThrow(
+      new TypeError('p.tagged learning is already set')
+    );
+    expect(() => plain.adaptive({ window: 8 }).learning({ window: 8 })).toThrow(
+      new TypeError('p.tagged learning is already set')
+    );
+  });
+
   it('refuses bad options', () => {
     expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.tagged adaptive window must be a positive integer, got 0')
+      new RangeError('p.tagged learning window must be a positive integer, got 0')
     );
     expect(() => plain.adaptive({ window: 1.5 })).toThrow(
-      new TypeError('p.tagged adaptive window must be a positive integer, got 1.5')
+      new TypeError('p.tagged learning window must be a positive integer, got 1.5')
     );
     expect(() => plain.weights([2 ** 45, 2 ** 45]).adaptive()).toThrow(
       new RangeError(

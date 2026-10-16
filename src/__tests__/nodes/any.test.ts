@@ -83,9 +83,9 @@ describe('Schema any', () => {
     [0, RangeError],
     [-1, RangeError],
     [1.5, TypeError],
-  ])('refuses the adaptive window %p', (window, type) => {
+  ])('refuses the learning window %p', (window, type) => {
     expect(() => p.any().adaptive({ window })).toThrow(
-      new type(`p.any adaptive window must be a positive integer, got ${window}`)
+      new type(`p.any learning window must be a positive integer, got ${window}`)
     );
   });
 

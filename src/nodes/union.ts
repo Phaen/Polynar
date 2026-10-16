@@ -2,8 +2,9 @@ import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import { kindOf, type Kind } from './guards';
 import { describe, oneOf } from './path';
-import type { AdaptiveOptions, Learning } from './adaptive';
+import type { LearningOptions } from './adaptive';
 import { members, type MemberPrior, type Members } from './members';
+import { MethodNode, PRIOR_METHODS, learningOf, type MethodSet } from './methods';
 
 /**
  * Union: one of several member nodes, picked by the value's JS kind
@@ -13,16 +14,21 @@ import { members, type MemberPrior, type Members } from './members';
  * value has exactly one encoding. Two array or two object members are
  * therefore rejected; object shapes go in `p.tagged`.
  */
-export class PUnion<T> extends PNode<T> {
+export class PUnion<T> extends MethodNode<T> {
   readonly _kinds: readonly Kind[];
   private readonly _members: readonly PNode<any>[];
   private readonly _byKind = new Map<Kind, number>();
   /** The prior as declared, for the rebuilds. */
   private readonly _prior?: MemberPrior;
+  readonly _methodNames = PRIOR_METHODS;
   /** How the member a value goes to is spelled. */
   private readonly _pick: Members;
 
-  constructor(nodes: readonly PNode<any>[], prior?: MemberPrior) {
+  constructor(
+    nodes: readonly PNode<any>[],
+    prior?: MemberPrior,
+    readonly _methods: MethodSet = {}
+  ) {
     super();
     if (nodes.length === 0) {
       throw new TypeError('p.union requires at least one member');
@@ -45,7 +51,11 @@ export class PUnion<T> extends PNode<T> {
     });
     this._kinds = [...this._byKind.keys()];
     this._prior = prior;
-    this._pick = members(this._members.length, prior, 'p.union');
+    this._pick = members(
+      this._members.length,
+      { ...prior, learn: learningOf(_methods) },
+      'p.union'
+    );
   }
 
   /**
@@ -54,28 +64,39 @@ export class PUnion<T> extends PNode<T> {
    * of the wire format.
    */
   weights(w: readonly number[]): PUnion<T> {
-    return new PUnion<T>(this._members, { ...this._prior, weights: w });
+    return new PUnion<T>(this._members, { ...this._prior, weights: w }, this._methods);
   }
 
   /**
    * Let the prior learn from the message: the declared weights, or even ones
-   * when none are, are the starting point, and each member coded counts as one
+   * when none are, are where it starts, and each member coded counts as one
    * observation, so a member that keeps recurring gets cheaper as the message
-   * goes on. `window` is how many observations the counts hold before they
-   * halve, so the newest weigh most (1024 when left out, and raised to the
-   * number of values it counts when smaller). From its second value on, the
-   * node spends one bit to stay static, or a few to name the learning rate that
-   * paid off. Part of the wire format, like the weights.
+   * goes on. From its second value on, the node spends one bit to stay static,
+   * or a few to name the learning rate that paid off. Part of the wire format,
+   * like the weights.
    */
-  adaptive(options?: AdaptiveOptions): PUnion<T> {
-    return new PUnion<T>(this._members, {
-      ...this._prior,
-      adaptive: options ?? {},
-    });
+  learn(): PUnion<T> {
+    return this._declare('learn', 'p.union');
   }
 
-  _open(options: Learning): PUnion<T> {
-    return this.adaptive(options);
+  /**
+   * What the node's learning goes by: `window` is how many observations the
+   * counts hold before they halve, so the newest weigh most (1024 when left
+   * out, and raised to the number of values counted when smaller), and
+   * `separate` keeps it from starting where other nodes of its kind and window
+   * got to. Set once; it applies once something learns.
+   */
+  learning(options: LearningOptions): PUnion<T> {
+    return this._learning(options, 'p.union');
+  }
+
+  /** Learn with every method the node has, here `.learn()`, under `options` as `.learning()` takes them. */
+  adaptive(options?: LearningOptions): PUnion<T> {
+    return this._adapt(options, 'p.union');
+  }
+
+  _withMethods(methods: MethodSet): PUnion<T> {
+    return new PUnion<T>(this._members, this._prior, methods);
   }
 
   get _exact(): boolean {

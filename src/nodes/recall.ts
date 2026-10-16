@@ -185,16 +185,16 @@ interface Recency {
   readonly evidence: Float64Array;
 }
 
-/** What the encoder knows of one message's recall: each value's member by identity, and the live counts when learned. */
+/** What the encoder knows of one message's recall: each value's member by identity, and the learned odds. */
 interface Writing {
   readonly index: Map<string, number>;
-  readonly learning?: Learning;
+  readonly learning: Learning;
 }
 
-/** What the decoder knows of one message's recall: the values in order of first appearance, and the live counts when learned. */
+/** What the decoder knows of one message's recall: the values in order of first appearance, and the learned odds. */
 interface Reading<T> {
   readonly values: T[];
-  readonly learning?: Learning;
+  readonly learning: Learning;
 }
 
 /** Fresh learned odds, with `recency` too when given, recording their changes in `journal` when given. */
@@ -299,9 +299,8 @@ function learn(fresh: Fenwick, seen: number): void {
 const RECALLED = 1;
 const CHOICES: readonly number[] = [RECALLED, 0];
 
-/** How a recall codes: `learned` and `open` as `Recall` describes them, `copy` as `read` returns a value. */
+/** How a recall codes: `open` as `Recall` describes it, `copy` as `read` returns a value. */
 export interface RecallOptions<T> {
-  readonly learned?: boolean;
   readonly open?: boolean;
   readonly copy?: (value: T) => T;
 }
@@ -309,21 +308,18 @@ export interface RecallOptions<T> {
 /**
  * The recall of one node: member 0 of its table is "new", every later
  * member a value the node coded in the message, in order of first
- * appearance. With fixed odds every member is equally likely, so with `n`
- * values seen any member costs log2(n + 1) bits, and a new value then its
- * spelling. `learned`, a value first costs whether it is new or seen,
- * learned as the message goes on, and a seen one then its member among
- * the seen values by how often each was coded, or, once that has cost
- * more lately, by how recently, so a field whose values never recur soon
- * pays next to nothing for the escape and a value that keeps coming back
- * costs well under a bit. The message's first value
- * meets a table of one member, which costs nothing. The encoder matches
- * values by an identity string, `identity` unless the caller has a cheaper
- * one; the decoder needs none.
+ * appearance. A value first costs whether it is new or seen, learned as
+ * the message goes on, and a seen one then its member among the seen
+ * values by how often each was coded, or, once that has cost more lately,
+ * by how recently, so a field whose values never recur soon pays next to
+ * nothing for the escape and a value that keeps coming back costs well
+ * under a bit. The message's first value meets a table of one member,
+ * which costs nothing. The encoder matches values by an identity string,
+ * `identity` unless the caller has a cheaper one; the decoder needs none.
  *
  * `open`, as `.adaptive()` leaves recall on a node that does not declare
- * it, the recall is learned and is only one of the node's methods: the
- * encoder spells a value it has seen in full instead when that costs less,
+ * it, the recall is only one of the node's methods: the encoder spells a
+ * value it has seen in full instead when that costs less,
  * as a new value the decoder then lists again, so a node whose own
  * spelling already prices its repeats well loses next to nothing. It
  * keeps to counts: a choice made value by value would take recency's
@@ -331,28 +327,26 @@ export interface RecallOptions<T> {
  * from the value.
  */
 export class Recall<T> {
-  readonly learned: boolean;
   readonly open: boolean;
   /** Turns a recalled value into what `read` returns; the value itself when left out. */
   private readonly copy?: (value: T) => T;
 
   constructor(options: RecallOptions<T> = {}) {
     this.open = options.open === true;
-    this.learned = options.learned === true || this.open;
     this.copy = options.copy;
   }
 
   private writing(enc: Encoder): Writing {
     return enc.state(this, () => ({
       index: new Map(),
-      learning: this.learned ? learning(!this.open, enc.journal) : undefined,
+      learning: learning(!this.open, enc.journal),
     }));
   }
 
   private reading(dec: Decoder): Reading<T> {
     return dec.state(this, () => ({
       values: [],
-      learning: this.learned ? learning(!this.open) : undefined,
+      learning: learning(!this.open),
     }));
   }
 
@@ -394,11 +388,7 @@ export class Recall<T> {
   }
 
   /** Writes `member`, a value already coded. */
-  private writeSeen(enc: Encoder, { index, learning }: Writing, member: number): void {
-    if (learning === undefined) {
-      enc.compose(member, index.size + 1);
-      return;
-    }
+  private writeSeen(enc: Encoder, { learning }: Writing, member: number): void {
     const { fresh, counts, recency } = learning;
     writeLive(enc, fresh, 1);
     learn(fresh, 1);
@@ -429,17 +419,13 @@ export class Recall<T> {
     key: string,
     spell: () => void
   ): void {
-    const seen = learning?.counts.size ?? index.size;
-    if (learning === undefined) {
-      enc.compose(0, seen + 1);
-    } else if (seen > 0) {
+    const seen = learning.counts.size;
+    if (seen > 0) {
       writeLive(enc, learning.fresh, 0);
       learn(learning.fresh, 0);
     }
     spell();
-    if (learning !== undefined) {
-      learnNew(learning, enc.journal);
-    }
+    learnNew(learning, enc.journal);
     if (!index.has(key)) {
       index.set(key, seen + 1);
       if (enc.journal.active) {
@@ -455,9 +441,7 @@ export class Recall<T> {
   read(dec: Decoder, spell: () => T): T {
     const { values, learning } = this.reading(dec);
     let member = 0;
-    if (learning === undefined) {
-      member = dec.parse(values.length + 1);
-    } else if (values.length > 0) {
+    if (values.length > 0) {
       const { fresh, counts, recency } = learning;
       const recalled = readLive(dec, fresh);
       learn(fresh, recalled);
@@ -485,9 +469,7 @@ export class Recall<T> {
       return this.copy === undefined ? value : this.copy(value);
     }
     const value = spell();
-    if (learning !== undefined) {
-      learnNew(learning);
-    }
+    learnNew(learning);
     values.push(value);
     return value;
   }
@@ -506,7 +488,7 @@ export class PRecall<T> extends PNode<T> {
   constructor(
     private readonly inner: PNode<T>,
     private readonly key: (value: T) => string,
-    private readonly recall = new Recall<T>({ learned: true })
+    private readonly recall = new Recall<T>()
   ) {
     super();
     this._kinds = inner._kinds;

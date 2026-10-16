@@ -3,9 +3,9 @@
  * 7 bits for ASCII, 18 to 27 for everything else — and round-trips any JS
  * string bit-exact, lone surrogates included. `.prose()` swaps the ladder
  * for the order-1 frequency model over lowercase text, its casing and
- * separators carried by a shape; `.adaptive()` alone codes English prose
- * whose odds the message takes over. An explicit charset trades generality for
- * density over a known alphabet. `p.string`.
+ * separators carried by a shape; `.adaptive()` without either codes English
+ * prose whose odds the message takes over. An explicit charset trades
+ * generality for density over a known alphabet. `p.string`.
  */
 import { Encoder, Decoder, Alphabet, CorruptInputError, costUnits } from '../packer';
 import type { Charset } from '../packer';
@@ -13,7 +13,7 @@ import type { Run } from './base';
 import { describe } from './path';
 import { checkUnset, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
-import type { SequenceAdaptiveOptions } from './adaptive';
+import type { Learning, LearningOptions } from './adaptive';
 import type { Kind } from './guards';
 import {
   TEXT_DIRECT_MAX,
@@ -37,7 +37,14 @@ import {
   type ShiftedTable,
 } from './prose';
 import { buildWeights } from './weights';
-import { bare, learningOf, learns, MethodNode, type MethodSet } from './methods';
+import {
+  bare,
+  itemsLearn,
+  learningOf,
+  MethodNode,
+  type MethodName,
+  type MethodSet,
+} from './methods';
 import { members, type Members } from './members';
 import { LOWER, MIXED, SHAPE_COUNT, SHAPE_WEIGHTS, plain, restore, shapesOf } from './shape';
 import { Sequence, TEXT_METHODS, type Ascent, type Symbols } from './sequence';
@@ -70,6 +77,25 @@ abstract class Text {
 
 /** Whether `code` is an ASCII capital. */
 const isCapital = (code: number): boolean => code >= 65 && code <= 90;
+
+/** Whether `code` is an ASCII letter. */
+const isAsciiLetter = (code: number): boolean => (code | 32) >= 97 && (code | 32) <= 122;
+
+/** Whether the code unit `code` is a letter by its Unicode class. */
+const isLetter = (code: number): boolean => /\p{L}/u.test(String.fromCharCode(code));
+
+/** Whether each symbol of a prose table is a letter, by symbol: its code point a letter of one code unit. */
+const tableLetters = new WeakMap<ProseTable, Uint8Array>();
+
+/** The letters of `table`, worked out once per table. */
+function lettersOf(table: ProseTable): Uint8Array {
+  let letters = tableLetters.get(table);
+  if (letters === undefined) {
+    letters = Uint8Array.from(table.codes, (code) => (code <= 0xffff && isLetter(code) ? 1 : 0));
+    tableLetters.set(table, letters);
+  }
+  return letters;
+}
 
 /** The code points a string is built from at a time: few enough to pass as arguments. */
 const BUILD_CHUNK = 4096;
@@ -142,6 +168,16 @@ class Ladder extends CodePoints implements Symbols<string> {
 
   row(): number {
     return 0;
+  }
+
+  /** The code points a slot past ASCII spells with its band offset, which the learned ladder may admit (`./grown`). */
+  range(symbol: number): readonly [number, number] | undefined {
+    return codePointBand(symbol);
+  }
+
+  /** The ASCII letters, the only letters spelled without a tail. */
+  letter(code: number): boolean {
+    return code < 128 && isAsciiLetter(code);
   }
 
   /**
@@ -251,6 +287,15 @@ class Prose extends CodePoints implements Symbols<string> {
 
   row(code: number): number {
     return code === SHIFT ? this.shift : proseContext(this.table, code);
+  }
+
+  /** The model's letters: the characters it holds that are letters, never a shift. */
+  letter(code: number): boolean {
+    if (code === SHIFT) {
+      return false;
+    }
+    const sym = proseContext(this.table, code);
+    return sym < this.table.escape && lettersOf(this.table)[sym] === 1;
   }
 
   /** The text of the items, refusing a shift that a lowercase letter does not follow. */
@@ -423,10 +468,16 @@ class LearnedText extends CodePoints implements Symbols<string> {
     return sym === this.table.escape && isCapital(code) ? proseContext(this.table, code + 32) : sym;
   }
 
-  /** The ASCII letters, the ones a shape changes the case of. */
+  /**
+   * The letters spelled without a tail: the ASCII letters, capitals
+   * included, and the model's other characters that are letters.
+   */
   letter(code: number): boolean {
-    const lower = code | 32;
-    return lower >= 97 && lower <= 122;
+    if (code < 128) {
+      return isAsciiLetter(code);
+    }
+    const sym = proseContext(this.table, code);
+    return sym < this.table.escape && lettersOf(this.table)[sym] === 1;
   }
 }
 
@@ -440,6 +491,8 @@ class CharsetText extends Text implements Symbols<string> {
 
   /** Whether the digits follow the characters' code units: a range, or a charset listed ascending. */
   private readonly ascending: boolean;
+  /** Whether each character is a letter, by digit, worked out on first use. */
+  private letters?: Uint8Array;
 
   constructor(private readonly alphabet: Alphabet) {
     super();
@@ -508,6 +561,15 @@ class CharsetText extends Text implements Symbols<string> {
 
   row(): number {
     return 0;
+  }
+
+  /** The characters that are letters by their Unicode class. */
+  letter(digit: number): boolean {
+    const { alphabet } = this;
+    this.letters ??= Uint8Array.from({ length: alphabet.size }, (_, d) =>
+      isLetter(alphabet.charAt(d).charCodeAt(0)) ? 1 : 0
+    );
+    return this.letters[digit] === 1;
   }
 
   build(digits: number[]): string {
@@ -603,16 +665,17 @@ function priceText(prose: Prose, text: string): number {
  * itself, each capital a shift. Each string takes the cheapest shape that
  * restores it exactly: priced from the static tables where nothing learns
  * and nothing but the characters follows the length, else by writing each.
- * The shapes are weighed statically, or learned under `adaptive`, where
- * the text is `LearnedText`, `mixed` keeping its capitals as they are, and
- * the words and the mixed text learn their contexts apart.
+ * The shapes are weighed statically, or learned under `learn`. Where the
+ * characters learn (`itemsLearn`) the text is `LearnedText`, `mixed`
+ * keeping its capitals as they are, and the words and the mixed text learn
+ * their odds and contexts apart.
  */
 export class ProseText implements TextCodec {
   private readonly lower: Prose;
   private readonly shifted: Prose;
   /** The text of every shape but `mixed`, which has no capitals. */
   private readonly words: Sequence<string>;
-  /** The text of `mixed`: its capitals shifted, or as they are under adaptive. */
+  /** The text of `mixed`: its capitals shifted, or as they are where the characters learn. */
   private readonly mixed: Sequence<string>;
   private readonly shapes: Members;
   /** Whether the shapes are priced instead of tried. */
@@ -626,8 +689,7 @@ export class ProseText implements TextCodec {
     const table = compileProse(model);
     this.lower = new Prose(model, table);
     this.shifted = new Prose(model, table, shiftedTable(model));
-    const learning = learningOf(methods);
-    if (learning === undefined) {
+    if (!itemsLearn(methods)) {
       this.words = new Sequence(this.lower, bounds, methods);
       this.mixed = new Sequence(this.shifted, bounds, methods);
     } else {
@@ -635,7 +697,11 @@ export class ProseText implements TextCodec {
       this.words = new Sequence(text, bounds, methods, WORDS);
       this.mixed = new Sequence(text, bounds, methods, VERBATIM);
     }
-    this.shapes = members(SHAPE_COUNT, { weights: SHAPE_WEIGHTS, adaptive: learning }, 'p.string');
+    this.shapes = members(
+      SHAPE_COUNT,
+      { weights: SHAPE_WEIGHTS, learn: learningOf(methods) },
+      'p.string'
+    );
     this.priced = bare(methods);
   }
 
@@ -773,9 +839,11 @@ export class PString extends MethodNode<string> {
   /** The methods the node has, declared or open. */
   readonly _methods: MethodSet;
   readonly _methodNames = TEXT_METHODS;
+  /** Whether `.adaptive()` opened the node, which then learns from English prose without a charset or model. */
+  private readonly _adapted: boolean;
   /**
    * The length and the characters, in the ladder, the prose model or the
-   * charset; adaptive without either, in English prose.
+   * charset; adapted without either, in English prose.
    */
   private readonly _text: TextCodec;
 
@@ -783,11 +851,13 @@ export class PString extends MethodNode<string> {
     bounds: LengthBounds = {},
     charset?: Charset,
     prose?: ProseModel,
-    methods: MethodSet = {}
+    methods: MethodSet = {},
+    adapted = false
   ) {
     super();
     this._bounds = bounds;
     this._methods = methods;
+    this._adapted = adapted;
     if (charset !== undefined) {
       if (prose !== undefined) {
         throw new TypeError('p.string cannot combine prose with a charset');
@@ -801,9 +871,9 @@ export class PString extends MethodNode<string> {
       this._prose = prose;
       this._text = new ProseText(prose, bounds, methods);
     } else {
-      this._text = !learns(methods)
-        ? new Sequence(new Ladder(), bounds, methods)
-        : new ProseText(ProseModels.english, bounds, methods);
+      this._text = adapted
+        ? new ProseText(ProseModels.english, bounds, methods)
+        : new Sequence(new Ladder(), bounds, methods);
     }
   }
 
@@ -814,7 +884,19 @@ export class PString extends MethodNode<string> {
     prose = this._prose,
     methods = this._methods
   ): PString {
-    return new PString(bounds, charset, prose, methods);
+    return new PString(bounds, charset, prose, methods, this._adapted);
+  }
+
+  /** The node opened as `.adaptive()` leaves it: without a charset or model, it learns from English prose. */
+  override _open(learning?: Learning, except?: readonly MethodName[]): this {
+    const node = super._open(learning, except) as PString;
+    return new PString(
+      node._bounds,
+      node._alphabet?.charset,
+      node._prose,
+      node._methods,
+      true
+    ) as this;
   }
 
   /** This node with `methods` in place of its own. */
@@ -862,34 +944,82 @@ export class PString extends MethodNode<string> {
   }
 
   /**
-   * Let the node learn from the message. Each character is priced by the
-   * four characters before it, as the message so far has followed them,
-   * falling back to a prior over the characters that learns too; a stretch
-   * that already occurred in the message is referred back to instead of
-   * spelled again; and the length learns, on the magnitude scale from the
-   * min when there is no max. Without a charset the text is prose: each
-   * string names its shape first, as under `.prose()`, and the prose model
-   * (English unless `.prose()` gives another) sets where the characters'
+   * Let the node's own priors learn from the message: the characters' odds,
+   * which the charset or the prose model sets, and the length's, on the
+   * magnitude scale from the min when there is no max. Under `.prose()` a
+   * mixed-case string keeps its capitals, and the model only sets where the
    * odds start, until the message's own counts outweigh it, so ids, hashes
-   * and numbers soon cost what their characters do, and a character the
-   * model lacks pays for its code point only the first time; a mixed-case
-   * string keeps its capitals, and learns its contexts apart from the words
-   * of the other shapes. With a charset every character starts out alike. The
-   * characters learn together with those of every other adaptive string
-   * of the message with the same charset or prose model and the same
-   * window, unless `separate`. The declared length weights, or even ones
-   * when none are, are where the length's prior starts. `window` is how
-   * many observations a prior's counts hold before they halve, so the
-   * newest weigh most (1024 when left out, and raised to the number of
-   * values they count when smaller). From its second value on, each prior
-   * spends one bit to stay static, or a few to name the learning rate
-   * that paid off. The length takes weights, not a cdf; part of the wire
-   * format, like the weights. Unless `.recall()` is declared, a string the
-   * node already wrote may be recalled as under it, at learned odds,
-   * whenever that costs less than spelling it.
+   * and numbers soon cost what their characters do; without a charset or a
+   * model, the ladder's slots start out alike. The characters learn together with
+   * those of every other string of the message with the same charset or
+   * prose model and window, unless `separate`. The declared length
+   * weights, or even ones when none are, are where the length's prior
+   * starts; from its second value on, each prior spends one bit to stay
+   * static, or a few to name the learning rate that paid off. The length
+   * takes weights, not a cdf.
    */
-  adaptive(options?: SequenceAdaptiveOptions): PString {
-    return this._open(options ?? {});
+  learn(): PString {
+    return this._declare('learn', 'p.string');
+  }
+
+  /**
+   * What the node's learning goes by, for `.learn()` and the methods that
+   * learn: `window` is how many observations a table's counts hold before
+   * they halve, so the newest weigh most (1024 when left out, and raised to
+   * the number of values counted when smaller), and `separate` keeps the
+   * characters, words and repeats apart from the other strings' and the
+   * node's tables from starting where others of their kind got to. Set
+   * once.
+   */
+  learning(options: LearningOptions): PString {
+    return this._learning(options, 'p.string');
+  }
+
+  /**
+   * Price each character by the four before it, as the message so far has
+   * followed them, falling back to the characters' learned odds, which
+   * this turns on. The contexts price nothing until the message holds 64
+   * characters, and after that only once they would have cost less than
+   * the odds alone. A mixed-case string learns its contexts apart from the
+   * words of the other shapes.
+   */
+  contexts(): PString {
+    return this._declare('contexts', 'p.string');
+  }
+
+  /**
+   * Spell a run of letters the message already spelled as one token of its
+   * words, priced by the word before it and by how lately the message used
+   * it, once the message holds 64 characters; a new word is an escape and
+   * then its letters. Letters are the characters that are letters by their
+   * Unicode class and take no escape. With `.contexts()` the encoder spells
+   * a known word both ways and it costs what the two give it together.
+   */
+  words(): PString {
+    return this._declare('words', 'p.string');
+  }
+
+  /**
+   * Let a character outside the alphabet's own, which pays for its code
+   * point, become a character of its own once the message has it: later
+   * occurrences cost what the learned odds give it, and a new one's code
+   * point is priced by the blocks the message's characters came from. Turns
+   * on the characters' learned odds; a charset has no such characters.
+   */
+  codepoints(): PString {
+    return this._declare('codepoints', 'p.string');
+  }
+
+  /**
+   * Learn with every method the node has: `.learn()`, `.contexts()`,
+   * `.words()`, `.codepoints()` and `.repeats()` on, and `.delta()`,
+   * `.recall()`, `.digits()`, `.positional()` and `.terminated()` open to a
+   * choice per value unless declared, under `options` as `.learning()`
+   * takes them. Without a charset or a model, the characters start from
+   * English prose, as under `.prose()`.
+   */
+  adaptive(options?: LearningOptions): PString {
+    return this._adapt(options, 'p.string');
   }
 
   charset(c: Charset): PString {
@@ -907,9 +1037,9 @@ export class PString extends MethodNode<string> {
    * fits is coded as it is, each capital a shift before its letter, likely
    * opening a word and rare inside one. Still encodes any string — code
    * points outside the model pay an escape on top of their laddered cost.
-   * English by default; any other `ProseModel` swaps the matrix. Under
-   * `.adaptive()` the model is where the learned odds start, as English is
-   * for an adaptive string without `.prose()`.
+   * English by default; any other `ProseModel` swaps the matrix. Where the
+   * characters learn, the model is where their odds start, as English is
+   * for a learning string without `.prose()`.
    */
   prose(model: ProseModel = ProseModels.english): PString {
     return this._with(this._bounds, this._alphabet?.charset, model);
@@ -918,11 +1048,10 @@ export class PString extends MethodNode<string> {
   /**
    * Spell each string after the node's first by the start it shares with
    * the node's previous string: after the length, how many of its leading
-   * characters are the previous string's (every count up to the shorter
-   * length alike, or learned under `.adaptive()`), then only the characters
-   * after them, priced as following that start. Suits sorted keys, paths
-   * and URLs. Under `.adaptive()` without it, each string picks the plain
-   * spelling or this one by a learned mode.
+   * characters are the previous string's, at learned odds, then only the
+   * characters after them, priced as following that start. Suits sorted
+   * keys, paths and URLs. Under `.adaptive()` without it, each string picks
+   * the plain spelling or this one by a learned mode.
    */
   delta(): PString {
     return this._declare('delta', 'p.string');
@@ -931,9 +1060,9 @@ export class PString extends MethodNode<string> {
   /**
    * Spell a string this node already wrote in the message by its place
    * among the distinct strings it wrote, and a new one as an escape and
-   * then in full: with n strings seen, a repeat costs log2(n + 1) bits, or
-   * under `.adaptive()` less the more often it recurs. The message's first
-   * string costs nothing extra.
+   * then in full, at learned odds: a string that keeps recurring soon costs
+   * a bit or two, and the escape next to nothing where strings never recur.
+   * The message's first string costs nothing extra.
    */
   recall(): PString {
     return this._declare('recall', 'p.string');
@@ -944,8 +1073,9 @@ export class PString extends MethodNode<string> {
    * instead of spelling it again: each string spends one bit on whether it
    * copies any, and one that does a bit at each position on whether a copy
    * starts there, and for a copy how far back it starts and how long it
-   * runs. Under `.adaptive()` the odds learn and strings copy whether or
-   * not this is declared.
+   * runs, all at learned odds, from the message's 64th character on. The
+   * strings of one alphabet and window copy from each other's, unless
+   * `separate`.
    */
   repeats(): PString {
     return this._declare('repeats', 'p.string');
@@ -955,13 +1085,11 @@ export class PString extends MethodNode<string> {
    * Spell each run of digits as one integer of its width, leading zeros
    * kept, and the text around the runs as a frame: after the node's first
    * string, one bit says the frame is the previous string's, else the
-   * frame is spelled with a digit standing for each run. With `.delta()`
-   * each run is its difference from the same run of the previous string,
-   * on the magnitude scale, and under `.adaptive()` on a learned one, so
+   * frame is spelled with a digit standing for each run. Each run is then
+   * on a learned scale around the same run of the previous string, so
    * timestamps, versions and numbered ids cost what their changing digits
-   * do; without either, a run of n digits costs log2(10^n) bits. Under
-   * `.adaptive()` without it, a string after one holding a digit picks this
-   * spelling by the learned mode.
+   * do. Under `.adaptive()` without it, a string after one holding a digit
+   * picks this spelling by the learned mode.
    */
   digits(): PString {
     return this._declare('digits', 'p.string');
@@ -970,10 +1098,9 @@ export class PString extends MethodNode<string> {
   /**
    * Spell a string whose length the node already wrote by its characters
    * at each place: per place, whether the character is one seen there in a
-   * string of that length and which, or a new one in full. Every choice
-   * alike, or learned under `.adaptive()`, where a constant place soon costs
-   * next to nothing and a hex digit four bits: uuids, hashes, tokens and
-   * fixed-format codes. A string of a new length is spelled as without it.
+   * string of that length and which, or a new one in full, at learned odds,
+   * so a constant place soon costs next to nothing and a hex digit four
+   * bits: uuids, hashes, tokens and fixed-format codes. A string of a new length is spelled as without it.
    * Under `.adaptive()` without it, a string of a length the node met
    * before picks this spelling by the learned mode.
    */
@@ -983,9 +1110,9 @@ export class PString extends MethodNode<string> {
 
   /**
    * Spell no length: the end of the string is one more symbol after its
-   * characters, priced like them, so under `.adaptive()` a string that
-   * ends after a telling run, such as `.com` or a closing `"`, costs little
-   * for its end whatever its length. The bounds still hold: the end never
+   * characters, priced like them, so with `.contexts()` a string that ends
+   * after a telling run, such as `.com` or a closing `"`, costs little for
+   * its end whatever its length. The bounds still hold: the end never
    * comes below `.min()`, and comes unspelled at `.max()`. Under
    * `.adaptive()` without it, a node spells its strings' ends while those
    * have lately cost less than their lengths would. Not with `.digits()` or

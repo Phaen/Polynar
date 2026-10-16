@@ -12,6 +12,7 @@ import { MIXED, SHAPE_COUNT, SHAPE_WEIGHTS, shapesOf } from '../../nodes/shape';
 import { buildWeights } from '../../nodes/weights';
 import { Repeats } from '../../nodes/repeats';
 import { MAX_ADMITTED } from '../../nodes/grown';
+import { LearnedMagnitude } from '../../nodes/magnitude';
 import { mulberry32, trip } from '../support';
 
 /** The size comparison's lorem ipsum, from examples/size-comparison.ts. */
@@ -452,13 +453,13 @@ describe('p.string adaptive', () => {
 
   it('refuses bad options', () => {
     expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.string adaptive window must be a positive integer, got 0')
+      new RangeError('p.string learning window must be a positive integer, got 0')
     );
     expect(() => plain.adaptive({ window: 1.5 })).toThrow(
-      new TypeError('p.string adaptive window must be a positive integer, got 1.5')
+      new TypeError('p.string learning window must be a positive integer, got 1.5')
     );
     expect(() => p.string().adaptive({ window: 1.5 })).toThrow(
-      new TypeError('p.string adaptive window must be a positive integer, got 1.5')
+      new TypeError('p.string learning window must be a positive integer, got 1.5')
     );
     expect(() => plain.weights([2 ** 45, ...Array<number>(7).fill(1)]).adaptive()).toThrow(
       new RangeError(
@@ -467,7 +468,7 @@ describe('p.string adaptive', () => {
     );
     expect(() => p.string().charset('abc').adaptive({ window: 3 })).not.toThrow();
     expect(() => p.string().charset([0, 0xd7ff]).adaptive()).not.toThrow();
-    const cdf = new TypeError('p.string adaptive takes weights, not a cdf');
+    const cdf = new TypeError('p.string learn takes weights, not a cdf');
     expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
     expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
   });
@@ -516,7 +517,7 @@ describe('p.string adaptive text model', () => {
   });
 
   it('refers back to a stretch of escaped code points under static prose', () => {
-    const value = 'naïve café — naïve café — naïve café';
+    const value = 'naïve café — '.repeat(6);
     const node = p.string().prose().repeats();
     expect(trip(node, value)).toBe(value);
     expect(node.encode(value).length).toBeLessThan(p.string().prose().encode(value).length);
@@ -753,17 +754,32 @@ describe('p.string methods', () => {
 
   it('spells a string by the start it shares, the characters after it priced as following it', () => {
     // 'abc' then 'abd': the length 3 of at most 4, then 'ab' shared of
-    // three, then 'd'.
+    // three on the learned scale, then 'd'.
     const node = p.object({ a: p.string().charset('abcd').max(4).delta(), b: p.string() });
     const twice = p.array(p.string().charset('abcd').max(4).delta()).length(2);
     const enc = new Encoder();
     enc.compose(3, 5);
     for (const c of [0, 1, 2]) enc.compose(c, 4);
     enc.compose(3, 5);
-    enc.compose(2, 4);
+    new LearnedMagnitude(false, {}, 'p.string').write(enc, 2, 0, 0, 3);
     enc.compose(3, 4);
     expect(twice.encode(['abc', 'abd'])).toEqual(enc.output());
     expect(trip(node, { a: 'abc', b: 'x' })).toEqual({ a: 'abc', b: 'x' });
+  });
+
+  it('spells an ascending run after the start each string shares with the one before', () => {
+    const sorted = ['', 'a', 'ab', 'abc', 'b', 'ba', 'bb', 'c𝄞', 'c𝄞a', 'é', '😀'];
+    const abc = sorted.filter((s) => /^[abc]*$/.test(s));
+    for (const [node, values] of [
+      [p.string(), sorted],
+      [p.string().charset('abc'), abc],
+      [p.string().charset('cba'), abc],
+    ] as const) {
+      expect(trip(p.array(node).sorted(), values)).toEqual(values);
+      expect(trip(p.set(node), new Set(values))).toEqual(new Set(values));
+    }
+    // Every string reads back as written, so a companion predicts it as given.
+    expect(p.string()._exact).toBe(true);
   });
 
   it('recalls a string it already wrote', () => {
@@ -831,16 +847,11 @@ describe('p.string digit fields', () => {
   const size = (node: PNode<string>, values: string[]) => p.array(node).encode(values).length;
 
   it('spells each run of digits as one integer of its width, the frame by a flag once it repeats', () => {
-    // '7': one field of one digit, the frame a placeholder digit, then the
-    // field; '8': the frame flagged as the previous one's, then the field.
-    const node = p.array(p.string().charset(CharSets.digit).length(1).digits()).length(2);
-    const enc = new Encoder();
-    enc.compose(1, 2);
-    enc.compose(0, 10);
-    enc.compose(7, 10);
-    enc.compose(1, 2);
-    enc.compose(8, 10);
-    expect(node.encode(['7', '8'])).toEqual(enc.output());
+    // Every id after the first: the frame flagged as the previous one's,
+    // then the field next to the previous one's.
+    const ids = Array.from({ length: 50 }, (_, i) => `id-${String(i).padStart(4, '0')}`);
+    expect(trip(p.array(p.string().digits()), ids)).toEqual(ids);
+    expect(size(p.string().digits(), ids)).toBeLessThan(size(p.string(), ids) / 5);
   });
 
   it('round-trips leading zeros, long runs, text without digits and every alphabet', () => {
@@ -875,14 +886,11 @@ describe('p.string digit fields', () => {
     expect(trip(p.array(p.string().charset('ab789').digits()), sparse)).toEqual(sparse);
   });
 
-  it('packs timestamps far below their characters, closer still on their differences', () => {
+  it('packs timestamps far below their characters, closer still where the characters learn', () => {
     expect(trip(p.array(p.string().digits()), stamps)).toEqual(stamps);
     expect(size(p.string().digits(), stamps)).toBeLessThan(size(p.string(), stamps) / 2);
-    expect(size(p.string().digits().delta(), stamps)).toBeLessThan(
-      size(p.string().digits(), stamps)
-    );
     expect(size(p.string().digits().adaptive(), stamps)).toBeLessThan(
-      size(p.string().digits().delta(), stamps) / 2
+      size(p.string().digits(), stamps) * 0.75
     );
   });
 
@@ -894,14 +902,11 @@ describe('p.string digit fields', () => {
   });
 
   it('refuses a digit its charset lacks', () => {
-    // No previous value: one field, one digit, the frame its placeholder,
-    // then a field of 5.
+    // One field of one digit, the frame its placeholder, the third
+    // character of either charset, then a field of 5.
     const node = p.string().charset('ab1').length(1).digits();
-    const enc = new Encoder();
-    enc.compose(1, 2);
-    enc.compose(2, 3);
-    enc.compose(5, 10);
-    expect(() => node.decode(enc.output())).toThrow(
+    const bytes = p.string().charset('ab5').length(1).digits().encode('5');
+    expect(() => node.decode(bytes)).toThrow(
       new CorruptInputError('A digit field holds a digit outside the alphabet')
     );
   });

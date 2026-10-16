@@ -30,7 +30,7 @@ const excluding = (size: number, members: readonly number[]): Exclusion => {
 
 describe('GrownAlphabet', () => {
   it('numbers the items it admits in order, past the prior symbol for them', () => {
-    const alphabet = new GrownAlphabet(BASE, 1024, wide);
+    const alphabet = new GrownAlphabet(BASE, 1024, wide, true);
     const enc = new Encoder();
     expect(alphabet.size).toBe(BASE + 1 + MAX_ADMITTED);
     expect(alphabet.symbol(enc, 900)).toBe(-1);
@@ -45,7 +45,7 @@ describe('GrownAlphabet', () => {
   });
 
   it('admits no more than MAX_ADMITTED items', () => {
-    const alphabet = new GrownAlphabet(BASE, 1024, wide);
+    const alphabet = new GrownAlphabet(BASE, 1024, wide, true);
     const enc = new Encoder();
     for (let item = 0; item <= MAX_ADMITTED; item++) {
       alphabet.admit(enc, item, 0);
@@ -56,7 +56,7 @@ describe('GrownAlphabet', () => {
   });
 
   it('takes back what a rolled-back transaction admitted and counted', () => {
-    const alphabet = new GrownAlphabet(BASE, 1024, wide);
+    const alphabet = new GrownAlphabet(BASE, 1024, wide, true);
     const enc = new Encoder();
     alphabet.admit(enc, 900, 0);
     const mark = enc.mark();
@@ -74,7 +74,7 @@ describe('GrownAlphabet', () => {
   });
 
   it('halves the counts past the window, or twice the items admitted, keeping each', () => {
-    const alphabet = new GrownAlphabet(BASE, 4, wide);
+    const alphabet = new GrownAlphabet(BASE, 4, wide, true);
     const enc = new Encoder();
     alphabet.admit(enc, 900, 0);
     alphabet.admit(enc, 70, 0);
@@ -102,12 +102,12 @@ describe('GrownAlphabet tails', () => {
 
   /** Writes each `[item, symbol]` new to the message, then reads them back. */
   const roundTrip = (spelled: readonly [number, number][]): number[] => {
-    const alphabet = new GrownAlphabet(BASE, 1024, ranges);
+    const alphabet = new GrownAlphabet(BASE, 1024, ranges, true);
     const enc = new Encoder();
     for (const [item, symbol] of spelled) {
       expect(alphabet.tail(enc, item, symbol)).toBe(true);
     }
-    const decoding = new GrownAlphabet(BASE, 1024, ranges);
+    const decoding = new GrownAlphabet(BASE, 1024, ranges, true);
     const dec = new Decoder(enc.output());
     const read = spelled.map(([, symbol]) => decoding.untail(dec, symbol) as number);
     dec.finalize();
@@ -128,7 +128,7 @@ describe('GrownAlphabet tails', () => {
   });
 
   it('spends nothing on the one item its symbol leaves new', () => {
-    const alphabet = new GrownAlphabet(BASE, 1024, ranges);
+    const alphabet = new GrownAlphabet(BASE, 1024, ranges, true);
     const enc = new Encoder();
     for (const item of [7, 8, 10, 11]) {
       alphabet.tail(enc, item, 1);
@@ -142,7 +142,7 @@ describe('GrownAlphabet tails', () => {
 
   it('weighs the stretch new items came from above the rest', () => {
     const cost = (item: number): number => {
-      const alphabet = new GrownAlphabet(BASE, 1024, ranges);
+      const alphabet = new GrownAlphabet(BASE, 1024, ranges, true);
       const enc = new Encoder();
       for (let k = 0; k < 20; k++) {
         alphabet.tail(enc, 1500 + 2 * k, 0);
@@ -157,7 +157,7 @@ describe('GrownAlphabet tails', () => {
   });
 
   it('leaves a symbol without a tail to the alphabet', () => {
-    const alphabet = new GrownAlphabet(BASE, 1024, ranges);
+    const alphabet = new GrownAlphabet(BASE, 1024, ranges, true);
     const enc = new Encoder();
     expect(alphabet.tail(enc, 3, 2)).toBe(false);
     expect(alphabet.admitted(enc)).toBe(0);
@@ -166,7 +166,7 @@ describe('GrownAlphabet tails', () => {
   });
 
   it('codes new items past MAX_ADMITTED without admitting them', () => {
-    const alphabet = new GrownAlphabet(BASE, 1024, wide);
+    const alphabet = new GrownAlphabet(BASE, 1024, wide, true);
     const enc = new Encoder();
     for (let item = 0; item < MAX_ADMITTED; item++) {
       alphabet.admit(enc, item, 0);
@@ -177,7 +177,7 @@ describe('GrownAlphabet tails', () => {
   });
 
   it('refuses a new item where its symbol spells none not admitted', () => {
-    const alphabet = new GrownAlphabet(BASE, 1024, ranges);
+    const alphabet = new GrownAlphabet(BASE, 1024, ranges, true);
     const dec = new Decoder(new Encoder().output());
     for (let item = 7; item <= 11; item++) {
       alphabet.admit(dec, item, 1);
@@ -188,7 +188,7 @@ describe('GrownAlphabet tails', () => {
 
 describe('GrownPrior', () => {
   it('spans the grown alphabet and keeps the rows of its prior', () => {
-    const alphabet = new GrownAlphabet(BASE, 1024, wide);
+    const alphabet = new GrownAlphabet(BASE, 1024, wide, true);
     const inner = new AdaptivePrior([WEIGHTS], BASE + 1, undefined, 'w');
     const prior = new GrownPrior(inner, alphabet);
     expect(prior.members).toBe(alphabet.size);
@@ -218,7 +218,7 @@ describe('GrownPrior', () => {
       }
       script.push([sym, out, -1]);
     }
-    const alphabet = new GrownAlphabet(BASE, 64, wide);
+    const alphabet = new GrownAlphabet(BASE, 64, wide, true);
     const prior = priorOver(alphabet);
     const enc = new Encoder();
     for (const [sym, out, item] of script) {
@@ -241,7 +241,7 @@ describe('GrownPrior', () => {
   });
 
   it('rules out its symbol for an admitted item where none is left', () => {
-    const alphabet = new GrownAlphabet(BASE, 1024, wide);
+    const alphabet = new GrownAlphabet(BASE, 1024, wide, true);
     const prior = priorOver(alphabet);
     const plain = new AdaptivePrior([WEIGHTS], BASE + 1, undefined, 'w');
     const enc = new Encoder();
@@ -254,7 +254,7 @@ describe('GrownPrior', () => {
   });
 
   it('prices an admitted item by its symbol and count, one numbered ahead as just admitted', () => {
-    const alphabet = new GrownAlphabet(BASE, 1024, wide);
+    const alphabet = new GrownAlphabet(BASE, 1024, wide, true);
     const prior = priorOver(alphabet);
     const plain = new AdaptivePrior([WEIGHTS], BASE + 1, undefined, 'w');
     const enc = new Encoder();
@@ -269,7 +269,7 @@ describe('GrownPrior', () => {
   });
 
   it('learns its symbol for an admitted item and the item’s count', () => {
-    const alphabet = new GrownAlphabet(BASE, 1024, wide);
+    const alphabet = new GrownAlphabet(BASE, 1024, wide, true);
     const prior = priorOver(alphabet);
     const enc = new Encoder();
     alphabet.admit(enc, 900, 0);

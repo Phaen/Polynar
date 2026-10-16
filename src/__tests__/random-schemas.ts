@@ -163,8 +163,17 @@ const hotGen = <T>(draw: () => T): (() => T) => {
   return () => (rand() < 0.8 ? pick(hot) : draw());
 };
 
-/** A method a node may declare: `.delta()`, `.recall()`, `.repeats()`, and on a string `.digits()` or `.positional()`. */
-type Method = 'delta' | 'recall' | 'repeats' | 'digits' | 'positional';
+/** A method a node may declare, as its type has them: the learning of its priors, on a string or binary its contexts, on a string its words and grown alphabet too. */
+type Method =
+  | 'learn'
+  | 'contexts'
+  | 'words'
+  | 'codepoints'
+  | 'delta'
+  | 'recall'
+  | 'repeats'
+  | 'digits'
+  | 'positional';
 
 /**
  * `c` with each of `methods` declared a third of the time, in the order
@@ -184,14 +193,20 @@ const withMethods = (c: Case, methods: readonly Method[]): Case => {
   };
 };
 
-/** The methods of a number: the difference from the previous value, and recall. */
-const NUMBER_METHODS: readonly Method[] = ['delta', 'recall'];
+/** The methods of a number: its learning, the difference from the previous value, and recall. */
+const NUMBER_METHODS: readonly Method[] = ['learn', 'delta', 'recall'];
 
-/** The methods of a string or binary: those of a number, and repeats. */
-const SEQUENCE_METHODS: readonly Method[] = ['delta', 'recall', 'repeats'];
+/** The methods of a binary: those of a number, the contexts and repeats. */
+const SEQUENCE_METHODS: readonly Method[] = ['learn', 'contexts', 'delta', 'recall', 'repeats'];
 
-/** The methods of a string: those of a sequence, digit fields and positions. */
-const TEXT_METHODS: readonly Method[] = [...SEQUENCE_METHODS, 'digits', 'positional'];
+/** The methods of a string: those of a binary, words, the grown alphabet, digit fields and positions. */
+const TEXT_METHODS: readonly Method[] = [
+  ...SEQUENCE_METHODS,
+  'words',
+  'codepoints',
+  'digits',
+  'positional',
+];
 
 /** A string with digit runs, some with leading zeros and some past a field's 15 digits, or of one length, mostly. */
 const fieldString = (): string => {

@@ -1,11 +1,11 @@
 import { Encoder, Decoder } from '../packer';
-import { PNode } from './base';
 import type { Kind } from './guards';
 import type { InferTagged } from './infer';
 import type { PObject } from './object';
 import { atPath, oneOf, describe } from './path';
-import type { AdaptiveOptions, Learning } from './adaptive';
+import type { LearningOptions } from './adaptive';
 import { members, type MemberPrior, type Members } from './members';
+import { MethodNode, PRIOR_METHODS, learningOf, type MethodSet } from './methods';
 
 /**
  * Tagged union: object shapes picked by the value's tag field. `p.tagged`.
@@ -15,7 +15,7 @@ import { members, type MemberPrior, type Members } from './members';
  * member shape: the union carries it. The node is of kind 'object', so it
  * combines with members of other kinds in `p.union`.
  */
-export class PTagged<K extends string, M extends Record<string, PObject<any>>> extends PNode<
+export class PTagged<K extends string, M extends Record<string, PObject<any>>> extends MethodNode<
   InferTagged<K, M>
 > {
   readonly _kinds: readonly Kind[] = ['object'];
@@ -25,10 +25,16 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
   private readonly _index = new Map<string, number>();
   /** The prior as declared, for the rebuilds. */
   private readonly _prior?: MemberPrior;
+  readonly _methodNames = PRIOR_METHODS;
   /** How the tag is spelled. */
   private readonly _pick: Members;
 
-  constructor(key: K, shapes: M, prior?: MemberPrior) {
+  constructor(
+    key: K,
+    shapes: M,
+    prior?: MemberPrior,
+    readonly _methods: MethodSet = {}
+  ) {
     super();
     this._key = key;
     this._members = { ...shapes }; // copy so later caller mutation can't change the node
@@ -53,7 +59,7 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
       this._index.set(tag, i);
     });
     this._prior = prior;
-    this._pick = members(this._tags.length, prior, 'p.tagged');
+    this._pick = members(this._tags.length, { ...prior, learn: learningOf(_methods) }, 'p.tagged');
   }
 
   /**
@@ -62,28 +68,44 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
    * of the wire format.
    */
   weights(w: readonly number[]): PTagged<K, M> {
-    return new PTagged<K, M>(this._key, this._members, { ...this._prior, weights: w });
+    return new PTagged<K, M>(
+      this._key,
+      this._members,
+      { ...this._prior, weights: w },
+      this._methods
+    );
   }
 
   /**
    * Let the prior learn from the message: the declared weights, or even ones
-   * when none are, are the starting point, and each tag coded counts as one
-   * observation, so a tag that keeps recurring gets cheaper as the message goes
-   * on. `window` is how many observations the counts hold before they halve, so
-   * the newest weigh most (1024 when left out, and raised to the number of
-   * values it counts when smaller). From its second value on, the node spends
-   * one bit to stay static, or a few to name the learning rate that paid off.
-   * Part of the wire format, like the weights.
+   * when none are, are where it starts, and each tag coded counts as one
+   * observation, so a tag that keeps recurring gets cheaper as the message
+   * goes on. From its second value on, the node spends one bit to stay static,
+   * or a few to name the learning rate that paid off. Part of the wire format,
+   * like the weights.
    */
-  adaptive(options?: AdaptiveOptions): PTagged<K, M> {
-    return new PTagged<K, M>(this._key, this._members, {
-      ...this._prior,
-      adaptive: options ?? {},
-    });
+  learn(): PTagged<K, M> {
+    return this._declare('learn', 'p.tagged');
   }
 
-  _open(options: Learning): PTagged<K, M> {
-    return this.adaptive(options);
+  /**
+   * What the node's learning goes by: `window` is how many observations the
+   * counts hold before they halve, so the newest weigh most (1024 when left
+   * out, and raised to the number of values counted when smaller), and
+   * `separate` keeps it from starting where other nodes of its kind and window
+   * got to. Set once; it applies once something learns.
+   */
+  learning(options: LearningOptions): PTagged<K, M> {
+    return this._learning(options, 'p.tagged');
+  }
+
+  /** Learn with every method the node has, here `.learn()`, under `options` as `.learning()` takes them. */
+  adaptive(options?: LearningOptions): PTagged<K, M> {
+    return this._adapt(options, 'p.tagged');
+  }
+
+  _withMethods(methods: MethodSet): PTagged<K, M> {
+    return new PTagged<K, M>(this._key, this._members, this._prior, methods);
   }
 
   _write(enc: Encoder, value: InferTagged<K, M>): void {

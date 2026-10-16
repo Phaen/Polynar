@@ -33,8 +33,7 @@ export {
 } from './nodes';
 export { ProseModels, buildProseModel, members } from './nodes';
 export type {
-  AdaptiveOptions,
-  SequenceAdaptiveOptions,
+  LearningOptions,
   AnyValue,
   Infer,
   InferShape,

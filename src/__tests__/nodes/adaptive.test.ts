@@ -93,7 +93,7 @@ describe('checkAdaptation', () => {
     [NaN, TypeError],
   ])('refuses a window of %p', (n, kind) => {
     expect(() => checkAdaptation({ window: n }, 'w')).toThrow(
-      new kind(`w adaptive window must be a positive integer, got ${n}`)
+      new kind(`w learning window must be a positive integer, got ${n}`)
     );
   });
 });
@@ -103,7 +103,7 @@ describe('checkAdaptiveMembers', () => {
     expect(MAX_ADAPTIVE_MEMBERS).toBe(65536);
     expect(() => checkAdaptiveMembers(MAX_ADAPTIVE_MEMBERS, 'w')).not.toThrow();
     expect(() => checkAdaptiveMembers(MAX_ADAPTIVE_MEMBERS + 1, 'w')).toThrow(
-      new RangeError('w adaptive prior spans 65537 values, above the limit 65536')
+      new RangeError('w learned prior spans 65537 values, above the limit 65536')
     );
   });
 });
@@ -147,13 +147,13 @@ describe('AdaptiveTable', () => {
       new TypeError('w weights must list one weight per value: expected 3, got 2')
     );
     expect(() => new AdaptiveTable([1, 1], 2, 0, W, 'w')).toThrow(
-      new RangeError('w adaptive prior must be a positive integer, got 0')
+      new RangeError('w learning prior must be a positive integer, got 0')
     );
     expect(() => new AdaptiveTable([1, 1], 2, 1.5, W, 'w')).toThrow(
-      new TypeError('w adaptive prior must be a positive integer, got 1.5')
+      new TypeError('w learning prior must be a positive integer, got 1.5')
     );
     expect(() => new AdaptiveTable([1, 1], 2, 2, NaN, 'w')).toThrow(
-      new TypeError('w adaptive window must be a positive integer, got NaN')
+      new TypeError('w learning window must be a positive integer, got NaN')
     );
     expect(
       () =>
@@ -164,7 +164,7 @@ describe('AdaptiveTable', () => {
           MAX_ADAPTIVE_MEMBERS + 1,
           'w'
         )
-    ).toThrow(new RangeError('w adaptive prior spans 65537 values, above the limit 65536'));
+    ).toThrow(new RangeError('w learned prior spans 65537 values, above the limit 65536'));
     expect(() => new AdaptiveTable([2 ** 43, 1], 2, 2, W, 'w')).toThrow(
       new RangeError(
         `w adaptive prior 2 and window 1024 overflow with weights totalling ${2 ** 43 + 1}`
@@ -572,10 +572,10 @@ describe('AdaptivePrior', () => {
       new TypeError('w weights must list one weight per value: expected 2, got 1')
     );
     expect(() => new AdaptivePrior([ones(65537)], 65537, undefined, 'w')).toThrow(
-      new RangeError('w adaptive prior spans 65537 values, above the limit 65536')
+      new RangeError('w learned prior spans 65537 values, above the limit 65536')
     );
     expect(() => new AdaptivePrior([ones(2)], 2, 0, 'w')).toThrow(
-      new RangeError('w adaptive window must be a positive integer, got 0')
+      new RangeError('w learning window must be a positive integer, got 0')
     );
     // The slowest rung, 4 for two members, binds; the row with the largest total counts.
     expect(

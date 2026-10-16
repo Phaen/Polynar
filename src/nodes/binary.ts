@@ -2,7 +2,7 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { typedArrayKind, type Kind, type TypedArray } from './guards';
 import { checkUnset, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
-import type { AdaptiveOptions } from './adaptive';
+import type { LearningOptions } from './adaptive';
 import { MethodNode, type MethodSet } from './methods';
 import { BYTES_METHODS, Sequence, type Symbols } from './sequence';
 
@@ -178,35 +178,57 @@ export class PBinary<A extends TypedArray> extends MethodNode<A> {
   }
 
   /**
-   * Let the node learn from the message. Each byte is priced by the four
-   * bytes before it, as the message so far has followed them, falling back
-   * to a prior over the bytes that learns too; a stretch of bytes that
-   * already occurred in the message is referred back to instead of spelled
-   * again; and the element count learns, on the magnitude scale from the
-   * min when there is no max. The bytes
-   * learn together with those of every other adaptive binary of the message
-   * with the same window, whatever its element type, and the count's prior
-   * may start from what its kin learned, unless `separate`. The declared
+   * Let the node's own priors learn from the message: the bytes' odds,
+   * every byte alike to start, and the element count's, on the magnitude
+   * scale from the min when there is no max. The bytes learn together with
+   * those of every other binary of the message with the same window,
+   * whatever its element type, unless `separate`. The declared count
    * weights, or even ones when none are, are where the count's prior
-   * starts. `window` is how many observations a prior's counts hold before
-   * they halve, so the newest weigh most (1024 when left out, and raised to
-   * the number of values they count when smaller). From its second value
-   * on, each prior spends one bit to stay static, or a few to name the
-   * learning rate that paid off. The element count takes weights, not a
-   * cdf; part of the wire format, like the weights. Unless `.recall()` is
-   * declared, an array the node already wrote may be recalled as under it,
-   * at learned odds, whenever that costs less than spelling it.
+   * starts; from its second value on, each prior spends one bit to stay
+   * static, or a few to name the learning rate that paid off. The count
+   * takes weights, not a cdf.
    */
-  adaptive(options?: AdaptiveOptions): PBinary<A> {
-    return this._open(options ?? {});
+  learn(): PBinary<A> {
+    return this._declare('learn', 'p.binary');
+  }
+
+  /**
+   * What the node's learning goes by, for `.learn()` and the methods that
+   * learn: `window` is how many observations a table's counts hold before
+   * they halve, so the newest weigh most (1024 when left out, and raised to
+   * the number of values counted when smaller), and `separate` keeps the
+   * bytes and repeats apart from the other binaries' and the node's tables
+   * from starting where others of their kind got to. Set once.
+   */
+  learning(options: LearningOptions): PBinary<A> {
+    return this._learning(options, 'p.binary');
+  }
+
+  /**
+   * Price each byte by the four before it, as the message so far has
+   * followed them, falling back to the bytes' learned odds, which this
+   * turns on. The contexts price nothing until the message holds 64 bytes,
+   * and after that only once they would have cost less than the odds alone.
+   */
+  contexts(): PBinary<A> {
+    return this._declare('contexts', 'p.binary');
+  }
+
+  /**
+   * Learn with every method the node has: `.learn()`, `.contexts()` and
+   * `.repeats()` on, and `.delta()`, `.recall()` and `.terminated()` open
+   * to a choice per value unless declared, under `options` as
+   * `.learning()` takes them.
+   */
+  adaptive(options?: LearningOptions): PBinary<A> {
+    return this._adapt(options, 'p.binary');
   }
 
   /**
    * Spell each array after the node's first by the start it shares with
    * the node's previous array: after the element count, how many of its
-   * leading bytes are the previous array's (every count up to the shorter
-   * byte length alike, or learned under `.adaptive()`), then only the bytes
-   * after them, priced as following that start. Under `.adaptive()` without
+   * leading bytes are the previous array's, at learned odds, then only the
+   * bytes after them, priced as following that start. Under `.adaptive()` without
    * it, each array picks the plain spelling or this one by a learned mode.
    */
   delta(): PBinary<A> {
@@ -216,10 +238,9 @@ export class PBinary<A extends TypedArray> extends MethodNode<A> {
   /**
    * Spell an array this node already wrote in the message by its place
    * among the distinct arrays it wrote, and a new one as an escape and then
-   * in full: with n arrays seen, a repeat costs log2(n + 1) bits, or under
-   * `.adaptive()` less the more often it recurs. The message's first array
-   * costs nothing extra, and a repeat decodes as a copy of the array first
-   * decoded.
+   * in full, at learned odds: an array that keeps recurring soon costs a
+   * bit or two. The message's first array costs nothing extra, and a repeat
+   * decodes as a copy of the array first decoded.
    */
   recall(): PBinary<A> {
     return this._declare('recall', 'p.binary');
@@ -229,9 +250,9 @@ export class PBinary<A extends TypedArray> extends MethodNode<A> {
    * Copy a stretch of bytes this node already wrote in the message instead
    * of spelling it again: each array spends one bit on whether it copies
    * any, and one that does a bit at each position on whether a copy starts
-   * there, and for a copy how far back it starts and how long it runs.
-   * Under `.adaptive()` the odds learn and arrays copy whether or not this
-   * is declared.
+   * there, and for a copy how far back it starts and how long it runs, all
+   * at learned odds, from the message's 64th byte on. The binaries of one
+   * window copy from each other's, unless `separate`.
    */
   repeats(): PBinary<A> {
     return this._declare('repeats', 'p.binary');

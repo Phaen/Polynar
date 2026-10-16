@@ -4,7 +4,7 @@ import { atPath } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
-import type { AdaptiveOptions } from './adaptive';
+import type { LearningOptions } from './adaptive';
 import {
   checkOrder,
   ordinal,
@@ -62,11 +62,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     this._order = order;
     this._methods = methods;
     this._recall = recallOf(methods, copy);
-    this._choice = members(
-      2,
-      learning === undefined ? undefined : { adaptive: learning },
-      'p.array'
-    );
+    this._choice = members(2, learning === undefined ? undefined : { learn: learning }, 'p.array');
   }
 
   /** Require at least `n` items. A raised floor packs the count denser. */
@@ -113,18 +109,35 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
    * Let the prior over the count learn from the message: the declared weights,
    * or even ones when none are, are the starting point, and each count coded
    * counts as one observation, so a count that keeps recurring gets cheaper as
-   * the message goes on. `window` is how many observations the counts hold
-   * before they halve, so the newest weigh most (1024 when left out, and raised
-   * to the number of values it counts when smaller). From its second value on,
-   * the node spends one bit to stay static, or a few to name the learning rate
-   * that paid off. Without a max, the count learns on the magnitude scale
-   * from the min instead: by its distance's bit-length class. Takes weights,
-   * not a cdf; part of the wire format, like the weights. Unless `.recall()`
-   * is declared, an array the node already wrote may also be recalled as
-   * under it, at learned odds, whenever that costs less than spelling it.
+   * the message goes on. From its second value on, the node spends one bit to
+   * stay static, or a few to name the learning rate that paid off. Without a
+   * max, the count learns on the magnitude scale from the min instead: by its
+   * distance's bit-length class. Takes weights, not a cdf; part of the wire
+   * format, like the weights.
    */
-  adaptive(options?: AdaptiveOptions): PArray<TItem> {
-    return this._open(options ?? {});
+  learn(): PArray<TItem> {
+    return this._declare('learn', 'p.array');
+  }
+
+  /**
+   * What the node's learning goes by, for `.learn()` and the methods that
+   * learn: `window` is how many observations a table's counts hold before
+   * they halve, so the newest weigh most (1024 when left out, and raised to
+   * the number of values counted when smaller), and `separate` keeps its
+   * tables from starting where other nodes of its kind and window got to.
+   * Set once.
+   */
+  learning(options: LearningOptions): PArray<TItem> {
+    return this._learning(options, 'p.array');
+  }
+
+  /**
+   * Learn with every method the node has: `.learn()`, and `.recall()` opens to
+   * a learned choice per value unless declared, under `options` as
+   * `.learning()` takes them.
+   */
+  adaptive(options?: LearningOptions): PArray<TItem> {
+    return this._adapt(options, 'p.array');
   }
 
   /**
@@ -170,8 +183,8 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
   /**
    * Spell an array this node already wrote in the message by its place
    * among the distinct arrays it wrote, and a new one as an escape and then
-   * in full: with n arrays seen, a repeat costs log2(n + 1) bits, or under
-   * `.adaptive()` less the more often it recurs. The message's first array
+   * in full: with n arrays seen, a repeat costs log2(n + 1) bits, less the
+   * more often it recurs. The message's first array
    * costs nothing extra. Arrays the schema writes the same way are the same
    * array, and a repeat decodes as a copy of the array first decoded.
    */

@@ -8,12 +8,12 @@ import {
   lineageOf,
   type Learning,
 } from './adaptive';
-import { LearnedMagnitude, magnitude, type Magnitude } from './magnitude';
+import { LearnedMagnitude, type Magnitude } from './magnitude';
 import {
   ModeChoice,
   Previous,
   chooses,
-  learningOf,
+  optionsOf,
   recallOf,
   type Method,
   type MethodName,
@@ -161,7 +161,7 @@ export class IndexRange {
     if (learning !== undefined) {
       const { window } = checkAdaptation(learning, who);
       if (typeof prior === 'function') {
-        throw new TypeError(`${who} adaptive takes weights, not a cdf`);
+        throw new TypeError(`${who} learn takes weights, not a cdf`);
       }
       if (
         lo !== undefined &&
@@ -386,8 +386,7 @@ export const INDEX_METHODS: readonly MethodName[] = ['learn', 'delta', 'recall']
  * The methods a lattice node spells its indices by, over its range: by
  * default the range's own spelling. `.delta()` spells every value after
  * the node's first in the message as its difference from the previous
- * one, on the static magnitude scale, or the learned one where the node
- * learns; it takes no weights or cdf. With the delta open, a mode picks
+ * one, on a learned magnitude scale; it takes no weights or cdf. With the delta open, a mode picks
  * per value between the plain spelling and the difference. With
  * `.recall()`, a value the node already wrote in the message is spelled by
  * its place among those values first, a new one then by the other methods.
@@ -412,16 +411,16 @@ export class IndexMethods {
     who: string
   ) {
     const { declared, learned } = range;
-    const learning = learningOf(methods);
+    const options = optionsOf(methods);
     if (methods.delta === 'declared' && declared !== undefined) {
       throw new TypeError(`${who} delta takes no ${priorKind(declared)}`);
     }
     if (methods.delta !== undefined) {
-      this.delta = new Delta(magnitude(learning, true, who), range.low, range.high);
+      this.delta = new Delta(new LearnedMagnitude(true, options, who), range.low, range.high);
     }
     if (chooses(methods, ['delta'])) {
       // `.adaptive()` opens the delta with the range's learned odds.
-      this.mode = new ModeChoice([learned as LearnedOdds, this.delta as Delta], learning, who);
+      this.mode = new ModeChoice([learned as LearnedOdds, this.delta as Delta], options, who);
     }
     const providers: ValueProvider<number>[] = [];
     if (learned !== undefined) {

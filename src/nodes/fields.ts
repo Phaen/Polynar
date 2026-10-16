@@ -11,7 +11,7 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { writeLive, readLive } from './adaptive';
 import { Fenwick } from './fenwick';
-import { MAX_CLASS, STATIC_MAGNITUDE, classOf, type Magnitude } from './magnitude';
+import { MAX_CLASS, classOf, type Magnitude } from './magnitude';
 import type { Method, ValueProvider } from './methods';
 import type { Symbols } from './sequence';
 
@@ -63,23 +63,17 @@ interface Fields {
 
 /** What one side reads or writes a field spelling's numbers through. */
 interface Io {
-  /** A flag, learned when `table` is given, else at even odds. */
-  bit(table: Fenwick | undefined, bit: number): number;
+  /** A learned flag. */
+  bit(table: Fenwick, bit: number): number;
   /** An integer in `[lo, hi]` on `scale` around `origin`. */
   scaled(scale: Magnitude, value: number, origin: number, lo: number, hi: number): number;
-  /** An integer below `radix`, every one alike. */
-  uniform(value: number, radix: number): number;
 }
 
 /** Writes each number as it goes, and learns it before the next. */
 const writer = (enc: Encoder): Io => ({
   bit(table, bit) {
-    if (table === undefined) {
-      enc.compose(bit, 2);
-    } else {
-      writeLive(enc, table, bit);
-      learnFlag(table, bit);
-    }
+    writeLive(enc, table, bit);
+    learnFlag(table, bit);
     return bit;
   },
   scaled(scale, value, origin, lo, hi) {
@@ -87,18 +81,11 @@ const writer = (enc: Encoder): Io => ({
     scale.learn(enc, value, origin, lo, hi);
     return value;
   },
-  uniform(value, radix) {
-    enc.compose(value, radix);
-    return value;
-  },
 });
 
 /** Reads each number back, and learns it before the next. */
 const reader = (dec: Decoder): Io => ({
   bit(table) {
-    if (table === undefined) {
-      return dec.parse(2);
-    }
     const bit = readLive(dec, table);
     learnFlag(table, bit);
     return bit;
@@ -108,24 +95,16 @@ const reader = (dec: Decoder): Io => ({
     scale.learn(dec, value, origin, lo, hi);
     return value;
   },
-  uniform(_value, radix) {
-    return dec.parse(radix);
-  },
 });
 
 /** Learns each number, written or not. */
 const learner = (side: Encoder | Decoder): Io => ({
   bit(table, bit) {
-    if (table !== undefined) {
-      learnFlag(table, bit);
-    }
+    learnFlag(table, bit);
     return bit;
   },
   scaled(scale, value, origin, lo, hi) {
     scale.learn(side, value, origin, lo, hi);
-    return value;
-  },
-  uniform(value) {
     return value;
   },
 });
@@ -230,13 +209,11 @@ interface DigitLearning {
  * the frame in the node's plain spelling, each field one placeholder
  * digit. Then the widths, unless one field takes every digit, or a flag
  * says they are the previous value's where their sum allows; then each
- * field's value. `learned`, the flags learn and every number sits on a
- * learned scale, a field's around the same field of the previous value,
- * each of the first `FIELD_SCALES` fields on a scale of its own, and every
- * value the node codes that they could have spelled teaches them,
- * whichever spelling it took; `delta` alone puts the values on the static
- * scale around that field, and otherwise each is uniform over its width.
- * Needs an alphabet that knows its digits.
+ * field's value. The flags learn and every number sits on a learned
+ * scale, a field's around the same field of the previous value, each of
+ * the first `FIELD_SCALES` fields on a scale of its own, and every value
+ * the node codes that they could have spelled teaches them, whichever
+ * spelling it took. Needs an alphabet that knows its digits.
  */
 export class DigitFields implements Method<number[]>, ValueProvider<number[]> {
   private readonly digit: (item: number) => number;
@@ -246,16 +223,10 @@ export class DigitFields implements Method<number[]>, ValueProvider<number[]> {
   private readonly counts: Magnitude;
   private readonly sums: Magnitude;
   private readonly widthScale: Magnitude;
-  /** The scale of each field's value, by field; uniform where undefined. */
+  /** The scale of each field's value, by field. */
   private readonly scales: Magnitude[] = [];
 
-  private readonly learned: boolean;
-
-  constructor(
-    private readonly host: FieldHost,
-    { learned = false, delta = false }: { readonly learned?: boolean; readonly delta?: boolean }
-  ) {
-    this.learned = learned;
+  constructor(private readonly host: FieldHost) {
     const { symbols } = host;
     this.digit = (symbols.digit as (item: number) => number).bind(symbols);
     this.digitItem = (symbols.digitItem as (digit: number) => number).bind(symbols);
@@ -265,21 +236,16 @@ export class DigitFields implements Method<number[]>, ValueProvider<number[]> {
       placeholder = item < 0 ? placeholder : item;
     }
     this.placeholder = placeholder;
-    const scale = (): Magnitude => (learned ? new FieldScale() : STATIC_MAGNITUDE);
-    this.counts = scale();
-    this.sums = scale();
-    this.widthScale = scale();
-    if (learned || delta) {
-      for (let i = 0; i < FIELD_SCALES; i++) {
-        this.scales.push(scale());
-      }
+    this.counts = new FieldScale();
+    this.sums = new FieldScale();
+    this.widthScale = new FieldScale();
+    for (let i = 0; i < FIELD_SCALES; i++) {
+      this.scales.push(new FieldScale());
     }
   }
 
-  private learning(side: Encoder | Decoder): DigitLearning | undefined {
-    return !this.learned
-      ? undefined
-      : side.state(this, () => ({ frame: flag(side), widths: flag(side) }));
+  private learning(side: Encoder | Decoder): DigitLearning {
+    return side.state(this, () => ({ frame: flag(side), widths: flag(side) }));
   }
 
   /**
@@ -358,17 +324,15 @@ export class DigitFields implements Method<number[]>, ValueProvider<number[]> {
     return items;
   }
 
-  /** Records `items` as the value the fields coded last on `side`, where they learn. */
+  /** Records `items` as the value the fields coded last on `side`. */
   private coded(side: Encoder | Decoder, items: readonly number[]): void {
     const learning = this.learning(side);
-    if (learning !== undefined) {
-      const before = learning.coded;
-      learning.coded = items;
-      if (side.journal?.active === true) {
-        side.journal.call(() => {
-          learning.coded = before;
-        });
-      }
+    const before = learning.coded;
+    learning.coded = items;
+    if (side.journal?.active === true) {
+      side.journal.call(() => {
+        learning.coded = before;
+      });
     }
   }
 
@@ -377,7 +341,7 @@ export class DigitFields implements Method<number[]>, ValueProvider<number[]> {
    * could have spelled it; one they coded they learned as they coded it.
    */
   learn(side: Encoder | Decoder, items: number[]): void {
-    if (this.learning(side)?.coded !== items && this.available(side)) {
+    if (this.learning(side).coded !== items && this.available(side)) {
       this.walk(side, learner(side), this.fields(items), true);
     }
   }
@@ -414,7 +378,7 @@ export class DigitFields implements Method<number[]>, ValueProvider<number[]> {
     let digits: number;
     const same =
       prev !== undefined &&
-      io.bit(learning?.frame, own !== undefined && DigitFields.sameGaps(own, prev) ? 1 : 0) === 1;
+      io.bit(learning.frame, own !== undefined && DigitFields.sameGaps(own, prev) ? 1 : 0) === 1;
     if (same) {
       gaps = prev.gaps;
       count = gaps.length - 1;
@@ -447,12 +411,8 @@ export class DigitFields implements Method<number[]>, ValueProvider<number[]> {
       const radix = 10 ** widths[i];
       const value = own?.values[i] ?? 0;
       const scale = this.scales[Math.min(i, FIELD_SCALES - 1)];
-      if (scale === undefined) {
-        values.push(io.uniform(value, radix));
-      } else {
-        const origin = prev !== undefined && i < prev.values.length ? prev.values[i] : 0;
-        values.push(io.scaled(scale, value, clamp(origin, 0, radix - 1), 0, radix - 1));
-      }
+      const origin = prev !== undefined && i < prev.values.length ? prev.values[i] : 0;
+      values.push(io.scaled(scale, value, clamp(origin, 0, radix - 1), 0, radix - 1));
     }
     if (own !== undefined) {
       return [];
@@ -500,7 +460,7 @@ export class DigitFields implements Method<number[]>, ValueProvider<number[]> {
   /** The widths of `count` fields of `digits` digits in all, through `io`. */
   private widths(
     io: Io,
-    learning: DigitLearning | undefined,
+    learning: DigitLearning,
     own: Fields | undefined,
     prev: Fields | undefined,
     count: number,
@@ -516,7 +476,7 @@ export class DigitFields implements Method<number[]>, ValueProvider<number[]> {
       const sum = prev.widths.reduce((a, b) => a + b, 0);
       if (sum === digits) {
         const same = own !== undefined && own.widths.every((w, i) => w === prev.widths[i]);
-        if (io.bit(learning?.widths, same ? 1 : 0) === 1) {
+        if (io.bit(learning.widths, same ? 1 : 0) === 1) {
           return [...prev.widths];
         }
       }
@@ -561,16 +521,16 @@ export class DigitFields implements Method<number[]>, ValueProvider<number[]> {
 }
 
 /**
- * One place of the strings of a length: the items seen there, and under
- * learning how often each occurred and whether the item was new or seen.
+ * One place of the strings of a length: the items seen there, how often
+ * each occurred and whether the item was new or seen.
  */
 interface Spot {
   readonly items: number[];
-  readonly counts?: number[];
+  readonly counts: number[];
   /** How many values reached the spot: the sum of `counts`. */
   total: number;
   /** How often the item here was new, and seen, gaining 2 a value and halving past `SPOT_WINDOW`. */
-  readonly fresh?: number[];
+  readonly fresh: number[];
 }
 
 /** The strings of one span: the first one's items until a second comes, then a spot per place. */
@@ -583,7 +543,7 @@ interface Layout {
 /** One message's positions: the layout of each span, and the learned odds of an item new to its spot. */
 interface Positions {
   readonly layouts: Map<number, Layout>;
-  readonly symbols?: Fenwick;
+  readonly symbols: Fenwick;
 }
 
 /** Past this total a spot's new-or-seen counts halve. */
@@ -593,37 +553,32 @@ const SPOT_WINDOW = 32;
 const SYMBOL_GAIN = 32;
 
 /** No spot: a place no string of the span reached yet. */
-const EMPTY: Spot = { items: [], total: 0 };
+const EMPTY: Spot = { items: [], counts: [], total: 0, fresh: [1, 1] };
 
 /**
  * Positions: a value whose span the node met `gate` times before spells
  * each item at its place among the items the strings of that span held
  * there. A place first says whether its item is one seen there, then which;
- * a new one is its symbol and tail. With fixed odds every item seen there
- * and the escape are alike, and a new symbol is uniform. `learned`, the
- * new-or-seen flag learns per place, a seen item weighs by how often it
- * occurred there, and a new one's symbol by how often symbols came new to
- * any place of the node. The odds of a span learn from every value of it
- * the node codes, whichever spelling it takes.
+ * a new one is its symbol and tail. The new-or-seen flag learns per place,
+ * a seen item weighs by how often it occurred there, and a new one's symbol
+ * by how often symbols came new to any place of the node. The odds of a
+ * span learn from every value of it the node codes, whichever spelling it
+ * takes.
  */
 export class Positional implements Method<number[]>, ValueProvider<number[]> {
-  private readonly learned: boolean;
   private readonly gate: number;
 
   constructor(
     private readonly host: FieldHost,
-    { learned = false, gate }: { readonly learned?: boolean; readonly gate: number }
+    { gate }: { readonly gate: number }
   ) {
-    this.learned = learned;
     this.gate = gate;
   }
 
   private positions(side: Encoder | Decoder): Positions {
     return side.state(this, () => ({
       layouts: new Map(),
-      symbols: this.learned
-        ? new Fenwick(new Array<number>(this.host.symbols.size).fill(1), side.journal)
-        : undefined,
+      symbols: new Fenwick(new Array<number>(this.host.symbols.size).fill(1), side.journal),
     }));
   }
 
@@ -660,9 +615,7 @@ export class Positional implements Method<number[]>, ValueProvider<number[]> {
 
   /** A spot holding `item` once. */
   private newSpot(item: number): Spot {
-    return this.learned
-      ? { items: [item], counts: [1], total: 1, fresh: [1, 1] }
-      : { items: [item], total: 1 };
+    return { items: [item], counts: [1], total: 1, fresh: [1, 1] };
   }
 
   write(enc: Encoder, items: number[]): void {
@@ -675,9 +628,7 @@ export class Positional implements Method<number[]>, ValueProvider<number[]> {
       const member = spot.items.indexOf(item);
       const n = spot.items.length;
       const { counts, fresh } = spot;
-      if (counts === undefined || fresh === undefined) {
-        enc.compose(member + 1, n + 1);
-      } else if (n > 0) {
+      if (n > 0) {
         enc.composeWeighted(
           member < 0 ? 0 : fresh[0],
           fresh[member < 0 ? 0 : 1],
@@ -694,19 +645,14 @@ export class Positional implements Method<number[]>, ValueProvider<number[]> {
       if (member < 0) {
         const symbol = symbols.symbol(item);
         const ruled = this.ruled(spot);
-        if (table === undefined) {
-          const below = ruled.filter((other) => other < symbol).length;
-          enc.compose(symbol - below, symbols.size - ruled.length);
-        } else {
-          let cum = table.cum(symbol);
-          let total = table.total;
-          for (const other of ruled) {
-            const freq = table.freq(other);
-            total -= freq;
-            cum -= other < symbol ? freq : 0;
-          }
-          enc.composeWeighted(cum, table.freq(symbol), total);
+        let cum = table.cum(symbol);
+        let total = table.total;
+        for (const other of ruled) {
+          const freq = table.freq(other);
+          total -= freq;
+          cum -= other < symbol ? freq : 0;
         }
+        enc.composeWeighted(cum, table.freq(symbol), total);
         symbols.tail(enc, item, symbol);
       }
     }
@@ -727,9 +673,7 @@ export class Positional implements Method<number[]>, ValueProvider<number[]> {
       const n = spot.items.length;
       const { counts, fresh } = spot;
       let member = -1;
-      if (counts === undefined || fresh === undefined) {
-        member = dec.parse(n + 1) - 1;
-      } else if (n > 0) {
+      if (n > 0) {
         const seen = dec.parseWeighted(fresh[0] + fresh[1], (r) =>
           r < fresh[0] ? ([0, 0, fresh[0]] as const) : ([1, fresh[0], fresh[1]] as const)
         );
@@ -770,19 +714,12 @@ export class Positional implements Method<number[]>, ValueProvider<number[]> {
   }
 
   /**
-   * Reads the symbol of an item new to `spot`, every one alike or from
-   * `table`, the symbols `ruled` out owning no states: a rank or residual
-   * at or past where a ruled-out symbol would stand lies past it.
+   * Reads the symbol of an item new to `spot` from `table`, the symbols
+   * `ruled` out owning no states: a residual at or past where a ruled-out
+   * symbol would stand lies past it.
    */
-  private readNew(dec: Decoder, table: Fenwick | undefined, spot: Spot): number {
+  private readNew(dec: Decoder, table: Fenwick, spot: Spot): number {
     const ruled = this.ruled(spot);
-    if (table === undefined) {
-      let symbol = dec.parse(this.host.symbols.size - ruled.length);
-      for (const other of ruled) {
-        symbol += other <= symbol ? 1 : 0;
-      }
-      return symbol;
-    }
     let total = table.total;
     for (const symbol of ruled) {
       total -= table.freq(symbol);
@@ -814,10 +751,8 @@ export class Positional implements Method<number[]>, ValueProvider<number[]> {
     let spots = layout.spots;
     if (spots === undefined) {
       spots = layout.first.map((item) => this.newSpot(item));
-      if (table !== undefined) {
-        for (const item of layout.first) {
-          table.add(this.host.symbols.symbol(item), SYMBOL_GAIN);
-        }
+      for (const item of layout.first) {
+        table.add(this.host.symbols.symbol(item), SYMBOL_GAIN);
       }
       layout.spots = spots;
       journal?.call(() => {
@@ -829,36 +764,30 @@ export class Positional implements Method<number[]>, ValueProvider<number[]> {
       if (k === spots.length) {
         journal?.truncate(spots, k);
         spots.push(this.newSpot(item));
-        table?.add(this.host.symbols.symbol(item), SYMBOL_GAIN);
+        table.add(this.host.symbols.symbol(item), SYMBOL_GAIN);
         continue;
       }
       const spot = spots[k];
       const member = spot.items.indexOf(item);
       const { counts, fresh } = spot;
-      if (fresh !== undefined) {
-        journal?.pair(fresh, fresh[0], fresh[1]);
-        fresh[member < 0 ? 0 : 1] += 2;
-        if (fresh[0] + fresh[1] > SPOT_WINDOW) {
-          fresh[0] = Math.ceil(fresh[0] / 2);
-          fresh[1] = Math.ceil(fresh[1] / 2);
-        }
+      journal?.pair(fresh, fresh[0], fresh[1]);
+      fresh[member < 0 ? 0 : 1] += 2;
+      if (fresh[0] + fresh[1] > SPOT_WINDOW) {
+        fresh[0] = Math.ceil(fresh[0] / 2);
+        fresh[1] = Math.ceil(fresh[1] / 2);
       }
       journal?.set(spot, 'total', spot.total);
       spot.total++;
       if (member >= 0) {
-        if (counts !== undefined) {
-          journal?.set(counts, member, counts[member]);
-          counts[member]++;
-        }
+        journal?.set(counts, member, counts[member]);
+        counts[member]++;
         continue;
       }
       journal?.truncate(spot.items, spot.items.length);
       spot.items.push(item);
-      if (counts !== undefined) {
-        journal?.truncate(counts, counts.length);
-        counts.push(1);
-      }
-      table?.add(this.host.symbols.symbol(item), SYMBOL_GAIN);
+      journal?.truncate(counts, counts.length);
+      counts.push(1);
+      table.add(this.host.symbols.symbol(item), SYMBOL_GAIN);
     }
     journal?.set(layout, 'seen', layout.seen);
     layout.seen++;

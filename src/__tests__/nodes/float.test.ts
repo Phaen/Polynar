@@ -811,3 +811,41 @@ describe('doubleFrom', () => {
     );
   });
 });
+
+describe('p.float learn', () => {
+  const rand = mulberry32(0x7a);
+  const prices = Array.from({ length: 200 }, () => Math.round(rand() * 100000) / 100);
+  const doubles = Array.from({ length: 200 }, () => rand() * 2 - 1);
+  const mixed = [0, -0, 1, -2.5, 0.1, 0.1 + 0.2, 1 / 3, NaN, Infinity, -Infinity, 5e-324, 1e21];
+  let at = 52.1;
+  const track = Array.from(
+    { length: 200 },
+    () => (at = Math.round((at + rand() / 1e3) * 1e6) / 1e6)
+  );
+
+  it.each([
+    ['decimals', prices],
+    ['doubles', doubles],
+    ['mixed', mixed],
+  ])('round-trips %s bit-exact on its own', (_name, values) => {
+    const node = p.array(p.float().learn());
+    expect(node.decode(node.encode(values)).every((back, i) => Object.is(back, values[i]))).toBe(
+      true
+    );
+  });
+
+  it('beats `.learn()` with `.adaptive()` on a slowly incrementing series', () => {
+    expect(p.array(p.float().adaptive()).encode(track).length).toBeLessThan(
+      p.array(p.float().learn()).encode(track).length
+    );
+  });
+
+  it('takes its learning options once, before `.adaptive()`', () => {
+    expect(p.array(p.float().learning({ window: 8 }).adaptive()).encode(prices)).toEqual(
+      p.array(p.float().adaptive({ window: 8 })).encode(prices)
+    );
+    expect(() => p.float().learning({}).learning({})).toThrow(
+      new TypeError('p.float learning is already set')
+    );
+  });
+});

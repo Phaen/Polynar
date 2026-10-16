@@ -9,19 +9,19 @@ import {
   checkAdaptation,
   checkAdaptiveMembers,
   lineageOf,
-  type AdaptiveOptions,
+  type LearningOptions,
 } from './adaptive';
 import { buildWeights, readTable, writeTable, type WeightTable } from './weights';
 
 /**
  * A node's declared prior over its members: weights, or `rows` of weights
- * with one list per context the members are spelled in, adapting when
- * `adaptive` is set, `{}` for the default options.
+ * with one list per context the members are spelled in, whose odds learn
+ * under the `learn` options when set, `{}` for the defaults.
  */
 export interface MemberPrior {
   readonly weights?: readonly number[];
   readonly rows?: readonly (readonly number[])[];
-  readonly adaptive?: AdaptiveOptions;
+  readonly learn?: LearningOptions;
 }
 
 /**
@@ -93,7 +93,7 @@ class AdaptiveMembers implements Members {
   constructor(
     readonly count: number,
     rows: readonly (readonly number[])[],
-    adaptation: AdaptiveOptions,
+    adaptation: LearningOptions,
     who: string
   ) {
     this.prior = new AdaptivePrior(rows, count, adaptation.window, who, lineageOf(adaptation));
@@ -133,11 +133,11 @@ export function members(count: number, prior: MemberPrior | undefined, who: stri
     throw new TypeError(`${who} rows need at least one row`);
   }
   const rows = given ?? (weights === undefined ? undefined : [weights]);
-  if (prior?.adaptive !== undefined) {
-    checkAdaptation(prior.adaptive, who);
+  if (prior?.learn !== undefined) {
+    checkAdaptation(prior.learn, who);
     checkAdaptiveMembers(count, who);
     const ones = [new Array<number>(count).fill(1)];
-    return new AdaptiveMembers(count, rows ?? ones, prior.adaptive, who);
+    return new AdaptiveMembers(count, rows ?? ones, prior.learn, who);
   }
   if (rows !== undefined) {
     return new WeightedMembers(count, rows, who);

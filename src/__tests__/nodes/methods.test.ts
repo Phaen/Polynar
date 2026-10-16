@@ -70,7 +70,7 @@ class Toy implements Method<number>, ValueProvider<number> {
 }
 
 /** The mode over `toys`. */
-const modes = (toys: readonly Toy[], adaptive?: { window?: number }): ModeChoice<number> =>
+const modes = (toys: readonly Toy[], adaptive: { window?: number } = {}): ModeChoice<number> =>
   new ModeChoice(toys, adaptive, 'test');
 
 /** Writes `values` through `choice`, then reads them back through `back`, a choice over fresh methods of the same shape. */
@@ -115,14 +115,12 @@ describe('opened', () => {
 });
 
 describe('recallOf', () => {
-  it('is pinned when declared, learned when the node learns, open when opened, else none', () => {
+  it('is pinned when declared, open when opened, else none', () => {
     expect(recallOf({})).toBeUndefined();
     const pinned = recallOf({ recall: 'declared' });
-    expect([pinned?.learned, pinned?.open]).toEqual([false, false]);
-    const learned = recallOf({ recall: 'declared', learn: 'open' });
-    expect([learned?.learned, learned?.open]).toEqual([true, false]);
-    const open = recallOf({ recall: 'open', learn: 'open' });
-    expect([open?.learned, open?.open]).toEqual([true, true]);
+    expect(pinned?.open).toBe(false);
+    const open = recallOf({ recall: 'open' });
+    expect(open?.open).toBe(true);
   });
 });
 
@@ -179,7 +177,7 @@ describe('Previous', () => {
 
 describe('ModeChoice', () => {
   it('needs a method and valid adaptive options', () => {
-    expect(() => new ModeChoice<number>([], undefined, 'test')).toThrow(
+    expect(() => new ModeChoice<number>([], {}, 'test')).toThrow(
       new TypeError('test needs at least one method')
     );
     expect(() => modes([new Toy(2)], { window: 0 })).toThrow(RangeError);
@@ -334,13 +332,15 @@ describe('.adaptive()', () => {
   /** A node `.adaptive()` opens, as each node type takes it. */
   interface Adaptive {
     readonly _methods: MethodSet;
-    adaptive(): Adaptive & PNode<any>;
-    _open(options: { window?: number }, except?: readonly MethodName[]): Adaptive & PNode<any>;
+    adaptive(options?: { window?: number }): Adaptive & PNode<any>;
+    _open(options?: { window?: number }, except?: readonly MethodName[]): Adaptive & PNode<any>;
+    learn?(): Adaptive & PNode<any>;
+    learning?(options: { window?: number }): Adaptive & PNode<any>;
   }
 
   const index: MethodName[] = ['learn', 'delta', 'recall'];
-  const bytes: MethodName[] = ['learn', 'delta', 'recall', 'repeats', 'terminated'];
-  const text: MethodName[] = [...bytes, 'digits', 'positional'];
+  const bytes: MethodName[] = ['learn', 'contexts', 'delta', 'recall', 'repeats', 'terminated'];
+  const text: MethodName[] = [...bytes, 'words', 'codepoints', 'digits', 'positional'];
   const container: MethodName[] = ['learn', 'recall'];
 
   const random = mulberry32(11);
@@ -350,11 +350,11 @@ describe('.adaptive()', () => {
   const words = ['north', 'south', 'east', 'west', 'Order-1042', 'order-1043', 'v2.10.3', ''];
   const ints = many((i) => (i % 7 === 0 ? pick([5, 9, 1000]) : 1000 + i * 3 + pick([-1, 0, 2])));
 
-  it.each([
+  const cases = [
     ['p.int', p.int(), index, ints],
     ['p.decimal', p.decimal(0.01), index, ints.map((v) => v / 100)],
     ['p.date', p.date().precision('day'), index, ints.map((v) => new Date(v * 86400000))],
-    ['p.float', p.float(), ['learn'], ints.map((v) => v / 8 + 0.1)],
+    ['p.float', p.float(), ['learn', 'delta'], ints.map((v) => v / 8 + 0.1)],
     ['p.string', p.string(), text, many(() => pick(words))],
     ['a charset', p.string().charset('0123456789abcdef-'), text, many((i) => `${i % 9}-ab${i}`)],
     ['p.binary', p.binary(), bytes, many((i) => Uint8Array.of(i % 5, 7, i % 3))],
@@ -367,12 +367,14 @@ describe('.adaptive()', () => {
       container,
       many((i) => ({ id: i % 4, name: i % 3 === 0 ? undefined : pick(words) })),
     ],
-  ] as [string, Adaptive, MethodName[], unknown[]][])(
+  ] as [string, Adaptive, MethodName[], unknown[]][];
+
+  it.each(cases)(
     'opens every method of %s, and round-trips under them',
     (_name, node, names, values) => {
       const adapted = node.adaptive();
       const open = Object.fromEntries(names.map((name) => [name, 'open']));
-      expect(adapted._methods).toEqual({ ...open, learning: {} });
+      expect({ ...adapted._methods, learning: undefined }).toEqual(open);
       const list = p.array(adapted);
       expect(list.decode(list.encode(values))).toEqual(values);
     }
@@ -383,7 +385,6 @@ describe('.adaptive()', () => {
       learn: 'open',
       delta: 'declared',
       recall: 'open',
-      learning: {},
     });
     expect(p.string().terminated().adaptive()._methods.terminated).toBe('declared');
   });
@@ -393,7 +394,7 @@ describe('.adaptive()', () => {
     expect(p.string().adaptive(options)._methods.learning).toEqual(options);
   });
 
-  it.each([
+  const priors = [
     ['p.bool', p.bool(), [true, true, false, true, true, true]],
     ['p.enum', p.enum(['a', 'b', 'c']), ['a', 'a', 'c', 'a', 'a', 'a']],
     ['p.optional', p.optional(p.bool()), [true, undefined, true, true, true, true]],
@@ -405,15 +406,41 @@ describe('.adaptive()', () => {
       [{ k: 'a' }, { k: 'a' }, { k: 'b' }, { k: 'a' }, { k: 'a' }, { k: 'a' }],
     ],
     ['p.any', p.any(), [1, 'a', 2, 3, 'b', 4]],
-  ] as [string, PNode<any> & { adaptive(options: object): PNode<any> }, unknown[]][])(
-    'opens %s without methods as .adaptive() does',
+  ] as [string, Adaptive, unknown[]][];
+
+  it.each(priors)('opens %s without methods as .adaptive() does', (_name, node, values) => {
+    const opened = (node._open as (options: object) => PNode<any>)({ window: 16 });
+    const bytes = p.array(opened).encode(values);
+    expect(bytes).toEqual(p.array(node.adaptive({ window: 16 })).encode(values));
+    expect(p.array(opened).decode(bytes)).toEqual(values);
+  });
+
+  it.each([...cases.map(([n, node, , values]) => [n, node, values] as const), ...priors])(
+    'learns the same under .learn().adaptive() and .learning().adaptive() as under .adaptive() on %s',
     (_name, node, values) => {
-      const opened = (node._open as (options: object) => PNode<any>)({ window: 16 });
-      const bytes = p.array(opened).encode(values);
-      expect(bytes).toEqual(p.array(node.adaptive({ window: 16 })).encode(values));
-      expect(p.array(opened).decode(bytes)).toEqual(values);
+      const encode = (n: PNode<any>) => p.array(n).encode(values);
+      // p.object and p.any take their learning from `.adaptive()` alone.
+      if (node.learn === undefined) {
+        return;
+      }
+      const adaptive = encode(node.adaptive());
+      expect(encode(node.learn!().adaptive())).toEqual(adaptive);
+      expect(encode(node.learning!({ window: 8 }).adaptive())).toEqual(
+        encode(node.adaptive({ window: 8 }))
+      );
     }
   );
+
+  it('learns a declared delta or recall without .adaptive()', () => {
+    const long = Array.from({ length: 200 }, (_, i) => 1000 + i * 3);
+    const delta = (n: PNode<number>) => p.array(n).encode(long).length;
+    expect(delta(p.int().delta())).toBeLessThan(delta(p.int()));
+    const names = Array.from({ length: 200 }, (_, i) => ['alpha', 'bravo', 'charlie'][i % 3]);
+    const recall = (n: PNode<string>) => p.array(n).encode(names).length;
+    expect(recall(p.string().recall())).toBeLessThan(recall(p.string()));
+    const list = p.array(p.int().delta());
+    expect(list.decode(list.encode(long))).toEqual(long);
+  });
 
   it('leaves the methods p.any names closed, and adapts a node without methods', () => {
     const text = p.string()._open({ window: 8 }, ['recall']);

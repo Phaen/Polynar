@@ -151,46 +151,6 @@ export interface Magnitude {
   learn(side: Encoder | Decoder, value: number, origin: number, lo: number, hi: number): void;
 }
 
-/** The static scale's digit for a placed value: 0 the origin, then the classes above it, then those below. */
-const staticDigit = ({ up, cls }: Placed, ups: number): number =>
-  cls === 0 ? 0 : up ? cls : ups + cls;
-
-/** The static scale's radix: the origin and every class the interval reaches on either side. */
-const staticRadix = (origin: number, lo: number, hi: number): number =>
-  1 + classOf(hi - origin) + classOf(origin - lo);
-
-/**
- * The static magnitude scale: one digit naming the side and class, every
- * class the interval reaches equally likely, the origin itself among them,
- * then the tail. A side the interval does not reach costs nothing.
- */
-export const STATIC_MAGNITUDE: Magnitude = {
-  write(enc, value, origin, lo, hi) {
-    check(value, origin, lo, hi);
-    const placed = place(value, origin);
-    enc.compose(staticDigit(placed, classOf(hi - origin)), staticRadix(origin, lo, hi));
-    if (placed.cls > 0) {
-      writeTail(enc, placed, value, origin, lo, hi);
-    }
-  },
-
-  read(dec, origin, lo, hi) {
-    check(undefined, origin, lo, hi);
-    const ups = classOf(hi - origin);
-    const digit = dec.parse(staticRadix(origin, lo, hi));
-    if (digit === 0) {
-      // An origin of -0 reads back as 0.
-      return origin + 0;
-    }
-    const up = digit <= ups;
-    return readTail(dec, up, up ? digit : digit - ups, origin, lo, hi);
-  },
-
-  learn(_side, value, origin, lo, hi) {
-    check(value, origin, lo, hi);
-  },
-};
-
 /** `check`, and an interval starting at the origin, for a scale that reaches only above it; `who` names the scale. */
 function checkUp(
   value: number | undefined,
@@ -408,13 +368,4 @@ export class LearnedMagnitude implements Magnitude {
     const up = value >= origin;
     this.prior.learn(side, this.member(up, up ? value - origin : origin - value));
   }
-}
-
-/**
- * The magnitude scale of a node: learned under `learning`, holding both
- * sides when `signed`, and static otherwise, which reaches whichever sides
- * the interval does.
- */
-export function magnitude(learning: Learning | undefined, signed: boolean, who: string): Magnitude {
-  return learning === undefined ? STATIC_MAGNITUDE : new LearnedMagnitude(signed, learning, who);
 }

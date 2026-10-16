@@ -4,7 +4,7 @@ import { atPath } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
-import type { AdaptiveOptions, Learning } from './adaptive';
+import type { LearningOptions, Learning } from './adaptive';
 import {
   checkOrder,
   ordinal,
@@ -167,23 +167,39 @@ export class PCollection<T> extends MethodNode<T> {
 
   /**
    * Let the prior over the entry count learn from the message: the declared
-   * weights, or even ones when none are, are the starting point, and each entry
-   * count coded counts as one observation, so an entry count that keeps
-   * recurring gets cheaper as the message goes on. `window` is how many
-   * observations the counts hold before they halve, so the newest weigh most
-   * (1024 when left out, and raised to the number of values it counts when
-   * smaller). From its second value on, the node spends one bit to stay static,
-   * or a few to name the learning rate that paid off. Without a max, the count
-   * learns on the magnitude scale from the min instead: by its distance's
-   * bit-length class. Takes weights, not a cdf; part of the wire format, like
-   * the weights. Unless `.recall()` is declared, a collection the node
-   * already wrote may also be recalled as under it, at learned odds,
-   * whenever that costs less than spelling it. A record's keys go through
-   * `p.string().adaptive(options)`, so keys that recur are recalled and new
-   * ones learn their characters with the message's other strings.
+   * weights, or even ones when none are, are the starting point, and each
+   * entry count coded counts as one observation, so an entry count that keeps
+   * recurring gets cheaper as the message goes on. From its second value on,
+   * the node spends one bit to stay static, or a few to name the learning rate
+   * that paid off. Without a max, the count learns on the magnitude scale from
+   * the min instead: by its distance's bit-length class. Takes weights, not a
+   * cdf; part of the wire format, like the weights. A record's keys learn as
+   * under `p.string().adaptive()`: keys that recur are recalled and new ones
+   * learn their characters with the message's other strings.
    */
-  adaptive(options?: AdaptiveOptions): PCollection<T> {
-    return this._open(options ?? {});
+  learn(): PCollection<T> {
+    return this._declare('learn', this._layout.who);
+  }
+
+  /**
+   * What the node's learning goes by, for `.learn()` and the methods that
+   * learn: `window` is how many observations a table's counts hold before
+   * they halve, so the newest weigh most (1024 when left out, and raised to
+   * the number of values counted when smaller), and `separate` keeps its
+   * tables from starting where other nodes of its kind and window got to.
+   * Set once.
+   */
+  learning(options: LearningOptions): PCollection<T> {
+    return this._learning(options, this._layout.who);
+  }
+
+  /**
+   * Learn with every method the node has: `.learn()`, and `.recall()` opens to
+   * a learned choice per value unless declared, under `options` as
+   * `.learning()` takes them.
+   */
+  adaptive(options?: LearningOptions): PCollection<T> {
+    return this._adapt(options, this._layout.who);
   }
 
   /**
@@ -204,7 +220,7 @@ export class PCollection<T> extends MethodNode<T> {
    * Spell a collection this node already wrote in the message by its place
    * among the distinct collections it wrote, and a new one as an escape and
    * then in full: with n collections seen, a repeat costs log2(n + 1) bits,
-   * or under `.adaptive()` less the more often it recurs. The message's
+   * less the more often it recurs. The message's
    * first collection costs nothing extra. Collections the schema writes the
    * same way are the same collection, and a repeat decodes as a copy
    * of the collection first decoded.

@@ -4,7 +4,7 @@
  */
 
 import { Encoder, Decoder, CorruptInputError } from '../../index';
-import { DigitFields, Positional, type FieldHost } from '../../nodes/fields';
+import { DigitFields, FieldScale, Positional, type FieldHost } from '../../nodes/fields';
 import type { Symbols } from '../../nodes/sequence';
 
 /**
@@ -51,23 +51,9 @@ const input = (write: (enc: Encoder) => void): Decoder => {
 };
 
 describe('DigitFields', () => {
-  it('learns nothing at fixed odds', () => {
-    // 'a12' after 'a7': the frame flagged, then the field uniform.
-    const fields = new DigitFields(host(3, [10, 7]), {});
-    const spell = (learn: boolean): Uint8Array => {
-      const enc = new Encoder();
-      if (learn) {
-        fields.learn(enc, [10, 3, 4]);
-      }
-      fields.write(enc, [10, 1, 2]);
-      return enc.output();
-    };
-    expect(spell(true)).toEqual(spell(false));
-  });
-
   it('refuses a frame flagged as the previous one that leaves its fields too few digits', () => {
     // 'a1a' before, its frame two units: a span of 2 leaves the field none.
-    const fields = new DigitFields(host(2, [10, 1, 10]), {});
+    const fields = new DigitFields(host(2, [10, 1, 10]));
     const dec = input((enc) => enc.compose(1, 2));
     expect(() => fields.read(dec)).toThrow(
       new CorruptInputError('Digit fields do not fit the frame')
@@ -75,7 +61,7 @@ describe('DigitFields', () => {
   });
 
   it('refuses a frame flagged as the previous one that leaves its fields too many digits', () => {
-    const fields = new DigitFields(host(40, [10, 1, 10]), {});
+    const fields = new DigitFields(host(40, [10, 1, 10]));
     const dec = input((enc) => enc.compose(1, 2));
     expect(() => fields.read(dec)).toThrow(
       new CorruptInputError('Digit fields do not fit the frame')
@@ -84,10 +70,10 @@ describe('DigitFields', () => {
 
   it('refuses a spelled frame with another number of fields than declared', () => {
     // One field of one digit in a span of 2, the frame spelled without its placeholder.
-    const fields = new DigitFields(host(2, undefined, [10, 10]), {});
+    const fields = new DigitFields(host(2, undefined, [10, 10]));
     const dec = input((enc) => {
-      enc.compose(1, 3);
-      enc.compose(0, 2);
+      new FieldScale().write(enc, 1, 0, 0, 2);
+      new FieldScale().write(enc, 1, 1, 1, 2);
     });
     expect(() => fields.read(dec)).toThrow(
       new CorruptInputError('A frame holds the wrong number of fields')
@@ -105,13 +91,13 @@ describe('Positional', () => {
   };
 
   it('refuses more items than twice the span', () => {
-    // A new item at the first place, past `a`, then at two places no
-    // string reached: each the zero-unit item, which fills nothing.
+    // A new item at the first place, past `a`'s symbol, then at two places
+    // no string reached: each the zero-unit item, which fills nothing.
     const [positions, dec] = after((enc) => {
-      enc.compose(0, 2);
-      enc.compose(10, 12);
-      enc.compose(11, 13);
-      enc.compose(11, 13);
+      enc.composeWeighted(0, 1, 2);
+      enc.composeWeighted(10, 1, 12);
+      enc.composeWeighted(11, 1, 13);
+      enc.composeWeighted(11, 1, 13);
     });
     expect(() => positions.read(dec)).toThrow(
       new CorruptInputError('More items than twice the length 1')
@@ -122,8 +108,8 @@ describe('Positional', () => {
     // Corrupt input alone reaches this: a length positions never met.
     const positions = new Positional(host(2), { gate: 1 });
     const dec = input((enc) => {
-      enc.compose(10, 13);
-      enc.compose(3, 13);
+      enc.composeWeighted(10, 1, 13);
+      enc.composeWeighted(3, 1, 13);
     });
     expect(positions.read(dec)).toEqual([10, 3]);
   });
@@ -140,8 +126,8 @@ describe('Positional', () => {
 
   it('refuses an item that overruns the span', () => {
     const [positions, dec] = after((enc) => {
-      enc.compose(0, 2);
-      enc.compose(11, 12);
+      enc.composeWeighted(0, 1, 2);
+      enc.composeWeighted(11, 1, 12);
     });
     expect(() => positions.read(dec)).toThrow(new CorruptInputError('Items overrun the length 1'));
   });

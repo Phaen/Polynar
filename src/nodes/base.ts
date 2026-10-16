@@ -17,8 +17,7 @@
 import { Encoder, Decoder } from '../packer';
 import type { CodecOptions, DecodeOptions, OutputType } from '../packer';
 import type { Kind } from './guards';
-import type { AdaptiveOptions, Learning } from './adaptive';
-import { members, type MemberPrior, type Members } from './members';
+import type { Learning } from './adaptive';
 import type { MethodName } from './methods';
 
 /** One run of values, written or read one after another, each against the ones before it. */
@@ -121,99 +120,5 @@ export abstract class PNode<TOut> {
     // leftover digits and trailing padding throw.
     dec.finalize();
     return value;
-  }
-}
-
-/**
- * A value or `undefined`, at the cost of one presence bit. `p.optional`.
- * Only `undefined` means absent; `null` reaches the inner node.
- */
-export class POptional<TOut> extends PNode<TOut | undefined> {
-  /**
-   * The inner node's kinds plus `'undefined'`, or undeclared when the inner
-   * node is, so an optional node is a union member whenever its inner node is.
-   */
-  declare readonly _kinds?: readonly Kind[];
-
-  /** The prior as declared, `[present, absent]`, for the rebuilds. */
-  private readonly _prior?: MemberPrior;
-  /** Member 0 is present, as the weights list it first. */
-  private readonly _members: Members;
-
-  constructor(
-    readonly inner: PNode<TOut>,
-    prior?: MemberPrior
-  ) {
-    super();
-    if (inner._kinds !== undefined) {
-      this._kinds = [...new Set<Kind>([...inner._kinds, 'undefined'])];
-    }
-    this._prior = prior;
-    this._members = members(2, prior, 'p.optional');
-  }
-
-  get _exact(): boolean {
-    return this.inner._exact;
-  }
-
-  _takesUndefined(): boolean {
-    return true;
-  }
-
-  /**
-   * Under `.adaptive()`, the prior of the presence flag in `contexts`
-   * contexts: the declared weights in each, learning as declared.
-   */
-  _presence(contexts: number): MemberPrior | undefined {
-    const adaptive = this._prior?.adaptive;
-    if (adaptive === undefined) {
-      return undefined;
-    }
-    const weights = this._prior?.weights ?? [1, 1];
-    return { rows: new Array<readonly number[]>(contexts).fill(weights), adaptive };
-  }
-
-  /**
-   * Declare how likely the value is to be there, as `[present, absent]`
-   * weights: a 99%-present value costs ~0.015 bits instead of a full bit.
-   * A prior, not a constraint, and part of the wire format.
-   */
-  weights(w: readonly [number, number]): POptional<TOut> {
-    return new POptional<TOut>(this.inner, { ...this._prior, weights: w });
-  }
-
-  /**
-   * Let the prior learn from the message: the declared weights, or even ones
-   * when none are, are the starting point, and each value or absence coded
-   * counts as one observation, so whichever keeps recurring gets cheaper as the
-   * message goes on. `window` is how many observations the counts hold before
-   * they halve, so the newest weigh most (1024 when left out, and raised to the
-   * number of values it counts when smaller). From its second value on, the
-   * node spends one bit to stay static, or a few to name the learning rate that
-   * paid off. Part of the wire format, like the weights.
-   */
-  adaptive(options?: AdaptiveOptions): POptional<TOut> {
-    return new POptional<TOut>(this.inner, {
-      ...this._prior,
-      adaptive: options ?? {},
-    });
-  }
-
-  _open(options: Learning): POptional<TOut> {
-    return this.adaptive(options);
-  }
-
-  _write(enc: Encoder, value: TOut | undefined): void {
-    this._members.write(enc, value === undefined ? 1 : 0);
-    if (value !== undefined) {
-      this.inner._write(enc, value);
-    }
-  }
-
-  _read(dec: Decoder): TOut | undefined {
-    if (this._members.read(dec) === 1) {
-      return undefined;
-    }
-    return this.inner._read(dec);
   }
 }

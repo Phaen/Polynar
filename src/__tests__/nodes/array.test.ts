@@ -191,17 +191,17 @@ describe('p.array adaptive', () => {
 
   it('refuses bad options', () => {
     expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.array adaptive window must be a positive integer, got 0')
+      new RangeError('p.array learning window must be a positive integer, got 0')
     );
     expect(() => plain.adaptive({ window: 1.5 })).toThrow(
-      new TypeError('p.array adaptive window must be a positive integer, got 1.5')
+      new TypeError('p.array learning window must be a positive integer, got 1.5')
     );
     expect(() => plain.weights([2 ** 45, ...Array<number>(7).fill(1)]).adaptive()).toThrow(
       new RangeError(
         'p.array adaptive prior 16 and window 1024 overflow with weights totalling 35184372088839'
       )
     );
-    const cdf = new TypeError('p.array adaptive takes weights, not a cdf');
+    const cdf = new TypeError('p.array learn takes weights, not a cdf');
     expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
     expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
   });
@@ -370,5 +370,35 @@ describe('Schema array order restrictions', () => {
         );
       }
     }
+  });
+});
+
+describe('p.array learn', () => {
+  const plain = p.array(p.int().min(0).max(3)).max(7);
+  const run = (length: number, seed: number) => {
+    const rnd = mulberry32(seed);
+    return Array.from({ length }, () =>
+      Array<number>(rnd() < 0.8 ? 3 : Math.floor(rnd() * 8)).fill(1)
+    );
+  };
+
+  it('round-trips a seeded run on its own', () => {
+    const values = run(300, 5);
+    expect(trip(p.array(plain.learn()), values)).toEqual(values);
+  });
+
+  it('round-trips with its methods declared beside it', () => {
+    const values = run(300, 6);
+    expect(trip(p.array(plain.learn().recall()), values)).toEqual(values);
+  });
+
+  it('takes its learning options once, before `.adaptive()`', () => {
+    const values = run(200, 7);
+    expect(p.array(plain.learning({ window: 8 }).adaptive()).encode(values)).toEqual(
+      p.array(plain.adaptive({ window: 8 })).encode(values)
+    );
+    expect(() => plain.learning({ window: 8 }).learning({ window: 8 })).toThrow(
+      new TypeError('p.array learning is already set')
+    );
   });
 });

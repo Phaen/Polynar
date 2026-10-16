@@ -5,7 +5,6 @@
 import { p, Encoder, CorruptInputError } from '../../index';
 import { mulberry32, trip } from '../support';
 import { decimalPlaces } from '../../nodes/decimal';
-import { STATIC_MAGNITUDE } from '../../nodes/magnitude';
 
 describe('Schema decimal', () => {
   it.each([0, 0.07, 0.29, 3.14, 99.99, 100])(
@@ -259,17 +258,17 @@ describe('p.decimal adaptive', () => {
 
   it('refuses bad options', () => {
     expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.decimal adaptive window must be a positive integer, got 0')
+      new RangeError('p.decimal learning window must be a positive integer, got 0')
     );
     expect(() => plain.adaptive({ window: 1.5 })).toThrow(
-      new TypeError('p.decimal adaptive window must be a positive integer, got 1.5')
+      new TypeError('p.decimal learning window must be a positive integer, got 1.5')
     );
     expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)]).adaptive()).toThrow(
       new RangeError(
         'p.decimal adaptive prior 32 and window 1024 overflow with weights totalling 35184372088847'
       )
     );
-    const cdf = new TypeError('p.decimal adaptive takes weights, not a cdf');
+    const cdf = new TypeError('p.decimal learn takes weights, not a cdf');
     expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
     expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
   });
@@ -279,21 +278,14 @@ describe('p.decimal methods', () => {
   const prices = [9.99, 10.01, 10.05, 10.02, 9.97, 10.01];
 
   it('spells each price after the first as its difference in steps', () => {
-    const node = p.array(p.decimal(0.01).min(0).max(100).delta()).length(prices.length);
-    const model = new Encoder();
-    model.compose(999, 10001);
-    for (let i = 1; i < prices.length; i++) {
-      STATIC_MAGNITUDE.write(
-        model,
-        Math.round(prices[i] * 100),
-        Math.round(prices[i - 1] * 100),
-        0,
-        10000
-      );
-    }
-    const bytes = node.encode(prices);
-    expect(bytes).toEqual(model.output());
-    expect(node.decode(bytes)).toEqual(prices);
+    const walk = Array.from({ length: 100 }, (_, i) => 10 + (i % 5) / 100);
+    const node = p.array(p.decimal(0.01).min(0).max(100).delta());
+    const bytes = node.encode(walk);
+    const plain = p.array(p.decimal(0.01).min(0).max(100)).encode(walk);
+    expect(bytes.length).toBeLessThan(plain.length / 2);
+    expect(node.decode(bytes)).toEqual(walk);
+    const short = p.array(p.decimal(0.01).min(0).max(100).delta()).length(prices.length);
+    expect(short.decode(short.encode(prices))).toEqual(prices);
   });
 
   it('round-trips with delta, recall and adaptive on any grid', () => {
@@ -350,5 +342,33 @@ describe('p.decimal methods', () => {
       .length(2)
       .encode([0, 2 ** 52 + 1]);
     expect(() => p.array(p.decimal(3).delta()).length(2).decode(bytes)).toThrow(CorruptInputError);
+  });
+});
+
+describe('p.decimal learn', () => {
+  const plain = p.decimal(0.5).min(0).max(7.5);
+  const run = (length: number, seed: number) => {
+    const rnd = mulberry32(seed);
+    return Array.from({ length }, () => (rnd() < 0.8 ? 1.5 : Math.floor(rnd() * 16) / 2));
+  };
+
+  it('round-trips a seeded run on its own', () => {
+    const values = run(300, 5);
+    expect(trip(p.array(plain.learn()), values)).toEqual(values);
+  });
+
+  it('round-trips with its methods declared beside it', () => {
+    const values = run(300, 6);
+    expect(trip(p.array(plain.learn().delta().recall()), values)).toEqual(values);
+  });
+
+  it('takes its learning options once, before `.adaptive()`', () => {
+    const values = run(200, 7);
+    expect(p.array(plain.learning({ window: 8 }).adaptive()).encode(values)).toEqual(
+      p.array(plain.adaptive({ window: 8 })).encode(values)
+    );
+    expect(() => plain.learning({ window: 8 }).learning({ window: 8 })).toThrow(
+      new TypeError('p.decimal learning is already set')
+    );
   });
 });

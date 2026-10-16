@@ -1,6 +1,7 @@
 import { Encoder, Decoder, ReplayDecoder, SlotCache } from '../packer';
 import type { InferShape } from './infer';
-import { PNode, POptional } from './base';
+import type { PNode } from './base';
+import { POptional } from './optional';
 import { atPath, describe } from './path';
 import type { Kind } from './guards';
 import { CONTAINER_METHODS, MethodNode, learns, recallOf, type MethodSet } from './methods';
@@ -128,7 +129,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<In
           : undefined;
       }),
       follows: this._keys.map((_, i) =>
-        leaders?.[i] === undefined ? undefined : new Follow(scope.budget, this._learns, journal)
+        leaders?.[i] === undefined ? undefined : new Follow(scope.budget, journal)
       ),
     };
   });

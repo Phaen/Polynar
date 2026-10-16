@@ -3,7 +3,8 @@
  * implements; `lattice` is the shared integer wire for int, decimal,
  * date, and lengths and counts.
  */
-export { PNode, POptional } from './base';
+export { PNode } from './base';
+export { POptional } from './optional';
 export { PInt } from './int';
 export { PDecimal } from './decimal';
 export { PFloat } from './float';
@@ -35,6 +36,6 @@ export type { Infer, InferShape, InferTagged } from './infer';
 export type { Cdf } from './weights';
 export { members } from './members';
 export type { Members, MemberPrior } from './members';
-export type { AdaptiveOptions, SequenceAdaptiveOptions } from './adaptive';
+export type { LearningOptions } from './adaptive';
 export { ProseModels, buildProseModel } from './prose';
 export type { ProseModel, ProseModelOptions } from './prose';

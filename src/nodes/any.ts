@@ -16,7 +16,7 @@ import {
   checkAdaptation,
   readLive,
   writeLive,
-  type AdaptiveOptions,
+  type LearningOptions,
   type Learning,
 } from './adaptive';
 import type { MethodName } from './methods';
@@ -630,12 +630,12 @@ class AnyRecord extends PNode<{ [key: string]: AnyValue }> {
 }
 
 /** The options `p.any().adaptive()` takes: a window, as no node of it learns apart. */
-type AnyAdaptiveOptions = Pick<AdaptiveOptions, 'window'>;
+type AnyOptions = Pick<LearningOptions, 'window'>;
 
 /** What every key's codec under `p.any().adaptive()` shares. */
 interface AnyLearning {
   /** The options as declared, which every key's nodes adapt by. */
-  readonly options: AdaptiveOptions;
+  readonly options: LearningOptions;
   /** The lineage the tag table of every key starts from. */
   readonly tagRoot: Lineage;
   /** The lineage the node of each tag in `OWN_TAGS` of every key starts from, by tag. */
@@ -776,7 +776,7 @@ export class PAny extends PNode<AnyValue> {
   /** Under `.adaptive()`: the arrays and records coded in full, for recall. */
   readonly _trees?: Trees;
 
-  constructor(hints: readonly PNode<any>[] = [], adaptive?: AnyAdaptiveOptions) {
+  constructor(hints: readonly PNode<any>[] = [], adaptive?: AnyOptions) {
     super();
     this._hints = [...hints];
     this._hints.forEach((hint, i) => {
@@ -825,8 +825,8 @@ export class PAny extends PNode<AnyValue> {
         new PString()._open({ ...options, lineage: new Lineage() }, RECALLED),
         same
       ),
-      texts: new Recall<string>({ learned: true }),
-      shapes: new Recall<string[]>({ learned: true }),
+      texts: new Recall<string>(),
+      shapes: new Recall<string[]>(),
       hints: this._forms,
       textual: this._forms.map((form) => form instanceof PRecall),
     };
@@ -861,7 +861,7 @@ export class PAny extends PNode<AnyValue> {
    * out). Encoding and decoding take 5 to 40 times as long as without. Part
    * of the wire format.
    */
-  adaptive(options?: AnyAdaptiveOptions): PAny {
+  adaptive(options?: AnyOptions): PAny {
     return new PAny(this._hints, options ?? {});
   }
 
@@ -960,7 +960,7 @@ export class PAny extends PNode<AnyValue> {
     };
     return new AnyCodec(
       this,
-      members(tiers.length, { weights: tiers, adaptive: options(learning.tagRoot) }, 'p.any'),
+      members(tiers.length, { weights: tiers, learn: options(learning.tagRoot) }, 'p.any'),
       tagNodes(
         undefined,
         undefined,
@@ -972,7 +972,7 @@ export class PAny extends PNode<AnyValue> {
         learning.hints.map((hint, i) => (learning.textual[i] ? new PRecall(hint, same) : hint))
       ),
       make,
-      new Recall<number>({ learned: true })
+      new Recall<number>()
     );
   }
 

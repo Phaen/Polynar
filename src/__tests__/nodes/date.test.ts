@@ -2,8 +2,7 @@
  * `p.date()`: timestamps, optionally floored to UTC calendar buckets.
  */
 
-import { p, Encoder, type DateUnit } from '../../index';
-import { STATIC_MAGNITUDE } from '../../nodes/magnitude';
+import { p, type DateUnit } from '../../index';
 import { mulberry32, trip } from '../support';
 import { calendar, checkInRange, iso, utcMonthStart } from '../../nodes/date';
 
@@ -303,17 +302,17 @@ describe('p.date adaptive', () => {
 
   it('refuses bad options', () => {
     expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.date adaptive window must be a positive integer, got 0')
+      new RangeError('p.date learning window must be a positive integer, got 0')
     );
     expect(() => plain.adaptive({ window: 1.5 })).toThrow(
-      new TypeError('p.date adaptive window must be a positive integer, got 1.5')
+      new TypeError('p.date learning window must be a positive integer, got 1.5')
     );
     expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)]).adaptive()).toThrow(
       new RangeError(
         'p.date adaptive prior 32 and window 1024 overflow with weights totalling 35184372088847'
       )
     );
-    const cdf = new TypeError('p.date adaptive takes weights, not a cdf');
+    const cdf = new TypeError('p.date learn takes weights, not a cdf');
     expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
     expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
   });
@@ -330,16 +329,12 @@ describe('p.date methods', () => {
 
   it('spells each date after the first as its difference in buckets', () => {
     const node = p.date().min(start).precision('second').delta();
+    const bytes = p.array(node).encode(times);
+    const plain = p.array(p.date().min(start).precision('second')).encode(times);
+    expect(bytes.length).toBeLessThan(plain.length / 2);
+    expect(p.array(node).decode(bytes)).toEqual(times);
     const three = times.slice(0, 3);
-    const model = new Encoder();
-    const seconds = three.map((t) => (t.getTime() - start) / 1000);
-    model.composeTerm(seconds[0]);
-    for (let i = 1; i < 3; i++) {
-      STATIC_MAGNITUDE.write(model, seconds[i], seconds[i - 1], 0, Number.MAX_SAFE_INTEGER);
-    }
-    const bytes = p.array(node).length(3).encode(three);
-    expect(bytes).toEqual(model.output());
-    expect(p.array(node).length(3).decode(bytes)).toEqual(three);
+    expect(p.array(node).length(3).decode(p.array(node).length(3).encode(three))).toEqual(three);
   });
 
   it('round-trips with delta, recall and adaptive, bounded or not', () => {
@@ -395,5 +390,40 @@ describe('p.date methods', () => {
       new TypeError('p.date delta takes no weights')
     );
     expect(() => day.delta().cdf((t) => t)).toThrow(new TypeError('p.date delta takes no cdf'));
+  });
+});
+
+describe('p.date learn', () => {
+  const plain = p
+    .date()
+    .precision('day')
+    .min(new Date(0))
+    .max(new Date(15 * 86_400_000));
+  const run = (length: number, seed: number) => {
+    const rnd = mulberry32(seed);
+    return Array.from(
+      { length },
+      () => new Date((rnd() < 0.8 ? 3 : Math.floor(rnd() * 16)) * 86_400_000)
+    );
+  };
+
+  it('round-trips a seeded run on its own', () => {
+    const values = run(300, 5);
+    expect(trip(p.array(plain.learn()), values)).toEqual(values);
+  });
+
+  it('round-trips with its methods declared beside it', () => {
+    const values = run(300, 6);
+    expect(trip(p.array(plain.learn().delta().recall()), values)).toEqual(values);
+  });
+
+  it('takes its learning options once, before `.adaptive()`', () => {
+    const values = run(200, 7);
+    expect(p.array(plain.learning({ window: 8 }).adaptive()).encode(values)).toEqual(
+      p.array(plain.adaptive({ window: 8 })).encode(values)
+    );
+    expect(() => plain.learning({ window: 8 }).learning({ window: 8 })).toThrow(
+      new TypeError('p.date learning is already set')
+    );
   });
 });

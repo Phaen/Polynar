@@ -1,8 +1,8 @@
 /**
  * The magnitude scale: an integer relative to an origin as its side, the
- * bit-length class of its distance and the tail within the class, static
- * or learned, exact up to the edges of its interval and across the whole
- * safe range.
+ * bit-length class of its distance and the tail within the class, on the
+ * gamma or a learned scale, exact up to the edges of its interval and
+ * across the whole safe range.
  */
 
 import { Encoder, Decoder } from '../../packer';
@@ -14,10 +14,8 @@ import {
   LearnedMagnitude,
   MAX_CLASS,
   SIDE_SYMBOLS,
-  STATIC_MAGNITUDE,
   classOf,
   gammaWeights,
-  magnitude,
   sideWeights,
   type Magnitude,
 } from '../../nodes/magnitude';
@@ -94,93 +92,60 @@ describe('classOf', () => {
   });
 });
 
-describe.each([
-  ['static', () => STATIC_MAGNITUDE],
-  ['learned', () => new LearnedMagnitude(true, {}, 'test')],
-])('%s magnitude', (_name, make) => {
-  it('refuses arguments that are not safe integers, an origin outside, a value outside', () => {
-    const scale = make();
-    const enc = new Encoder();
-    const dec = new Decoder(new Uint8Array(0));
-    for (const bad of [1.5, NaN, Infinity, TWO_53]) {
-      expect(() => scale.write(enc, bad, 0, -5, 5)).toThrow(TypeError);
-      expect(() => scale.write(enc, 0, 0, bad, 5)).toThrow(TypeError);
-      expect(() => scale.read(dec, bad, -5, 5)).toThrow(TypeError);
-      expect(() => scale.learn(enc, 0, bad, -5, 5)).toThrow(TypeError);
-    }
-    expect(() => scale.write(enc, 0, 6, -5, 5)).toThrow(
-      new RangeError('Magnitude origin 6 is outside [-5, 5]')
-    );
-    expect(() => scale.read(dec, -6, -5, 5)).toThrow(RangeError);
-    expect(() => scale.write(enc, 6, 0, -5, 5)).toThrow(
-      new RangeError('Magnitude value 6 is outside [-5, 5]')
-    );
-    expect(() => scale.learn(dec, -6, 0, -5, 5)).toThrow(RangeError);
-  });
+describe.each([['learned', () => new LearnedMagnitude(true, {}, 'test')]])(
+  '%s magnitude',
+  (_name, make) => {
+    it('refuses arguments that are not safe integers, an origin outside, a value outside', () => {
+      const scale = make();
+      const enc = new Encoder();
+      const dec = new Decoder(new Uint8Array(0));
+      for (const bad of [1.5, NaN, Infinity, TWO_53]) {
+        expect(() => scale.write(enc, bad, 0, -5, 5)).toThrow(TypeError);
+        expect(() => scale.write(enc, 0, 0, bad, 5)).toThrow(TypeError);
+        expect(() => scale.read(dec, bad, -5, 5)).toThrow(TypeError);
+        expect(() => scale.learn(enc, 0, bad, -5, 5)).toThrow(TypeError);
+      }
+      expect(() => scale.write(enc, 0, 6, -5, 5)).toThrow(
+        new RangeError('Magnitude origin 6 is outside [-5, 5]')
+      );
+      expect(() => scale.read(dec, -6, -5, 5)).toThrow(RangeError);
+      expect(() => scale.write(enc, 6, 0, -5, 5)).toThrow(
+        new RangeError('Magnitude value 6 is outside [-5, 5]')
+      );
+      expect(() => scale.learn(dec, -6, 0, -5, 5)).toThrow(RangeError);
+    });
 
-  it('round-trips every value of small intervals from every origin', () => {
-    expect(tripAll(make, small).back).toEqual(small.map(([value]) => value));
-  });
+    it('round-trips every value of small intervals from every origin', () => {
+      expect(tripAll(make, small).back).toEqual(small.map(([value]) => value));
+    });
 
-  it('round-trips values across the whole safe range, exactly', () => {
-    expect(tripAll(make, wide).back).toEqual(wide.map(([value]) => value));
-  });
+    it('round-trips values across the whole safe range, exactly', () => {
+      expect(tripAll(make, wide).back).toEqual(wide.map(([value]) => value));
+    });
 
-  it('writes nothing for an interval of one value', () => {
-    expect(tripAll(make, [[4, 4, 4, 4]]).bytes).toEqual(new Uint8Array(0));
-  });
+    it('writes nothing for an interval of one value', () => {
+      expect(tripAll(make, [[4, 4, 4, 4]]).bytes).toEqual(new Uint8Array(0));
+    });
 
-  it('reads a value at an origin of -0 as 0', () => {
-    const [back] = tripAll(make, [[0, -0, -3, 3]]).back;
-    expect(Object.is(back, 0)).toBe(true);
-  });
+    it('reads a value at an origin of -0 as 0', () => {
+      const [back] = tripAll(make, [[0, -0, -3, 3]]).back;
+      expect(Object.is(back, 0)).toBe(true);
+    });
 
-  it('keeps encoder and decoder in step through learn', () => {
-    const writer = make();
-    const reader = make();
-    const enc = new Encoder();
-    for (let i = 0; i < 20; i++) writer.learn(enc, 3, 0, -100, 100);
-    writer.write(enc, 3, 0, -100, 100);
-    writer.write(enc, -77, 0, -100, 100);
-    const dec = new Decoder(enc.output());
-    for (let i = 0; i < 20; i++) reader.learn(dec, 3, 0, -100, 100);
-    expect([reader.read(dec, 0, -100, 100), reader.read(dec, 0, -100, 100)]).toEqual([3, -77]);
-    dec.finalize();
-  });
-});
-
-describe('static magnitude', () => {
-  it('names the origin and each class the interval reaches with one digit, then the tail', () => {
-    // [-10, 100] from 0: the origin, 7 classes above, 4 below.
-    const at = (value: number) => tripAll(() => STATIC_MAGNITUDE, [[value, 0, -10, 100]]).bytes;
-    expect(at(0)).toEqual(digits([0, 12]));
-    expect(at(1)).toEqual(digits([1, 12]));
-    expect(at(5)).toEqual(digits([3, 12], [1, 4]));
-    expect(at(-1)).toEqual(digits([8, 12]));
-    expect(at(-9)).toEqual(digits([11, 12], [1, 3]));
-    // Class 7 is cut at 100: 37 tails, not 64.
-    expect(at(100)).toEqual(digits([7, 12], [36, 37]));
-    // Below, class 4 is cut at 10: 3 tails, not 8.
-    expect(at(-10)).toEqual(digits([11, 12], [2, 3]));
-  });
-
-  it('spends nothing on a side the interval does not reach', () => {
-    const bytes = tripAll(() => STATIC_MAGNITUDE, [[6, 0, 0, 7]]).bytes;
-    expect(bytes).toEqual(digits([3, 4], [2, 4]));
-  });
-
-  it('cuts class 54 at the edge of the safe range', () => {
-    const case_: Case = [MAX, -MAX, -MAX, MAX];
-    // The distance 2^54 - 2 is class 54, its tail 2^53 - 2 of 2^53 - 1.
-    expect(tripAll(() => STATIC_MAGNITUDE, [case_]).bytes).toEqual(
-      digits([54, 55], [TWO_53 - 2, MAX])
-    );
-    const down: Case = [-MAX, MAX - 1, -MAX, MAX];
-    expect(tripAll(() => STATIC_MAGNITUDE, [down]).bytes).toEqual(
-      digits([55, 56], [TWO_53 - 3, TWO_53 - 2])
-    );
-  });
-});
+    it('keeps encoder and decoder in step through learn', () => {
+      const writer = make();
+      const reader = make();
+      const enc = new Encoder();
+      for (let i = 0; i < 20; i++) writer.learn(enc, 3, 0, -100, 100);
+      writer.write(enc, 3, 0, -100, 100);
+      writer.write(enc, -77, 0, -100, 100);
+      const dec = new Decoder(enc.output());
+      for (let i = 0; i < 20; i++) reader.learn(dec, 3, 0, -100, 100);
+      expect([reader.read(dec, 0, -100, 100), reader.read(dec, 0, -100, 100)]).toEqual([3, -77]);
+      dec.finalize();
+    });
+  }
+);
 
 describe.each([
   ['gamma', () => GAMMA_MAGNITUDE],
@@ -290,14 +255,5 @@ describe('learned magnitude', () => {
 
   it('refuses invalid adaptive options', () => {
     expect(() => new LearnedMagnitude(true, { window: 0 }, 'test')).toThrow(RangeError);
-  });
-});
-
-describe('magnitude', () => {
-  it('is static without adaptive options and learned with them', () => {
-    expect(magnitude(undefined, true, 'test')).toBe(STATIC_MAGNITUDE);
-    const learned = magnitude({ window: 99 }, false, 'test');
-    expect(learned).toBeInstanceOf(LearnedMagnitude);
-    expect((learned as LearnedMagnitude).signed).toBe(false);
   });
 });

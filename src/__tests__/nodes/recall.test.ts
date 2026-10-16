@@ -91,7 +91,7 @@ describe('PRecall', () => {
   });
 
   it('shares a recall it is given, so a value one node spelled recalls through another', () => {
-    const shared = new Recall<string>({ learned: true });
+    const shared = new Recall<string>();
     const upper = new PRecall<string>(p.string().charset('AB'), (s) => s, shared);
     const lower = new PRecall<string>(p.string(), (s) => s, shared);
     const enc = new Encoder();
@@ -245,7 +245,7 @@ describe('identity', () => {
   });
 
   it('writes the key of each value through a recall inside it, or spells it when the key is computed', () => {
-    const recall = new Recall<number>({ learned: true });
+    const recall = new Recall<number>();
     const twice = identity((enc) => {
       for (let i = 0; i < 2; i++) recall.write(enc, 'k', () => enc.compose(1, 3));
     });
@@ -370,24 +370,16 @@ describe('Recall', () => {
     return { bytes: enc.output(), hits };
   };
 
-  it('spells a member uniformly over "new" and the values seen, without learning', () => {
+  it('spells a member by odds it learns, cheaper than a uniform one on repeats', () => {
     const { bytes, hits } = writeAll(new Recall(), [4, 4, 7, 4, 7, 8]);
     expect(hits).toEqual([false, true, false, true, true, false]);
-    const model = new Encoder();
-    model.compose(4, 9);
-    model.compose(1, 2);
-    model.compose(0, 2);
-    model.compose(7, 9);
-    model.compose(1, 3);
-    model.compose(2, 3);
-    model.compose(0, 3);
-    model.compose(8, 9);
-    expect(bytes).toEqual(model.output());
     const dec = new Decoder(bytes);
     const recall = new Recall<number>();
     const back = [0, 1, 2, 3, 4, 5].map(() => recall.read(dec, () => dec.parse(9)));
     dec.finalize();
     expect(back).toEqual([4, 4, 7, 4, 7, 8]);
+    const keys = Array.from({ length: 200 }, (_, i) => [1, 5, 3][i % 3]);
+    expect(writeAll(new Recall(), keys).bytes.length).toBeLessThan(keys.length / 16);
   });
 
   it('reads a recalled value through its copy', () => {
@@ -404,7 +396,6 @@ describe('Recall', () => {
 
   it('spells a seen value in full when open and that costs less, the decoder listing it again', () => {
     const recall = new Recall<number>({ open: true });
-    expect(recall.learned).toBe(true);
     // After two new values the seen flag and member cost more than the spelling.
     const { bytes, hits } = writeAll(recall, [1, 2, 3, 1]);
     expect(hits).toEqual([false, false, false, false]);
@@ -447,7 +438,7 @@ describe('Recall', () => {
 
   it('spells as PRecall does when learned', () => {
     const values = ['a', 'b', 'a', 'a', 'c', 'b'];
-    const recall = new Recall<string>({ learned: true });
+    const recall = new Recall<string>();
     const enc = new Encoder();
     for (const v of values) recall.write(enc, v, () => p.string()._write(enc, v));
     expect(enc.output()).toEqual(tripAll(strings(), values).bytes);
@@ -468,24 +459,20 @@ const inOne = <T>(node: PNode<T>, values: readonly T[]) => {
 describe('.recall()', () => {
   const item = p.int().min(0).max(255);
 
-  it('costs a repeated object log2(seen + 1) bits', () => {
+  it('costs a repeated object next to nothing once the repeats are learned', () => {
     const node = p.object({ a: item, b: p.bool() }).recall();
     const one = { a: 7, b: true };
     const two = { a: 9, b: false };
-    const { bytes, back } = inOne(node, [one, two, one, two, two]);
+    const { back } = inOne(node, [one, two, one, two, two]);
     expect(back).toEqual([one, two, one, two, two]);
-    const model = new Encoder();
-    model.compose(7, 256);
-    model.compose(0, 2);
-    model.compose(0, 2);
-    model.compose(9, 256);
-    model.compose(1, 2);
-    model.compose(1, 3);
-    model.compose(2, 3);
-    model.compose(2, 3);
-    expect(bytes).toEqual(model.output());
     // A repeat decodes as a copy of the object first decoded.
     expect(back[2]).not.toBe(back[0]);
+    const many = Array.from({ length: 200 }, (_, i) => (i % 2 === 0 ? one : two));
+    const learned = inOne(node, many);
+    expect(learned.back).toEqual(many);
+    expect(learned.bytes.length).toBeLessThan(
+      inOne(p.object({ a: item, b: p.bool() }), many).bytes.length / 4
+    );
   });
 
   it('decodes each repeat as its own copy, so mutating one leaves the others intact', () => {

@@ -753,29 +753,25 @@ export interface Followed {
  * field's value the last time the leading field had this value, or, the
  * first time, the field's previous value with the leading field's value
  * then replaced by its value now, or else the leading field's value
- * itself. The flag is a bit, or learned per kind of prediction when
- * `learning`.
+ * itself. The flag is learned per kind of prediction.
  */
 export class Follow {
   private readonly last = new Map<unknown, unknown>();
   /** The learned flags of a remembered prediction, of the leading value itself and of a template. */
-  private readonly flags?: readonly [Fenwick, Fenwick, Fenwick];
+  private readonly flags: readonly [Fenwick, Fenwick, Fenwick];
   /** The field's previous value, and the leading field's value then. */
   private previous: unknown;
   private before: unknown;
 
   constructor(
     private readonly budget: Float64Array,
-    learning: boolean,
     journal?: Journal
   ) {
-    if (learning) {
-      this.flags = [
-        new Fenwick([1, 1], journal),
-        new Fenwick([1, 1], journal),
-        new Fenwick([1, 1], journal),
-      ];
-    }
+    this.flags = [
+      new Fenwick([1, 1], journal),
+      new Fenwick([1, 1], journal),
+      new Fenwick([1, 1], journal),
+    ];
   }
 
   /** The prediction while the leading field has `leader`. */
@@ -799,14 +795,9 @@ export class Follow {
     const turn = this.predict(leader);
     if (turn.offered) {
       turn.hit = Object.is(value, turn.prediction);
-      const { flags } = this;
-      if (flags === undefined) {
-        enc.compose(turn.hit ? 1 : 0, 2);
-      } else {
-        const flag = flags[turn.kind];
-        writeLive(enc, flag, turn.hit ? 1 : 0);
-        learnFlag(flag, turn.hit);
-      }
+      const flag = this.flags[turn.kind];
+      writeLive(enc, flag, turn.hit ? 1 : 0);
+      learnFlag(flag, turn.hit);
     }
     return turn;
   }
@@ -815,14 +806,9 @@ export class Follow {
   read(dec: Decoder, leader: unknown): Followed {
     const turn = this.predict(leader);
     if (turn.offered) {
-      const { flags } = this;
-      if (flags === undefined) {
-        turn.hit = dec.parse(2) === 1;
-      } else {
-        const flag = flags[turn.kind];
-        turn.hit = readLive(dec, flag) === 1;
-        learnFlag(flag, turn.hit);
-      }
+      const flag = this.flags[turn.kind];
+      turn.hit = readLive(dec, flag) === 1;
+      learnFlag(flag, turn.hit);
     }
     return turn;
   }
