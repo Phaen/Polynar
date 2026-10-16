@@ -16,7 +16,7 @@ function printed(output: string): string[][][] {
   for (const line of output.split('\n')) {
     if (line.startsWith('┌')) {
       tables.push([]);
-    } else if (/^│ \d/.test(line)) {
+    } else if (/^│\s*\d/.test(line)) {
       const cells = line
         .split('│')
         .slice(2, -1)
