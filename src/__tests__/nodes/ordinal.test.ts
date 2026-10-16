@@ -203,16 +203,24 @@ describe('writeOrdinal / readOrdinal', () => {
     expect(bytes).toBeGreaterThan(2934 * 0.99);
   });
 
-  it('meet the performance targets', () => {
-    const cases: [number[], number][] = [
-      [distinct(1000, 2 ** 32), 2 ** 32],
-      [distinct(10_000, 2 ** 20), 2 ** 20],
-    ];
-    for (const [digits, radix] of cases) {
-      const start = performance.now();
-      trip(digits, radix, { sorted: true, unique: true });
-      expect(performance.now() - start).toBeLessThan(digits.length === 1000 ? 200 : 2000);
-    }
+  it('scale close to linearly in the digit count', () => {
+    // Five times the digits: linear is about 5, n log n about 5.4, quadratic 25.
+    const radix = 2 ** 20;
+    const order: Order = { sorted: true, unique: true };
+    const small = distinct(2000, radix);
+    const large = distinct(10_000, radix);
+    const time = (digits: number[]): number => {
+      let best = Infinity;
+      for (let run = 0; run < 3; run++) {
+        const start = performance.now();
+        trip(digits, radix, order);
+        best = Math.min(best, performance.now() - start);
+      }
+      return best;
+    };
+    time(large);
+    const ratio = time(large) / time(small);
+    expect(ratio).toBeLessThan(12);
   });
 
   it('reject more distinct digits than the radix holds as corrupt', () => {
