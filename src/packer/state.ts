@@ -3,7 +3,8 @@ import type { Journal } from './journal';
 /**
  * Per-message state for nodes whose coding depends on what the same node
  * wrote earlier in the message: an adaptive prior's counts, the strings a
- * message has seen.
+ * message has seen. It also holds the message's registry of providers
+ * (`../nodes/providers`), learned knowledge that nodes share by a string key.
  */
 
 /** Rejects a `key` that cannot key a node's slot: anything but an object or a function. */
@@ -22,6 +23,8 @@ export function checkKey(key: unknown, name: string): void {
  */
 export class MessageState {
   private readonly slots = new Map<object, unknown>();
+  /** The providers' slots, by `kind|key`. */
+  private readonly providers = new Map<string, unknown>();
   /** How many slots were dropped so far: a `SlotCache` holds a slot only while this stands. */
   private drops = 0;
 
@@ -32,10 +35,10 @@ export class MessageState {
     return this.drops;
   }
 
-  /** Drops the slot of `key`, as a rollback does. */
-  delete(key: object): boolean {
+  /** Drops the slot of `key`, a node's or a provider's, as a rollback does. */
+  delete(key: object | string): boolean {
     this.drops++;
-    return this.slots.delete(key);
+    return typeof key === 'string' ? this.providers.delete(key) : this.slots.delete(key);
   }
 
   /**
@@ -55,11 +58,29 @@ export class MessageState {
     }
     return slot;
   }
+
+  /**
+   * The provider slot under `key`: created by `init` on the message's first
+   * request for it, and returned as-is after, like a node's slot.
+   */
+  provider<S>(key: string, init: () => S): S {
+    const found = this.providers.get(key);
+    if (found !== undefined || this.providers.has(key)) {
+      return found as S;
+    }
+    const slot = init();
+    this.providers.set(key, slot);
+    if (this.journal?.active === true) {
+      this.journal.drop(this, key);
+    }
+    return slot;
+  }
 }
 
 /** A side as a `SlotCache` reads it: its message state and that state's drops. */
 export interface StateSide {
   state<S>(key: object, init: () => S): S;
+  provider<S>(key: string, init: () => S): S;
   readonly stateEpoch: number;
 }
 
@@ -76,7 +97,7 @@ export class SlotCache<S, Side extends StateSide> {
 
   /** The slot of `key`, built by `init` for a side whose message has none. */
   constructor(
-    private readonly key: object,
+    private readonly key: object | string,
     private readonly init: (side: Side) => S
   ) {}
 
@@ -84,7 +105,11 @@ export class SlotCache<S, Side extends StateSide> {
     if (side === this.side && side.stateEpoch === this.epoch) {
       return this.slot as S;
     }
-    const slot = side.state(this.key, () => this.init(side));
+    const { key } = this;
+    const slot =
+      typeof key === 'string'
+        ? side.provider(key, () => this.init(side))
+        : side.state(key, () => this.init(side));
     this.side = side;
     this.epoch = side.stateEpoch;
     this.slot = slot;

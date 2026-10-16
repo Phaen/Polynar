@@ -17,8 +17,9 @@
 import { Encoder, Decoder } from '../packer';
 import type { CodecOptions, DecodeOptions, OutputType } from '../packer';
 import type { Kind } from './guards';
-import type { AdaptiveOptions } from './adaptive';
+import type { AdaptiveOptions, Learning } from './adaptive';
 import { members, type MemberPrior, type Members } from './members';
+import type { MethodName } from './methods';
 
 /** One run of values, written or read one after another, each against the ones before it. */
 export interface Run<T> {
@@ -83,6 +84,13 @@ export abstract class PNode<TOut> {
   get _exact(): boolean {
     return false;
   }
+
+  /**
+   * The node as `.adaptive(options)` leaves it, any of its methods named in
+   * `except` left as they are: how `p.any` adapts the nodes it builds and
+   * its hints. Present on nodes that adapt.
+   */
+  _open?(options: Learning, except?: readonly MethodName[]): PNode<TOut>;
 
   /** Validate one value and write its digits. The whole codec for this type. */
   abstract _write(enc: Encoder, value: TOut): void;
@@ -189,6 +197,10 @@ export class POptional<TOut> extends PNode<TOut | undefined> {
       ...this._prior,
       adaptive: options ?? {},
     });
+  }
+
+  _open(options: Learning): POptional<TOut> {
+    return this.adaptive(options);
   }
 
   _write(enc: Encoder, value: TOut | undefined): void {

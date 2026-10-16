@@ -6,10 +6,20 @@ import {
   checkAdaptation,
   checkAdaptiveMembers,
   lineageOf,
-  type AdaptiveOptions,
+  type Learning,
 } from './adaptive';
 import { LearnedMagnitude, magnitude, type Magnitude } from './magnitude';
-import { ModeChoice, recallOf, type Method, type Spelling } from './methods';
+import {
+  ModeChoice,
+  Previous,
+  chooses,
+  learningOf,
+  recallOf,
+  type Method,
+  type MethodName,
+  type MethodSet,
+  type ValueProvider,
+} from './methods';
 import { Recall } from './recall';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
@@ -21,15 +31,14 @@ const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const SPLIT_HIGH = 2 ** 26;
 const SPLIT_LOW = 2 ** 27;
 
-/** Whether `offset` is an integer in `[low, high]`. */
-const within = (offset: number, low: number, high: number): boolean =>
-  Number.isInteger(offset) && offset >= low && offset <= high;
+/** A range's learned odds of an offset, coded through and taught apart. */
+type LearnedOdds = Method<number> & ValueProvider<number>;
 
 /**
- * A narrow range's learned spelling: each offset from the range's min a
- * member of an adaptive prior over the range.
+ * A narrow range's learned odds: each offset from the range's min a member
+ * of an adaptive prior over the range.
  */
-class LearnedMembers implements Method<number> {
+class LearnedMembers implements LearnedOdds {
   constructor(private readonly prior: AdaptivePrior) {}
 
   available(): boolean {
@@ -45,18 +54,16 @@ class LearnedMembers implements Method<number> {
   }
 
   learn(side: Encoder | Decoder, offset: number): void {
-    if (within(offset, 0, this.prior.members - 1)) {
-      this.prior.learn(side, offset);
-    }
+    this.prior.learn(side, offset);
   }
 }
 
 /**
- * A wide or unbounded range's learned spelling: each offset on the learned
+ * A wide or unbounded range's learned scale: each offset on the learned
  * magnitude scale from the range's origin, over the offsets `[low, high]`
  * the range reaches.
  */
-class LearnedOffsets implements Method<number> {
+class LearnedOffsets implements LearnedOdds {
   constructor(
     private readonly scale: Magnitude,
     private readonly low: number,
@@ -76,9 +83,7 @@ class LearnedOffsets implements Method<number> {
   }
 
   learn(side: Encoder | Decoder, offset: number): void {
-    if (within(offset, this.low, this.high)) {
-      this.scale.learn(side, offset, 0, this.low, this.high);
-    }
+    this.scale.learn(side, offset, 0, this.low, this.high);
   }
 }
 
@@ -97,8 +102,9 @@ class LearnedOffsets implements Method<number> {
  * Adaptive options turn the prior adaptive: over a range of at most
  * `MAX_ADAPTIVE_MEMBERS` values or under declared weights, an adaptive
  * prior over the range, the declared weights or even ones, with the values
- * a message writes learned on top; over a wider or unbounded range, the
- * learned magnitude scale from the range's origin.
+ * a message codes learned on top; over a wider or unbounded range, the
+ * learned magnitude scale from the range's origin. Coding learns nothing:
+ * the range's owner teaches it each index through `learn`.
  */
 export class IndexRange {
   readonly lo?: number;
@@ -110,10 +116,10 @@ export class IndexRange {
   readonly declared?: Prior;
   readonly prior?: RangePrior;
   /**
-   * The adaptive options as given, set when the prior adapts; the weights
-   * then live in `learned`, not `prior`.
+   * What the prior learns under, set when it adapts; the weights then live
+   * in `learned`, not `prior`.
    */
-  readonly adaptive?: AdaptiveOptions;
+  readonly learning?: Learning;
   /** The one radix an index packs in: both bounds, no prior or adaptive options, fewer than 2^53 values. */
   readonly radix?: number;
   /** Set with `radix`: the index `digit` steps above min, as a digit read in `radix` stands for. */
@@ -133,8 +139,8 @@ export class IndexRange {
   readonly low: number;
   /** The highest offset the range reaches: the span between both bounds, 0 from a lone max, else the safe integers' end. */
   readonly high: number;
-  /** Set with `adaptive`: the learned spelling of an index's offset, which `write` and `read` use. */
-  readonly learned?: Method<number>;
+  /** Set with `learning`: the learned odds of an index's offset, which `write` and `read` code through and `learn` teaches. */
+  readonly learned?: LearnedOdds;
   private readonly show: (index: number) => string;
 
   constructor(
@@ -142,7 +148,7 @@ export class IndexRange {
     lo?: number,
     hi?: number,
     prior?: Prior,
-    adaptive?: AdaptiveOptions,
+    learning?: Learning,
     show: (index: number) => string = String
   ) {
     checkRange(who, lo, hi, show);
@@ -152,8 +158,8 @@ export class IndexRange {
     this.origin = lo ?? hi ?? 0;
     this.low = lo === undefined ? -MAX_SAFE : 0;
     this.high = hi === undefined ? MAX_SAFE : hi - this.origin;
-    if (adaptive !== undefined) {
-      const { window } = checkAdaptation(adaptive, who);
+    if (learning !== undefined) {
+      const { window } = checkAdaptation(learning, who);
       if (typeof prior === 'function') {
         throw new TypeError(`${who} adaptive takes weights, not a cdf`);
       }
@@ -166,13 +172,13 @@ export class IndexRange {
         checkAdaptiveMembers(n, who);
         const weights = prior ?? new Array<number>(n).fill(1);
         this.learned = new LearnedMembers(
-          new AdaptivePrior([weights], n, window, who, lineageOf(adaptive))
+          new AdaptivePrior([weights], n, window, who, lineageOf(learning))
         );
       } else {
-        const scale = new LearnedMagnitude(lo === undefined, adaptive, who);
+        const scale = new LearnedMagnitude(lo === undefined, learning, who);
         this.learned = new LearnedOffsets(scale, this.low, this.high);
       }
-      this.adaptive = adaptive;
+      this.learning = learning;
     } else if (prior !== undefined) {
       this.prior = new RangePrior(prior, lo as number, hi as number, who, show);
     }
@@ -185,7 +191,7 @@ export class IndexRange {
       lo !== undefined &&
       hi !== undefined &&
       prior === undefined &&
-      adaptive === undefined &&
+      learning === undefined &&
       hi - lo < MAX_SAFE
     ) {
       this.radix = hi - lo + 1;
@@ -251,6 +257,11 @@ export class IndexRange {
       return this.fromOffset(this.learned.read(dec));
     }
     return this.prior === undefined ? this.readIndex(dec) : this.prior.read(dec);
+  }
+
+  /** Learns `index`, just written or read, where the odds learn. */
+  learn(side: Encoder | Decoder, index: number): void {
+    this.learned?.learn(side, index - this.origin + 0);
   }
 
   /** Packs `index`, an integer within the bounds as `write` checked. */
@@ -325,133 +336,124 @@ export class IndexRange {
   }
 }
 
-/** A side's previous offset of one node in the message: undefined before its first value. */
-interface Previous {
-  offset?: number;
-}
-
 /**
- * An index spelled as its difference from the node's previous one: the
- * offset on a magnitude scale whose origin is the previous offset, over the
- * offsets the range reaches, so a side or class the bounds rule out costs
- * nothing. Available from the node's second value in a message on.
+ * The difference of an index from the node's previous one: the offset on
+ * a magnitude scale whose origin is the previous offset, over the offsets
+ * the range reaches, so a side or class the bounds rule out costs nothing.
+ * Codes from the node's second value in a message on. Each offset it
+ * learns teaches the scale its difference from the previous offset, then
+ * becomes the previous offset.
  */
-export class Delta implements Method<number> {
+export class Delta implements Method<number>, ValueProvider<number> {
+  /** The offset the next difference counts from. */
+  private readonly previous = new Previous<number>();
+
   constructor(
     private readonly scale: Magnitude,
     private readonly low: number,
     private readonly high: number
   ) {}
 
-  /** This message's previous offset on `side`. */
-  private previous(side: Encoder | Decoder): Previous {
-    return side.state<Previous>(this, () => ({}));
-  }
-
-  /** Records `offset` as the previous one on `side`, for the next value's difference. */
-  follow(side: Encoder | Decoder, offset: number): void {
-    const previous = this.previous(side);
-    const before = previous.offset;
-    previous.offset = offset;
-    if (side.journal?.active === true) {
-      side.journal.call(() => {
-        previous.offset = before;
-      });
-    }
+  /** Counts the next difference on `side` from `offset`, in place of the previous offset. */
+  from(side: Encoder | Decoder, offset: number): void {
+    this.previous.learn(side, offset);
   }
 
   available(side: Encoder | Decoder): boolean {
-    return this.previous(side).offset !== undefined;
+    return this.previous.get(side) !== undefined;
   }
 
   write(enc: Encoder, offset: number): void {
-    this.scale.write(enc, offset, this.previous(enc).offset as number, this.low, this.high);
+    this.scale.write(enc, offset, this.previous.get(enc) as number, this.low, this.high);
   }
 
   read(dec: Decoder): number {
-    return this.scale.read(dec, this.previous(dec).offset as number, this.low, this.high);
+    return this.scale.read(dec, this.previous.get(dec) as number, this.low, this.high);
   }
 
   learn(side: Encoder | Decoder, offset: number): void {
-    const origin = this.previous(side).offset;
-    if (origin !== undefined && within(offset, this.low, this.high)) {
+    const origin = this.previous.swap(side, offset);
+    if (origin !== undefined) {
       this.scale.learn(side, offset, origin, this.low, this.high);
     }
   }
 }
 
+/** The methods of a lattice node, which `.adaptive()` opens. */
+export const INDEX_METHODS: readonly MethodName[] = ['learn', 'delta', 'recall'];
+
 /**
  * The methods a lattice node spells its indices by, over its range: by
  * default the range's own spelling. `.delta()` spells every value after
  * the node's first in the message as its difference from the previous
- * one, on the static magnitude scale, or the learned one under adaptation;
- * it takes no weights or cdf. Under adaptation without `.delta()`, a mode
- * picks per value between the plain spelling and the difference. With
+ * one, on the static magnitude scale, or the learned one where the node
+ * learns; it takes no weights or cdf. With the delta open, a mode picks
+ * per value between the plain spelling and the difference. With
  * `.recall()`, a value the node already wrote in the message is spelled by
  * its place among those values first, a new one then by the other methods.
- * The previous value is the last the node coded, recalled or spelled.
+ * Every value, recalled or spelled, then teaches the range's learned odds
+ * and the difference, in that order, so the previous value is the last
+ * the node coded.
  */
 export class IndexMethods {
-  /** Set by `.delta()` or adaptation: the difference, and the previous offset it counts from. */
+  /** Set by a declared or open delta: the difference, and the previous offset it counts from. */
   private readonly delta?: Delta;
-  /** Set by adaptation without `.delta()`: the mode between plain, 0, and the difference, 1. */
+  /** Set by an open delta: the mode between plain, 0, and the difference, 1. */
   private readonly mode?: ModeChoice<number>;
   private readonly recall?: Recall<number>;
+  /** What every value the node codes teaches, by its offset from the range's origin, in order. */
+  private readonly providers: readonly ValueProvider<number>[];
   /** Whether no method is declared, so every value spells as the range writes it. */
   readonly plain: boolean;
 
   constructor(
     readonly range: IndexRange,
-    spelling: Spelling,
+    methods: MethodSet,
     who: string
   ) {
-    const { declared, adaptive, learned } = range;
-    if (spelling.delta !== undefined) {
-      if (declared !== undefined) {
-        throw new TypeError(`${who} delta takes no ${priorKind(declared)}`);
-      }
-      this.delta = new Delta(magnitude(adaptive, true, who), range.low, range.high);
-    } else if (learned !== undefined) {
-      this.delta = new Delta(magnitude(adaptive, true, who), range.low, range.high);
-      this.mode = new ModeChoice([learned, this.delta], adaptive, who);
+    const { declared, learned } = range;
+    const learning = learningOf(methods);
+    if (methods.delta === 'declared' && declared !== undefined) {
+      throw new TypeError(`${who} delta takes no ${priorKind(declared)}`);
     }
-    this.recall = recallOf(spelling, adaptive);
-    this.plain = spelling.delta === undefined && this.recall === undefined;
+    if (methods.delta !== undefined) {
+      this.delta = new Delta(magnitude(learning, true, who), range.low, range.high);
+    }
+    if (chooses(methods, ['delta'])) {
+      // `.adaptive()` opens the delta with the range's learned odds.
+      this.mode = new ModeChoice([learned as LearnedOdds, this.delta as Delta], learning, who);
+    }
+    const providers: ValueProvider<number>[] = [];
+    if (learned !== undefined) {
+      providers.push(learned);
+    }
+    if (this.delta !== undefined) {
+      providers.push(this.delta);
+    }
+    this.providers = providers;
+    this.recall = recallOf(methods);
+    this.plain = methods.delta !== 'declared' && this.recall === undefined;
   }
 
   /** Writes `index`; `subject` names the value in an error, as the range's `write` takes it. */
   write(enc: Encoder, index: number, subject?: () => string): void {
-    const { delta, recall } = this;
-    if (delta === undefined && recall === undefined) {
-      this.range.write(enc, index, subject);
-      return;
-    }
-    // The difference needs every index within the origin's exact reach.
-    const offset = delta === undefined ? index : this.range.offset(index, subject);
+    const { recall, providers } = this;
+    // The providers learn offsets, so every index must lie within the
+    // origin's exact reach.
+    const offset = providers.length === 0 ? index : this.range.offset(index, subject);
     if (recall === undefined) {
       this.spell(enc, index, offset, subject);
     } else {
       // An index that does not encode is never seen, so it never matches.
-      const key = String(index + 0);
-      if (recall.write(enc, key, () => this.spell(enc, index, offset, subject))) {
-        this.learn(enc, offset);
-      }
+      recall.write(enc, String(index + 0), () => this.spell(enc, index, offset, subject));
     }
-    delta?.follow(enc, offset);
+    this.after(enc, offset);
   }
 
-  /**
-   * The methods that could have spelled a recalled value learn it, as
-   * though they had: both under the mode, else the difference once it is
-   * available. Nothing learns without a difference.
-   */
-  private learn(side: Encoder | Decoder, offset: number): void {
-    const { delta, mode } = this;
-    if (mode !== undefined) {
-      this.range.learned?.learn(side, offset);
-    }
-    if (delta?.available(side) === true) {
-      delta.learn(side, offset);
+  /** Teaches every provider the value at `offset` from the origin, just coded. */
+  private after(side: Encoder | Decoder, offset: number): void {
+    for (const provider of this.providers) {
+      provider.learn(side, offset);
     }
   }
 
@@ -468,25 +470,15 @@ export class IndexMethods {
   }
 
   read(dec: Decoder): number {
-    const { delta, recall } = this;
-    let recalled = recall !== undefined;
+    const { recall } = this;
     const index =
-      recall === undefined
-        ? this.unspell(dec)
-        : recall.read(dec, () => {
-            recalled = false;
-            return this.unspell(dec);
-          });
-    if (delta !== undefined) {
+      recall === undefined ? this.unspell(dec) : recall.read(dec, () => this.unspell(dec));
+    if (this.providers.length > 0) {
       // The encoder refuses an index out of the origin's exact reach.
       if (!this.range.reaches(index)) {
         throw new CorruptInputError('Index is outside the exact range of its origin');
       }
-      const offset = index - this.range.origin + 0;
-      if (recalled) {
-        this.learn(dec, offset);
-      }
-      delta.follow(dec, offset);
+      this.after(dec, index - this.range.origin + 0);
     }
     return index;
   }
@@ -509,7 +501,6 @@ export interface LengthBounds {
   readonly min?: number;
   readonly max?: number;
   readonly prior?: Prior;
-  readonly adaptive?: AdaptiveOptions;
 }
 
 /** A length or count bound: a non-negative integer, checked at definition. */
@@ -532,17 +523,23 @@ export const lengthBound = (
 
 /**
  * The range of a string, byte-run or array length, its floor defaulting to
- * 0. `noun` names the quantity in an error, as in `p.array weights requires
- * a max count`.
+ * 0, learning under `learning`. `noun` names the quantity in an error, as
+ * in `p.array weights requires a max count`.
  */
-export function lengthRange(bounds: LengthBounds, who: string, noun: string): IndexRange {
+export function lengthRange(
+  bounds: LengthBounds,
+  who: string,
+  noun: string,
+  learning?: Learning
+): IndexRange {
   const min = lengthBound(bounds.min, who, 'min');
   const max = lengthBound(bounds.max, who, 'max');
-  const { prior, adaptive } = bounds;
+  const { prior } = bounds;
+
   if (prior !== undefined && max === undefined) {
     throw new TypeError(`${who} ${priorKind(prior)} requires a max ${noun}`);
   }
-  return new IndexRange(who, min ?? 0, max, prior, adaptive);
+  return new IndexRange(who, min ?? 0, max, prior, learning);
 }
 
 /** Refuses a second `min`, `max` or order restriction on one node: each is set once. */

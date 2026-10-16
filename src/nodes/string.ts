@@ -9,9 +9,9 @@
  */
 import { Encoder, Decoder, Alphabet, CorruptInputError, costUnits } from '../packer';
 import type { Charset } from '../packer';
-import { PNode, type Run } from './base';
+import type { Run } from './base';
 import { describe } from './path';
-import { checkUnset } from './lattice';
+import { checkUnset, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
 import type { SequenceAdaptiveOptions } from './adaptive';
 import type { Kind } from './guards';
@@ -37,17 +37,10 @@ import {
   type ShiftedTable,
 } from './prose';
 import { buildWeights } from './weights';
-import { withMethod } from './methods';
+import { bare, learningOf, learns, MethodNode, type MethodSet } from './methods';
 import { members, type Members } from './members';
 import { LOWER, MIXED, SHAPE_COUNT, SHAPE_WEIGHTS, plain, restore, shapesOf } from './shape';
-import {
-  Sequence,
-  withSequenceMethod,
-  type Ascent,
-  type SequenceBounds,
-  type SequenceSpelling,
-  type Symbols,
-} from './sequence';
+import { Sequence, TEXT_METHODS, type Ascent, type Symbols } from './sequence';
 
 /** What every text alphabet shares: a length prefix counting UTF-16 code units. */
 abstract class Text {
@@ -629,21 +622,21 @@ export class ProseText implements TextCodec {
   /** The shape the encoder last picked, which only orders its next tries. */
   private last = 0;
 
-  constructor(model: ProseModel, bounds: SequenceBounds, spelling: SequenceSpelling) {
+  constructor(model: ProseModel, bounds: LengthBounds, methods: MethodSet) {
     const table = compileProse(model);
     this.lower = new Prose(model, table);
     this.shifted = new Prose(model, table, shiftedTable(model));
-    const { adaptive } = bounds;
-    if (adaptive === undefined) {
-      this.words = new Sequence(this.lower, bounds, spelling);
-      this.mixed = new Sequence(this.shifted, bounds, spelling);
+    const learning = learningOf(methods);
+    if (learning === undefined) {
+      this.words = new Sequence(this.lower, bounds, methods);
+      this.mixed = new Sequence(this.shifted, bounds, methods);
     } else {
       const text = new LearnedText(model, table);
-      this.words = new Sequence(text, bounds, spelling, WORDS);
-      this.mixed = new Sequence(text, bounds, spelling, VERBATIM);
+      this.words = new Sequence(text, bounds, methods, WORDS);
+      this.mixed = new Sequence(text, bounds, methods, VERBATIM);
     }
-    this.shapes = members(SHAPE_COUNT, { weights: SHAPE_WEIGHTS, adaptive }, 'p.string');
-    this.priced = adaptive === undefined && Object.keys(spelling).length === 0;
+    this.shapes = members(SHAPE_COUNT, { weights: SHAPE_WEIGHTS, adaptive: learning }, 'p.string');
+    this.priced = bare(methods);
   }
 
   write(enc: Encoder, value: string): void {
@@ -769,16 +762,17 @@ export class ProseText implements TextCodec {
   }
 }
 
-export class PString extends PNode<string> {
+export class PString extends MethodNode<string> {
   readonly _kinds: readonly Kind[] = ['string'];
 
-  private readonly _bounds: SequenceBounds;
+  private readonly _bounds: LengthBounds;
   /** Explicit charset; undefined selects the laddered code-point default. */
   private readonly _alphabet?: Alphabet;
   /** Prose model replacing the flat ladder, as given. */
   private readonly _prose?: ProseModel;
-  /** The declared methods. */
-  private readonly _spelling: SequenceSpelling;
+  /** The methods the node has, declared or open. */
+  readonly _methods: MethodSet;
+  readonly _methodNames = TEXT_METHODS;
   /**
    * The length and the characters, in the ladder, the prose model or the
    * charset; adaptive without either, in English prose.
@@ -786,14 +780,14 @@ export class PString extends PNode<string> {
   private readonly _text: TextCodec;
 
   constructor(
-    bounds: SequenceBounds = {},
+    bounds: LengthBounds = {},
     charset?: Charset,
     prose?: ProseModel,
-    spelling: SequenceSpelling = {}
+    methods: MethodSet = {}
   ) {
     super();
     this._bounds = bounds;
-    this._spelling = spelling;
+    this._methods = methods;
     if (charset !== undefined) {
       if (prose !== undefined) {
         throw new TypeError('p.string cannot combine prose with a charset');
@@ -802,26 +796,30 @@ export class PString extends PNode<string> {
       // of the array can't change the node. One character is a legal
       // alphabet: each character then costs nothing.
       this._alphabet = new Alphabet(charset, 1);
-      this._text = new Sequence(new CharsetText(this._alphabet), bounds, spelling);
+      this._text = new Sequence(new CharsetText(this._alphabet), bounds, methods);
     } else if (prose !== undefined) {
       this._prose = prose;
-      this._text = new ProseText(prose, bounds, spelling);
+      this._text = new ProseText(prose, bounds, methods);
     } else {
-      this._text =
-        bounds.adaptive === undefined
-          ? new Sequence(new Ladder(), bounds, spelling)
-          : new ProseText(ProseModels.english, bounds, spelling);
+      this._text = !learns(methods)
+        ? new Sequence(new Ladder(), bounds, methods)
+        : new ProseText(ProseModels.english, bounds, methods);
     }
   }
 
   /** This node with `bounds`, `charset` and `prose`, keeping its methods. */
   private _with(
-    bounds: SequenceBounds,
+    bounds: LengthBounds,
     charset = this._alphabet?.charset,
     prose = this._prose,
-    spelling = this._spelling
+    methods = this._methods
   ): PString {
-    return new PString(bounds, charset, prose, spelling);
+    return new PString(bounds, charset, prose, methods);
+  }
+
+  /** This node with `methods` in place of its own. */
+  _withMethods(methods: MethodSet): PString {
+    return this._with(this._bounds, undefined, undefined, methods);
   }
 
   /** A floor on the length; the prefix then counts up from it. */
@@ -891,7 +889,7 @@ export class PString extends PNode<string> {
    * whenever that costs less than spelling it.
    */
   adaptive(options?: SequenceAdaptiveOptions): PString {
-    return this._with({ ...this._bounds, adaptive: options ?? {} });
+    return this._open(options ?? {});
   }
 
   charset(c: Charset): PString {
@@ -927,8 +925,7 @@ export class PString extends PNode<string> {
    * spelling or this one by a learned mode.
    */
   delta(): PString {
-    const spelling = withMethod(this._spelling, 'delta', 'p.string');
-    return this._with(this._bounds, undefined, undefined, spelling);
+    return this._declare('delta', 'p.string');
   }
 
   /**
@@ -939,8 +936,7 @@ export class PString extends PNode<string> {
    * string costs nothing extra.
    */
   recall(): PString {
-    const spelling = withMethod(this._spelling, 'recall', 'p.string');
-    return this._with(this._bounds, undefined, undefined, spelling);
+    return this._declare('recall', 'p.string');
   }
 
   /**
@@ -952,12 +948,7 @@ export class PString extends PNode<string> {
    * not this is declared.
    */
   repeats(): PString {
-    return this._with(
-      this._bounds,
-      undefined,
-      undefined,
-      withSequenceMethod(this._spelling, 'repeats', 'p.string')
-    );
+    return this._declare('repeats', 'p.string');
   }
 
   /**
@@ -973,8 +964,7 @@ export class PString extends PNode<string> {
    * spelling by the learned mode.
    */
   digits(): PString {
-    const spelling = withSequenceMethod(this._spelling, 'digits', 'p.string');
-    return this._with(this._bounds, undefined, undefined, spelling);
+    return this._declare('digits', 'p.string');
   }
 
   /**
@@ -988,8 +978,7 @@ export class PString extends PNode<string> {
    * before picks this spelling by the learned mode.
    */
   positional(): PString {
-    const spelling = withSequenceMethod(this._spelling, 'positional', 'p.string');
-    return this._with(this._bounds, undefined, undefined, spelling);
+    return this._declare('positional', 'p.string');
   }
 
   /**
@@ -1004,8 +993,7 @@ export class PString extends PNode<string> {
    * `.weights()`.
    */
   terminated(): PString {
-    const spelling = withSequenceMethod(this._spelling, 'terminated', 'p.string');
-    return this._with(this._bounds, undefined, undefined, spelling);
+    return this._declare('terminated', 'p.string');
   }
 
   get _exact(): boolean {

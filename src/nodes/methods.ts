@@ -6,60 +6,159 @@
  * user left open. Which method a value takes is the encoder's choice alone:
  * it tries each spelling, keeps the cheapest, and the decoder reads the
  * mode back without checking it.
+ *
+ * A method only codes. What a node knows of its values (its previous
+ * value, a difference scale, the learned odds of its range) lives in value
+ * providers, which methods code through without teaching them: once a
+ * value is coded, the node teaches it to every provider of its method set,
+ * in their order, whichever method spelled it or recalled it.
  */
 
 import type { Encoder, Decoder } from '../packer';
-import {
-  AdaptivePrior,
-  checkAdaptation,
-  lineageOf,
-  recallOpen,
-  type AdaptiveOptions,
-} from './adaptive';
+import { AdaptivePrior, checkAdaptation, lineageOf, type Learning } from './adaptive';
+import { PNode } from './base';
 import { Exclusion } from './excluded';
 import { Recall } from './recall';
 
 /**
- * The methods a node declares, carried through every rebuild so a later
- * `.min()`, `.weights()` or `.adaptive()` keeps them. Each is set once.
+ * How a node has a method: declared, so it spells every value it can, or
+ * open, as `.adaptive()` leaves each method the node does not declare,
+ * offered to the node's per-value choice where it has one.
  */
-export interface Spelling {
+export type MethodFlag = 'declared' | 'open';
+
+/**
+ * The methods a node has, carried through every rebuild so a later
+ * `.min()`, `.weights()` or `.adaptive()` keeps them; a method left out is
+ * off. Each is declared once.
+ */
+export interface MethodSet {
+  /** The node's own tables learn from the message: its odds, scales and the providers its methods read. */
+  readonly learn?: MethodFlag;
   /** Each value after the first as its difference from the node's previous one. */
-  readonly delta?: true;
+  readonly delta?: MethodFlag;
   /** Each value as its place among the distinct values the node already wrote, or as new. */
-  readonly recall?: true;
+  readonly recall?: MethodFlag;
+  /** Stretches the node already wrote in the message copied instead of spelled again. */
+  readonly repeats?: MethodFlag;
+  /** Each run of digits as an integer of its width, the text around the runs a frame (`./fields`). */
+  readonly digits?: MethodFlag;
+  /** A value of a length the node met before by the items seen at each of its places (`./fields`). */
+  readonly positional?: MethodFlag;
+  /** No length prefix: the end of the value is one more symbol after its items. */
+  readonly terminated?: MethodFlag;
+  /** What the tables learn under, with `learn`. */
+  readonly learning?: Learning;
 }
 
-/** `spelling` with `method` declared; `who` names the node in the error a second declaration throws. */
-export function withMethod(spelling: Spelling, method: keyof Spelling, who: string): Spelling {
-  if (spelling[method] !== undefined) {
+/** The name of a method a node may have. */
+export type MethodName = Exclude<keyof MethodSet, 'learning'>;
+
+/** The methods of an array, a collection or an object, which `.adaptive()` opens. */
+export const CONTAINER_METHODS: readonly MethodName[] = ['learn', 'recall'];
+
+/** A node with methods: `.adaptive()` opens those it does not declare, and each declaration adds one. */
+export abstract class MethodNode<TOut> extends PNode<TOut> {
+  /** The methods the node has, declared or open. */
+  abstract readonly _methods: MethodSet;
+  /** The node's own methods, which `.adaptive()` opens. */
+  abstract readonly _methodNames: readonly MethodName[];
+  /** The node with `methods` in place of its own. */
+  abstract _withMethods(methods: MethodSet): MethodNode<TOut>;
+
+  _open(options: Learning, except: readonly MethodName[] = []): this {
+    const names = this._methodNames.filter((name) => !except.includes(name));
+    return this._withMethods(opened(this._methods, names, options)) as this;
+  }
+
+  /** The node with `method` declared; `who` names it in the error a second declaration throws. */
+  protected _declare(method: MethodName, who: string): this {
+    return this._withMethods(withMethod(this._methods, method, who)) as this;
+  }
+}
+
+/** `methods` with `method` declared; `who` names the node in the error a second declaration throws. */
+export function withMethod<S extends MethodSet>(methods: S, method: MethodName, who: string): S {
+  if (methods[method] === 'declared') {
     throw new TypeError(`${who} ${method} is already set`);
   }
-  return { ...spelling, [method]: true };
+  return { ...methods, [method]: 'declared' };
 }
 
 /**
- * The recall of a node: pinned when `.recall()` is declared, learned under
- * `adaptive`; else open under `adaptive`, unless the options close it;
- * none otherwise. `copy` is the recall's.
+ * `methods` as `.adaptive(learning)` leaves them: each of `names`, the
+ * node's own methods, open unless declared, learning under `learning`.
  */
-export function recallOf<T>(
-  spelling: Spelling,
-  adaptive: AdaptiveOptions | undefined,
-  copy?: (value: T) => T
-): Recall<T> | undefined {
-  if (spelling.recall !== undefined) {
-    return new Recall<T>(adaptive !== undefined, copy);
+export function opened<S extends MethodSet>(
+  methods: S,
+  names: readonly MethodName[],
+  learning: Learning
+): S {
+  const open: { [M in MethodName]?: MethodFlag } = {};
+  for (const name of names) {
+    open[name] = methods[name] ?? 'open';
   }
-  return recallOpen(adaptive) ? new Recall<T>(true, copy, true) : undefined;
+  return { ...methods, ...open, learning };
+}
+
+/** Whether the node's tables learn. */
+export function learns(methods: MethodSet): boolean {
+  return methods.learn !== undefined;
+}
+
+/** What the node's tables learn under: none unless they learn. */
+export function learningOf(methods: MethodSet): Learning | undefined {
+  return learns(methods) ? methods.learning : undefined;
+}
+
+/** Whether the node has no method at all, declared or open. */
+export function bare(methods: MethodSet): boolean {
+  return Object.keys(methods).every((key) => key === 'learning');
+}
+
+/** Whether the node declares any of `names`. */
+export function declaresAny(methods: MethodSet, names: readonly MethodName[]): boolean {
+  return names.some((name) => methods[name] === 'declared');
 }
 
 /**
- * One way of spelling a node's value. Each method keeps its own tables and
- * whatever per-message state it reads (a previous value, a list), and
- * learns from every value it codes; `learn` teaches it a value another
+ * Whether the node picks, value by value, between its plain spelling and
+ * `names`: one of them open and none declared, which would pin the spelling.
+ */
+export function chooses(methods: MethodSet, names: readonly MethodName[]): boolean {
+  return !declaresAny(methods, names) && names.some((name) => methods[name] === 'open');
+}
+
+/**
+ * The recall of a node: declared, pinned, learned when the node learns;
+ * open, learned and one of the node's methods; none otherwise. `copy` is
+ * the recall's.
+ */
+export function recallOf<T>(methods: MethodSet, copy?: (value: T) => T): Recall<T> | undefined {
+  if (methods.recall === undefined) {
+    return undefined;
+  }
+  return methods.recall === 'declared'
+    ? new Recall<T>({ learned: learns(methods), copy })
+    : new Recall<T>({ open: true, copy });
+}
+
+/**
+ * Learned knowledge of a node's values: a scale, learned odds, the node's
+ * previous value. Methods code through providers without teaching them;
+ * once a value is coded, the node teaches it to every provider of its
+ * method set, in their order, whichever method coded it. A provider that
+ * codes several symbols within one value, as the contexts and digit fields
+ * do, learns each as it codes it, so the value's later symbols are priced
+ * after its earlier ones; its `learn` then absorbs only a value another
  * method coded.
  */
+export interface ValueProvider<T> {
+  /** Learns `value`, just coded by any of the node's methods. */
+  learn(side: Encoder | Decoder, value: T): void;
+}
+
+/** One way of spelling a node's value, which learns nothing. */
 export interface Method<T> {
   /**
    * Whether the method can take the node's next value, from what both sides
@@ -67,12 +166,41 @@ export interface Method<T> {
    * not available is left out of the mode.
    */
   available(side: Encoder | Decoder): boolean;
-  /** Spells `value` and learns it, throwing when it cannot spell it. Called only when available. */
+  /** Spells `value`, throwing when it cannot. Called only when available. */
   write(enc: Encoder, value: T): void;
-  /** Reads a value `write` spelled and learns it. Called only when available. */
+  /** Reads a value `write` spelled. Called only when available. */
   read(dec: Decoder): T;
-  /** Learns `value`, coded by another method, as though it had spelled it; nothing when it cannot spell it. */
-  learn(side: Encoder | Decoder, value: T): void;
+}
+
+/** The node's previous value in the message on each side: none before its first. */
+export class Previous<T> implements ValueProvider<T> {
+  /** The previous value on `side`. */
+  get(side: Encoder | Decoder): T | undefined {
+    return side.state<{ value?: T }>(this, () => ({})).value;
+  }
+
+  learn(side: Encoder | Decoder, value: T): void {
+    this.swap(side, value);
+  }
+
+  /** Learns `value` on `side`, and returns the previous value it replaces. */
+  swap(side: Encoder | Decoder, value: T): T | undefined {
+    const state = side.state<{ value?: T }>(this, () => ({}));
+    const before = state.value;
+    state.value = value;
+    if (side.journal?.active === true) {
+      side.journal.call(() => {
+        state.value = before;
+      });
+    }
+    return before;
+  }
+}
+
+/** A set of a node's available methods: their indices, in order, and the others ruled out. */
+interface Available {
+  readonly open: readonly number[];
+  readonly exclusion: Exclusion;
 }
 
 /**
@@ -82,126 +210,108 @@ export interface Method<T> {
  * first value, when only plain applies, costs its plain spelling and
  * nothing more. The modes are equally likely over the available methods,
  * or, under `adaptive`, a table of even weights under the adaptive prior
- * with the methods not available ruled out.
+ * with the methods not available ruled out, which learns each mode written.
  *
  * The encoder decides among the available methods by trying each, the
- * mode symbol and the method's spelling written and learned as a real
- * write would, and keeps the cheapest, a tie going to the lower index, so
- * method 0, the plain spelling, wins every tie. After a
- * value every other available method learns it, on both sides, so their
- * tables follow the message whichever spelled it.
+ * mode symbol and the method's spelling written as a real write would,
+ * and keeps the cheapest, a tie going to the lower index, so method 0, the
+ * plain spelling, wins every tie.
  */
 export class ModeChoice<T> {
   /** The learned mode table under `adaptive`. */
   private readonly prior?: AdaptivePrior;
-  /** The exclusion of each set of available methods, keyed by their indices, built on first use. */
-  private readonly exclusions = new Map<string, Exclusion>();
+  /** Each set of available methods, by the bit of each, built on first use. */
+  private readonly sets: (Available | undefined)[] = [];
   /** The method the encoder last picked, which only orders its next tries. */
   private last = 0;
-  /** The method the latest value on either side was spelled by. */
-  picked = 0;
 
   constructor(
     readonly methods: readonly Method<T>[],
-    adaptive: AdaptiveOptions | undefined,
+    learning: Learning | undefined,
     readonly who: string
   ) {
     if (methods.length === 0) {
       throw new TypeError(`${who} needs at least one method`);
     }
-    if (adaptive !== undefined) {
-      const { window } = checkAdaptation(adaptive, who);
+    if (learning !== undefined) {
+      const { window } = checkAdaptation(learning, who);
       const n = methods.length;
       const ones = [new Array<number>(n).fill(1)];
-      this.prior = new AdaptivePrior(ones, n, window, who, lineageOf(adaptive));
+      this.prior = new AdaptivePrior(ones, n, window, who, lineageOf(learning));
     }
   }
 
-  /** The methods available for the next value on `side`, in index order. */
-  private available(side: Encoder | Decoder): number[] {
-    const open: number[] = [];
-    this.methods.forEach((method, i) => {
-      if (method.available(side)) {
-        open.push(i);
+  /** The methods available for the next value on `side`. */
+  private available(side: Encoder | Decoder): Available {
+    const { methods } = this;
+    let bits = 0;
+    for (let i = 0; i < methods.length; i++) {
+      if (methods[i].available(side)) {
+        bits |= 1 << i;
       }
-    });
-    if (open.length === 0) {
+    }
+    if (bits === 0) {
       throw new RangeError(`${this.who} has no method available for the value`);
     }
-    return open;
+    return (this.sets[bits] ??= this.set(bits));
   }
 
-  /** The methods outside `open` ruled out, one exclusion per set of available methods. */
-  private exclusion(open: readonly number[]): Exclusion {
-    const key = open.join();
-    let exclusion = this.exclusions.get(key);
-    if (exclusion === undefined) {
-      exclusion = new Exclusion(this.methods.length);
-      for (let i = 0; i < this.methods.length; i++) {
-        if (!open.includes(i)) {
-          exclusion.add(i);
-        }
+  /** The set of the methods whose bits `bits` holds. */
+  private set(bits: number): Available {
+    const open: number[] = [];
+    const exclusion = new Exclusion(this.methods.length);
+    for (let i = 0; i < this.methods.length; i++) {
+      if ((bits & (1 << i)) === 0) {
+        exclusion.add(i);
+      } else {
+        open.push(i);
       }
-      this.exclusions.set(key, exclusion);
     }
-    return exclusion;
+    return { open, exclusion };
   }
 
-  /** Writes mode `mode` among `open`, which holds at least two methods. */
-  private writeMode(enc: Encoder, mode: number, open: readonly number[]): void {
+  /** Writes mode `mode` among `set`, which holds at least two methods. */
+  private writeMode(enc: Encoder, mode: number, { open, exclusion }: Available): void {
     if (this.prior === undefined) {
       enc.compose(open.indexOf(mode), open.length);
     } else {
-      this.prior.write(enc, mode, 0, this.exclusion(open));
+      this.prior.write(enc, mode, 0, exclusion);
     }
   }
 
-  /** Spells `value` by the method the encoder picks, then lets every other available method learn it. */
+  /** Spells `value` by the method the encoder picks. */
   write(enc: Encoder, value: T): void {
-    const open = this.available(enc);
-    let mode = open[0];
-    if (open.length > 1) {
-      // The method that won last is tried first, so the others' tries run
-      // under its cost and stop as soon as they pass it.
-      const order = open.includes(this.last)
-        ? [this.last, ...open.filter((i) => i !== this.last)]
-        : open;
-      mode = enc.decide(open, order, (i) => {
-        this.writeMode(enc, i, open);
-        this.methods[i].write(enc, value);
-      });
-      this.last = mode;
-    } else {
-      this.methods[mode].write(enc, value);
+    const set = this.available(enc);
+    const { open } = set;
+    if (open.length === 1) {
+      this.methods[open[0]].write(enc, value);
+      return;
     }
-    this.picked = mode;
-    this.teach(enc, value, open, mode);
+    // The method that won last is tried first, so the others' tries run
+    // under its cost and stop as soon as they pass it.
+    const order = open.includes(this.last)
+      ? [this.last, ...open.filter((i) => i !== this.last)]
+      : open;
+    const mode = enc.decide(open, order, (i) => {
+      this.writeMode(enc, i, set);
+      this.methods[i].write(enc, value);
+    });
+    this.last = mode;
+    this.prior?.learn(enc, mode);
   }
 
-  /** Reads a value `write` spelled, then lets every other available method learn it. */
+  /** Reads a value `write` spelled. */
   read(dec: Decoder): T {
-    const open = this.available(dec);
-    let mode = open[0];
-    if (open.length > 1) {
-      // The uniform digit is below the count, and an excluded mode owns no
-      // states, so the mode read is always one of the available methods.
-      mode =
-        this.prior === undefined
-          ? open[dec.parse(open.length)]
-          : this.prior.read(dec, 0, this.exclusion(open));
+    const { open, exclusion } = this.available(dec);
+    if (open.length === 1) {
+      return this.methods[open[0]].read(dec);
     }
+    // The uniform digit is below the count, and an excluded mode owns no
+    // states, so the mode read is always one of the available methods.
+    const mode =
+      this.prior === undefined ? open[dec.parse(open.length)] : this.prior.read(dec, 0, exclusion);
     const value = this.methods[mode].read(dec);
-    this.picked = mode;
-    this.teach(dec, value, open, mode);
+    this.prior?.learn(dec, mode);
     return value;
-  }
-
-  /** Every available method but `mode` learns `value`, in index order. */
-  private teach(side: Encoder | Decoder, value: T, open: readonly number[], mode: number): void {
-    for (const i of open) {
-      if (i !== mode) {
-        this.methods[i].learn(side, value);
-      }
-    }
   }
 }

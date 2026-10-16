@@ -16,7 +16,7 @@ import {
 } from './ordinal';
 import { readRun, writeRun } from './runs';
 import { members, type Members } from './members';
-import { recallOf, withMethod, type Spelling } from './methods';
+import { CONTAINER_METHODS, learningOf, MethodNode, recallOf, type MethodSet } from './methods';
 import { copy, identity, type Recall } from './recall';
 
 const MAX_ARRAY_LENGTH = 2 ** 32 - 1;
@@ -27,15 +27,17 @@ const MAX_ARRAY_LENGTH = 2 ** 32 - 1;
  * bounded counts pack against their range, and a fixed `.length(n)` collapses
  * the range to one state — the count then costs zero bits on the wire.
  */
-export class PArray<TItem> extends PNode<TItem[]> {
+export class PArray<TItem> extends MethodNode<TItem[]> {
   readonly _kinds: readonly Kind[] = ['array'];
 
   private readonly _item: PNode<TItem>;
   private readonly _bounds: LengthBounds;
   private readonly _count: IndexRange;
   private readonly _order: Order;
-  private readonly _spelling: Spelling;
-  /** Set by `.recall()`: learned when the count is adaptive. */
+  /** The methods the node has, declared or open. */
+  readonly _methods: MethodSet;
+  readonly _methodNames = CONTAINER_METHODS;
+  /** Set by `.recall()` or opened: learned where the node learns. */
   private readonly _recall?: Recall<TItem[]>;
   /**
    * How distinct strings in their own order are spelled, see `./runs`:
@@ -47,20 +49,24 @@ export class PArray<TItem> extends PNode<TItem[]> {
     item: PNode<TItem>,
     bounds: LengthBounds = {},
     order: Order = {},
-    spelling: Spelling = {}
+    methods: MethodSet = {}
   ) {
     super();
     this._item = item;
     this._bounds = bounds;
-    this._count = lengthRange(bounds, 'p.array', 'count');
+    const learning = learningOf(methods);
+    this._count = lengthRange(bounds, 'p.array', 'count', learning);
     if (order.sorted !== undefined && order.unordered !== undefined) {
       throw new TypeError('p.array takes sorted or unordered, not both');
     }
     this._order = order;
-    this._spelling = spelling;
-    this._recall = recallOf(spelling, bounds.adaptive, copy);
-    const { adaptive } = bounds;
-    this._choice = members(2, adaptive === undefined ? undefined : { adaptive }, 'p.array');
+    this._methods = methods;
+    this._recall = recallOf(methods, copy);
+    this._choice = members(
+      2,
+      learning === undefined ? undefined : { adaptive: learning },
+      'p.array'
+    );
   }
 
   /** Require at least `n` items. A raised floor packs the count denser. */
@@ -118,7 +124,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
    * under it, at learned odds, whenever that costs less than spelling it.
    */
   adaptive(options?: AdaptiveOptions): PArray<TItem> {
-    return this._with({ ...this._bounds, adaptive: options ?? {} });
+    return this._open(options ?? {});
   }
 
   /**
@@ -170,12 +176,16 @@ export class PArray<TItem> extends PNode<TItem[]> {
    * array, and a repeat decodes as a copy of the array first decoded.
    */
   recall(): PArray<TItem> {
-    const spelling = withMethod(this._spelling, 'recall', 'p.array');
-    return new PArray<TItem>(this._item, this._bounds, this._order, spelling);
+    return this._declare('recall', 'p.array');
+  }
+
+  /** This node with `methods` in place of its own. */
+  _withMethods(methods: MethodSet): PArray<TItem> {
+    return new PArray<TItem>(this._item, this._bounds, this._order, methods);
   }
 
   private _with(bounds: LengthBounds, order: Order = this._order): PArray<TItem> {
-    return new PArray<TItem>(this._item, bounds, order, this._spelling);
+    return new PArray<TItem>(this._item, bounds, order, this._methods);
   }
 
   _write(enc: Encoder, value: TItem[]): void {
@@ -198,6 +208,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
     const count = value.length;
 
     this._count.write(enc, count, () => `Array length ${count}`);
+    this._count.learn(enc, count);
 
     if (restricts(this._order)) {
       // checkOrder accepted the item when the order was set.
@@ -231,6 +242,7 @@ export class PArray<TItem> extends PNode<TItem[]> {
     if (count > MAX_ARRAY_LENGTH) {
       throw new CorruptInputError(`Array length ${count} is above the largest possible array`);
     }
+    this._count.learn(dec, count);
     dec.charge(count);
     const item = this._item;
     const value: TItem[] = [];

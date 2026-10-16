@@ -20,7 +20,6 @@
  * same counts.
  */
 import {
-  SlotCache,
   costUnits,
   type Decoder,
   type Encoder,
@@ -30,6 +29,7 @@ import {
   type Undoable,
 } from '../packer';
 import { Fenwick } from './fenwick';
+import { ProviderRef, poolKey, type Pool, type ProviderKind } from './providers';
 
 /** The scale of the word spelling's share: `share / SHARE_ONE`. */
 const SHARE_ONE = 1024;
@@ -275,9 +275,11 @@ class TokenLocator implements Locator<number> {
   }
 }
 
-/** The word token's odds, and what each word teaches. */
-export class WordModel {
-  private readonly messages = new SlotCache<Words, Encoder | Decoder>(this, (side) => ({
+/** The vocabulary a message learned: its words, their counts and recency, and the token's odds. */
+const VOCABULARY: ProviderKind<Pool | undefined, Words> = {
+  name: 'vocabulary',
+  key: (pool) => poolKey(pool),
+  init: (_, side) => ({
     ids: new Map(),
     words: [],
     counts: new Fenwick([], side.journal),
@@ -288,10 +290,22 @@ export class WordModel {
     share: SHARE_START,
     lean: LEAN_START,
     journal: side.journal,
-  }));
+  }),
+};
+
+/**
+ * The word token's odds, and what each word teaches: the vocabulary,
+ * learned per message, shared within `pool`, else the model's own.
+ */
+export class WordModel {
+  private readonly vocabulary: ProviderRef<Pool | undefined, Words>;
+
+  constructor(pool?: Pool) {
+    this.vocabulary = new ProviderRef(VOCABULARY, pool);
+  }
 
   private message(side: Encoder | Decoder): Words {
-    return this.messages.get(side);
+    return this.vocabulary.get(side);
   }
 
   /** The id of `word` on `side`, -1 for a word the message has not learned, the empty one among them. */

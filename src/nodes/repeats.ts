@@ -19,8 +19,10 @@ import {
   log2Units,
   type Undoable,
 } from '../packer';
-import { AdaptiveTable, readLive, writeLive, type LiveCounts, type LiveTable } from './adaptive';
+import { LiveCounts, readLive, writeLive, type LiveTable } from './adaptive';
 import { KeyMap } from './keymap';
+import { ProviderRef, poolKey, type Pool, type ProviderKind } from './providers';
+import { buildWeights, type WeightTable } from './weights';
 
 /** The shortest match at a new distance. */
 export const MIN_MATCH = 3;
@@ -219,15 +221,14 @@ function widthOf(b: number, max: number): number {
 }
 
 /**
- * Writes `v`, an integer in `[1, max]`, as its log2 bucket through `table`
+ * Writes `v`, an integer in `[1, max]`, as its log2 bucket through `live`
  * restricted to the buckets `max` allows, then its offset in the bucket
  * uniformly. `max` is a positive integer below 2^32. The table learns the
  * bucket.
  */
-export function writeBucketed(enc: Encoder, table: AdaptiveTable, v: number, max: number): void {
+export function writeBucketed(enc: Encoder, live: LiveCounts, v: number, max: number): void {
   checkMax(max);
   checkInteger(v, 1, max, 'Value');
-  const live = table.live(enc);
   const b = bucketOf(v);
   writeLive(enc, restricted(live, bucketOf(max)), b);
   live.learn(b);
@@ -235,22 +236,15 @@ export function writeBucketed(enc: Encoder, table: AdaptiveTable, v: number, max
 }
 
 /** Reads a value written by `writeBucketed` under the same `max`. */
-export function readBucketed(dec: Decoder, table: AdaptiveTable, max: number): number {
+export function readBucketed(dec: Decoder, live: LiveCounts, max: number): number {
   checkMax(max);
-  const live = table.live(dec);
   const b = readLive(dec, restricted(live, bucketOf(max)));
   live.learn(b);
   return 2 ** b + dec.parse(widthOf(b, max));
 }
 
 /** The cost, in `COST_UNITS`, `writeBucketed` would give `v` now, learning nothing. */
-function priceBucketed(
-  side: Encoder | Decoder,
-  table: AdaptiveTable,
-  v: number,
-  max: number
-): number {
-  const live = table.live(side);
+function priceBucketed(live: LiveCounts, v: number, max: number): number {
   const b = bucketOf(v);
   const top = bucketOf(max);
   return costUnits(live.freq(b), live.cum(top) + live.freq(top)) + log2Units(widthOf(b, max));
@@ -314,60 +308,109 @@ export interface RepeatCoding {
   priceLength(side: Encoder | Decoder, match: Match, maxLength: number): number;
 }
 
+/** The weights of the repeat tables, every member alike: a flag's, the match kinds', the log2 buckets'. */
+const FLAG_WEIGHTS = buildWeights([1, 1], 2, 'repeats');
+const KIND_WEIGHTS = buildWeights(new Array<number>(REPS + 1).fill(1), REPS + 1, 'repeats');
+const BUCKET_WEIGHTS = buildWeights(new Array<number>(BUCKETS).fill(1), BUCKETS, 'repeats');
+
+/** The observations every repeat table counts its weights as. */
+const PRIOR = 2;
+
 /**
- * The repeat tables of one node: the per-value branch, the match flag in
- * each flag context, the match kind, distance buckets, length buckets, and
- * the length buckets of a match at a cached distance.
+ * The repeat statistics of a message, the live counts of each repeat
+ * table: the per-value branch, the match flag in each flag context, the
+ * match kind, the distance buckets, the length buckets, and the length
+ * buckets of a match at a cached distance.
+ */
+interface Statistics {
+  readonly used: LiveCounts;
+  readonly flags: readonly LiveCounts[];
+  readonly kind: LiveCounts;
+  readonly distance: LiveCounts;
+  readonly length: LiveCounts;
+  readonly repLength: LiveCounts;
+}
+
+/**
+ * The repeat statistics a message learned: shared within a pool, as a
+ * learned spelling's are, every node of it learns into one set.
+ */
+const REPEATS: ProviderKind<Pool | undefined, Statistics> = {
+  name: 'repeats',
+  key: (pool) => poolKey(pool),
+  init: (_, { journal }) => {
+    const live = (weights: WeightTable): LiveCounts =>
+      new LiveCounts(weights, PRIOR, WINDOW, journal);
+    return {
+      used: live(FLAG_WEIGHTS),
+      flags: [live(FLAG_WEIGHTS), live(FLAG_WEIGHTS), live(FLAG_WEIGHTS)],
+      kind: live(KIND_WEIGHTS),
+      distance: live(BUCKET_WEIGHTS),
+      length: live(BUCKET_WEIGHTS),
+      repLength: live(BUCKET_WEIGHTS),
+    };
+  },
+};
+
+/**
+ * Learned repeats: every branch, flag, match kind and bucket through a
+ * live table of the repeat statistics, learned per message, shared within
+ * `pool`, else the node's own.
  */
 export class Repeats implements RepeatCoding {
   readonly cached = true;
-  private readonly used: AdaptiveTable;
-  private readonly flags: readonly AdaptiveTable[];
-  /** Members 0 to `REPS - 1` name a cached distance, `REPS` a new one. */
-  private readonly kind: AdaptiveTable;
-  private readonly distance: AdaptiveTable;
-  private readonly length: AdaptiveTable;
-  private readonly repLength: AdaptiveTable;
+  private readonly statistics: ProviderRef<Pool | undefined, Statistics>;
 
-  constructor(who: string) {
-    this.used = new AdaptiveTable([1, 1], 2, 2, WINDOW, who);
-    this.flags = [0, 1, 2].map(() => new AdaptiveTable([1, 1], 2, 2, WINDOW, who));
-    this.kind = new AdaptiveTable(new Array<number>(REPS + 1).fill(1), REPS + 1, 2, WINDOW, who);
-    const ones = new Array<number>(BUCKETS).fill(1);
-    this.distance = new AdaptiveTable(ones, BUCKETS, 2, WINDOW, who);
-    this.length = new AdaptiveTable(ones, BUCKETS, 2, WINDOW, who);
-    this.repLength = new AdaptiveTable(ones, BUCKETS, 2, WINDOW, who);
+  constructor(pool?: Pool) {
+    this.statistics = new ProviderRef(REPEATS, pool);
   }
 
-  /** The flag table of `context`. */
-  private flag(context: FlagContext): AdaptiveTable {
-    return this.flags[context];
+  /** This message's repeat statistics on `side`. */
+  private stats(side: Encoder | Decoder): Statistics {
+    return this.statistics.get(side);
+  }
+
+  /** Writes member `pos` through `live`, then learns it. */
+  private write(enc: Encoder, live: LiveCounts, pos: number): void {
+    writeLive(enc, live, pos);
+    live.learn(pos);
+  }
+
+  /** Reads a member written by `write` through `live`, then learns it. */
+  private read(dec: Decoder, live: LiveCounts): number {
+    const pos = readLive(dec, live);
+    live.learn(pos);
+    return pos;
+  }
+
+  /** The cost, in `COST_UNITS`, of member `pos` in `live` now, learning nothing. */
+  private price(live: LiveCounts, pos: number): number {
+    const [, freq, total] = live.bucket(pos);
+    return costUnits(freq, total);
   }
 
   /** Writes whether this value spells repeats at all. */
   writeUsed(enc: Encoder, used: boolean): void {
-    this.used.write(enc, used ? 1 : 0);
+    this.write(enc, this.stats(enc).used, used ? 1 : 0);
   }
 
   /** Reads the branch written by `writeUsed`. */
   readUsed(dec: Decoder): boolean {
-    return this.used.read(dec) === 1;
+    return this.read(dec, this.stats(dec).used) === 1;
   }
 
   /** Writes whether a match starts at this position, through the flag table of `context`. */
   writeFlag(enc: Encoder, match: boolean, context: FlagContext): void {
-    this.flag(context).write(enc, match ? 1 : 0);
+    this.write(enc, this.stats(enc).flags[context], match ? 1 : 0);
   }
 
   /** Reads the flag written by `writeFlag` in the same context. */
   readFlag(dec: Decoder, context: FlagContext): boolean {
-    return this.flag(context).read(dec) === 1;
+    return this.read(dec, this.stats(dec).flags[context]) === 1;
   }
 
   learnFlag(side: Encoder | Decoder, match: boolean, context: FlagContext): void {
-    this.flag(context)
-      .live(side)
-      .learn(match ? 1 : 0);
+    this.stats(side).flags[context].learn(match ? 1 : 0);
   }
 
   /**
@@ -382,13 +425,14 @@ export class Repeats implements RepeatCoding {
   writeMatch(enc: Encoder, match: Match, maxDistance: number, maxLength: number): void {
     checkMatch(match, maxDistance, maxLength);
     const { rep } = match;
-    this.kind.write(enc, rep ?? REPS);
+    const stats = this.stats(enc);
+    this.write(enc, stats.kind, rep ?? REPS);
     if (rep !== undefined) {
-      writeBucketed(enc, this.repLength, match.length - REP_MIN + 1, maxLength - REP_MIN + 1);
+      writeBucketed(enc, stats.repLength, match.length - REP_MIN + 1, maxLength - REP_MIN + 1);
       return;
     }
-    writeBucketed(enc, this.distance, match.distance, maxDistance);
-    writeBucketed(enc, this.length, match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1);
+    writeBucketed(enc, stats.distance, match.distance, maxDistance);
+    writeBucketed(enc, stats.length, match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1);
   }
 
   /**
@@ -399,7 +443,8 @@ export class Repeats implements RepeatCoding {
    */
   readMatch(dec: Decoder, maxDistance: number, maxLength: number, reps: readonly number[]): Match {
     checkBounds(maxDistance, maxLength);
-    const rep = this.kind.read(dec);
+    const stats = this.stats(dec);
+    const rep = this.read(dec, stats.kind);
     if (rep < REPS) {
       const distance = reps[rep];
       if (distance > maxDistance) {
@@ -407,18 +452,17 @@ export class Repeats implements RepeatCoding {
           `Repeat distance ${distance} is above the maximum ${maxDistance}`
         );
       }
-      const length = readBucketed(dec, this.repLength, maxLength - REP_MIN + 1) + REP_MIN - 1;
+      const length = readBucketed(dec, stats.repLength, maxLength - REP_MIN + 1) + REP_MIN - 1;
       return { distance, length, rep };
     }
-    const distance = readBucketed(dec, this.distance, maxDistance);
-    const length = readBucketed(dec, this.length, maxLength - MIN_MATCH + 1) + MIN_MATCH - 1;
+    const distance = readBucketed(dec, stats.distance, maxDistance);
+    const length = readBucketed(dec, stats.length, maxLength - MIN_MATCH + 1) + MIN_MATCH - 1;
     return { distance, length };
   }
 
   /** The cost, in `COST_UNITS`, the flag would be written with now in `context`, learning nothing. */
   priceFlag(side: Encoder | Decoder, match: boolean, context: FlagContext): number {
-    const [, freq, total] = this.flag(context).bucket(side, match ? 1 : 0);
-    return costUnits(freq, total);
+    return this.price(this.stats(side).flags[context], match ? 1 : 0);
   }
 
   /**
@@ -447,17 +491,18 @@ export class Repeats implements RepeatCoding {
     context: FlagContext
   ): number {
     const { rep } = match;
-    const [, freq, total] = this.kind.bucket(side, rep ?? REPS);
-    const head = this.priceFlag(side, true, context) + costUnits(freq, total);
+    const stats = this.stats(side);
+    const head = this.price(stats.flags[context], 1) + this.price(stats.kind, rep ?? REPS);
     return rep === undefined
-      ? head + priceBucketed(side, this.distance, match.distance, maxDistance)
+      ? head + priceBucketed(stats.distance, match.distance, maxDistance)
       : head;
   }
 
   priceLength(side: Encoder | Decoder, match: Match, maxLength: number): number {
+    const stats = this.stats(side);
     return match.rep === undefined
-      ? priceBucketed(side, this.length, match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1)
-      : priceBucketed(side, this.repLength, match.length - REP_MIN + 1, maxLength - REP_MIN + 1);
+      ? priceBucketed(stats.length, match.length - MIN_MATCH + 1, maxLength - MIN_MATCH + 1)
+      : priceBucketed(stats.repLength, match.length - REP_MIN + 1, maxLength - REP_MIN + 1);
   }
 }
 

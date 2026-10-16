@@ -10,13 +10,14 @@ import {
   EndChoice,
   Sequence,
   StaticLiterals,
-  withSequenceMethod,
+  TEXT_METHODS,
   type Symbols,
 } from '../../nodes/sequence';
 import { buildWeights, writeTable } from '../../nodes/weights';
 import { costUnits } from '../../packer';
 import type { LengthBounds } from '../../nodes/lattice';
-import { AdaptivePrior, withoutRecall } from '../../nodes/adaptive';
+import { AdaptivePrior, type Learning } from '../../nodes/adaptive';
+import { opened, type MethodSet } from '../../nodes/methods';
 import { ContextModel } from '../../nodes/contexts';
 import { Repeats, type Match } from '../../nodes/repeats';
 import { LearnedMagnitude } from '../../nodes/magnitude';
@@ -104,19 +105,34 @@ const encode = <T>(sequence: Sequence<T>, value: T): Uint8Array => {
   return enc.output();
 };
 
+/** The methods of a sequence learning under `learning`, as `.adaptive()` opens them, but those `declared`. */
+const learns = (learning: Learning = {}, declared: MethodSet = {}): MethodSet =>
+  opened(declared, TEXT_METHODS, learning);
+
+/** The methods `.adaptive()` opens but recall, as `p.any` opens a string's, which it recalls itself. */
+const unrecalled = (): MethodSet =>
+  opened(
+    {},
+    TEXT_METHODS.filter((name) => name !== 'recall'),
+    {}
+  );
+
 const values = [[], [0], [1, 2, 3], [12, 0, 1, 1, 5], [3, 3, 3, 3, 3, 3, 3, 3, 0]];
 
 describe('Sequence', () => {
   it.each([
-    ['uniform', undefined, {}],
-    ['uniform with a max', undefined, { max: 12 }],
-    ['rows', rows, { max: 12 }],
-    ['adaptive', undefined, { adaptive: {} }],
-    ['adaptive rows with a learned length', rows, { max: 12, adaptive: { window: 8 } }],
-  ])('round-trips under the %s spelling', (_name, given, bounds: LengthBounds) => {
-    const many = Array.from({ length: 40 }, (_, i) => values[i % values.length]);
-    expect(roundTrip(new Sequence(toy(given), bounds), many)).toEqual(many);
-  });
+    ['uniform', undefined, {}, {}],
+    ['uniform with a max', undefined, { max: 12 }, {}],
+    ['rows', rows, { max: 12 }, {}],
+    ['adaptive', undefined, {}, learns()],
+    ['adaptive rows with a learned length', rows, { max: 12 }, learns({ window: 8 })],
+  ])(
+    'round-trips under the %s spelling',
+    (_name, given, bounds: LengthBounds, methods: MethodSet) => {
+      const many = Array.from({ length: 40 }, (_, i) => values[i % values.length]);
+      expect(roundTrip(new Sequence(toy(given), bounds, methods), many)).toEqual(many);
+    }
+  );
 
   it('writes the prefix, then each symbol and its tail', () => {
     const plainEnc = new Encoder();
@@ -163,9 +179,10 @@ describe('Sequence', () => {
   it.each([
     ['tailed', toy(), {}],
     ['weighted', { ...plain, rows: [rows[1]] }, {}],
-    ['adaptive', plain, { adaptive: {} }],
-  ])('reads a %s alphabet item by item', (_name, symbols: Symbols<number[]>, bounds) => {
-    const sequence = new Sequence(symbols, bounds);
+    ['adaptive', plain, learns()],
+  ])('reads a %s alphabet item by item', (_name, symbols: Symbols<number[]>, methods) => {
+    const sequence = new Sequence(symbols, {}, methods);
+
     const value = [0, 2, 0, 3];
     const dec = new Decoder(encode(sequence, value));
     const run = jest.spyOn(dec, 'parseMany');
@@ -221,12 +238,12 @@ describe('Sequence', () => {
 
   it('learns the symbols without a max, and refuses bad adaptive options', () => {
     const repeated = Array<number>(400).fill(2);
-    const learning = new Sequence(toy(), { adaptive: {} });
+    const learning = new Sequence(toy(), {}, learns());
     expect(roundTrip(learning, [repeated])).toEqual([repeated]);
     expect(encode(learning, repeated).length).toBeLessThan(
       encode(new Sequence(toy(), {}), repeated).length / 4
     );
-    expect(() => new Sequence(toy(), { adaptive: { window: 0 } })).toThrow(
+    expect(() => new Sequence(toy(), {}, learns({ window: 0 }))).toThrow(
       new RangeError('toy adaptive window must be a positive integer, got 0')
     );
     expect(() => new Sequence(toy(), { prior: [1, 1] })).toThrow(
@@ -288,18 +305,16 @@ describe('Sequence', () => {
       ['without rows', undefined],
       ['in rows', rows],
     ])('round-trips long repetitive and random values in one message %s', (_name, given) => {
-      const sequence = new Sequence(toy(given), { adaptive: {} });
+      const sequence = new Sequence(toy(given), {}, learns());
       const many = [repetitive, random(1, 60), repetitive, [], [3], random(2, 5), repetitive];
       expect(roundTrip(sequence, many)).toEqual(many);
     });
 
     it('spells a repetitive value with repeats, and a random one without', () => {
-      const { used, matches } = spy(() =>
-        encode(new Sequence(toy(), { adaptive: {} }), repetitive)
-      );
+      const { used, matches } = spy(() => encode(new Sequence(toy(), {}, learns()), repetitive));
       expect(used).toEqual([true]);
       expect(matches.length).toBeGreaterThan(0);
-      const sequence = new Sequence(toy(), { adaptive: {} });
+      const sequence = new Sequence(toy(), {}, learns());
       expect(spy(() => encode(sequence, random(3, 80))).used).toEqual([false]);
     });
 
@@ -307,7 +322,7 @@ describe('Sequence', () => {
       // Lengths, not ends, close the values, so the end is known.
       const open = jest.spyOn(EndChoice.prototype, 'open').mockReturnValue(false);
       try {
-        const sequence = new Sequence(toy(), { adaptive: {} });
+        const sequence = new Sequence(toy(), {}, learns());
         const first = random(4, 70);
         const second = first.slice(5, 25);
         const enc = new Encoder();
@@ -327,7 +342,7 @@ describe('Sequence', () => {
     });
 
     it('codes a repeat under the largest bound where the end is spelled', () => {
-      const sequence = new Sequence(toy(), { adaptive: {} }, { terminated: true });
+      const sequence = new Sequence(toy(), {}, learns({}, { terminated: 'declared' }));
       const first = random(4, 70);
       const second = first.slice(5, 25);
       const enc = new Encoder();
@@ -342,7 +357,7 @@ describe('Sequence', () => {
     });
 
     it('copies a match overlapping the position it starts at', () => {
-      const sequence = new Sequence(toy(), { adaptive: {} });
+      const sequence = new Sequence(toy(), {}, learns());
       const run = [6, ...Array<number>(80).fill(2)];
       const { matches } = spy(() => encode(sequence, run));
       expect(matches.some(([match]) => match.distance < match.length)).toBe(true);
@@ -350,7 +365,7 @@ describe('Sequence', () => {
     });
 
     it('copies items wider than one unit, the bounds counting units', () => {
-      const sequence = new Sequence(toy(), { adaptive: {} });
+      const sequence = new Sequence(toy(), {}, learns());
       const wide = Array<number>(400).fill(1);
       const { matches } = spy(() => encode(sequence, wide));
       // After the first item, 798 units are left for the 399 items that follow.
@@ -363,7 +378,7 @@ describe('Sequence', () => {
         // Lengths, not ends, close the values.
         const open = jest.spyOn(EndChoice.prototype, 'open').mockReturnValue(false);
         try {
-          const sequence = new Sequence(toy(), { adaptive: withoutRecall({}) });
+          const sequence = new Sequence(toy(), {}, unrecalled());
           const enc = new Encoder();
           const { used } = spy(() => values.forEach((value) => sequence.write(enc, value)));
           const dec = new Decoder(enc.output());
@@ -391,7 +406,7 @@ describe('Sequence', () => {
       // the written ones.
       const enc = new Encoder();
       lengths()(enc, 2 ** 33);
-      new Repeats('toy').writeUsed(enc, true);
+      new Repeats().writeUsed(enc, true);
       const model = new ContextModel(
         new AdaptivePrior([[1, 1, 1, 1]], 4, undefined, 'toy'),
         4,
@@ -416,7 +431,7 @@ describe('Sequence', () => {
       const flag = jest.spyOn(Repeats.prototype, 'readFlag');
       try {
         const dec = new Decoder(enc.output(), { limit: Infinity });
-        expect(() => new Sequence(toy(), { adaptive: {} }).read(dec)).toThrow('cut off');
+        expect(() => new Sequence(toy(), {}, learns()).read(dec)).toThrow('cut off');
         expect(flag).not.toHaveBeenCalled();
       } finally {
         literal.mockRestore();
@@ -425,7 +440,7 @@ describe('Sequence', () => {
     });
 
     it('refuses a repeat that grows the items past the largest array', () => {
-      const repeats = new Repeats('toy');
+      const repeats = new Repeats();
       const model = new ContextModel(
         new AdaptivePrior([[1, 1, 1, 1]], 4, undefined, 'toy'),
         4,
@@ -446,7 +461,7 @@ describe('Sequence', () => {
       model.write(enc, 0, 0, [4, 4, 4, 4]);
       repeats.writeFlag(enc, true, 0);
       repeats.writeMatch(enc, { distance: 1, length: 2 ** 32 - 2 }, 3, 2 ** 32 - 2);
-      const sequence = new Sequence(toy(), { adaptive: withoutRecall({}) });
+      const sequence = new Sequence(toy(), {}, unrecalled());
       const dec = new Decoder(enc.output());
       expect(sequence.read(dec)).toEqual([2, 2]);
       expect(() => sequence.read(dec)).toThrow(
@@ -458,7 +473,7 @@ describe('Sequence', () => {
       // A value of 2^20 units: one literal, then a match copying the rest.
       const enc = new Encoder();
       lengths()(enc, 2 ** 20);
-      const repeats = new Repeats('toy');
+      const repeats = new Repeats();
       const model = new ContextModel(
         new AdaptivePrior([[1, 1, 1, 1]], 4, undefined, 'toy'),
         4,
@@ -469,7 +484,7 @@ describe('Sequence', () => {
       repeats.writeFlag(enc, true, 0);
       repeats.writeMatch(enc, { distance: 1, length: 2 ** 20 - 1 }, 1, 2 ** 20 - 1);
       const bytes = enc.output();
-      expect(() => new Sequence(toy(), { adaptive: {} }).read(new Decoder(bytes))).toThrow(
+      expect(() => new Sequence(toy(), {}, learns()).read(new Decoder(bytes))).toThrow(
         new CorruptInputError(
           `Repeats copy more than ${2 ** 16 * bytes.length} items from ${bytes.length} digits of input`
         )
@@ -477,7 +492,7 @@ describe('Sequence', () => {
     });
 
     it('copies a long run far under the cap', () => {
-      const sequence = new Sequence(toy(), { adaptive: {} });
+      const sequence = new Sequence(toy(), {}, learns());
       const run = Array<number>(100000).fill(2);
       const bytes = encode(sequence, run);
       expect(bytes.length).toBeLessThan(20);
@@ -552,7 +567,7 @@ describe('Sequence', () => {
       // Lengths, not ends, close the values.
       const open = jest.spyOn(EndChoice.prototype, 'open').mockReturnValue(false);
       try {
-        const sequence = new Sequence(plain, { adaptive: {} });
+        const sequence = new Sequence(plain, {}, learns());
         const enc = new Encoder();
         const events = record(() => values.forEach((value) => sequence.write(enc, value)));
         const dec = new Decoder(enc.output());
@@ -633,7 +648,7 @@ describe('Sequence', () => {
     });
 
     it('rules nothing out in an alphabet with tails', () => {
-      const sequence = new Sequence(toy(), { adaptive: {} });
+      const sequence = new Sequence(toy(), {}, learns());
       const value = mutated(7, 40, 10).map((digit, i) => (digit === 3 ? 3 + (i % 10) : digit));
       const events = record(() => encode(sequence, value));
       expect(events.some((e) => e.kind === 'match')).toBe(true);
@@ -664,7 +679,7 @@ describe('Sequence', () => {
       // Seventy units: item 1 spelled, then 35 more copied from it, 72 units.
       const enc = new Encoder();
       lengths()(enc, 70);
-      const repeats = new Repeats('toy');
+      const repeats = new Repeats();
       const model = new ContextModel(
         new AdaptivePrior([[1, 1, 1, 1]], 4, undefined, 'toy'),
         4,
@@ -674,7 +689,7 @@ describe('Sequence', () => {
       model.write(enc, 1, 0, [4, 4, 4, 4]);
       repeats.writeFlag(enc, true, 0);
       repeats.writeMatch(enc, { distance: 1, length: 35 }, 1, 68);
-      expect(() => new Sequence(toy(), { adaptive: {} }).read(new Decoder(enc.output()))).toThrow(
+      expect(() => new Sequence(toy(), {}, learns()).read(new Decoder(enc.output()))).toThrow(
         new CorruptInputError('Toy items overrun the length prefix')
       );
     });
@@ -695,8 +710,8 @@ describe('Sequence', () => {
     it('learns as one with every sequence of its pool and window, in either write order', () => {
       // An undeclared window is the default one, and the length is the
       // sequence's own.
-      const a = new Sequence(toy(), { adaptive: {} });
-      const b = new Sequence(toy(), { max: 100, adaptive: { window: 1024 } });
+      const a = new Sequence(toy(), {}, learns());
+      const b = new Sequence(toy(), { max: 100 }, learns({ window: 1024 }));
       const value = random(4, 70);
       for (const [first, second] of [
         [a, b],
@@ -709,12 +724,12 @@ describe('Sequence', () => {
     });
 
     it('keeps apart sequences of another pool or window, and a separate one', () => {
-      const a = new Sequence(toy(), { adaptive: {} });
+      const a = new Sequence(toy(), {}, learns());
       const value = random(4, 70);
       for (const b of [
-        new Sequence(toy(rows), { adaptive: {} }),
-        new Sequence(toy(), { adaptive: { window: 512 } }),
-        new Sequence(toy(), { adaptive: { separate: true } }),
+        new Sequence(toy(rows), {}, learns()),
+        new Sequence(toy(), {}, learns({ window: 512 })),
+        new Sequence(toy(), {}, learns({ separate: true })),
       ]) {
         expect(pair(a, b, value).matches).toEqual([]);
       }
@@ -722,12 +737,12 @@ describe('Sequence', () => {
 
     it('spells a separate sequence as one alone in its pool', () => {
       const value = random(6, 70);
-      const alone = () => new Sequence({ ...toy(), pool: {} }, { adaptive: {} });
-      const separate = () => new Sequence(toy(), { adaptive: { separate: true } });
+      const alone = () => new Sequence({ ...toy(), pool: {} }, {}, learns());
+      const separate = () => new Sequence(toy(), {}, learns({ separate: true }));
       expect(pair(separate(), separate(), value).bytes).toEqual(
         pair(alone(), alone(), value).bytes
       );
-      expect(encode(new Sequence(toy(), { adaptive: {} }), value)).toEqual(encode(alone(), value));
+      expect(encode(new Sequence(toy(), {}, learns()), value)).toEqual(encode(alone(), value));
     });
   });
 });
@@ -764,7 +779,7 @@ describe('Sequence methods', () => {
         [1, 1],
         [1, 0],
       ];
-      const sequence = () => new Sequence(toy(), { max: 12 }, { delta: true });
+      const sequence = () => new Sequence(toy(), { max: 12 }, { delta: 'declared' });
       const expected = hand((enc) =>
         digits(enc, [
           // [0, 2, 3]: the length, then the items in full.
@@ -809,13 +824,13 @@ describe('Sequence methods', () => {
         [0, 0],
         [0, 2],
       ];
-      const sequence = () => new Sequence(toy(rows), { max: 12 }, { delta: true });
+      const sequence = () => new Sequence(toy(rows), { max: 12 }, { delta: 'declared' });
       expect(message(sequence(), values)).toEqual(expected);
       expect(roundTrip(sequence(), values)).toEqual(values);
     });
 
     it('reads the items after the shared start of a uniform, tailless alphabet as one run', () => {
-      const sequence = new Sequence(plain, { max: 3 }, { delta: true });
+      const sequence = new Sequence(plain, { max: 3 }, { delta: 'declared' });
       const values = [
         [3, 0, 2, 1],
         [3, 0, 1, 1],
@@ -841,7 +856,7 @@ describe('Sequence methods', () => {
           [1, 4],
         ])
       );
-      const sequence = new Sequence(toy(), { max: 12 }, { delta: true });
+      const sequence = new Sequence(toy(), { max: 12 }, { delta: 'declared' });
       const dec = new Decoder(bytes);
       expect(sequence.read(dec)).toEqual([0]);
       expect(() => sequence.read(dec)).toThrow(
@@ -876,14 +891,17 @@ describe('Sequence methods', () => {
     };
 
     it('picks the delta for a value sharing a long start, and the plain spelling otherwise, each learning both', () => {
-      const sequence = new Sequence(toy(), { max: 100, adaptive: {} });
+      const sequence = new Sequence(toy(), { max: 100 }, learns());
       const values = [a, b, c];
       let bytes: Uint8Array = new Uint8Array();
       // The first value has no delta; b shares 27 of 30 items; c none, and
       // its shared start of 0 is learned all the same.
       expect(scale(() => (bytes = message(sequence, values)))).toEqual({
         written: [[27, 0, 0, 30]],
-        learned: [[0, 0, 0, 30]],
+        learned: [
+          [27, 0, 0, 30],
+          [0, 0, 0, 30],
+        ],
       });
       const read = jest.spyOn(LearnedMagnitude.prototype, 'read');
       const learned = scale(() => {
@@ -893,14 +911,17 @@ describe('Sequence methods', () => {
       }).learned;
       expect(read.mock.calls.map(([, ...rest]) => rest)).toEqual([[0, 0, 30]]);
       read.mockRestore();
-      expect(learned).toEqual([[0, 0, 0, 30]]);
+      expect(learned).toEqual([
+        [27, 0, 0, 30],
+        [0, 0, 0, 30],
+      ]);
     });
 
     it('spells every value after the first by the delta when declared, with no mode', () => {
-      const sequence = () => new Sequence(toy(), { max: 100, adaptive: {} }, { delta: true });
+      const sequence = () => new Sequence(toy(), { max: 100 }, learns({}, { delta: 'declared' }));
       expect(scale(() => message(sequence(), [a, c]))).toEqual({
         written: [[0, 0, 0, 30]],
-        learned: [],
+        learned: [[0, 0, 0, 30]],
       });
       expect(roundTrip(sequence(), [a, b, c, b])).toEqual([a, b, c, b]);
     });
@@ -910,8 +931,8 @@ describe('Sequence methods', () => {
       const values = Array.from({ length: 60 }, () =>
         Array.from({ length: Math.floor(random() * 12) }, () => Math.floor(random() * 13))
       ).map((value, i, all) => (i % 3 === 0 ? value : [...(all[i - 1] ?? []), ...value]));
-      for (const spelling of [{}, { delta: true as const }]) {
-        const sequence = new Sequence(toy(), { adaptive: {} }, spelling);
+      for (const spelling of [{}, { delta: 'declared' as const }]) {
+        const sequence = new Sequence(toy(), {}, learns({}, spelling));
         expect(roundTrip(sequence, values)).toEqual(values);
       }
     });
@@ -923,7 +944,7 @@ describe('Sequence methods', () => {
 
     it('learn on the magnitude scale from the min', () => {
       const values = Array.from({ length: 100 }, () => Array<number>(40).fill(0));
-      const sequence = new Sequence(single, { min: 5, adaptive: {} });
+      const sequence = new Sequence(single, { min: 5 }, learns());
       expect(roundTrip(sequence, values)).toEqual(values);
       // A term costs over 10 bits for 35; learned, under 4.
       expect(message(sequence, values).length).toBeLessThan(50);
@@ -949,7 +970,7 @@ describe('Sequence methods', () => {
           [1, 3],
         ])
       );
-      const sequence = () => new Sequence(toy(), { max: 12 }, { recall: true });
+      const sequence = () => new Sequence(toy(), { max: 12 }, { recall: 'declared' });
       expect(message(sequence(), values)).toEqual(expected);
       expect(roundTrip(sequence(), values)).toEqual(values);
     });
@@ -979,7 +1000,8 @@ describe('Sequence methods', () => {
           [3, 10],
         ])
       );
-      const sequence = () => new Sequence(toy(), { max: 12 }, { recall: true, delta: true });
+      const sequence = () =>
+        new Sequence(toy(), { max: 12 }, { recall: 'declared', delta: 'declared' });
       expect(message(sequence(), values)).toEqual(expected);
       expect(roundTrip(sequence(), values)).toEqual(values);
     });
@@ -994,15 +1016,15 @@ describe('Sequence methods', () => {
         },
       };
       const values = [[0, 2], [3], [0, 2], [0, 2], [3]];
-      const sequence = new Sequence(copying, { max: 12, adaptive: {} }, { recall: true });
+      const sequence = new Sequence(copying, { max: 12 }, learns({}, { recall: 'declared' }));
       const out = roundTrip(sequence, values);
       expect(out).toEqual(values);
       expect(copies).toEqual([[0, 2], [0, 2], [3]]);
       expect(out[2]).not.toBe(out[0]);
-      const once = message(new Sequence(toy(), { max: 12, adaptive: {} }, { recall: true }), [
+      const once = message(new Sequence(toy(), { max: 12 }, learns({}, { recall: 'declared' })), [
         [0, 2],
       ]);
-      expect(once).toEqual(message(new Sequence(toy(), { max: 12, adaptive: {} }), [[0, 2]]));
+      expect(once).toEqual(message(new Sequence(toy(), { max: 12 }, learns()), [[0, 2]]));
     });
   });
 
@@ -1025,7 +1047,7 @@ describe('Sequence methods', () => {
           [0, 1],
         ]);
       });
-      const sequence = () => new Sequence(toy(), { max: 12 }, { repeats: true });
+      const sequence = () => new Sequence(toy(), { max: 12 }, { repeats: 'declared' });
       const value = [0, 2, 0, 2, 0, 2];
       expect(encode(sequence(), value)).toEqual(expected);
       expect(roundTrip(sequence(), [value])).toEqual([value]);
@@ -1043,9 +1065,9 @@ describe('Sequence methods', () => {
         [...stretch, 8, 8, 8, 8],
       ];
       for (const [given, spelling] of [
-        [undefined, { repeats: true as const }],
-        [rows, { repeats: true as const }],
-        [rows, { repeats: true as const, delta: true as const }],
+        [undefined, { repeats: 'declared' as const }],
+        [rows, { repeats: 'declared' as const }],
+        [rows, { repeats: 'declared' as const, delta: 'declared' as const }],
       ] as const) {
         expect(roundTrip(new Sequence(toy(given), { max: 100 }, spelling), values)).toEqual(values);
       }
@@ -1054,11 +1076,13 @@ describe('Sequence methods', () => {
         [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 0],
         [3, 3, 3, 3, 3, 3],
       ];
-      expect(roundTrip(new Sequence(symbols, {}, { repeats: true }), tailless)).toEqual(tailless);
-      const repetitive = [...stretch, ...stretch, ...stretch];
-      expect(encode(new Sequence(toy(), {}, { repeats: true }), repetitive).length).toBeLessThan(
-        encode(new Sequence(toy(), {}), repetitive).length * 0.6
+      expect(roundTrip(new Sequence(symbols, {}, { repeats: 'declared' }), tailless)).toEqual(
+        tailless
       );
+      const repetitive = [...stretch, ...stretch, ...stretch];
+      expect(
+        encode(new Sequence(toy(), {}, { repeats: 'declared' }), repetitive).length
+      ).toBeLessThan(encode(new Sequence(toy(), {}), repetitive).length * 0.6);
     });
 
     it('refuses copied items that overrun the length prefix', () => {
@@ -1078,18 +1102,8 @@ describe('Sequence methods', () => {
         ]);
       });
       expect(() =>
-        new Sequence(toy(), { max: 12 }, { repeats: true }).read(new Decoder(bytes))
+        new Sequence(toy(), { max: 12 }, { repeats: 'declared' }).read(new Decoder(bytes))
       ).toThrow(new CorruptInputError('Toy items overrun the length prefix'));
-    });
-
-    it('are declared once', () => {
-      expect(withSequenceMethod({ delta: true }, 'repeats', 'toy')).toEqual({
-        delta: true,
-        repeats: true,
-      });
-      expect(() => withSequenceMethod({ repeats: true }, 'repeats', 'toy')).toThrow(
-        new TypeError('toy repeats is already set')
-      );
     });
   });
 });
@@ -1142,7 +1156,7 @@ describe('Sequence runs', () => {
   it.each(['any', 'sorted', 'unique'] as const)(
     'round-trip a %s run, each value after the one before, recalling those written',
     (ascent) => {
-      const make = () => new Sequence(toy(), { max: 12 }, { recall: true });
+      const make = () => new Sequence(toy(), { max: 12 }, { recall: 'declared' });
       const writer = make();
       const enc = new Encoder();
       writer.write(enc, [0, 2]);

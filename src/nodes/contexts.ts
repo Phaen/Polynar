@@ -37,7 +37,6 @@
  */
 
 import {
-  SlotCache,
   costUnits,
   type Encoder,
   type Decoder,
@@ -48,6 +47,7 @@ import {
 } from '../packer';
 import { Exclusion, type Table } from './excluded';
 import { KeyMap } from './keymap';
+import { ProviderRef, poolKey, type Pool, type ProviderKind } from './providers';
 
 /** The longest history a context keys on. */
 export const MAX_ORDER = 4;
@@ -352,18 +352,27 @@ function learnCell(cell: [number, number], escaped: boolean, journal?: Journal):
   }
 }
 
+/** The stops a message learned, by row: the end evidence of a kind of value where the contexts escape. */
+const STOPS: ProviderKind<Pool | undefined, ([number, number] | undefined)[]> = {
+  name: 'stops',
+  key: (pool) => poolKey(pool),
+  init: () => [],
+};
+
 /**
  * Whether a value ends where it may, learned per row: a pair of counts,
  * going on and ending, that learn as escape cells do, the end coded below
  * going on. The contexts consult it where they all escape; a static
- * spelling at every place a value may end.
+ * spelling at every place a value may end. Its pairs are learned per
+ * message, shared within `pool`, else its own.
  */
 export class Stops {
   /** Each message's pairs, by row, built on first use. */
-  private readonly messages = new SlotCache<([number, number] | undefined)[], Encoder | Decoder>(
-    this,
-    () => []
-  );
+  private readonly pairs: ProviderRef<Pool | undefined, ([number, number] | undefined)[]>;
+
+  constructor(pool?: Pool) {
+    this.pairs = new ProviderRef(STOPS, pool);
+  }
 
   /** Learns `end` in `row` on `side` as `write` would code it, writing nothing. */
   learn(side: Encoder | Decoder, row: number, end: boolean): void {
@@ -372,7 +381,7 @@ export class Stops {
 
   /** The pair of `row` on `side`. */
   private pair(side: Encoder | Decoder, row: number): [number, number] {
-    const pairs = this.messages.get(side);
+    const pairs = this.pairs.get(side);
     let pair = pairs[row];
     if (pair === undefined) {
       pair = [STOP_START[0], STOP_START[1]];
@@ -410,9 +419,10 @@ export class Stops {
 
 /**
  * What the contexts escape to: a table over the symbols, by row, that codes
- * a symbol with members ruled out and learns every symbol the contexts code.
- * `AdaptivePrior` is one; `cost` is the cost, in `COST_UNITS`, the encoder's
- * table as it stands gives a symbol, learning nothing.
+ * a symbol with members ruled out, learning nothing, and learns through
+ * `learn` the symbols the contexts teach it. `AdaptivePrior` is one; `cost`
+ * is the cost, in `COST_UNITS`, the encoder's table as it stands gives a
+ * symbol.
  */
 export interface SymbolPrior {
   readonly members: number;
@@ -424,10 +434,34 @@ export interface SymbolPrior {
   cost(enc: Encoder, pos: number, row: number, excluded: Exclusion): number;
 }
 
+/** The pool a model's contexts are shared within, if any, and the symbols they span. */
+interface ContextsConfig {
+  readonly pool?: Pool;
+  readonly size: number;
+}
+
+/**
+ * The contexts a message learned for one kind of value: a table per order,
+ * the escape cells, and the exclusion each symbol reuses.
+ */
+const CONTEXTS: ProviderKind<ContextsConfig, Contexts> = {
+  name: 'contexts',
+  key: ({ pool, size }) => poolKey(pool, size),
+  init: ({ size }, side) => ({
+    tables: Array.from({ length: MAX_ORDER }, () => new KeyMap<Context>()),
+    cells: new Array<[number, number] | undefined>(CELL_KEYS),
+    exclusion: new Exclusion(size),
+    coded: 0,
+    top: false,
+    journal: side.journal,
+  }),
+};
+
 /**
  * PPM contexts above a prior over `size` symbols: learned contexts for each
  * history length from 1 to `MAX_ORDER`, over the symbols and `end`, which
- * is `size`. `who` names the node.
+ * is `size`. `who` names the node. Its contexts and stops are learned per
+ * message, shared within `pool`, else its own.
  *
  * A history lists the previous symbols newest first, exactly `MAX_ORDER`
  * of them, each in `[0, size]`, where a value no symbol coded takes, such
@@ -439,18 +473,11 @@ export class ContextModel {
   /** The symbol that ends a value: `size`, past the prior's. */
   readonly end: number;
   /** Whether a value ends, where every context escapes. */
-  private readonly stops = new Stops();
+  private readonly stops: Stops;
   /** The context orders, highest first. */
   private readonly orders: readonly number[];
   /** Each message's contexts. */
-  private readonly messages = new SlotCache<Contexts, Encoder | Decoder>(this, (side) => ({
-    tables: this.orders.map(() => new KeyMap<Context>()),
-    cells: new Array<[number, number] | undefined>(CELL_KEYS),
-    exclusion: new Exclusion(this.size),
-    coded: 0,
-    top: false,
-    journal: side.journal,
-  }));
+  private readonly contexts: ProviderRef<ContextsConfig, Contexts>;
   /** What `visit` returns, its contexts written over by the next visit. */
   private readonly visited: Context[] = [];
   /** What `lookup` fills, written over by the next lookup. */
@@ -474,13 +501,16 @@ export class ContextModel {
   constructor(
     private readonly prior: SymbolPrior,
     size: number,
-    private readonly who: string
+    private readonly who: string,
+    pool?: Pool
   ) {
     if (size !== prior.members) {
       throw new TypeError(`${who} contexts span ${size} symbols, but their prior ${prior.members}`);
     }
     this.size = size;
     this.end = size;
+    this.stops = new Stops(pool);
+    this.contexts = new ProviderRef(CONTEXTS, { pool, size });
     const orders: number[] = [];
     for (let k = MAX_ORDER; k > 0; k--) {
       orders.push(k);
@@ -560,7 +590,7 @@ export class ContextModel {
   /**
    * Writes `sym` where every context escaped: the stop where it is coded,
    * the end's cost going to `endUnits`, then any other symbol through the
-   * prior.
+   * prior, which learns it.
    */
   private writeFallen(
     enc: Encoder,
@@ -578,10 +608,11 @@ export class ContextModel {
     }
     if (!ending) {
       this.prior.write(enc, sym, row, state.exclusion);
+      this.prior.learn(enc, sym, row);
     }
   }
 
-  /** Reads a symbol `writeFallen` wrote, the end's cost going to `endUnits`. */
+  /** Reads a symbol `writeFallen` wrote, the end's cost going to `endUnits`, and the prior learns it. */
   private readFallen(dec: Decoder, row: number, state: Contexts, endable: boolean): number {
     if (this.stopping(endable)) {
       const cost = this.stops.cost(dec, row, true);
@@ -590,7 +621,9 @@ export class ContextModel {
         return this.end;
       }
     }
-    return this.prior.read(dec, row, state.exclusion);
+    const sym = this.prior.read(dec, row, state.exclusion);
+    this.prior.learn(dec, sym, row);
+    return sym;
   }
 
   /** Reads a symbol written by `write` in `row` after `history` under the same `except` and `endable`. */
@@ -898,7 +931,7 @@ export class ContextModel {
 
   /** This message's contexts on `side`. */
   private message(side: Encoder | Decoder): Contexts {
-    return this.messages.get(side);
+    return this.contexts.get(side);
   }
 
   /** How many of the contexts, highest order first, price the next symbol: none until the warm-up is over. */

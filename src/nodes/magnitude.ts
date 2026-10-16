@@ -16,7 +16,7 @@
  */
 
 import type { Encoder, Decoder } from '../packer';
-import { AdaptivePrior, checkAdaptation, lineageOf, type AdaptiveOptions } from './adaptive';
+import { AdaptivePrior, checkAdaptation, lineageOf, type Learning } from './adaptive';
 import { Exclusion } from './excluded';
 
 const TWO_32 = 2 ** 32;
@@ -39,13 +39,21 @@ export function classOf(distance: number): number {
     : 64 - Math.clz32(Math.floor(distance / TWO_32));
 }
 
+/** Refuses `n` unless it is a safe integer. */
+function checkSafe(n: number): void {
+  if (!Number.isSafeInteger(n)) {
+    throw new TypeError(`Magnitude bound ${n} is not a safe integer`);
+  }
+}
+
 /** Refuses an interval, origin and value that are not safe integers with `lo <= origin <= hi` and the value within. */
 function check(value: number | undefined, origin: number, lo: number, hi: number): void {
-  for (const n of value === undefined ? [origin, lo, hi] : [value, origin, lo, hi]) {
-    if (!Number.isSafeInteger(n)) {
-      throw new TypeError(`Magnitude bound ${n} is not a safe integer`);
-    }
+  if (value !== undefined) {
+    checkSafe(value);
   }
+  checkSafe(origin);
+  checkSafe(lo);
+  checkSafe(hi);
   if (lo > origin || origin > hi) {
     throw new RangeError(`Magnitude origin ${origin} is outside [${lo}, ${hi}]`);
   }
@@ -135,11 +143,11 @@ function readTail(
  * always lies in the interval.
  */
 export interface Magnitude {
-  /** Writes `value` and learns it. */
+  /** Writes `value`, learning nothing. */
   write(enc: Encoder, value: number, origin: number, lo: number, hi: number): void;
-  /** Reads a value `write` wrote under the same origin and interval, and learns it. */
+  /** Reads a value `write` wrote under the same origin and interval, learning nothing. */
   read(dec: Decoder, origin: number, lo: number, hi: number): number;
-  /** Learns `value` as though it were written; nothing for a scale that does not learn. */
+  /** Learns `value`, written or not; nothing for a scale that does not learn. */
   learn(side: Encoder | Decoder, value: number, origin: number, lo: number, hi: number): void;
 }
 
@@ -319,13 +327,13 @@ export class LearnedMagnitude implements Magnitude {
 
   constructor(
     readonly signed: boolean,
-    adaptive: AdaptiveOptions,
+    learning: Learning,
     private readonly who: string,
     prices: Prices = 'term'
   ) {
-    const { window } = checkAdaptation(adaptive, who);
+    const { window } = checkAdaptation(learning, who);
     const weights = WEIGHTS[prices][signed ? 1 : 0];
-    this.prior = new AdaptivePrior([weights], weights.length, window, who, lineageOf(adaptive));
+    this.prior = new AdaptivePrior([weights], weights.length, window, who, lineageOf(learning));
   }
 
   /** `check`, and for an unsigned scale an interval starting at the origin. */
@@ -337,9 +345,9 @@ export class LearnedMagnitude implements Magnitude {
     }
   }
 
-  /** The member of a placed value: its symbol above the origin, or past the upper side's below it. */
-  private member({ up, distance, cls }: Placed): number {
-    const symbol = symbolOf(distance, cls);
+  /** The member of a value `distance` from the origin, above it when `up`: its symbol, or past the upper side's below it. */
+  private member(up: boolean, distance: number): number {
+    const symbol = symbolOf(distance, classOf(distance));
     return up ? symbol : SIDE_SYMBOLS - 1 + symbol;
   }
 
@@ -372,7 +380,12 @@ export class LearnedMagnitude implements Magnitude {
   write(enc: Encoder, value: number, origin: number, lo: number, hi: number): void {
     this.checkSide(value, origin, lo, hi);
     const placed = place(value, origin);
-    this.prior.write(enc, this.member(placed), 0, this.exclusion(origin, lo, hi));
+    this.prior.write(
+      enc,
+      this.member(placed.up, placed.distance),
+      0,
+      this.exclusion(origin, lo, hi)
+    );
     if (placed.cls >= FIRST_CLASS) {
       writeTail(enc, placed, value, origin, lo, hi);
     }
@@ -392,19 +405,16 @@ export class LearnedMagnitude implements Magnitude {
 
   learn(side: Encoder | Decoder, value: number, origin: number, lo: number, hi: number): void {
     this.checkSide(value, origin, lo, hi);
-    this.prior.learn(side, this.member(place(value, origin)));
+    const up = value >= origin;
+    this.prior.learn(side, this.member(up, up ? value - origin : origin - value));
   }
 }
 
 /**
- * The magnitude scale of a node: learned under `adaptive`, holding both
+ * The magnitude scale of a node: learned under `learning`, holding both
  * sides when `signed`, and static otherwise, which reaches whichever sides
  * the interval does.
  */
-export function magnitude(
-  adaptive: AdaptiveOptions | undefined,
-  signed: boolean,
-  who: string
-): Magnitude {
-  return adaptive === undefined ? STATIC_MAGNITUDE : new LearnedMagnitude(signed, adaptive, who);
+export function magnitude(learning: Learning | undefined, signed: boolean, who: string): Magnitude {
+  return learning === undefined ? STATIC_MAGNITUDE : new LearnedMagnitude(signed, learning, who);
 }

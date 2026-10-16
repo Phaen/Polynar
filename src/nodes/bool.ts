@@ -1,7 +1,7 @@
 import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import type { Kind } from './guards';
-import type { AdaptiveOptions } from './adaptive';
+import type { AdaptiveOptions, Learning } from './adaptive';
 import { members, type MemberPrior, type Members } from './members';
 
 /** Boolean. `p.bool`. */
@@ -41,6 +41,10 @@ export class PBool extends PNode<boolean> {
    */
   adaptive(options?: AdaptiveOptions): PBool {
     return new PBool({ ...this._prior, adaptive: options ?? {} });
+  }
+
+  _open(options: Learning): PBool {
+    return this.adaptive(options);
   }
 
   get _exact(): boolean {

@@ -4,7 +4,7 @@ import { atPath } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
-import type { AdaptiveOptions } from './adaptive';
+import type { AdaptiveOptions, Learning } from './adaptive';
 import {
   checkOrder,
   ordinal,
@@ -14,7 +14,7 @@ import {
   type Order,
 } from './ordinal';
 import { readRun, writeRun } from './runs';
-import { recallOf, withMethod, type Spelling } from './methods';
+import { CONTAINER_METHODS, learningOf, MethodNode, recallOf, type MethodSet } from './methods';
 import { copy, identity, type Recall } from './recall';
 import { PString } from './string';
 
@@ -41,7 +41,7 @@ export interface Layout<T> {
    * The node the keys go through under `.adaptive()`, for a layout whose
    * keys have no node of the caller's to adapt; the declared key otherwise.
    */
-  learnedKey?(adaptive: AdaptiveOptions): PNode<any>;
+  learnedKey?(learning: Learning): PNode<any>;
 }
 
 export const MAP: Layout<Map<any, any>> = {
@@ -73,7 +73,7 @@ export const RECORD: Layout<Record<string, any>> = {
     // instead of replacing the prototype.
     return Object.fromEntries(entries);
   },
-  learnedKey: (adaptive) => new PString().adaptive(adaptive),
+  learnedKey: (learning) => new PString().adaptive(learning),
 };
 
 /**
@@ -82,7 +82,7 @@ export const RECORD: Layout<Record<string, any>> = {
  * through the shared integer lattice with bounds `[min ?? 0, max]`.
  * `p.map`, `p.record` and `p.set` differ only in their `Layout`.
  */
-export class PCollection<T> extends PNode<T> {
+export class PCollection<T> extends MethodNode<T> {
   readonly _kinds: readonly Kind[];
 
   private readonly _layout: Layout<T>;
@@ -96,8 +96,10 @@ export class PCollection<T> extends PNode<T> {
   private readonly _count: IndexRange;
   /** Set by `.unordered()`. */
   private readonly _unordered?: true;
-  private readonly _spelling: Spelling;
-  /** Set by `.recall()`: learned when the count is adaptive. */
+  /** The methods the node has, declared or open. */
+  readonly _methods: MethodSet;
+  readonly _methodNames = CONTAINER_METHODS;
+  /** Set by `.recall()` or opened: learned where the node learns. */
   private readonly _recall?: Recall<T>;
 
   constructor(
@@ -106,21 +108,21 @@ export class PCollection<T> extends PNode<T> {
     value?: PNode<any>,
     bounds: LengthBounds = {},
     unordered?: true,
-    spelling: Spelling = {}
+    methods: MethodSet = {}
   ) {
     super();
     this._layout = layout;
     this._key = key;
-    const { adaptive } = bounds;
+    const learning = learningOf(methods);
     this._keys =
-      adaptive === undefined || layout.learnedKey === undefined ? key : layout.learnedKey(adaptive);
+      learning === undefined || layout.learnedKey === undefined ? key : layout.learnedKey(learning);
     this._value = value;
     this._bounds = bounds;
-    this._count = lengthRange(bounds, layout.who, 'count');
+    this._count = lengthRange(bounds, layout.who, 'count', learning);
     this._kinds = [layout.kind];
     this._unordered = unordered;
-    this._spelling = spelling;
-    this._recall = recallOf(spelling, bounds.adaptive, copy);
+    this._methods = methods;
+    this._recall = recallOf(methods, copy);
   }
 
   /** Require at least `n` entries. A raised floor packs the count denser. */
@@ -181,7 +183,7 @@ export class PCollection<T> extends PNode<T> {
    * ones learn their characters with the message's other strings.
    */
   adaptive(options?: AdaptiveOptions): PCollection<T> {
-    return this._with({ ...this._bounds, adaptive: options ?? {} });
+    return this._open(options ?? {});
   }
 
   /**
@@ -208,20 +210,21 @@ export class PCollection<T> extends PNode<T> {
    * of the collection first decoded.
    */
   recall(): PCollection<T> {
-    const spelling = withMethod(this._spelling, 'recall', this._layout.who);
-    return new PCollection<T>(
-      this._layout,
-      this._key,
-      this._value,
-      this._bounds,
-      this._unordered,
-      spelling
-    );
+    return this._declare('recall', this._layout.who);
   }
 
-  private _with(bounds: LengthBounds, unordered = this._unordered): PCollection<T> {
-    const { _layout, _key, _value, _spelling } = this;
-    return new PCollection<T>(_layout, _key, _value, bounds, unordered, _spelling);
+  /** This node with `methods` in place of its own. */
+  _withMethods(methods: MethodSet): PCollection<T> {
+    return this._with(this._bounds, this._unordered, methods);
+  }
+
+  private _with(
+    bounds: LengthBounds,
+    unordered = this._unordered,
+    methods = this._methods
+  ): PCollection<T> {
+    const { _layout, _key, _value } = this;
+    return new PCollection<T>(_layout, _key, _value, bounds, unordered, methods);
   }
 
   /**
@@ -252,6 +255,7 @@ export class PCollection<T> extends PNode<T> {
     const { name } = this._layout;
     const size = this._layout.size(value);
     this._count.write(enc, size, () => `${name} size ${size}`);
+    this._count.learn(enc, size);
     if (this._unordered !== undefined) {
       const entries = [...this._layout.entries(value)];
       const keys = entries.map(([key]) => key);
@@ -289,6 +293,7 @@ export class PCollection<T> extends PNode<T> {
   /** Reads a collection `_spell` wrote. */
   private _unspell(dec: Decoder): T {
     const count = this._count.read(dec);
+    this._count.learn(dec, count);
     dec.charge(count);
     const entries = new Map<unknown, unknown>();
     if (this._unordered !== undefined) {

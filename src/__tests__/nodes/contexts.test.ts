@@ -612,6 +612,7 @@ describe('ContextModel warm-up', () => {
       run.slice(0, WARMUP).forEach(({ sym, row, history }) => {
         model.write(withModel, sym, row, history);
         prior.write(withPrior, sym, row);
+        prior.learn(withPrior, sym, row);
       });
       expect(withModel.output()).toEqual(withPrior.output());
       // The next symbol's contexts have seen it: priced through them, not

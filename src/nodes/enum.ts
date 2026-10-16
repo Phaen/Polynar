@@ -2,7 +2,7 @@ import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import { kindOf, type Kind } from './guards';
 import { oneOf, describe } from './path';
-import type { AdaptiveOptions } from './adaptive';
+import type { AdaptiveOptions, Learning } from './adaptive';
 import { members, type MemberPrior, type Members } from './members';
 
 /**
@@ -68,6 +68,10 @@ export class PEnum<T> extends PNode<T> {
       ...this._prior,
       adaptive: options ?? {},
     });
+  }
+
+  _open(options: Learning): PEnum<T> {
+    return this.adaptive(options);
   }
 
   get _exact(): boolean {

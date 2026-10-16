@@ -1,11 +1,10 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { isDate, type Kind } from './guards';
-import { PNode } from './base';
 import { describe } from './path';
-import { IndexMethods, IndexRange, checkUnset } from './lattice';
+import { INDEX_METHODS, IndexMethods, IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 import type { AdaptiveOptions } from './adaptive';
-import { withMethod, type Spelling } from './methods';
+import { learningOf, MethodNode, type MethodSet } from './methods';
 
 export type DateUnit =
   | 'millisecond'
@@ -127,7 +126,7 @@ export const calendar = (unit: DateUnit, step: number): Calendar => {
  * through max's, so a min inside a bucket decodes to that bucket's start,
  * before min.
  */
-export class PDate extends PNode<Date> {
+export class PDate extends MethodNode<Date> {
   readonly _kinds: readonly Kind[] = ['date'];
 
   private readonly _min?: number;
@@ -137,8 +136,10 @@ export class PDate extends PNode<Date> {
   private readonly _calendar: Calendar;
   /** Bucket indices on the UTC calendar, the epoch's bucket at 0. */
   private readonly _range: IndexRange;
-  private readonly _spelling: Spelling;
-  private readonly _methods: IndexMethods;
+  /** The methods the node has, declared or open. */
+  readonly _methods: MethodSet;
+  readonly _methodNames = INDEX_METHODS;
+  private readonly _coding: IndexMethods;
   declare readonly _radix?: number;
 
   constructor(
@@ -147,8 +148,7 @@ export class PDate extends PNode<Date> {
     unit: DateUnit = 'millisecond',
     step = 1,
     prior?: Prior,
-    adaptive?: AdaptiveOptions,
-    spelling: Spelling = {}
+    methods: MethodSet = {}
   ) {
     super();
     this._min = isDate(min) ? min.getTime() : min;
@@ -178,18 +178,18 @@ export class PDate extends PNode<Date> {
     // included, encodes again.
     const lo = this._min === undefined ? undefined : this._calendar.index(this._min);
     const hi = this._max === undefined ? undefined : this._calendar.index(this._max);
-    this._range = new IndexRange('p.date', lo, hi, prior, adaptive, (b) =>
+    this._range = new IndexRange('p.date', lo, hi, prior, learningOf(methods), (b) =>
       iso(this._calendar.start(b))
     );
-    this._spelling = spelling;
-    this._methods = new IndexMethods(this._range, spelling, 'p.date');
+    this._methods = methods;
+    this._coding = new IndexMethods(this._range, methods, 'p.date');
     // Bucket starts rise with the index and none starts after its bound,
     // which lies within the Date range, so when the first bucket starts
     // within it every bucket does, and reading a digit cannot fail. Only a
     // first bucket straddling the earliest Date starts before it.
     const fromDigit = this._range.fromDigit;
     if (
-      this._methods.plain &&
+      this._coding.plain &&
       lo !== undefined &&
       fromDigit !== undefined &&
       !isNaN(new Date(this._calendar.start(lo)).getTime())
@@ -258,7 +258,7 @@ export class PDate extends PNode<Date> {
    * less than spelling it.
    */
   adaptive(options?: AdaptiveOptions): PDate {
-    return this._with({ adaptive: options ?? {} });
+    return this._open(options ?? {});
   }
 
   /**
@@ -271,7 +271,7 @@ export class PDate extends PNode<Date> {
    * spelling. Takes no weights or cdf.
    */
   delta(): PDate {
-    return this._with({ spelling: withMethod(this._spelling, 'delta', 'p.date') });
+    return this._declare('delta', 'p.date');
   }
 
   /**
@@ -283,7 +283,12 @@ export class PDate extends PNode<Date> {
    * as a new Date.
    */
   recall(): PDate {
-    return this._with({ spelling: withMethod(this._spelling, 'recall', 'p.date') });
+    return this._declare('recall', 'p.date');
+  }
+
+  /** This node with `methods` in place of its own. */
+  _withMethods(methods: MethodSet): PDate {
+    return this._with({ methods });
   }
 
   /** Only to the millisecond: a coarser bucket reads back as its start. */
@@ -292,7 +297,7 @@ export class PDate extends PNode<Date> {
   }
 
   _write(enc: Encoder, value: Date): void {
-    this._methods.write(enc, this._bucket(value), () => `Date ${value.toISOString()}`);
+    this._coding.write(enc, this._bucket(value), () => `Date ${value.toISOString()}`);
   }
 
   /** The bucket of `value`, refused when it is invalid or the decoder could not rebuild it. */
@@ -312,7 +317,7 @@ export class PDate extends PNode<Date> {
   }
 
   _read(dec: Decoder): Date {
-    const bucket = this._methods.read(dec);
+    const bucket = this._coding.read(dec);
     const date = new Date(this._calendar.start(bucket));
     // A bucket starting beyond the ±8.64e15 ms Date range can only come from
     // a corrupted input or from a bucket that straddles the range's edge.
@@ -328,8 +333,7 @@ export class PDate extends PNode<Date> {
     unit?: DateUnit;
     step?: number;
     prior?: Prior;
-    adaptive?: AdaptiveOptions;
-    spelling?: Spelling;
+    methods?: MethodSet;
   }): PDate {
     return new PDate(
       change.min ?? this._min,
@@ -337,8 +341,7 @@ export class PDate extends PNode<Date> {
       change.unit ?? this._unit,
       change.step ?? this._step,
       change.prior ?? this._range.declared,
-      change.adaptive ?? this._range.adaptive,
-      change.spelling ?? this._spelling
+      change.methods ?? this._methods
     );
   }
 }

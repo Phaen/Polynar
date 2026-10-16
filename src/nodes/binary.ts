@@ -1,17 +1,10 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
-import { PNode } from './base';
 import { typedArrayKind, type Kind, type TypedArray } from './guards';
-import { checkUnset } from './lattice';
+import { checkUnset, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
 import type { AdaptiveOptions } from './adaptive';
-import { withMethod } from './methods';
-import {
-  Sequence,
-  withSequenceMethod,
-  type SequenceBounds,
-  type SequenceSpelling,
-  type Symbols,
-} from './sequence';
+import { MethodNode, type MethodSet } from './methods';
+import { BYTES_METHODS, Sequence, type Symbols } from './sequence';
 
 /**
  * A typed-array class: its element width and a way to build it on a buffer.
@@ -126,25 +119,22 @@ class Bytes<A extends TypedArray> implements Symbols<A> {
  * values, so every element round-trips bit-exact, NaN payloads and -0
  * included, at exactly its width. `p.binary`, a `Uint8Array` by default.
  */
-export class PBinary<A extends TypedArray> extends PNode<A> {
+export class PBinary<A extends TypedArray> extends MethodNode<A> {
   readonly _kinds: readonly Kind[];
 
   private readonly _type: TypedArrayClass<A>;
-  private readonly _bounds: SequenceBounds;
-  /** The declared methods. */
-  private readonly _spelling: SequenceSpelling;
+  private readonly _bounds: LengthBounds;
+  /** The methods the node has, declared or open. */
+  readonly _methods: MethodSet;
+  readonly _methodNames = BYTES_METHODS;
   private readonly _sequence: Sequence<A>;
 
-  constructor(
-    type: TypedArrayClass<A>,
-    bounds: SequenceBounds = {},
-    spelling: SequenceSpelling = {}
-  ) {
+  constructor(type: TypedArrayClass<A>, bounds: LengthBounds = {}, methods: MethodSet = {}) {
     super();
     this._type = type;
     this._bounds = bounds;
-    this._spelling = spelling;
-    this._sequence = new Sequence(new Bytes(type), bounds, spelling);
+    this._methods = methods;
+    this._sequence = new Sequence(new Bytes(type), bounds, methods);
     this._kinds = [typedArrayKind(new type(new ArrayBuffer(0)))];
   }
 
@@ -208,7 +198,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * at learned odds, whenever that costs less than spelling it.
    */
   adaptive(options?: AdaptiveOptions): PBinary<A> {
-    return this._with({ ...this._bounds, adaptive: options ?? {} });
+    return this._open(options ?? {});
   }
 
   /**
@@ -220,7 +210,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * it, each array picks the plain spelling or this one by a learned mode.
    */
   delta(): PBinary<A> {
-    return this._with(this._bounds, withMethod(this._spelling, 'delta', 'p.binary'));
+    return this._declare('delta', 'p.binary');
   }
 
   /**
@@ -232,7 +222,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * decoded.
    */
   recall(): PBinary<A> {
-    return this._with(this._bounds, withMethod(this._spelling, 'recall', 'p.binary'));
+    return this._declare('recall', 'p.binary');
   }
 
   /**
@@ -244,7 +234,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * is declared.
    */
   repeats(): PBinary<A> {
-    return this._with(this._bounds, withSequenceMethod(this._spelling, 'repeats', 'p.binary'));
+    return this._declare('repeats', 'p.binary');
   }
 
   /**
@@ -255,12 +245,17 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * lengths would. Not with a length `.cdf()` or `.weights()`.
    */
   terminated(): PBinary<A> {
-    return this._with(this._bounds, withSequenceMethod(this._spelling, 'terminated', 'p.binary'));
+    return this._declare('terminated', 'p.binary');
   }
 
-  /** This node with `bounds` and `spelling`, of the same element type. */
-  private _with(bounds: SequenceBounds, spelling = this._spelling): PBinary<A> {
-    return new PBinary(this._type, bounds, spelling);
+  /** This node with `methods` in place of its own. */
+  _withMethods(methods: MethodSet): PBinary<A> {
+    return this._with(this._bounds, methods);
+  }
+
+  /** This node with `bounds` and `methods`, of the same element type. */
+  private _with(bounds: LengthBounds, methods = this._methods): PBinary<A> {
+    return new PBinary(this._type, bounds, methods);
   }
 
   _write(enc: Encoder, value: A): void {

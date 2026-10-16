@@ -15,11 +15,11 @@ import {
   Lineage,
   checkAdaptation,
   readLive,
-  withLineage,
-  withoutRecall,
   writeLive,
   type AdaptiveOptions,
+  type Learning,
 } from './adaptive';
+import type { MethodName } from './methods';
 import { members, type Members } from './members';
 import { PRecall, Recall, copy } from './recall';
 import { Fenwick } from './fenwick';
@@ -633,7 +633,7 @@ class AnyRecord extends PNode<{ [key: string]: AnyValue }> {
 type AnyAdaptiveOptions = Pick<AdaptiveOptions, 'window'>;
 
 /** What every key's codec under `p.any().adaptive()` shares. */
-interface Learning {
+interface AnyLearning {
   /** The options as declared, which every key's nodes adapt by. */
   readonly options: AdaptiveOptions;
   /** The lineage the tag table of every key starts from. */
@@ -744,11 +744,12 @@ const same = (text: string): string => text;
 /** The identity of a key list. */
 const listed = (keys: string[]): string => JSON.stringify(keys);
 
-/** A hint's form under `.adaptive()`: its own `.adaptive(options)` when it has one. */
-function adapted(hint: PNode<any>, options: AdaptiveOptions): PNode<any> {
-  const adapt = (hint as { adaptive?: unknown }).adaptive;
-  return typeof adapt === 'function' ? (adapt.call(hint, options) as PNode<any>) : hint;
-}
+/**
+ * The methods `p.any` leaves closed on the nodes it builds and on a hint
+ * of strings: it recalls their values itself, and an int's recall would
+ * save next to nothing on top of its companion.
+ */
+const RECALLED: readonly MethodName[] = ['recall'];
 
 /**
  * Self-describing escape hatch: a type tag, then the value through the node
@@ -771,7 +772,7 @@ export class PAny extends PNode<AnyValue> {
   /** Without `.adaptive()`: the one codec every value goes through. */
   private readonly _codec?: AnyCodec;
   /** Under `.adaptive()`: what every key's codec shares. */
-  private readonly _learning?: Learning;
+  private readonly _learning?: AnyLearning;
   /** Under `.adaptive()`: the arrays and records coded in full, for recall. */
   readonly _trees?: Trees;
 
@@ -809,9 +810,9 @@ export class PAny extends PNode<AnyValue> {
     this._forms = this._hints.map((hint) => {
       // Every hint declares its kinds, checked above.
       const textual = (hint._kinds as readonly Kind[]).every((kind) => kind === 'string');
-      return textual
-        ? new PRecall<string>(adapted(hint, withoutRecall(options)), same)
-        : adapted(hint, options);
+      // p.any recalls the strings, so a string hint opens no recall of its own.
+      const form = hint._open?.(options, textual ? RECALLED : []) ?? hint;
+      return textual ? new PRecall<string>(form, same) : form;
     });
     this._learning = {
       options,
@@ -821,11 +822,11 @@ export class PAny extends PNode<AnyValue> {
       // A lineage of the key's own, so its tables learn apart from any
       // declared string's.
       key: new PRecall<string>(
-        new PString().adaptive(withLineage(withoutRecall(options), new Lineage())),
+        new PString()._open({ ...options, lineage: new Lineage() }, RECALLED),
         same
       ),
-      texts: new Recall<string>(true),
-      shapes: new Recall<string[]>(true),
+      texts: new Recall<string>({ learned: true }),
+      shapes: new Recall<string[]>({ learned: true }),
       hints: this._forms,
       textual: this._forms.map((form) => form instanceof PRecall),
     };
@@ -862,6 +863,10 @@ export class PAny extends PNode<AnyValue> {
    */
   adaptive(options?: AnyAdaptiveOptions): PAny {
     return new PAny(this._hints, options ?? {});
+  }
+
+  _open(options: Learning): PAny {
+    return this.adaptive(options);
   }
 
   /** This message's state on `side`. */
@@ -910,37 +915,47 @@ export class PAny extends PNode<AnyValue> {
    * hold values of the shared codec too.
    */
   private _build(key: string | undefined, roots = false): AnyCodec {
-    const learning = this._learning as Learning;
+    const learning = this._learning as AnyLearning;
     const { tiers, texts, shapes } = learning;
-    const options = (root: Lineage): AdaptiveOptions =>
-      withLineage(learning.options, roots ? root : new Lineage(root));
+    const options = (root: Lineage) => ({
+      ...learning.options,
+      lineage: roots ? root : new Lineage(root),
+    });
     const make = (tag: number): PNode<any> => {
       // Strings, key lists and containers are recalled by the codec, and an
       // int's recall saves next to nothing on top of its companion, so the
       // nodes open no recall of their own.
-      const adaptive = withoutRecall(options(learning.roots.get(tag) as Lineage));
+      const adaptive = options(learning.roots.get(tag) as Lineage);
       switch (tag) {
         case TAG_INT:
-          return new PInt().adaptive(adaptive);
+          return new PInt()._open(adaptive, RECALLED);
         case TAG_FLOAT:
-          return new PFloat().adaptive(adaptive);
-        case TAG_STRING:
-          return new PRecall(new PRecall(new PString().adaptive(adaptive), same, texts), same);
-        case TAG_ARRAY:
-          return new PArray<AnyValue>(
-            new AnyKey(this, key === undefined ? undefined : `${key}[]`)
-          ).adaptive(adaptive);
+          return new PFloat()._open(adaptive, RECALLED);
+        case TAG_STRING: {
+          const text = new PString()._open(adaptive, RECALLED);
+          return new PRecall(new PRecall(text, same, texts), same);
+        }
+        case TAG_ARRAY: {
+          const items = new AnyKey(this, key === undefined ? undefined : `${key}[]`);
+          return new PArray<AnyValue>(items)._open(adaptive, RECALLED);
+        }
         case TAG_OBJECT: {
-          const list = new PArray(learning.key).adaptive(adaptive);
+          const list = new PArray(learning.key)._open(adaptive, RECALLED);
           return new AnyRecord(new PRecall(new PRecall(list, listed, shapes), listed), this);
         }
         case TAG_MAP: {
           const here = new AnyKey(this, key);
-          return new PCollection<Map<AnyValue, AnyValue>>(MAP, here, here).adaptive(adaptive);
+          return new PCollection<Map<AnyValue, AnyValue>>(MAP, here, here)._open(
+            adaptive,
+            RECALLED
+          );
         }
         default:
           // The last of OWN_TAGS, the only tags left unbuilt.
-          return new PCollection<Set<AnyValue>>(SET, new AnyKey(this, key)).adaptive(adaptive);
+          return new PCollection<Set<AnyValue>>(SET, new AnyKey(this, key))._open(
+            adaptive,
+            RECALLED
+          );
       }
     };
     return new AnyCodec(
@@ -957,7 +972,7 @@ export class PAny extends PNode<AnyValue> {
         learning.hints.map((hint, i) => (learning.textual[i] ? new PRecall(hint, same) : hint))
       ),
       make,
-      new Recall<number>(true)
+      new Recall<number>({ learned: true })
     );
   }
 

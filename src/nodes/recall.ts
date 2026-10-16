@@ -299,6 +299,13 @@ function learn(fresh: Fenwick, seen: number): void {
 const RECALLED = 1;
 const CHOICES: readonly number[] = [RECALLED, 0];
 
+/** How a recall codes: `learned` and `open` as `Recall` describes them, `copy` as `read` returns a value. */
+export interface RecallOptions<T> {
+  readonly learned?: boolean;
+  readonly open?: boolean;
+  readonly copy?: (value: T) => T;
+}
+
 /**
  * The recall of one node: member 0 of its table is "new", every later
  * member a value the node coded in the message, in order of first
@@ -325,14 +332,14 @@ const CHOICES: readonly number[] = [RECALLED, 0];
  */
 export class Recall<T> {
   readonly learned: boolean;
+  readonly open: boolean;
+  /** Turns a recalled value into what `read` returns; the value itself when left out. */
+  private readonly copy?: (value: T) => T;
 
-  /** `copy` turns a recalled value into what `read` returns; the value itself when left out. */
-  constructor(
-    learned: boolean,
-    private readonly copy?: (value: T) => T,
-    readonly open = false
-  ) {
-    this.learned = learned || open;
+  constructor(options: RecallOptions<T> = {}) {
+    this.open = options.open === true;
+    this.learned = options.learned === true || this.open;
+    this.copy = options.copy;
   }
 
   private writing(enc: Encoder): Writing {
@@ -499,7 +506,7 @@ export class PRecall<T> extends PNode<T> {
   constructor(
     private readonly inner: PNode<T>,
     private readonly key: (value: T) => string,
-    private readonly recall = new Recall<T>(true)
+    private readonly recall = new Recall<T>({ learned: true })
   ) {
     super();
     this._kinds = inner._kinds;

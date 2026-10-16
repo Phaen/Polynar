@@ -20,7 +20,6 @@ import {
   checkAdaptiveMembers,
   lineageOf,
   readLive,
-  withLineage,
   writeLive,
 } from '../../nodes/adaptive';
 import { Exclusion, excludedBucket } from '../../nodes/excluded';
@@ -386,6 +385,25 @@ describe('AdaptiveTable', () => {
   });
 });
 
+/** Writes `pos` through `prior` and learns it, as a node codes a member. */
+const put = (
+  prior: AdaptivePrior,
+  enc: Encoder,
+  pos: number,
+  row = 0,
+  excluded?: Exclusion
+): void => {
+  prior.write(enc, pos, row, excluded);
+  prior.learn(enc, pos, row);
+};
+
+/** Reads a member `put` wrote and learns it. */
+const take = (prior: AdaptivePrior, dec: Decoder, row = 0, excluded?: Exclusion): number => {
+  const pos = prior.read(dec, row, excluded);
+  prior.learn(dec, pos, row);
+  return pos;
+};
+
 /** The selector's weights: static as likely as every rung together. */
 const selectorTable = (prior: AdaptivePrior) =>
   buildWeights([prior.rungs.length, ...ones(prior.rungs.length)], 1 + prior.rungs.length, 'w');
@@ -458,13 +476,13 @@ const encodeAll = (
   rows: readonly number[] = symbols.map(() => 0)
 ): Uint8Array => {
   const enc = new Encoder();
-  symbols.forEach((symbol, i) => prior.write(enc, symbol, rows[i]));
+  symbols.forEach((symbol, i) => put(prior, enc, symbol, rows[i]));
   return enc.output();
 };
 
 const decodeAll = (prior: AdaptivePrior, bytes: Uint8Array, rows: readonly number[]): number[] => {
   const dec = new Decoder(bytes);
-  const out = rows.map((row) => prior.read(dec, row));
+  const out = rows.map((row) => take(prior, dec, row));
   dec.finalize();
   return out;
 };
@@ -498,7 +516,7 @@ const encodeScript = (prior: AdaptivePrior, script: Script): Uint8Array => {
     if (script.learned[i]) {
       prior.learn(enc, symbol, script.rows[i]);
     } else {
-      prior.write(enc, symbol, script.rows[i], exclusionOf(prior, script.excluded[i] ?? []));
+      put(prior, enc, symbol, script.rows[i], exclusionOf(prior, script.excluded[i] ?? []));
     }
   });
   return enc.output();
@@ -511,7 +529,7 @@ const decodeScript = (prior: AdaptivePrior, bytes: Uint8Array, script: Script): 
       prior.learn(dec, symbol, script.rows[i]);
       return symbol;
     }
-    return prior.read(dec, script.rows[i], exclusionOf(prior, script.excluded[i] ?? []));
+    return take(prior, dec, script.rows[i], exclusionOf(prior, script.excluded[i] ?? []));
   });
   dec.finalize();
   return out;
@@ -708,12 +726,12 @@ describe('AdaptivePrior', () => {
     const spread = sequence(4, 300, 3);
     const enc = new Encoder();
     for (let i = 0; i < skewed.length; i++) {
-      a.write(enc, skewed[i]);
-      b.write(enc, spread[i]);
+      put(a, enc, skewed[i]);
+      put(b, enc, spread[i]);
     }
     const dec = new Decoder(enc.output());
     for (let i = 0; i < skewed.length; i++) {
-      expect([a.read(dec), b.read(dec)]).toEqual([skewed[i], spread[i]]);
+      expect([take(a, dec), take(b, dec)]).toEqual([skewed[i], spread[i]]);
     }
     dec.finalize();
     // A second message starts over: static first value, then its own selector.
@@ -722,25 +740,25 @@ describe('AdaptivePrior', () => {
 
   it('refuses a position outside its members and a row outside its rows', () => {
     const prior = new AdaptivePrior([ones(3), ones(3)], 3, undefined, 'w');
-    expect(() => prior.write(new Encoder(), 3)).toThrow(
+    expect(() => put(prior, new Encoder(), 3)).toThrow(
       new RangeError('Position 3 is outside [0, 3)')
     );
-    expect(() => prior.write(new Encoder(), -1)).toThrow(
+    expect(() => put(prior, new Encoder(), -1)).toThrow(
       new RangeError('Position -1 is outside [0, 3)')
     );
-    expect(() => prior.write(new Encoder(), 0.5)).toThrow(
+    expect(() => put(prior, new Encoder(), 0.5)).toThrow(
       new TypeError('Position 0.5 is not an integer')
     );
     for (const row of [2, -1, 0.5, NaN]) {
-      expect(() => prior.write(new Encoder(), 0, row)).toThrow(
+      expect(() => put(prior, new Encoder(), 0, row)).toThrow(
         new RangeError(`Row ${row} is outside [0, 2)`)
       );
-      expect(() => prior.read(new Decoder(new Encoder().output()), row)).toThrow(
+      expect(() => take(prior, new Decoder(new Encoder().output()), row)).toThrow(
         new RangeError(`Row ${row} is outside [0, 2)`)
       );
     }
     const lone = new AdaptivePrior([[1]], 1, undefined, 'x');
-    expect(() => lone.write(new Encoder(), 7)).toThrow(
+    expect(() => put(lone, new Encoder(), 7)).toThrow(
       new RangeError('Position 7 is outside [0, 1)')
     );
   });
@@ -768,7 +786,7 @@ describe('AdaptivePrior options', () => {
       const prior = new AdaptivePrior(weights, 4, undefined, 'w', undefined, { pooled });
       const enc = new Encoder();
       for (let i = 0; i < 200; i++) {
-        prior.write(enc, 1, 0);
+        put(prior, enc, 1, 0);
       }
       const [, freq, total] = prior.estimate(enc, 1, 1);
       return freq / total;
@@ -868,17 +886,17 @@ describe('AdaptivePrior exclusion and learning', () => {
     const symbols = sequence(1, 300, 8, 0.9);
     const enc = new Encoder();
     const none = new Exclusion(8);
-    symbols.forEach((symbol) => prior.write(enc, symbol, 0, none));
+    symbols.forEach((symbol) => put(prior, enc, symbol, 0, none));
     expect(enc.output()).toEqual(encodeAll(prior, symbols));
   });
 
   it('writes nothing for a value its exclusion leaves alone, and still learns it', () => {
     const prior = new AdaptivePrior([ones(3)], 3, undefined, 'w');
     const enc = new Encoder();
-    prior.write(enc, 1, 0, exclusionOf(prior, [0, 2]));
+    put(prior, enc, 1, 0, exclusionOf(prior, [0, 2]));
     expect(enc.output()).toEqual(new Encoder().output());
     const dec = new Decoder(new Encoder().output());
-    expect(prior.read(dec, 0, exclusionOf(prior, [2, 0]))).toBe(1);
+    expect(take(prior, dec, 0, exclusionOf(prior, [2, 0]))).toBe(1);
     dec.finalize();
 
     const tail = sequence(9, 200, 3, 0.9);
@@ -928,11 +946,11 @@ describe('AdaptivePrior exclusion and learning', () => {
     const prior = new AdaptivePrior([[3]], 1, undefined, 'w');
     const enc = new Encoder();
     prior.learn(enc, 0);
-    prior.write(enc, 0);
+    put(prior, enc, 0);
     expect(enc.output()).toEqual(new Encoder().output());
     const dec = new Decoder(new Encoder().output());
     prior.learn(dec, 0);
-    expect(prior.read(dec)).toBe(0);
+    expect(take(prior, dec)).toBe(0);
     dec.finalize();
     expect(() => prior.learn(enc, 1)).toThrow(new RangeError('Position 1 is outside [0, 1)'));
   });
@@ -957,7 +975,7 @@ describe('AdaptivePrior estimate', () => {
     const prior = new AdaptivePrior(weights, 5, undefined, 'w');
     const enc = new Encoder();
     symbols.forEach((symbol, i) =>
-      i % 2 === 0 ? prior.write(enc, symbol) : prior.learn(enc, symbol)
+      i % 2 === 0 ? put(prior, enc, symbol) : prior.learn(enc, symbol)
     );
     const live = handLive(prior);
     for (let pos = 0; pos < 5; pos++) {
@@ -981,10 +999,10 @@ describe('AdaptivePrior estimate', () => {
     const a = new Encoder();
     const b = new Encoder();
     symbols.forEach((symbol) => {
-      plain.write(a, symbol);
+      put(plain, a, symbol);
       estimated.estimate(b, symbol);
       estimated.estimate(b, symbol, 1);
-      estimated.write(b, symbol);
+      put(estimated, b, symbol);
     });
     expect(b.output()).toEqual(a.output());
   });
@@ -1040,12 +1058,11 @@ describe('Lineage', () => {
     expect(new Lineage(root).pair(2, rows(2), 'w')).toBe(first);
   });
 
-  it('rides on adaptive options', () => {
+  it('rides on what a node learns under', () => {
     const lineage = new Lineage();
-    const options = withLineage({ window: 5 }, lineage);
-    expect(options.window).toBe(5);
-    expect(lineageOf(options)).toBe(lineage);
-    expect(lineageOf(withLineage({ separate: true }, lineage))).toBe(lineage);
+    expect(lineageOf({ window: 5, lineage })).toBe(lineage);
+    expect(lineageOf({ separate: true, lineage })).toBe(lineage);
+
     expect(lineageOf({ window: 5 })).toBe(KIN);
     expect(lineageOf({ separate: true })).toBeUndefined();
     expect(lineageOf(undefined)).toBeUndefined();
@@ -1073,7 +1090,7 @@ describe('AdaptivePrior in a lineage', () => {
     const [a, b] = [node(), node()];
     const enc = new Encoder();
     const first = [0, 1, 0, 2];
-    first.forEach((value) => a.write(enc, value));
+    first.forEach((value) => put(a, enc, value));
     const all = gathered(gatherer, first);
     // Nothing of its own yet: the gathered table, counted as BLEND_SHARE observations.
     for (let pos = 0; pos < 5; pos++) {
@@ -1084,7 +1101,7 @@ describe('AdaptivePrior in a lineage', () => {
         total * BLEND_SHARE,
       ]);
     }
-    b.write(enc, 3);
+    put(b, enc, 3);
     b.learn(enc, 3);
     const after = gathered(gatherer, [...first, 3, 3]);
     const [cum, freq] = after.bucket(3);
@@ -1114,10 +1131,10 @@ describe('AdaptivePrior in a lineage', () => {
       if (value === 4) {
         prior.learn(enc, value, row);
       } else {
-        prior.write(enc, value, row, excluded);
+        put(prior, enc, value, row, excluded);
       }
     });
-    encoders[0].write(enc, 0, 0, lone);
+    put(encoders[0], enc, 0, 0, lone);
     const decoders = [encoders[0], encoders[1]];
     const dec = new Decoder(enc.output());
     script.forEach((value, i) => {
@@ -1126,10 +1143,10 @@ describe('AdaptivePrior in a lineage', () => {
       if (value === 4) {
         prior.learn(dec, value, row);
       } else {
-        expect(prior.read(dec, row, excluded)).toBe(value);
+        expect(take(prior, dec, row, excluded)).toBe(value);
       }
     });
-    expect(decoders[0].read(dec, 0, lone)).toBe(0);
+    expect(take(decoders[0], dec, 0, lone)).toBe(0);
     dec.finalize();
   });
 
@@ -1137,7 +1154,7 @@ describe('AdaptivePrior in a lineage', () => {
     const { gatherer, node } = kin();
     const prior = node();
     const enc = new Encoder();
-    for (let i = 0; i < 1100; i++) prior.write(enc, 0);
+    for (let i = 0; i < 1100; i++) put(prior, enc, 0);
     const all = gathered(gatherer, Array<number>(1100).fill(0));
     // 1025 own observations halve to 512, then 75 more.
     expect(prior.estimate(enc, 0)[2]).toBe(all.total * (BLEND_SHARE + 587));
@@ -1145,7 +1162,7 @@ describe('AdaptivePrior in a lineage', () => {
     new AdaptivePrior([[1]], 1, undefined, 'w', root);
     const lone = new AdaptivePrior([[1]], 1, undefined, 'w', new Lineage(root));
     const quiet = new Encoder();
-    lone.write(quiet, 0);
+    put(lone, quiet, 0);
     expect(quiet.output()).toEqual(new Encoder().output());
   });
 
@@ -1177,8 +1194,8 @@ describe('AdaptivePrior with its kin', () => {
     after: readonly number[]
   ) => {
     const enc = new Encoder();
-    before.forEach((value) => first.write(enc, value));
-    after.forEach((value) => second.write(enc, value));
+    before.forEach((value) => put(first, enc, value));
+    after.forEach((value) => put(second, enc, value));
     return enc.output();
   };
 
@@ -1196,8 +1213,8 @@ describe('AdaptivePrior with its kin', () => {
     const separate = new AdaptivePrior(wide, 64, undefined, 'w');
     expect(bytes.length).toBeLessThan(message(a, before, separate, pattern).length);
     const dec = new Decoder(bytes);
-    expect(before.map(() => a.read(dec))).toEqual(before);
-    expect(pattern.map(() => b.read(dec))).toEqual(pattern);
+    expect(before.map(() => take(a, dec))).toEqual(before);
+    expect(pattern.map(() => take(b, dec))).toEqual(pattern);
     dec.finalize();
   });
 
@@ -1245,7 +1262,7 @@ describe('AdaptivePrior with its kin', () => {
       if (elsewhere === true) {
         priors[p].learn(enc, value, row);
       } else {
-        priors[p].write(enc, value, row, excluded);
+        put(priors[p], enc, value, row, excluded);
       }
     }
     const dec = new Decoder(enc.output());
@@ -1253,7 +1270,7 @@ describe('AdaptivePrior with its kin', () => {
       if (elsewhere === true) {
         priors[p].learn(dec, value, row);
       } else {
-        expect(priors[p].read(dec, row, excluded)).toBe(value);
+        expect(take(priors[p], dec, row, excluded)).toBe(value);
       }
     }
     dec.finalize();
@@ -1264,10 +1281,10 @@ describe('AdaptivePrior with its kin', () => {
     const after = unlikely(14, 12);
     const enc = new Encoder();
     const mark = enc.mark();
-    unlikely(13, 100).forEach((value) => a.write(enc, value));
-    after.forEach((value) => b.write(enc, value));
+    unlikely(13, 100).forEach((value) => put(a, enc, value));
+    after.forEach((value) => put(b, enc, value));
     enc.rollback(mark);
-    after.forEach((value) => b.write(enc, value));
+    after.forEach((value) => put(b, enc, value));
     expect(enc.output()).toEqual(encodeAll(alone(), after));
   });
 

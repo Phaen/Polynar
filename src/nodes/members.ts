@@ -31,9 +31,9 @@ export interface MemberPrior {
 export interface Members {
   readonly count: number;
   readonly radix?: number;
-  /** Writes member `pos`, an integer in `[0, count)`, in context `row`. */
+  /** Writes member `pos`, an integer in `[0, count)`, in context `row`, and learns it where the members learn. */
   write(enc: Encoder, pos: number, row?: number): void;
-  /** Reads a member written by `write` in context `row`. */
+  /** Reads a member written by `write` in context `row`, and learns it as `write` did. */
   read(dec: Decoder, row?: number): number;
 }
 
@@ -101,10 +101,13 @@ class AdaptiveMembers implements Members {
 
   write(enc: Encoder, pos: number, row = 0): void {
     this.prior.write(enc, pos, row);
+    this.prior.learn(enc, pos, row);
   }
 
   read(dec: Decoder, row = 0): number {
-    return this.prior.read(dec, row);
+    const pos = this.prior.read(dec, row);
+    this.prior.learn(dec, pos, row);
+    return pos;
   }
 }
 

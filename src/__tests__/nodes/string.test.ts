@@ -936,6 +936,13 @@ describe('p.string positions', () => {
     expect(node.encode(['ab', 'ab', 'ba'])).toEqual(enc.output());
   });
 
+  it('spells a value of a length positions never met in full, not as a difference', () => {
+    const values = ['ab', 'abb', 'abba'];
+    const positional = p.array(p.string().charset('ab').positional()).length(3);
+    const plain = p.array(p.string().charset('ab')).length(3);
+    expect(positional.encode(values)).toEqual(plain.encode(values));
+  });
+
   it('round-trips strings whose items differ at a length, and every alphabet', () => {
     const values = ['abcd', 'ab👋', 'abcd', 'abcdef', 'AbCd', 'aBcD', 'xyz', 'xy', 'x', '', 'abcd'];
     for (const node of [

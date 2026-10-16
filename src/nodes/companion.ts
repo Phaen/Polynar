@@ -565,7 +565,9 @@ export class Companion {
         if (c === 1) {
           for (let i = 0; i < origin.values.length; i++) {
             const [lo, hi] = origin.bounds(i);
-            this.scale(i).write(enc, (fields as number[])[i], origin.values[i], lo, hi);
+            const field = (fields as number[])[i];
+            this.scale(i).write(enc, field, origin.values[i], lo, hi);
+            this.scale(i).learn(enc, field, origin.values[i]);
           }
         } else {
           spell();
@@ -598,7 +600,9 @@ export class Companion {
     if (turn.hit) {
       const fields = origin.values.map((at, i) => {
         const [lo, hi] = origin.bounds(i);
-        return this.scale(i).read(dec, at, lo, hi);
+        const field = this.scale(i).read(dec, at, lo, hi);
+        this.scale(i).learn(dec, field, at);
+        return field;
       });
       turn.prediction = origin.build(fields);
     }

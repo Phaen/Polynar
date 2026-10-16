@@ -17,7 +17,6 @@ import {
   Decoder,
   CorruptInputError,
   type EventLog,
-  SlotCache,
   COST_UNITS,
   costUnits,
   log2Units,
@@ -27,7 +26,6 @@ import {
   DEFAULT_ADAPTIVE_WINDOW,
   checkAdaptation,
   type PriorOptions,
-  type SequenceAdaptiveOptions,
 } from './adaptive';
 import { ContextModel, MAX_ORDER, Stops, WARMUP } from './contexts';
 import { GrownAlphabet, GrownPrior } from './grown';
@@ -42,7 +40,17 @@ import {
 import { IndexRange, lengthRange, type LengthBounds } from './lattice';
 import { GAMMA_MAGNITUDE, LearnedMagnitude, type Magnitude } from './magnitude';
 import { members, type Members } from './members';
-import { ModeChoice, recallOf, type Method, type Spelling } from './methods';
+import {
+  ModeChoice,
+  chooses,
+  declaresAny,
+  learningOf,
+  recallOf,
+  type Method,
+  type MethodName,
+  type MethodSet,
+  type ValueProvider,
+} from './methods';
 import { Recall } from './recall';
 import { DigitFields, Positional, type FieldHost } from './fields';
 import {
@@ -57,6 +65,7 @@ import {
 } from './repeats';
 import { buildWeights, checkIndex } from './weights';
 import { WordModel, mixWeights } from './words';
+import { ProviderRef, poolKey, type Pool, type ProviderKind } from './providers';
 
 /** Thrown out of a word's spellings where a literal of it falls to the prior, which a mixture cannot hold. */
 const UNMIXED = new Error('A word literal fell to the prior');
@@ -122,7 +131,7 @@ export interface Symbols<T> {
    * window learn as one. Alphabets in one pool spell every item as the same
    * symbol and tail, in the same rows.
    */
-  readonly pool: unknown;
+  readonly pool: string | object;
   /** Members of the symbol table. */
   readonly size: number;
   /** The static prior over the symbols, one weight list per row; undefined means uniform in one row. */
@@ -486,9 +495,8 @@ export class StaticLiterals implements Literals {
  * How the items of a value after its length prefix are spelled. `lead` is
  * the start the value shares with the node's previous value, already
  * known to both sides: the items spelled are those after it, `span` units
- * of them, and the first is priced as the item after `lead`. `kind` picks
- * the model the symbols are priced in, where a body keeps more than one.
- * `first`, when given, is what is known of the first item's symbol, which
+ * of them, and the first is priced as the item after `lead`. `first`,
+ * when given, is what is known of the first item's symbol, which
  * the body rules out what it can of. `ends`, when given, makes the end a
  * symbol after the items.
  */
@@ -498,7 +506,6 @@ interface Body {
     items: readonly number[],
     span: number,
     lead: readonly number[],
-    kind: number,
     first?: First,
     ends?: Ends
   ): void;
@@ -511,12 +518,9 @@ interface Body {
     dec: Decoder,
     span: number,
     lead: readonly number[],
-    kind: number,
     first?: First,
     ends?: Ends
   ): [number[], number];
-  /** Takes in `items`, a value another spelling coded, for repeats to copy from: where the body has them. */
-  see?(side: Encoder | Decoder, items: readonly number[]): void;
 }
 
 /**
@@ -596,7 +600,6 @@ class Spelled<T> implements Body {
     items: readonly number[],
     _span: number,
     lead: readonly number[],
-    _kind: number,
     first?: First,
     ends?: Ends
   ): void {
@@ -628,7 +631,6 @@ class Spelled<T> implements Body {
     dec: Decoder,
     span: number,
     lead: readonly number[],
-    _kind: number,
     first?: First,
     ends?: Ends
   ): [number[], number] {
@@ -680,15 +682,15 @@ class Spelled<T> implements Body {
  */
 class Engine<T> implements Body {
   /**
-   * Whether the engine's last value that could hold a repeat took them,
-   * which only orders the next value's tries, the way it took tried first.
+   * Whether the node's last value that could hold a repeat took them,
+   * which only orders the next value's tries: the way it did not take is
+   * tried first, which measured fastest on texts written again and again.
+   * It carries over from one message to the next; the order changes no
+   * choice, only how soon the try after the first stops.
    */
   private used = true;
   /** The costs `search` works in, reused from one search to the next. */
   private readonly costs: number[] = [];
-
-  /** The model of each kind of value, built on its first use. */
-  private readonly models: Literals[] = [];
 
   /** The steps of the parse planned, by item of the value, a literal undefined. */
   private readonly plan = new Map<number, Match | undefined>();
@@ -705,15 +707,20 @@ class Engine<T> implements Body {
    */
   endUnits = 0;
 
+  /** The model the symbols are priced in, built on first use. */
+  private model?: Literals;
+
   constructor(
     private readonly symbols: Symbols<T>,
-    private readonly literals: () => Literals,
+    private readonly build: () => Literals,
     private readonly repeats: RepeatCoding,
     private readonly gate: number,
     private readonly grown?: GrownAlphabet,
-    private readonly words?: WordModel
+    private readonly words?: WordModel,
+    pool?: Pool
   ) {
     this.end = grown?.size ?? symbols.size;
+    this.history = new ProviderRef(HISTORY, pool);
   }
 
   /** The symbol of `item` on `side`: its own once admitted, else the alphabet's. */
@@ -744,22 +751,17 @@ class Engine<T> implements Body {
     return this.grown?.untail(dec, sym) ?? this.symbols.untail(dec, sym);
   }
 
-  /** The model values of `kind` are priced in. */
-  private model(kind: number): Literals {
-    return (this.models[kind] ??= this.literals());
-  }
-
   /** Each message's items. */
-  private readonly messages = new SlotCache<Message, Encoder | Decoder>(this, () => ({
-    items: [],
-    next: 0,
-    copied: 0,
-    reps: [...FIRST_REPS],
-  }));
+  private readonly history: ProviderRef<Pool | undefined, Message>;
+
+  /** The model the symbols are priced in. */
+  private literals(): Literals {
+    return (this.model ??= this.build());
+  }
 
   /** This message's items on `side`. */
   private message(side: Encoder | Decoder): Message {
-    return this.messages.get(side);
+    return this.history.get(side);
   }
 
   /**
@@ -832,7 +834,7 @@ class Engine<T> implements Body {
    * Writes the items of a value of `span` units after `lead`. Where the
    * value can hold a repeat, the encoder decides between spelling it with
    * repeats and without, a tie going to repeats, trying first the way the
-   * engine's previous such value took. A value spelled without repeats
+   * node's previous such value did not take. A value spelled without repeats
    * still registers its positions with the finder: the next value would
    * register the same ones in the same order, and a try with repeats that
    * is rolled back registering them again for every value would take time
@@ -843,7 +845,6 @@ class Engine<T> implements Body {
     items: readonly number[],
     span: number,
     lead: readonly number[],
-    kind: number,
     first?: First,
     ends?: Ends
   ): void {
@@ -856,7 +857,7 @@ class Engine<T> implements Body {
     if (enc.journal.active) {
       enc.journal.truncate(all, base);
     }
-    const walk = this.walk(enc, items, span, lead, base, this.model(kind), ends);
+    const walk = this.walk(enc, items, span, lead, base, this.literals(), ends);
     if (ends?.open === true ? !possibleOpen(base, this.gate) : !possible(base, span, this.gate)) {
       this.spell(enc, state, walk, items, false, first?.except);
       return;
@@ -1552,11 +1553,11 @@ class Engine<T> implements Body {
   }
 
   /**
-   * Adds `items` to the message, for repeats to copy from. The encoder
-   * registers their positions with the finder at once, as `write` does a
-   * value spelled without repeats.
+   * Takes in `items`, a value the engine did not code, for repeats to copy
+   * from. The encoder registers their positions with the finder at once,
+   * as `write` does a value spelled without repeats.
    */
-  see(side: Encoder | Decoder, items: readonly number[]): void {
+  learn(side: Encoder | Decoder, items: readonly number[]): void {
     const state = this.message(side);
     const all = state.items;
     const base = all.length;
@@ -1580,12 +1581,11 @@ class Engine<T> implements Body {
     dec: Decoder,
     span: number,
     lead: readonly number[],
-    kind: number,
     first?: First,
     ends?: Ends
   ): [number[], number] {
     const { symbols, repeats } = this;
-    const model = this.model(kind);
+    const model = this.literals();
     const state = this.message(dec);
     const all = state.items;
     const base = all.length;
@@ -1777,59 +1777,47 @@ class Engine<T> implements Body {
 }
 
 /**
- * The shared learned spellings, by pool and then window. Each holds its
- * learning per message, so nodes of one pool learn together within a
- * message and start over with the next.
+ * The repeat history of an engine's message: the items so far, the
+ * repeats' finder and cached distances. Shared within a pool, so nodes of
+ * one pool learn together within a message and start over with the next.
  */
-const pools = new Map<unknown, Map<number, Engine<unknown>>>();
+const HISTORY: ProviderKind<Pool | undefined, Message> = {
+  name: 'history',
+  key: (pool) => poolKey(pool),
+  init: () => ({
+    items: [],
+    next: 0,
+    copied: 0,
+    reps: [...FIRST_REPS],
+  }),
+};
 
 /**
- * The learned spelling of `symbols` under `window`, of its own: for each
- * kind of value, contexts over an adaptive prior whose rows learn as one,
- * and learned repeats across every kind. An alphabet that grows admits its
- * items once for every kind.
+ * The learned spelling of `symbols` for values of `kind` under `window`:
+ * contexts over an adaptive prior whose rows learn as one, and learned
+ * repeats; an alphabet that grows admits its items once for every kind.
+ * Its providers are shared within `pool`, else its own: the repeat
+ * history and statistics, the vocabulary and the grown alphabet across
+ * every kind, the character odds, the contexts and their stops per kind.
  */
-function learned<T>(symbols: Symbols<T>, window: number | undefined): Engine<T> {
+function learned<T>(symbols: Symbols<T>, window: number, kind: number, pool?: Pool): Engine<T> {
   const { who, size, rows } = symbols;
   const grown =
     symbols.range === undefined
       ? undefined
-      : new GrownAlphabet(size, window ?? DEFAULT_ADAPTIVE_WINDOW, symbols.range.bind(symbols));
+      : new GrownAlphabet(size, window, symbols.range.bind(symbols), pool);
   const members = grown === undefined ? size : size + 1;
   const weights = rows ?? [new Array<number>(members).fill(1)];
-  const options = { ...symbols.prior, pooled: true };
+  const ofKind = pool === undefined ? undefined : { ...pool, kind };
+  const options = { ...symbols.prior, pooled: true, pool: ofKind };
   const model = (): ContextModel => {
     const prior = new AdaptivePrior(weights, members, window, who, undefined, options);
     return grown === undefined
-      ? new ContextModel(prior, size, who)
-      : new ContextModel(new GrownPrior(prior, grown), grown.size, who);
+      ? new ContextModel(prior, size, who, ofKind)
+      : new ContextModel(new GrownPrior(prior, grown), grown.size, who, ofKind);
   };
-  const words = symbols.letter === undefined ? undefined : new WordModel();
-  return new Engine(symbols, model, new Repeats(who), WARMUP, grown, words);
-}
-
-/**
- * The learned spelling of `symbols` under `window`: the one its pool and
- * window share, built on the first request. It keeps the alphabet of that
- * first request, which spells items as every other alphabet of the pool.
- */
-function pooled<T>(symbols: Symbols<T>, window: number): Engine<T> {
-  let windows = pools.get(symbols.pool);
-  if (windows === undefined) {
-    windows = new Map();
-    pools.set(symbols.pool, windows);
-  }
-  let engine = windows.get(window);
-  if (engine === undefined) {
-    engine = learned(symbols as Symbols<unknown>, window);
-    windows.set(window, engine);
-  }
-  return engine as Engine<T>;
-}
-
-/** The bounds of a sequence's length, with the sequence's own adaptive options. */
-export interface SequenceBounds extends LengthBounds {
-  readonly adaptive?: SequenceAdaptiveOptions;
+  const words = symbols.letter === undefined ? undefined : new WordModel(pool);
+  return new Engine(symbols, model, new Repeats(pool), WARMUP, grown, words, pool);
 }
 
 /** A value's items as the encoder walks them: the model they are priced in, their symbols, and the row, history and units before each. */
@@ -1865,35 +1853,26 @@ const limitAt = (walk: Walk, j: number): number =>
     ? Math.min(walk.ends.high - walk.start - walk.before[j], MAX_REPEAT_BOUND)
     : walk.span - walk.before[j];
 
-/** The methods a sequence declares: those of `Spelling`, repeats, and the field spellings of text. */
-export interface SequenceSpelling extends Spelling {
-  /** Stretches the node already wrote in the message copied instead of spelled again. */
-  readonly repeats?: true;
-  /** Each run of digits as an integer of its width, the text around the runs a frame (`./fields`). */
-  readonly digits?: true;
-  /** A value of a length the node met before by the items seen at each of its places (`./fields`). */
-  readonly positional?: true;
-  /** No length prefix: the end of the value is one more symbol after its items. */
-  readonly terminated?: true;
-}
+/** The methods of a sequence of bytes, which `.adaptive()` opens. */
+export const BYTES_METHODS: readonly MethodName[] = [
+  'learn',
+  'delta',
+  'recall',
+  'repeats',
+  'terminated',
+];
 
-/** `spelling` with `method` declared; `who` names the node in the error a second declaration throws. */
-export function withSequenceMethod(
-  spelling: SequenceSpelling,
-  method: 'repeats' | 'digits' | 'positional' | 'terminated',
-  who: string
-): SequenceSpelling {
-  if (spelling[method] !== undefined) {
-    throw new TypeError(`${who} ${method} is already set`);
-  }
-  return { ...spelling, [method]: true };
-}
+/** The methods of a sequence of text, which `.adaptive()` opens: those of bytes, and the field spellings. */
+export const TEXT_METHODS: readonly MethodName[] = [...BYTES_METHODS, 'digits', 'positional'];
 
 /** Thrown out of a try of positions, where the end would be spelled, for a length they never met. */
 const SPAN = new Error('Positions never met the length');
 
-/** The first of the learned choice's methods that read the length: digit fields, then positions, after the plain spelling and the delta. */
-const FIELDS = 2;
+/** The spellings a sequence picks among, after its plain one: declared, they pin it. */
+const SPELLINGS: readonly MethodName[] = ['delta', 'digits', 'positional'];
+
+/** The spellings that read the value's length. */
+const FIELD_SPELLINGS: readonly MethodName[] = ['digits', 'positional'];
 
 /** How much of the lead each value keeps, so the choice of the end follows the node's latest values. */
 const KEEP = 15 / 16;
@@ -1932,11 +1911,10 @@ export class EndChoice {
    * Counts a value on `side` `count` past the length's floor whose end
    * cost `cost`, and moves the lead by that less what its length would
    * have cost: its share of the node's values, or an escape to a new length
-   * on the gamma scale where the node never had it. A value a spelling that
-   * reads the length took (`fielded`), which writes it either way, leaves
-   * the lead as it was.
+   * on the gamma scale where the node never had it. A value whose end the
+   * body neither coded nor priced, no `cost`, leaves the lead as it was.
    */
-  settle(side: Encoder | Decoder, count: number, cost: number, fielded: boolean): void {
+  settle(side: Encoder | Decoder, count: number, cost: number | undefined): void {
     const state = this.evidence(side);
     const { journal } = side;
     const { lengths, values, lead } = state;
@@ -1958,7 +1936,7 @@ export class EndChoice {
     }
     lengths.set(count, (had ?? 0) + 1);
     state.values = values + 1;
-    if (!fielded) {
+    if (cost !== undefined) {
       state.lead = (lead + cost - length) * KEEP;
     }
   }
@@ -1976,6 +1954,8 @@ interface Track {
   prev?: number[];
   span: number;
   open: boolean;
+  /** Whether the body coded the value's items: its repeats then hold them, and it coded or priced the end. */
+  inBody: boolean;
 }
 
 /** No items: the start a value shares with none. */
@@ -1987,39 +1967,44 @@ const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const MAX_LENGTH_COSTS = 4096;
 
 /**
- * A sequence of items in an alphabet, under length bounds. Adaptive bounds
- * make the symbols learn too, together with every other adaptive sequence
- * of the alphabet's pool and the same window unless `separate`, and the
- * length with them, over its range when there is a max and on the learned
- * magnitude scale from the min when there is none. The length always
- * learns on its own. Sequences of one pool and window share their repeats
- * whatever their `kind`, and their contexts and prior only within one.
+ * A sequence of items in an alphabet, under length bounds, by the methods
+ * it has (`MethodSet`). Where it learns, the symbols learn, together with
+ * every other learning sequence of the alphabet's pool and the same window
+ * unless `separate`, and the length with them, over its range when there
+ * is a max and on the learned magnitude scale from the min when there is
+ * none. The length always learns on its own. Sequences of one pool and
+ * window share their repeats whatever their `kind`, and their contexts and
+ * prior only within one.
  *
  * Declared, `repeats` copies earlier stretches of the node's own values at
- * fixed odds (adaptive sequences always copy, learned); `delta` spells each
+ * fixed odds (learning sequences always copy, learned); `delta` spells each
  * value after the first by the start it shares with the node's previous
  * one; `recall` spells a value the node already wrote by its place among
  * the distinct ones, ahead of the rest. In an alphabet that knows its
  * digits, `digits` spells each value as digit fields and `positional` a
  * value of a span the node met before by its places (`./fields`); where
  * several are declared, positions take the values they can, then digit
- * fields, then the delta. Adaptive without a declared method, each value
- * from the node's second on picks among the plain spelling, the delta and,
- * in such an alphabet, the field spellings, by a learned mode.
+ * fields, then the delta. With the methods open and none declared, each
+ * value from the node's second on picks among the plain spelling, the
+ * delta and, in such an alphabet, the field spellings, by a learned mode.
  *
  * The delta writes, after the length prefix, how many items of the
  * previous value the value starts with, out of the most whose units fit
  * its span, every count alike or learned; then the items after them,
- * priced as the items after that shared start. The previous value is the
- * one the node last coded, recalled or spelled.
+ * priced as the items after that shared start.
  *
  * Declared, `terminated` writes no length prefix: the end of the value is
  * one more symbol after its items, which the delta may follow all of the
- * previous value with. Adaptive with a length that varies and no length
+ * previous value with. Open, with a length that varies and no length
  * prior or field spelling declared, each value spells its end while ends
  * have lately cost less than the lengths would (`EndChoice`); such a value
  * can still take the field spellings after its length, positions once the
  * node met any length.
+ *
+ * Every value the node codes, recalled or spelled, then teaches what the
+ * node keeps of its values, in order: the repeats' items, the delta's
+ * shared start, the digit fields, the positions, the choice of the end,
+ * and last the previous value.
  */
 export class Sequence<T> {
   private readonly length: IndexRange;
@@ -2033,19 +2018,17 @@ export class Sequence<T> {
   private readonly shared?: LearnedMagnitude;
   /** The shared start of a run's value: on the gamma scale, learned apart under adaptive. */
   private readonly front: Magnitude = GAMMA_MAGNITUDE;
-  /** Whether the node keeps its previous value: when a delta may spell a value. */
+  /** Whether the node keeps its previous value: when a delta or digit fields may spell a value. */
   private readonly tracks: boolean;
+  /** Whether the delta is declared: it spells each value the field spellings leave, from the node's second. */
+  private readonly differs: boolean;
   /** The learned choice among the methods, under adaptive without a declared one. */
   private readonly choice?: ModeChoice<number[]>;
-  /**
-   * Digit fields and positions, declared or open to the choice, each value
-   * they spell then taken in by the body: only in an alphabet that knows
-   * its digits.
-   */
+  /** Digit fields and positions, declared or open to the choice: only in an alphabet that knows its digits. */
   private readonly digits?: Method<number[]>;
   private readonly positions?: Method<number[]>;
-  /** The positions themselves, which learn from every value spelled. */
-  private readonly positional?: Positional;
+  /** What every value the node codes teaches, in order. */
+  private readonly providers: readonly ValueProvider<number[]>[];
   /** Whether a method is declared, which pins the spelling: positions where they apply, then digit fields, then the delta. */
   private readonly declared: boolean;
   private readonly recall?: Recall<T>;
@@ -2059,21 +2042,24 @@ export class Sequence<T> {
 
   constructor(
     private readonly symbols: Symbols<T>,
-    bounds: SequenceBounds,
-    spelling: SequenceSpelling = {},
-    private readonly kind = 0
+    bounds: LengthBounds,
+    methods: MethodSet = {},
+    kind = 0
   ) {
     const { who, size, rows } = symbols;
-    const { adaptive, ...fixed } = bounds;
-    this.length = lengthRange(bounds.max === undefined ? fixed : bounds, who, symbols.noun);
+    const learning = learningOf(methods);
+    // Without a max the length learns on the magnitude scale, `lengths`.
+    this.length = lengthRange(
+      bounds,
+      who,
+      symbols.noun,
+      bounds.max === undefined ? undefined : learning
+    );
     // A length range always has its floor, 0 unless declared.
     this.min = this.length.lo as number;
-    this.declared =
-      spelling.delta !== undefined ||
-      spelling.digits !== undefined ||
-      spelling.positional !== undefined;
-    const fields = spelling.digits !== undefined || spelling.positional !== undefined;
-    const terminated = spelling.terminated !== undefined;
+    this.declared = declaresAny(methods, SPELLINGS);
+    const fields = declaresAny(methods, FIELD_SPELLINGS);
+    const terminated = methods.terminated === 'declared';
     if (terminated && fields) {
       throw new TypeError(
         `${who} terminated cannot combine with digits or positional, which read the length`
@@ -2085,7 +2071,7 @@ export class Sequence<T> {
     const hi = this.length.hi;
     if (
       terminated ||
-      (adaptive !== undefined && !fields && bounds.prior === undefined && hi !== this.min)
+      (methods.terminated === 'open' && !fields && bounds.prior === undefined && hi !== this.min)
     ) {
       const ends = {
         low: symbols.span(this.min),
@@ -2096,55 +2082,84 @@ export class Sequence<T> {
       this.learned = { ...ends, open: false };
       this.ending = new EndChoice(terminated);
     }
-    if (adaptive === undefined) {
-      this.body =
-        spelling.repeats === undefined
-          ? new Spelled(symbols, members(size, rows === undefined ? undefined : { rows }, who))
-          : new Engine(symbols, () => new StaticLiterals(symbols), EVEN_REPEATS, 0);
-    } else {
-      const { window } = checkAdaptation(adaptive, who);
-      const engine =
-        adaptive.separate === true
-          ? learned(symbols, window)
-          : pooled(symbols, window ?? DEFAULT_ADAPTIVE_WINDOW);
-      this.body = engine;
-      if (bounds.max === undefined) {
-        this.lengths = new LearnedMagnitude(false, adaptive, who);
+    let engine: Engine<T> | undefined;
+    // What a learned choice of the end learns from: the cost of the end the engine coded or priced.
+    let settles: ValueProvider<number[]> | undefined;
+    if (learning === undefined) {
+      if (methods.repeats !== undefined) {
+        engine = new Engine(symbols, () => new StaticLiterals(symbols), EVEN_REPEATS, 0);
       }
-      const shared = new LearnedMagnitude(false, adaptive, who);
-      this.shared = shared;
-      this.front = new LearnedMagnitude(false, adaptive, who, 'gamma');
+    } else {
+      const window = checkAdaptation(learning, who).window ?? DEFAULT_ADAPTIVE_WINDOW;
+      const pool = learning.separate === true ? undefined : { pool: symbols.pool, window };
+      const spelling = learned(symbols, window, kind, pool);
+      engine = spelling;
+      const { ending } = this;
+      if (ending !== undefined && !ending.declared) {
+        settles = { learn: (side) => this.settle(side, ending, spelling) };
+      }
+      if (bounds.max === undefined) {
+        this.lengths = new LearnedMagnitude(false, learning, who);
+      }
+      this.shared = new LearnedMagnitude(false, learning, who);
+      this.front = new LearnedMagnitude(false, learning, who, 'gamma');
     }
-    const open = adaptive !== undefined && !this.declared;
+    this.body =
+      engine ?? new Spelled(symbols, members(size, rows === undefined ? undefined : { rows }, who));
+    const providers: ValueProvider<number[]>[] = [];
+    if (engine !== undefined) {
+      providers.push(this.history(engine));
+    }
+    // The choice among the methods, with none declared to pin the spelling.
+    const open = chooses(methods, SPELLINGS);
+    this.tracks = this.declared || open;
+    this.differs = methods.delta === 'declared';
+    if (this.tracks && this.shared !== undefined) {
+      providers.push(this.sharedStart(this.shared));
+    }
+    let digits: DigitFields | undefined;
+    let positional: Positional | undefined;
     // A declared end writes no length for the field spellings to read.
     if (symbols.digit !== undefined && !terminated) {
       const host = this.host();
-      if (open || spelling.digits !== undefined) {
-        this.digits = this.seen(
-          new DigitFields(host, adaptive !== undefined, spelling.delta !== undefined)
-        );
+      const learned = learning !== undefined;
+      if (open || methods.digits === 'declared') {
+        digits = new DigitFields(host, { learned, delta: methods.delta === 'declared' });
+        this.digits = this.withLength(digits);
+        if (learned) {
+          providers.push(digits);
+        }
       }
-      if (open || spelling.positional !== undefined) {
-        const positional = new Positional(host, adaptive !== undefined, POSITIONAL_GATE);
-        this.positional = positional;
-        this.positions = this.seen(positional, positional);
+      if (open || methods.positional === 'declared') {
+        positional = new Positional(host, { learned, gate: POSITIONAL_GATE });
+        this.positions = this.withLength(positional, positional);
+        providers.push(positional);
       }
     }
     if (open) {
-      const methods: Method<number[]>[] = [
-        this.plain(this.body as Engine<T>),
-        this.delta(this.shared as LearnedMagnitude),
-      ];
+      const choices: Method<number[]>[] = [this.plain(), this.delta()];
       if (this.digits !== undefined) {
-        methods.push(this.digits);
+        choices.push(this.digits);
       }
       if (this.positions !== undefined) {
-        methods.push(this.positions);
+        choices.push(this.positions);
       }
-      this.choice = new ModeChoice(methods, adaptive, who);
+      this.choice = new ModeChoice(choices, learning, who);
     }
-    this.tracks = this.declared || adaptive !== undefined;
-    this.recall = recallOf<T>(spelling, adaptive, symbols.copy?.bind(symbols));
+    if (settles !== undefined) {
+      providers.push(settles);
+    }
+    if (this.tracks) {
+      // The track was retracked as the value began, so a transaction takes
+      // this back with the rest of it.
+      providers.push({
+        learn: (side, items) => {
+          this.track(side).prev = items;
+        },
+      });
+    }
+    this.providers = providers;
+    this.recall = recallOf<T>(methods, symbols.copy?.bind(symbols));
     const { item } = symbols;
     this.overrun = `${item.charAt(0).toUpperCase()}${item.slice(1)}s overrun the ${symbols.noun} prefix`;
   }
@@ -2181,57 +2196,53 @@ export class Sequence<T> {
       symbols: this.symbols as Symbols<unknown>,
       span: (side) => this.track(side).span,
       prev: (side) => this.track(side).prev,
-      writeBody: (enc, items, span) => this.body.write(enc, items, span, NONE, this.kind),
+      writeBody: (enc, items, span) => this.body.write(enc, items, span, NONE),
       readBody: (dec, span) => this.readBody(dec, span, NONE),
     };
   }
 
   /**
-   * `method`, a spelling that reads the value's span, the body taking in
-   * each value it spells, so repeats of later values, of this node or
-   * another of its pool, can copy from it. Where the value would spell its
-   * end, its length is written first; positions (`layouts`) are then
-   * available once the node met any length often enough, and refuse a
-   * value of a length they cannot spell.
+   * The method spelling by `coding`, which reads the value's span and
+   * codes the items apart from the body. Where the value would spell its end, its
+   * length is written first; positions (`layouts`) are then available once
+   * the node met any length often enough, and refuse a value of a length
+   * they cannot spell.
    */
-  private seen(method: Method<number[]>, layouts?: Positional): Method<number[]> {
+  private withLength(coding: Method<number[]>, layouts?: Positional): Method<number[]> {
     return {
       available: (side) =>
         !this.track(side).open || layouts === undefined
-          ? method.available(side)
+          ? coding.available(side)
           : layouts.met(side),
       write: (enc, items) => {
-        const track = this.track(enc);
+        const track = this.retrack(enc);
+        track.inBody = false;
         if (track.open) {
-          if (!method.available(enc)) {
+          if (!coding.available(enc)) {
             throw SPAN;
           }
           this.writeCount(enc, track.span / this.symbols.span(1));
         }
-        method.write(enc, items);
-        this.body.see?.(enc, items);
+        coding.write(enc, items);
       },
       read: (dec) => {
         const track = this.track(dec);
+        track.inBody = false;
         if (track.open) {
           track.span = this.readLength(dec);
         }
-        const items = method.read(dec);
-        this.body.see?.(dec, items);
-        return items;
+        return coding.read(dec);
       },
-      learn: (side, items) => method.learn(side, items),
     };
   }
 
   /** The plain spelling as a mode: the items in full. */
-  private plain(engine: Engine<T>): Method<number[]> {
+  private plain(): Method<number[]> {
     return {
       available: () => true,
       write: (enc, items) =>
-        engine.write(enc, items, this.track(enc).span, NONE, this.kind, undefined, this.ends(enc)),
+        this.body.write(enc, items, this.track(enc).span, NONE, undefined, this.ends(enc)),
       read: (dec) => this.readBody(dec, this.track(dec).span, NONE, undefined, this.ends(dec)),
-      learn: () => {},
     };
   }
 
@@ -2240,41 +2251,78 @@ export class Sequence<T> {
     return this.track(side).open ? this.spelled : this.learned;
   }
 
-  /** The delta as a mode, once the node has a previous value: its shared start learns every value. */
-  private delta(scale: LearnedMagnitude): Method<number[]> {
+  /** The delta as a mode, once the node has a previous value. */
+  private delta(): Method<number[]> {
     return {
       available: (side) => this.track(side).prev !== undefined,
-      write: (enc, items) => this.writeDelta(enc, items, this.track(enc).span, this.previous(enc)),
-      read: (dec) => this.readDelta(dec, this.track(dec).span, this.previous(dec)),
+      write: (enc, items) =>
+        this.writeDelta(enc, items, this.track(enc).span, this.previousItems(enc)),
+      read: (dec) => this.readDelta(dec, this.track(dec).span, this.previousItems(dec)),
+    };
+  }
+
+  /**
+   * The start each value from the node's second shares with its previous
+   * one, on `scale`, which learns it whichever spelling the value took.
+   */
+  private sharedStart(scale: Magnitude): ValueProvider<number[]> {
+    return {
       learn: (side, items) => {
-        const prev = this.previous(side);
-        const bound = this.bound(side, prev, this.track(side).span);
-        scale.learn(side, this.sharing(items, prev, bound), 0, 0, bound);
+        const { prev, span } = this.track(side);
+        if (prev !== undefined) {
+          const bound = this.bound(side, prev, span);
+          scale.learn(side, this.sharing(items, prev, bound), 0, 0, bound);
+        }
       },
     };
   }
 
-  /** This message's track of the node on `side`. */
-  private track(side: Encoder | Decoder): Track {
-    return side.state<Track>(this, () => ({ span: 0, open: false }));
+  /**
+   * The engine's repeats, which take in a value the body did not code, so
+   * later values can copy from it: they hold those the body coded already.
+   */
+  private history(engine: Engine<T>): ValueProvider<number[]> {
+    return {
+      learn: (side, items) => {
+        if (!this.track(side).inBody) {
+          engine.learn(side, items);
+        }
+      },
+    };
   }
 
-  /** This message's track of the node on `enc`, about to change: a transaction open restores it as it stands. */
-  private retrack(enc: Encoder): Track {
-    const track = this.track(enc);
-    if (enc.journal.active) {
-      const { prev, span, open } = track;
-      enc.journal.call(() => {
+  /**
+   * Counts the value just coded on `side` in the choice of the end: its
+   * length, and what its end cost where the body coded or priced it.
+   */
+  private settle(side: Encoder | Decoder, ending: EndChoice, engine: Engine<T>): void {
+    const track = this.track(side);
+    const count = track.span / this.symbols.span(1) - this.min;
+    ending.settle(side, count, track.inBody ? engine.endUnits : undefined);
+  }
+
+  /** This message's track of the node on `side`. */
+  private track(side: Encoder | Decoder): Track {
+    return side.state<Track>(this, () => ({ span: 0, open: false, inBody: false }));
+  }
+
+  /** This message's track of the node on `side`, about to change: a transaction open restores it as it stands. */
+  private retrack(side: Encoder | Decoder): Track {
+    const track = this.track(side);
+    if (side.journal?.active === true) {
+      const { prev, span, open, inBody } = track;
+      side.journal.call(() => {
         track.prev = prev;
         track.span = span;
         track.open = open;
+        track.inBody = inBody;
       });
     }
     return track;
   }
 
   /** The items of the node's previous value on `side`, which the delta, available only once there is one, reads. */
-  private previous(side: Encoder | Decoder): readonly number[] {
+  private previousItems(side: Encoder | Decoder): readonly number[] {
     return this.track(side).prev as number[];
   }
 
@@ -2336,7 +2384,7 @@ export class Sequence<T> {
     }
     const lead = prev.slice(0, shared);
     const rest = span - this.unitsOf(prev, shared);
-    this.body.write(enc, items.slice(shared), rest, lead, this.kind, undefined, this.ends(enc));
+    this.body.write(enc, items.slice(shared), rest, lead, undefined, this.ends(enc));
   }
 
   /** Reads the items `writeDelta` wrote after the same `prev`. */
@@ -2361,7 +2409,7 @@ export class Sequence<T> {
     first?: First,
     ends?: Ends
   ): number[] {
-    const [items, units] = this.body.read(dec, span, lead, this.kind, first, ends);
+    const [items, units] = this.body.read(dec, span, lead, first, ends);
     if (ends?.open === true) {
       this.track(dec).span = this.unitsOf(lead, lead.length) + units;
     }
@@ -2381,8 +2429,8 @@ export class Sequence<T> {
     }
     const symbols = this.symbols;
     const key = symbols.identity?.(value) ?? symbols.items(value).join();
-    if (recall.write(enc, key, () => this.spell(enc, value)) && this.tracks) {
-      this.retrack(enc).prev = symbols.items(value);
+    if (recall.write(enc, key, () => this.spell(enc, value))) {
+      this.recalled(enc, symbols.items(value));
     }
   }
 
@@ -2396,10 +2444,19 @@ export class Sequence<T> {
       spelled = true;
       return this.unspell(dec);
     });
-    if (!spelled && this.tracks) {
-      this.track(dec).prev = this.symbols.items(value);
+    if (!spelled) {
+      this.recalled(dec, this.symbols.items(value));
     }
     return value;
+  }
+
+  /** After a value of `items` recalled on `side`, which spelled neither its length nor its end: what it teaches. */
+  private recalled(side: Encoder | Decoder, items: number[]): void {
+    const track = this.retrack(side);
+    track.span = this.unitsOf(items, items.length);
+    track.open = false;
+    track.inBody = false;
+    this.after(side, items);
   }
 
   /** Writes the length prefix of `value` and returns the span of its items. */
@@ -2411,17 +2468,20 @@ export class Sequence<T> {
   }
 
   /**
-   * Writes the length prefix `count`, `subject` naming the value in an
-   * error; without one, of a value whose length was checked already.
+   * Writes the length prefix `count` and learns it, `subject` naming the
+   * value in an error; without one, of a value whose length was checked
+   * already.
    */
   private writeCount(enc: Encoder, count: number, subject?: () => string): void {
     if (this.lengths === undefined) {
       this.length.write(enc, count, subject);
+      this.length.learn(enc, count);
     } else {
       if (subject !== undefined) {
         checkIndex(count, this.min, undefined, subject);
       }
       this.lengths.write(enc, count, this.min, this.min, MAX_SAFE);
+      this.lengths.learn(enc, count, this.min, this.min, MAX_SAFE);
     }
   }
 
@@ -2433,32 +2493,17 @@ export class Sequence<T> {
     return symbols.span(count);
   }
 
-  /**
-   * Counts the end of the value on `side` of `span` units, as the body
-   * coded or priced it, where the choice of it learns.
-   */
-  private settle(side: Encoder | Decoder, span: number): void {
-    const { ending } = this;
-    if (ending !== undefined && !ending.declared) {
-      const count = span / this.symbols.span(1) - this.min;
-      // A learned choice comes only under adaptive, whose body is the engine.
-      ending.settle(side, count, (this.body as Engine<T>).endUnits, this.fielded());
-    }
-  }
-
-  /** Whether the node's latest value took a spelling that reads the length: digit fields or positions. */
-  private fielded(): boolean {
-    const choice = this.choice;
-    return choice !== undefined && choice.picked >= FIELDS;
-  }
-
-  /** Reads a length prefix `writeLength` wrote and returns the span of the items after it. */
+  /** Reads a length prefix `writeLength` wrote, learns it, and returns the span of the items after it. */
   private readLength(dec: Decoder): number {
     const symbols = this.symbols;
-    const count =
-      this.lengths === undefined
-        ? this.length.read(dec)
-        : this.lengths.read(dec, this.min, this.min, MAX_SAFE);
+    let count: number;
+    if (this.lengths === undefined) {
+      count = this.length.read(dec);
+      this.length.learn(dec, count);
+    } else {
+      count = this.lengths.read(dec, this.min, this.min, MAX_SAFE);
+      this.lengths.learn(dec, count, this.min, this.min, MAX_SAFE);
+    }
     symbols.check?.(count);
     dec.charge(count);
     return symbols.span(count);
@@ -2475,59 +2520,54 @@ export class Sequence<T> {
     const track = this.retrack(enc);
     track.span = span;
     track.open = open;
-    if (!this.tracks) {
-      this.body.write(enc, items, span, NONE, this.kind, undefined, this.ends(enc));
-      this.settle(enc, span);
-      return;
-    }
-    const { positions, digits } = this;
-    if (this.choice !== undefined) {
-      this.choice.write(enc, items);
+    track.inBody = true;
+    const { choice, positions, digits } = this;
+    const { prev } = track;
+    if (choice !== undefined) {
+      choice.write(enc, items);
     } else if (positions?.available(enc) === true) {
       positions.write(enc, items);
     } else if (digits !== undefined) {
       digits.write(enc, items);
-    } else if (track.prev !== undefined) {
-      this.writeDelta(enc, items, span, track.prev);
+    } else if (this.differs && prev !== undefined) {
+      this.writeDelta(enc, items, span, prev);
     } else {
-      this.body.write(enc, items, span, NONE, this.kind, undefined, this.ends(enc));
+      this.body.write(enc, items, span, NONE, undefined, this.ends(enc));
     }
-    this.settle(enc, span);
-    this.positional?.see(enc, items);
-    track.prev = items;
+    this.after(enc, items);
+  }
+
+  /** Teaches every provider `items`, the value just coded on `side`. */
+  private after(side: Encoder | Decoder, items: number[]): void {
+    for (const provider of this.providers) {
+      provider.learn(side, items);
+    }
   }
 
   /** Reads a value `spell` wrote. */
   private unspell(dec: Decoder): T {
-    const { symbols, ending } = this;
+    const { ending, choice, positions, digits } = this;
     const open = ending?.open(dec) === true;
     // Where the value spells its end, its items reach at most the most units.
     const track = this.track(dec);
     track.span = open ? (this.spelled as Ends).high : this.readLength(dec);
     track.open = open;
-    if (!this.tracks) {
-      const items = this.readBody(dec, track.span, NONE, undefined, this.ends(dec));
-      this.settle(dec, track.span);
-      return symbols.build(items);
-    }
-    const span = track.span;
+    track.inBody = true;
+    const { prev } = track;
     let items: number[];
-    const { positions, digits } = this;
-    if (this.choice !== undefined) {
-      items = this.choice.read(dec);
+    if (choice !== undefined) {
+      items = choice.read(dec);
     } else if (positions?.available(dec) === true) {
       items = positions.read(dec);
     } else if (digits !== undefined) {
       items = digits.read(dec);
-    } else if (track.prev !== undefined) {
-      items = this.readDelta(dec, span, track.prev);
+    } else if (this.differs && prev !== undefined) {
+      items = this.readDelta(dec, track.span, prev);
     } else {
-      items = this.readBody(dec, span, NONE, undefined, this.ends(dec));
+      items = this.readBody(dec, track.span, NONE, undefined, this.ends(dec));
     }
-    this.settle(dec, track.span);
-    this.positional?.see(dec, items);
-    track.prev = items;
-    return symbols.build(items);
+    this.after(dec, items);
+    return this.symbols.build(items);
   }
 
   /** The items `value` is spelled in. */
@@ -2567,15 +2607,16 @@ export class Sequence<T> {
     const spell = (): void => {
       const span = this.writeLength(enc, value);
       if (prev === undefined) {
-        this.body.write(enc, items, span, NONE, this.kind);
+        this.body.write(enc, items, span, NONE);
         return;
       }
       const most = this.most(prev, span, ascent);
       const shared = this.sharing(items, prev, most);
       this.front.write(enc, shared, 0, 0, most);
+      this.front.learn(enc, shared, 0, 0, most);
       const rest = span - this.unitsOf(prev, shared);
       const first = this.first(prev, shared, ascent);
-      this.body.write(enc, items.slice(shared), rest, prev.slice(0, shared), this.kind, first);
+      this.body.write(enc, items.slice(shared), rest, prev.slice(0, shared), first);
     };
     const recall = this.recall;
     if (recall === undefined) {
@@ -2600,6 +2641,7 @@ export class Sequence<T> {
           throw new CorruptInputError('An empty value follows another in an ascending run');
         }
         const shared = this.front.read(dec, 0, 0, most);
+        this.front.learn(dec, shared, 0, 0, most);
         const lead = prev.slice(0, shared);
         const rest = span - this.unitsOf(prev, shared);
         items = lead.concat(this.readBody(dec, rest, lead, this.first(prev, shared, ascent)));

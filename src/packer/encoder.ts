@@ -236,6 +236,11 @@ export class Encoder {
     return this.states.get(key, init);
   }
 
+  /** The message's provider under `key`, `kind|key`; see `MessageState.provider`. */
+  provider<S>(key: string, init: () => S): S {
+    return this.states.provider(key, init);
+  }
+
   /** How many slots of the message state were dropped so far; see `SlotCache`. */
   get stateEpoch(): number {
     return this.states.epoch;

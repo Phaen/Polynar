@@ -9,6 +9,7 @@
 import { p, Encoder, Decoder, CorruptInputError } from '../../index';
 import {
   Delta,
+  INDEX_METHODS,
   IndexMethods,
   IndexRange,
   checkUnset,
@@ -16,16 +17,18 @@ import {
   lengthRange,
 } from '../../nodes/lattice';
 import { LearnedMagnitude, STATIC_MAGNITUDE } from '../../nodes/magnitude';
-import { ModeChoice } from '../../nodes/methods';
+import { ModeChoice, opened, type MethodSet } from '../../nodes/methods';
 import { Recall } from '../../nodes/recall';
-import { AdaptivePrior, MAX_ADAPTIVE_MEMBERS, withoutRecall } from '../../nodes/adaptive';
+import { AdaptivePrior, MAX_ADAPTIVE_MEMBERS } from '../../nodes/adaptive';
 import type { PNode } from '../../nodes/base';
 import { mulberry32, trip } from '../support';
 import { buildWeights, readTable } from '../../nodes/weights';
 
 const adaptation = { window: 1024 };
-/** Adaptation with the node's own recall closed, for methods modelled without it. */
-const closed = withoutRecall({});
+/** The methods `.adaptive()` leaves a lattice node: those `declared`, the rest open. */
+const adapted = (declared: MethodSet = {}): MethodSet => opened(declared, INDEX_METHODS, {});
+/** As `adapted`, with the node's own recall closed, for methods modelled without it. */
+const closed = (declared: MethodSet = {}): MethodSet => opened(declared, ['learn', 'delta'], {});
 const ones = (n: number) => new Array<number>(n).fill(1);
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 
@@ -199,14 +202,19 @@ describe('Lone bounds', () => {
   });
 });
 
-/** Writes indices through `range`, then reads as many back. */
+/** Writes indices through `range`, then reads as many back, each learned as a node teaches it. */
 const roundTrip = (range: IndexRange, indices: number[]): number[] => {
   const enc = new Encoder();
   for (const index of indices) {
     range.write(enc, index);
+    range.learn(enc, index);
   }
   const dec = new Decoder(enc.output());
-  const out = indices.map(() => range.read(dec));
+  const out = indices.map(() => {
+    const index = range.read(dec);
+    range.learn(dec, index);
+    return index;
+  });
   dec.finalize();
   return out;
 };
@@ -364,7 +372,7 @@ describe('IndexRange', () => {
         new IndexRange('r', 1, MAX_ADAPTIVE_MEMBERS + 1, ones(MAX_ADAPTIVE_MEMBERS + 1), adaptation)
     ).toThrow(new RangeError('r adaptive prior spans 65537 values, above the limit 65536'));
     const widest = new IndexRange('r', 1, MAX_ADAPTIVE_MEMBERS, undefined, {});
-    expect(widest.adaptive).toEqual({});
+    expect(widest.learning).toEqual({});
     expect(widest.prior).toBeUndefined();
     expect(roundTrip(widest, [1, MAX_ADAPTIVE_MEMBERS])).toEqual([1, MAX_ADAPTIVE_MEMBERS]);
     expect(() => new IndexRange('r', 0, 2, [1, 1], adaptation)).toThrow(
@@ -375,11 +383,11 @@ describe('IndexRange', () => {
         `r adaptive prior 4 and window 1024 overflow with weights totalling ${2 ** 50 + 1}`
       )
     );
-    expect(new IndexRange('r', 0, 1).adaptive).toBeUndefined();
+    expect(new IndexRange('r', 0, 1).learning).toBeUndefined();
     expect(() => new IndexRange('r', 0, 1, undefined, { window: 1.5 })).toThrow(
       new TypeError('r adaptive window must be a positive integer, got 1.5')
     );
-    expect(() => lengthRange({ max: 1, adaptive: { window: 0 } }, 'w', 'count')).toThrow(
+    expect(() => lengthRange({ max: 1 }, 'w', 'count', { window: 0 })).toThrow(
       new RangeError('w adaptive window must be a positive integer, got 0')
     );
     expect(roundTrip(new IndexRange('r', 0, 1, undefined, {}), [1, 1, 0])).toEqual([1, 1, 0]);
@@ -406,11 +414,13 @@ describe('IndexRange', () => {
     const enc = new Encoder();
     for (const index of indices) {
       model.write(enc, index + 5);
+      model.learn(enc, index + 5);
     }
     const bytes = enc.output();
     const ranged = new Encoder();
     for (const index of indices) {
       range.write(ranged, index);
+      range.learn(ranged, index);
     }
     expect(ranged.output()).toEqual(bytes);
     // The skew makes the adaptive spelling the cheaper one; its selector
@@ -435,6 +445,7 @@ describe('IndexRange', () => {
       const enc = new Encoder();
       for (const index of indices) {
         into.write(enc, index);
+        into.learn(enc, index);
       }
       return enc.output();
     };
@@ -492,18 +503,14 @@ describe('lengthRange', () => {
   });
 
   it('takes an adaptation, passing it through, and learns without a max from the min', () => {
-    const open = lengthRange({ min: 1, adaptive: adaptation }, 'w', 'length');
-    expect([open.lo, open.hi, open.adaptive]).toEqual([1, undefined, adaptation]);
+    const open = lengthRange({ min: 1 }, 'w', 'length', adaptation);
+    expect([open.lo, open.hi, open.learning]).toEqual([1, undefined, adaptation]);
     expect(roundTrip(open, [1, 2, 900, 2])).toEqual([1, 2, 900, 2]);
-    expect(() => lengthRange({ prior: [1], adaptive: adaptation }, 'w', 'count')).toThrow(
+    expect(() => lengthRange({ prior: [1] }, 'w', 'count', adaptation)).toThrow(
       new TypeError('w weights requires a max count')
     );
-    const range = lengthRange(
-      { min: 1, max: 3, prior: [1, 2, 3], adaptive: adaptation },
-      'w',
-      'count'
-    );
-    expect([range.lo, range.hi, range.radix, range.adaptive]).toEqual([
+    const range = lengthRange({ min: 1, max: 3, prior: [1, 2, 3] }, 'w', 'count', adaptation);
+    expect([range.lo, range.hi, range.radix, range.learning]).toEqual([
       1,
       3,
       undefined,
@@ -604,10 +611,12 @@ describe('IndexRange learned spelling', () => {
       const enc = new Encoder();
       for (const index of indices) {
         model.write(enc, index - range.origin, 0, low, high);
+        model.learn(enc, index - range.origin, 0, low, high);
       }
       const ours = new Encoder();
       for (const index of indices) {
         range.write(ours, index);
+        range.learn(ours, index);
       }
       expect(ours.output()).toEqual(enc.output());
     }
@@ -643,7 +652,7 @@ describe('IndexRange learned spelling', () => {
       const mark = enc.mark();
       expect(() => learned.write(enc, offset)).toThrow();
       enc.rollback(mark);
-      learned.learn(enc, offset);
+      expect(() => learned.learn(enc, offset)).toThrow();
     }
     const cost = (): number => {
       const mark = enc.mark();
@@ -724,7 +733,7 @@ describe('IndexMethods', () => {
 
   it('spells a declared difference on the static scale after the first value', () => {
     const range = new IndexRange('r', -5, 100);
-    const methods = new IndexMethods(range, { delta: true }, 'r');
+    const methods = new IndexMethods(range, { delta: 'declared' }, 'r');
     expect(methods.plain).toBe(false);
     const indices = [7, 8, 8, -5, 100, 99];
     const model = new Encoder();
@@ -736,8 +745,8 @@ describe('IndexMethods', () => {
   });
 
   it('spells a declared difference on the learned scale under adaptation, the first value learned plain', () => {
-    const range = new IndexRange('r', undefined, undefined, undefined, closed);
-    const methods = new IndexMethods(range, { delta: true }, 'r');
+    const range = new IndexRange('r', undefined, undefined, undefined, {});
+    const methods = new IndexMethods(range, closed({ delta: 'declared' }), 'r');
     const indices = [1000, 1001, 1003, 1002, -7];
     const model = new Encoder();
     const scale = new LearnedMagnitude(true, {}, 'r');
@@ -749,44 +758,37 @@ describe('IndexMethods', () => {
   });
 
   it('refuses a difference under weights or a cdf', () => {
-    expect(() => new IndexMethods(new IndexRange('r', 0, 1, [1, 1]), { delta: true }, 'r')).toThrow(
+    const declared: MethodSet = { delta: 'declared' };
+    expect(() => new IndexMethods(new IndexRange('r', 0, 1, [1, 1]), declared, 'r')).toThrow(
       new TypeError('r delta takes no weights')
     );
+    expect(() => new IndexMethods(new IndexRange('r', 0, 1, (v) => v), declared, 'r')).toThrow(
+      new TypeError('r delta takes no cdf')
+    );
     expect(
-      () => new IndexMethods(new IndexRange('r', 0, 1, (v) => v), { delta: true }, 'r')
-    ).toThrow(new TypeError('r delta takes no cdf'));
-    expect(
-      () => new IndexMethods(new IndexRange('r', 0, 1, [1, 1], {}), { delta: true }, 'r')
+      () => new IndexMethods(new IndexRange('r', 0, 1, [1, 1], {}), adapted(declared), 'r')
     ).toThrow(new TypeError('r delta takes no weights'));
   });
 
   it('picks per value between plain and the difference under adaptation, as a ModeChoice over the same methods', () => {
     const indices = walk(400, 0, 999);
-    const range = new IndexRange('r', 0, 999, undefined, closed);
-    const { bytes, back } = methodsTrip(new IndexMethods(range, {}, 'r'), indices);
+    const range = new IndexRange('r', 0, 999, undefined, {});
+    const { bytes, back } = methodsTrip(new IndexMethods(range, closed(), 'r'), indices);
     expect(back).toEqual(indices);
     // The same mode and methods, built by hand: plain the range's learned
-    // spelling, the difference its offset from the previous one.
-    const twin = new IndexRange('r', 0, 999, undefined, {});
-    const scale = new LearnedMagnitude(true, {}, 'r');
-    const previous = { offset: undefined as number | undefined };
-    const plainMethod = twin.learned;
-    if (plainMethod === undefined) {
+    // odds, the difference its offset from the previous one, both learning
+    // every value, whichever spelled it.
+    const plain = new IndexRange('r', 0, 999, undefined, {}).learned;
+    if (plain === undefined) {
       throw new Error('not learned');
     }
-    const delta = {
-      available: () => previous.offset !== undefined,
-      write: (enc: Encoder, offset: number) =>
-        scale.write(enc, offset, previous.offset as number, 0, 999),
-      read: () => 0,
-      learn: (enc: Encoder | Decoder, offset: number) =>
-        scale.learn(enc, offset, previous.offset as number, 0, 999),
-    };
-    const mode = new ModeChoice([plainMethod, delta], {}, 'r');
+    const delta = new Delta(new LearnedMagnitude(true, {}, 'r'), 0, 999);
+    const mode = new ModeChoice([plain, delta], {}, 'r');
     const model = new Encoder();
     for (const index of indices) {
       mode.write(model, index);
-      previous.offset = index;
+      plain.learn(model, index);
+      delta.learn(model, index);
     }
     expect(bytes).toEqual(model.output());
     // The plain spelling over a run of differences is dearer.
@@ -805,27 +807,28 @@ describe('IndexMethods', () => {
       const enc = new Encoder();
       range.write(enc, 7);
       expect(
-        methodsTrip(new IndexMethods(new IndexRange('r', lo, hi, undefined, {}), {}, 'r'), [7])
-          .bytes
+        methodsTrip(new IndexMethods(new IndexRange('r', lo, hi, undefined, {}), adapted(), 'r'), [
+          7,
+        ]).bytes
       ).toEqual(enc.output());
     }
   });
 
   it.each([
     ['plain', new IndexRange('r', 0, 99), {}],
-    ['a difference', new IndexRange('r'), { delta: true as const }],
-    ['wide adaptation', new IndexRange('r', 0, 2 ** 20, undefined, closed), {}],
+    ['a difference', new IndexRange('r'), { delta: 'declared' as const }],
+    ['wide adaptation', new IndexRange('r', 0, 2 ** 20, undefined, {}), closed()],
     [
       'a learned difference',
-      new IndexRange('r', -50, undefined, undefined, closed),
-      { delta: true as const },
+      new IndexRange('r', -50, undefined, undefined, {}),
+      closed({ delta: 'declared' }),
     ],
     ['weights', new IndexRange('r', 0, 99, ones(100)), {}],
-  ])('recalls a value already written before %s', (_name, range, spelling) => {
+  ])('recalls a value already written before %s', (_name, range, spelling: MethodSet) => {
     // A few values far apart, each coming back often.
     const picks = [3, 97, 41, 66, 12];
     const indices = Array.from({ length: 400 }, () => picks[Math.floor(random() * picks.length)]);
-    const recalled = new IndexMethods(range, { ...spelling, recall: true }, 'r');
+    const recalled = new IndexMethods(range, { ...spelling, recall: 'declared' }, 'r');
     const { bytes, back } = methodsTrip(recalled, indices);
     expect(back).toEqual(indices);
     expect(bytes.length).toBeLessThan(
@@ -835,7 +838,7 @@ describe('IndexMethods', () => {
 
   it('measures the difference from a recalled value', () => {
     const range = new IndexRange('r', 0, 1000);
-    const methods = new IndexMethods(range, { delta: true, recall: true }, 'r');
+    const methods = new IndexMethods(range, { delta: 'declared', recall: 'declared' }, 'r');
     const indices = [500, 900, 500, 501];
     const model = new Encoder();
     range.write(model, 500);
@@ -851,15 +854,16 @@ describe('IndexMethods', () => {
     const indices = [100, 103, 100, 104];
     const methods = new IndexMethods(
       new IndexRange('r', undefined, undefined, undefined, {}),
-      { delta: true, recall: true },
+      adapted({ delta: 'declared', recall: 'declared' }),
       'r'
     );
     const model = new Encoder();
-    const recall = new Recall<number>(true);
+    const recall = new Recall<number>({ learned: true });
     const scale = new LearnedMagnitude(true, {}, 'r');
     const plain = new IndexRange('r', undefined, undefined, undefined, {});
     recall.write(model, '100', () => plain.write(model, 100));
     recall.write(model, '103', () => scale.write(model, 103, 100, -MAX_SAFE, MAX_SAFE));
+    scale.learn(model, 103, 100, -MAX_SAFE, MAX_SAFE);
     recall.write(model, '100', () => undefined);
     scale.learn(model, 100, 103, -MAX_SAFE, MAX_SAFE);
     recall.write(model, '104', () => scale.write(model, 104, 100, -MAX_SAFE, MAX_SAFE));
@@ -869,28 +873,31 @@ describe('IndexMethods', () => {
     const many = Array.from({ length: 300 }, () => [5, 900, 40000][Math.floor(random() * 3)]);
     const moded = new IndexMethods(
       new IndexRange('r', 0, 2 ** 20, undefined, {}),
-      { recall: true },
+      adapted({ recall: 'declared' }),
       'r'
     );
     expect(methodsTrip(moded, many).back).toEqual(many);
   });
 
   it('matches -0 to 0 and refuses what the range refuses', () => {
-    const methods = new IndexMethods(new IndexRange('r', -1, 1), { recall: true }, 'r');
+    const methods = new IndexMethods(new IndexRange('r', -1, 1), { recall: 'declared' }, 'r');
     const { back } = methodsTrip(methods, [-0, 0]);
     expect(back.map((v) => Object.is(v, 0))).toEqual([true, true]);
     expect(() => methods.write(new Encoder(), 2, () => 'Item')).toThrow(
       new RangeError('Item is above the maximum 1')
     );
     expect(() =>
-      new IndexMethods(new IndexRange('r', 0), { delta: true }, 'r').write(new Encoder(), 2 ** 60)
+      new IndexMethods(new IndexRange('r', 0), { delta: 'declared' }, 'r').write(
+        new Encoder(),
+        2 ** 60
+      )
     ).toThrow(new RangeError(`Value ${2 ** 60} is too far from 0 to encode exactly`));
   });
 
   it("reads a first value out of the origin's exact reach as corrupt", () => {
     const bytes = new Encoder();
     new IndexRange('r', 0).write(bytes, 2 ** 60);
-    const methods = new IndexMethods(new IndexRange('r', 0), { delta: true }, 'r');
+    const methods = new IndexMethods(new IndexRange('r', 0), { delta: 'declared' }, 'r');
     expect(() => methods.read(new Decoder(bytes.output()))).toThrow(
       new CorruptInputError('Index is outside the exact range of its origin')
     );
@@ -908,16 +915,17 @@ describe('IndexMethods', () => {
       for (const adaptive of [undefined, {}]) {
         for (const spelling of [
           {},
-          { delta: true as const },
-          { recall: true as const },
-          { delta: true as const, recall: true as const },
+          { delta: 'declared' as const },
+          { recall: 'declared' as const },
+          { delta: 'declared' as const, recall: 'declared' as const },
         ]) {
           const indices = walk(150, 0, 50);
           const methods = new IndexMethods(
             new IndexRange('r', lo, hi, undefined, adaptive),
-            spelling,
+            adaptive === undefined ? spelling : adapted(spelling),
             'r'
           );
+
           expect(methodsTrip(methods, indices).back).toEqual(indices);
         }
       }
@@ -926,12 +934,12 @@ describe('IndexMethods', () => {
 });
 
 describe('Delta', () => {
-  it('is available once it follows a previous offset, on each side apart', () => {
+  it('is available once it learned a previous offset, on each side apart', () => {
     const delta = new Delta(STATIC_MAGNITUDE, 0, 10);
     const enc = new Encoder();
     const dec = new Decoder(new Uint8Array());
     expect([delta.available(enc), delta.available(dec)]).toEqual([false, false]);
-    delta.follow(enc, 4);
+    delta.learn(enc, 4);
     expect([delta.available(enc), delta.available(dec)]).toEqual([true, false]);
   });
 
@@ -939,7 +947,7 @@ describe('Delta', () => {
     const delta = new Delta(STATIC_MAGNITUDE, 0, 10);
     const enc = new Encoder();
     expect(() => delta.write(enc, 5)).toThrow(TypeError);
-    delta.follow(enc, 4);
+    delta.from(enc, 4);
     for (const offset of [-1, 11, 4.5]) {
       expect(() => delta.write(enc, offset)).toThrow();
     }
@@ -954,23 +962,38 @@ describe('Delta', () => {
     const model = new LearnedMagnitude(true, {}, 'r');
     const enc = new Encoder();
     const twin = new Encoder();
-    // Nothing to learn from before a previous offset, nor out of reach.
+    // The first offset learned has no previous one to differ from.
     delta.learn(enc, 3);
-    delta.follow(enc, 0);
-    delta.learn(enc, 101);
     for (let i = 0; i < 10; i++) {
+      delta.from(enc, 0);
       delta.learn(enc, 2);
       model.learn(twin, 2, 0, -100, 100);
     }
+    delta.from(enc, 0);
     delta.write(enc, 2);
     model.write(twin, 2, 0, -100, 100);
     const bytes = enc.output();
     expect(bytes).toEqual(twin.output());
     const dec = new Decoder(bytes);
-    delta.follow(dec, 0);
+    delta.learn(dec, 3);
     for (let i = 0; i < 10; i++) {
+      delta.from(dec, 0);
       delta.learn(dec, 2);
     }
+    delta.from(dec, 0);
     expect(delta.read(dec)).toBe(2);
+  });
+
+  it('takes each offset it learns as the previous one, and a transaction rolls that back', () => {
+    const delta = new Delta(STATIC_MAGNITUDE, 0, 10);
+    const enc = new Encoder();
+    delta.learn(enc, 4);
+    const mark = enc.journal.mark();
+    delta.learn(enc, 9);
+    enc.journal.rollback(mark);
+    delta.write(enc, 6);
+    const model = new Encoder();
+    STATIC_MAGNITUDE.write(model, 6, 4, 0, 10);
+    expect(enc.output()).toEqual(model.output());
   });
 });

@@ -14,19 +14,13 @@
  * message's new items have come from, a script's block, its letters, grow
  * likelier. Below a half holding no admitted item the offset is uniform.
  */
-import {
-  CorruptInputError,
-  Encoder,
-  SlotCache,
-  costUnits,
-  type Decoder,
-  type Journal,
-} from '../packer';
+import { CorruptInputError, Encoder, costUnits, type Decoder, type Journal } from '../packer';
 import type { AdaptivePrior } from './adaptive';
 import type { SymbolPrior } from './contexts';
 import { Exclusion } from './excluded';
 import { Fenwick } from './fenwick';
 import { KeyMap } from './keymap';
+import { ProviderRef, poolKey, type Pool, type ProviderKind } from './providers';
 
 /** The most items a message admits; later new items keep their symbol and tail. */
 export const MAX_ADMITTED = 1 << 14;
@@ -130,37 +124,47 @@ interface Admitted {
 /** The items a symbol spells with a tail, first and last; undefined where it has none. */
 export type Range = (symbol: number) => readonly [number, number] | undefined;
 
+/** The items a message admitted, with their symbols, counts and offsets. */
+const GROWN: ProviderKind<Pool | undefined, Admitted> = {
+  name: 'grown',
+  key: (pool) => poolKey(pool),
+  init: (_, side) => ({
+    symbols: new KeyMap(),
+    items: [],
+    counts: new Fenwick([], side.journal),
+    offsets: [],
+    journal: side.journal,
+  }),
+};
+
 /**
  * The items a message admits to an alphabet of `base` symbols. The prior's
  * symbol for an admitted item is `base`, which no context ever codes, so a
  * history may also use it for "before the value began"; the `i`-th admitted
  * item is `base + 1 + i`, up to `size`. The counts of the admitted items
  * halve, rounding up, once they pass `window`, or twice the items admitted
- * when more.
+ * when more. The admitted items are learned per message, shared within
+ * `pool`, else the alphabet's own.
  */
 export class GrownAlphabet {
   /** The symbols: the alphabet's, the prior's for an admitted item, and room for every admitted one. */
   readonly size: number;
   /** Each message's admitted items. */
-  private readonly messages = new SlotCache<Admitted, Encoder | Decoder>(this, (side) => ({
-    symbols: new KeyMap(),
-    items: [],
-    counts: new Fenwick([], side.journal),
-    offsets: [],
-    journal: side.journal,
-  }));
+  private readonly admissions: ProviderRef<Pool | undefined, Admitted>;
 
   constructor(
     readonly base: number,
     private readonly window: number,
-    private readonly range: Range
+    private readonly range: Range,
+    pool?: Pool
   ) {
     this.size = base + 1 + MAX_ADMITTED;
+    this.admissions = new ProviderRef(GROWN, pool);
   }
 
   /** This message's admitted items on `side`. */
   message(side: Encoder | Decoder): Admitted {
-    return this.messages.get(side);
+    return this.admissions.get(side);
   }
 
   /** The symbol of `item` on `side`, -1 when it is not admitted. */
@@ -327,7 +331,6 @@ export class GrownPrior implements SymbolPrior {
       counts.count(index),
       left
     );
-    alphabet.learn(enc, pos);
   }
 
   read(dec: Decoder, row: number, excluded: Exclusion): number {
@@ -353,9 +356,7 @@ export class GrownPrior implements SymbolPrior {
       const at = counts.locate(full);
       return [at, counts.prefix(at) - (full - residual), counts.count(at)];
     });
-    const pos = base + 1 + index;
-    alphabet.learn(dec, pos);
-    return pos;
+    return base + 1 + index;
   }
 
   learn(side: Encoder | Decoder, pos: number, row: number): void {

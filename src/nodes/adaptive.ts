@@ -25,6 +25,7 @@ import {
   writeExcluded,
 } from './excluded';
 import { Fenwick } from './fenwick';
+import { ProviderRef, poolKey, type Pool, type ProviderKind } from './providers';
 import { buildWeights, readTable, type WeightTable } from './weights';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
@@ -55,60 +56,27 @@ export type Kinship = Lineage | typeof KIN;
 /** The kinship of a prior that learns with its kin. */
 export const KIN: unique symbol = Symbol('kin');
 
-/** The key of the lineage an adaptive node's options carry; only `withLineage` sets it. */
-const LINEAGE = Symbol('lineage');
-
-/** Adaptive options carrying a lineage. */
-interface Lineal extends AdaptiveOptions {
-  readonly [LINEAGE]?: Lineage;
+/**
+ * What a node's tables learn under: its adaptive options, and, where
+ * `p.any` builds the node, the lineage every adaptive prior it builds
+ * joins instead of its kin, through every rebuild that passes them on.
+ */
+export interface Learning extends AdaptiveOptions {
+  readonly lineage?: Lineage;
 }
 
 /**
- * `options` with `lineage` added, so every adaptive prior a node builds
- * from them joins it, through every rebuild that passes them on.
+ * What the priors a node builds from `learning` learn with: its lineage,
+ * else nothing under `separate`, else their kin.
  */
-export function withLineage(options: AdaptiveOptions, lineage: Lineage): AdaptiveOptions {
-  const lineal: Lineal = { ...options, [LINEAGE]: lineage };
-  return lineal;
-}
-
-/**
- * What the priors a node builds from `options` learn with: the lineage
- * the options carry, else nothing under `separate`, else their kin.
- */
-export function lineageOf(options: AdaptiveOptions | undefined): Kinship | undefined {
-  if (options === undefined) {
+export function lineageOf(learning: Learning | undefined): Kinship | undefined {
+  if (learning === undefined) {
     return undefined;
   }
-  const lineage = (options as Lineal)[LINEAGE];
-  if (lineage !== undefined) {
-    return lineage;
+  if (learning.lineage !== undefined) {
+    return learning.lineage;
   }
-  return options.separate === true ? undefined : KIN;
-}
-
-/** The key of the mark `withoutRecall` sets. */
-const OWN_RECALL = Symbol('ownRecall');
-
-/** Adaptive options that may close the node's own recall. */
-interface Recalled extends AdaptiveOptions {
-  readonly [OWN_RECALL]?: false;
-}
-
-/**
- * `options` for a node whose values its owner already recalls, as `p.any`
- * recalls its strings, key lists and containers: under them the node opens
- * no recall of its own unless `.recall()` declares one, through every
- * rebuild that passes them on.
- */
-export function withoutRecall(options: AdaptiveOptions): AdaptiveOptions {
-  const recalled: Recalled = { ...options, [OWN_RECALL]: false };
-  return recalled;
-}
-
-/** Whether `options` leave the node's own recall open, as every `.adaptive()` does. */
-export function recallOpen(options: AdaptiveOptions | undefined): boolean {
-  return options !== undefined && (options as Recalled)[OWN_RECALL] === undefined;
+  return learning.separate === true ? undefined : KIN;
 }
 
 /**
@@ -117,12 +85,15 @@ export function recallOpen(options: AdaptiveOptions | undefined): boolean {
  * `live` rows are what the learned codings weigh against those counts,
  * the declared rows when left out, which the static coding always keeps;
  * and under `keep` the counts halve rounding up, so a member seen in the
- * message keeps a count.
+ * message keeps a count. Within a `pool`, every prior of that pool learns
+ * into the same odds; such a prior learns with no lineage nor kin, whose
+ * tables stay its own.
  */
 export interface PriorOptions {
   readonly pooled?: boolean;
   readonly live?: readonly (readonly number[])[];
   readonly keep?: boolean;
+  readonly pool?: Pool;
 }
 
 /** The observations an adaptive prior holds before halving, unless declared; a table with more members holds that many. */
@@ -648,19 +619,83 @@ function rungBuckets(
   return buckets;
 }
 
-/** The priors of an adaptive prior over `members` members: `LADDER` scaled, at least 1 each, in ladder order without repeats. */
-function ladderRungs(members: number): number[] {
-  return [...new Set(LADDER.map((f) => Math.max(1, Math.round(f * members))))];
+/** The tables of a list of rows: each row's weight table, and that table as exclusion reads it. */
+interface RowTables {
+  readonly bases: readonly WeightTable[];
+  readonly statics: readonly Table[];
 }
 
-/** The key of a message's state of every kin, by what keys their gathered tables. */
-const KINDRED = {};
+/**
+ * The tables built for each list of rows: priors built over one list, as
+ * the learned spellings of one alphabet are, share its tables.
+ */
+const built = new WeakMap<readonly (readonly number[])[], RowTables>();
+
+/** The tables of `rows`, over `members` members. */
+function rowTables(rows: readonly (readonly number[])[], members: number, who: string): RowTables {
+  let tables = built.get(rows);
+  if (tables === undefined) {
+    const bases = rows.map((row) => buildWeights(row, members, who));
+    tables = { bases, statics: bases.map(staticTable) };
+    built.set(rows, tables);
+  }
+  return tables;
+}
+
+/**
+ * The codings of an adaptive prior over some number of members: the prior
+ * of each rung, `LADDER` scaled, at least 1 each, in ladder order without
+ * repeats; the selector's table, static as likely as every rung together;
+ * and the selector's bucket under each coding, as `composeSelector` takes
+ * them.
+ */
+interface Ladder {
+  readonly rungs: readonly number[];
+  readonly selector: WeightTable;
+  readonly choices: readonly Bucket[];
+}
+
+/** The ladder of each number of members, built on first use: every prior over as many shares it. */
+const ladders = new Map<number, Ladder>();
+
+/** The ladder of an adaptive prior over `members` members. */
+function ladderOf(members: number): Ladder {
+  let ladder = ladders.get(members);
+  if (ladder === undefined) {
+    const rungs = [...new Set(LADDER.map((f) => Math.max(1, Math.round(f * members))))];
+    const selector = buildWeights(
+      [rungs.length, ...rungs.map(() => 1)],
+      1 + rungs.length,
+      'adaptive selector'
+    );
+    const choices = selector.cums.map((cum, i): Bucket => [cum, selector.freqs[i], selector.total]);
+    ladder = { rungs, selector, choices };
+    ladders.set(members, ladder);
+  }
+  return ladder;
+}
 
 /** One message's state of a prior's kin: the gathered table of each row, and the priors that learned. */
 interface Kindred {
   readonly tables: (LiveCounts | undefined)[];
   readonly learners: Set<AdaptivePrior>;
 }
+
+/** What priors of one kin are built alike in: their node, members, weights and window. */
+interface Kin {
+  readonly who: string;
+  readonly members: number;
+  readonly rows: readonly (readonly number[])[];
+  readonly window?: number;
+}
+
+/** A kin's state in a message. */
+const KINDRED: ProviderKind<Kin, Kindred> = {
+  name: 'kin',
+  key: ({ who, members, rows, window }) =>
+    `${who}|${members}|${window ?? ''}|${rows.length}|${rowsHash(rows)}`,
+  init: () => ({ tables: [], learners: new Set() }),
+};
 
 /**
  * A hash of `rows`, the weights of a prior: priors of the same kin have
@@ -716,6 +751,35 @@ interface Reading {
   shared?: Fenwick;
 }
 
+/** The pool a prior's odds are shared within, if any, and the members they span. */
+interface OddsConfig {
+  readonly pool?: Pool;
+  readonly members: number;
+}
+
+/**
+ * The odds a prior learns in a message, as the encoder's view and the
+ * decoder's. Every prior of one pool learns into one, as the character
+ * odds of one kind of value do across a learned spelling's nodes.
+ */
+const WRITER: ProviderKind<OddsConfig, Writing, Encoder> = {
+  name: 'odds-writer',
+  key: ({ pool, members }) => poolKey(pool, members),
+  init: (_, { journal }) => ({
+    written: 0,
+    kinned: false,
+    pending: [],
+    live: false,
+    lives: [],
+    journal,
+  }),
+};
+const READER: ProviderKind<OddsConfig, Reading, Decoder> = {
+  name: 'odds-reader',
+  key: ({ pool, members }) => poolKey(pool, members),
+  init: () => ({ read: 0, pending: [], coding: 0, kinned: false, lives: [] }),
+};
+
 /** Whether the selector a decoder read chose the kin's blend, which stands in for the fastest rung. */
 function blended(state: Reading): boolean {
   return state.kinned && state.coding === 1;
@@ -740,7 +804,8 @@ function blended(state: Reading): boolean {
  * before this one: they own no states in any coding. A value whose
  * exclusion leaves one member is known without being written; it is
  * learned, but the first value and the selector wait for one that is
- * written. A value coded elsewhere entirely is learned through `learn`.
+ * written. Coding learns nothing: each value, coded here or elsewhere, is
+ * learned through `learn` once it is coded.
  *
  * A prior built with a lineage it does not root codes every value under
  * the `Blend` of the root's prior instead, with no selector: a node built
@@ -758,7 +823,7 @@ export class AdaptivePrior {
   /** The static table of each row. */
   readonly bases: readonly WeightTable[];
   /** The static table of each row as exclusion reads it. */
-  private readonly statics: readonly Table[];
+  readonly statics: readonly Table[];
   /** The table of each row the live tables weigh their prior by. */
   private readonly liveBases: readonly WeightTable[];
   /** Whether every row learns into one set of counts. */
@@ -768,9 +833,8 @@ export class AdaptivePrior {
   /** The prior of each adaptive coding, in selector order from 1. */
   readonly rungs: readonly number[];
   private readonly window: number;
-  /** The selector's table: static as likely as every rung together. */
+  /** The selector's table and its buckets. */
   private readonly selector: WeightTable;
-  /** The selector's bucket under each coding, as `composeSelector` takes them. */
   private readonly choices: readonly Bucket[];
   /** Set when the prior joined a lineage it does not root: the root's prior it starts from. */
   private readonly parent?: AdaptivePrior;
@@ -778,25 +842,11 @@ export class AdaptivePrior {
   private readonly gathering = {};
   /** The key of the prior's blended tables in a message's state, when it has a parent. */
   private readonly blending = {};
-  /** Set when the prior learns with its kin: what keys their gathered tables in a message's state. */
-  private readonly kin?: string;
-  /** Each message's view on an encoder. */
-  private readonly writings = new SlotCache<Writing, Encoder>(this, (enc) => ({
-    written: 0,
-    kinned: false,
-    pending: [],
-    live: false,
-    lives: [],
-    journal: enc.journal,
-  }));
-  /** Each message's view on a decoder. */
-  private readonly readings = new SlotCache<Reading, Decoder>(this, () => ({
-    read: 0,
-    pending: [],
-    coding: 0,
-    kinned: false,
-    lives: [],
-  }));
+  /** Set when the prior learns with its kin: the provider of their gathered tables. */
+  private readonly kin?: ProviderRef<Kin, Kindred>;
+  /** Each message's view on its side. */
+  private readonly writer: ProviderRef<OddsConfig, Writing, Encoder>;
+  private readonly reader: ProviderRef<OddsConfig, Reading, Decoder>;
 
   constructor(
     rows: readonly (readonly number[])[],
@@ -806,6 +856,9 @@ export class AdaptivePrior {
     lineage?: Kinship,
     options: PriorOptions = {}
   ) {
+    const odds = { pool: options.pool, members };
+    this.writer = new ProviderRef(WRITER, odds);
+    this.reader = new ProviderRef(READER, odds);
     if (rows.length === 0) {
       throw new TypeError(`${who} adaptive prior needs at least one row of weights`);
     }
@@ -817,23 +870,27 @@ export class AdaptivePrior {
     const parent = kin ? undefined : lineage?.pair(members, rows, who);
     this.parent = parent;
     if (kin) {
-      this.kin = `${who}|${members}|${window ?? ''}|${rows.length}|${rowsHash(rows)}`;
+      this.kin = new ProviderRef(KINDRED, { who, members, rows, window });
     }
     // A prior paired with its root's has the same weights, and so shares
     // the root's tables.
-    this.bases = parent?.bases ?? rows.map((row) => buildWeights(row, members, who));
-    this.statics = this.bases.map(staticTable);
+    const { bases, statics } = parent ?? rowTables(rows, members, who);
+    this.bases = bases;
+    this.statics = statics;
     const { live, pooled = false, keep = false } = options;
     if (live !== undefined && live.length !== rows.length) {
       throw new TypeError(
         `${who} adaptive prior has ${rows.length} rows, but ${live.length} live rows`
       );
     }
-    this.liveBases = live?.map((row) => buildWeights(row, members, who)) ?? this.bases;
+    this.liveBases = live === undefined ? bases : rowTables(live, members, who).bases;
     this.pooled = pooled;
     this.keep = keep;
     this.window = Math.max(window ?? DEFAULT_ADAPTIVE_WINDOW, members);
-    this.rungs = parent?.rungs ?? ladderRungs(members);
+    const { rungs, selector, choices } = ladderOf(members);
+    this.rungs = rungs;
+    this.selector = selector;
+    this.choices = choices;
     const total = [...this.bases, ...this.liveBases].reduce(
       (most, base) => Math.max(most, base.total),
       0
@@ -844,8 +901,6 @@ export class AdaptivePrior {
     }
     if (parent !== undefined) {
       // A blend codes every value, so the selector is never used.
-      this.selector = parent.selector;
-      this.choices = parent.choices;
       checkOverflow(total * (this.rungs[1] + parent.window), BLEND_SHARE, this.window, who);
       (lineage as Lineage).join(this);
       return;
@@ -853,13 +908,6 @@ export class AdaptivePrior {
     if (kin) {
       checkOverflow(total * (this.rungs[1] + this.window), BLEND_SHARE, this.window, who);
     }
-    const selector = buildWeights(
-      [this.rungs.length, ...this.rungs.map(() => 1)],
-      1 + this.rungs.length,
-      who
-    );
-    this.selector = selector;
-    this.choices = selector.cums.map((cum, i) => [cum, selector.freqs[i], selector.total]);
     if (lineage !== undefined && lineage !== KIN) {
       lineage.join(this);
     }
@@ -910,17 +958,7 @@ export class AdaptivePrior {
 
   /** This message's state of the prior's kin on `side`, made on first use. */
   private kindred(side: Encoder | Decoder): Kindred {
-    const kins = side.state<Map<string, Kindred>>(KINDRED, () => new Map());
-    const key = this.kin as string;
-    let kindred = kins.get(key);
-    if (kindred === undefined) {
-      kindred = { tables: [], learners: new Set() };
-      kins.set(key, kindred);
-      if (side.journal?.active === true) {
-        side.journal.drop(kins, key);
-      }
-    }
-    return kindred;
+    return (this.kin as ProviderRef<Kin, Kindred>).get(side);
   }
 
   /**
@@ -998,9 +1036,7 @@ export class AdaptivePrior {
       return;
     }
     if (this.parent !== undefined) {
-      const table = this.blend(enc, row);
-      writeExcluded(enc, table, excluded, pos);
-      table.learn(pos);
+      writeExcluded(enc, this.blend(enc, row), excluded, pos);
       return;
     }
     const state = this.writing(enc);
@@ -1011,7 +1047,8 @@ export class AdaptivePrior {
       } else {
         if (state.written === 1) {
           state.kinned = this.kin !== undefined && this.kinLearned(enc);
-          enc.composeSelector(this, this.choices);
+          // The odds are the group, as every prior of a pool codes in them.
+          enc.composeSelector(state, this.choices);
         }
         const buckets = rungBuckets(this.liveBases[row], this.rowLives(state, row), excluded, pos);
         // The static coding keeps the declared rows where the live ones differ.
@@ -1021,16 +1058,12 @@ export class AdaptivePrior {
         if (state.kinned) {
           buckets[1] = excludedBucket(this.blend(enc, row), excluded, pos);
         }
-        enc.composeAlternatives(this, buckets);
+        enc.composeAlternatives(state, buckets);
       }
       state.written++;
       if (state.journal.active) {
         state.journal.set(state, 'written', state.written - 1);
       }
-    }
-    this.teach(state, pos, row);
-    if (this.kin !== undefined) {
-      this.kinLearn(enc, pos, row, true);
     }
   }
 
@@ -1064,10 +1097,7 @@ export class AdaptivePrior {
       return 0;
     }
     if (this.parent !== undefined) {
-      const table = this.blend(dec, row);
-      const pos = readExcluded(dec, table, excluded);
-      table.learn(pos);
-      return pos;
+      return readExcluded(dec, this.blend(dec, row), excluded);
     }
     const state = this.reading(dec);
     let pos: number;
@@ -1110,14 +1140,13 @@ export class AdaptivePrior {
         excluded
       );
     }
-    this.study(dec, state, pos, row);
     return pos;
   }
 
   /**
-   * Learns member `pos` in context `row`, a value coded elsewhere that this
-   * prior still counts: the encoder's live tables learn it at once, the
-   * decoder's once its selector names their rung.
+   * Learns member `pos` in context `row`, coded here or elsewhere: the
+   * encoder's live tables learn it at once, the decoder's once its
+   * selector names their rung.
    */
   learn(side: Encoder | Decoder, pos: number, row = 0): void {
     this.check(pos, row);
@@ -1137,11 +1166,11 @@ export class AdaptivePrior {
   }
 
   private writing(enc: Encoder): Writing {
-    return this.writings.get(enc);
+    return this.writer.get(enc);
   }
 
   private reading(dec: Decoder): Reading {
-    return this.readings.get(dec);
+    return this.reader.get(dec);
   }
 
   /**

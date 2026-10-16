@@ -4,7 +4,7 @@ import type { Kind } from './guards';
 import type { InferTagged } from './infer';
 import type { PObject } from './object';
 import { atPath, oneOf, describe } from './path';
-import type { AdaptiveOptions } from './adaptive';
+import type { AdaptiveOptions, Learning } from './adaptive';
 import { members, type MemberPrior, type Members } from './members';
 
 /**
@@ -80,6 +80,10 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
       ...this._prior,
       adaptive: options ?? {},
     });
+  }
+
+  _open(options: Learning): PTagged<K, M> {
+    return this.adaptive(options);
   }
 
   _write(enc: Encoder, value: InferTagged<K, M>): void {

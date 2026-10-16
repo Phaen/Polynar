@@ -3,10 +3,11 @@ import type { InferShape } from './infer';
 import { PNode, POptional } from './base';
 import { atPath, describe } from './path';
 import type { Kind } from './guards';
-import { recallOf, withMethod, type Spelling } from './methods';
+import { CONTAINER_METHODS, MethodNode, learns, recallOf, type MethodSet } from './methods';
 import { copy, identity, unmeasured, type Recall } from './recall';
 import { Companion, Follow, Scope } from './companion';
 import { members, type Members } from './members';
+import { ProviderRef, type ProviderKind } from './providers';
 
 /**
  * The fields of a message's objects that companions are predicted from:
@@ -26,8 +27,12 @@ interface Fields {
   base: number;
 }
 
-/** The key of every message's `Fields`. */
-const FIELDS = {};
+/** The message's `Fields`, one per message, which every adaptive object shares. */
+const FIELDS: ProviderKind<undefined, Fields> = {
+  name: 'fields',
+  key: () => 'message',
+  init: () => ({ scope: new Scope(), field: 0, fields: 0, last: -1, base: 0 }),
+};
 
 /** One object's state in a message, per field: its learned companion and its declared one. */
 interface Message {
@@ -88,14 +93,16 @@ const scoped = (value: unknown): boolean =>
  * Object with a fixed shape. A field whose node takes `undefined` may be
  * absent or `undefined`, and then decodes with its key left out.
  */
-export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferShape<S>> {
+export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<InferShape<S>> {
   readonly _kinds: readonly Kind[] = ['object'];
 
   private readonly _shape: S;
   private readonly _keys: readonly string[];
-  private readonly _spelling: Spelling;
-  /** Set by `.adaptive()`. */
-  private readonly _adaptive: boolean;
+  /** The methods the node has, declared or open. */
+  readonly _methods: MethodSet;
+  readonly _methodNames = CONTAINER_METHODS;
+  /** Whether the object learns, as `.adaptive()` has it. */
+  private readonly _learns: boolean;
   /** Set by `.recall()` or `.adaptive()`: learned under `.adaptive()`. */
   private readonly _recall?: Recall<InferShape<S>>;
   /** Set by `.follows()`: per field, the index of the field it follows. */
@@ -106,47 +113,35 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
    * contexts by `presenceContext`.
    */
   private readonly _flags?: readonly (Members | undefined)[];
-  private readonly _fields = new SlotCache<Fields, Encoder | Decoder>(FIELDS, () => ({
-    scope: new Scope(),
-    field: 0,
-    fields: 0,
-    last: -1,
-    base: 0,
-  }));
+  private readonly _fields = new ProviderRef(FIELDS, undefined);
   private readonly _messages = new SlotCache<Message, Encoder | Decoder>(this, (side) => {
     const { scope } = this._fields.get(side);
     const { journal } = side;
-    const adaptive = this._adaptive;
     const leaders = this._leaders;
     return {
       companions: this._keys.map((key) => {
         const kinds = this._shape[key]._kinds;
-        return adaptive &&
+        return this._learns &&
           kinds !== undefined &&
           (kinds.includes('string') || kinds.includes('number') || kinds.includes('date'))
           ? new Companion(scope, journal)
           : undefined;
       }),
       follows: this._keys.map((_, i) =>
-        leaders?.[i] === undefined ? undefined : new Follow(scope.budget, adaptive, journal)
+        leaders?.[i] === undefined ? undefined : new Follow(scope.budget, this._learns, journal)
       ),
     };
   });
 
-  constructor(
-    shape: S,
-    spelling: Spelling = {},
-    adaptive = false,
-    leaders?: readonly (number | undefined)[]
-  ) {
+  constructor(shape: S, methods: MethodSet = {}, leaders?: readonly (number | undefined)[]) {
     super();
     this._shape = { ...shape }; // copy so later caller mutation can't change the node
     this._keys = Object.keys(this._shape);
-    this._spelling = spelling;
-    this._adaptive = adaptive;
-    this._recall = recallOf(spelling, adaptive ? {} : undefined, copy);
+    this._methods = methods;
+    this._learns = learns(methods);
+    this._recall = recallOf(methods, copy);
     this._leaders = leaders;
-    if (adaptive) {
+    if (this._learns) {
       const flags = this._keys.map((key) => {
         const field = this._shape[key];
         const prior = field instanceof POptional ? field._presence(PRESENCE_CONTEXTS) : undefined;
@@ -175,7 +170,12 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
    * wire format.
    */
   adaptive(): PObject<S> {
-    return new PObject<S>(this._shape, this._spelling, true, this._leaders);
+    return this._open({});
+  }
+
+  /** This node with `methods` in place of its own. */
+  _withMethods(methods: MethodSet): PObject<S> {
+    return new PObject<S>(this._shape, methods, this._leaders);
   }
 
   /**
@@ -188,8 +188,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
    * decoded.
    */
   recall(): PObject<S> {
-    const spelling = withMethod(this._spelling, 'recall', 'p.object');
-    return new PObject<S>(this._shape, spelling, this._adaptive, this._leaders);
+    return this._declare('recall', 'p.object');
   }
 
   /**
@@ -220,7 +219,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
       }
       leaders[at] = from;
     }
-    return new PObject<S>(this._shape, this._spelling, this._adaptive, leaders);
+    return new PObject<S>(this._shape, this._methods, leaders);
   }
 
   /** Whether the shape declares `key`. */
@@ -230,7 +229,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
 
   _write(enc: Encoder, value: InferShape<S>): void {
     const recall = this._recall;
-    if (!this._adaptive) {
+    if (!this._learns) {
       const message = this._leaders === undefined ? undefined : this._messages.get(enc);
       if (recall === undefined) {
         this._spell(enc, value, message);
@@ -261,7 +260,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
 
   _read(dec: Decoder): InferShape<S> {
     const recall = this._recall as Recall<InferShape<S>>;
-    if (!this._adaptive) {
+    if (!this._learns) {
       const message = this._leaders === undefined ? undefined : this._messages.get(dec);
       return this._recall === undefined
         ? this._unspell(dec, message)
@@ -323,7 +322,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
   /** Writes the object in full, through its fields' companions when given its state. */
   private _spell(enc: Encoder, value: InferShape<S>, message?: Message): void {
     const keys = this._keys;
-    const fields = this._adaptive && message !== undefined ? this._fields.get(enc) : undefined;
+    const fields = this._learns && message !== undefined ? this._fields.get(enc) : undefined;
     const field = fields?.field;
     let i = 0;
     try {
@@ -442,7 +441,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
   private _unspell(dec: Decoder, message?: Message): InferShape<S> {
     const value: Record<string, unknown> = {};
     const keys = this._keys;
-    const fields = this._adaptive && message !== undefined ? this._fields.get(dec) : undefined;
+    const fields = this._learns && message !== undefined ? this._fields.get(dec) : undefined;
     const field = fields?.field;
     const absent =
       message === undefined || this._flags === undefined

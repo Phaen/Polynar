@@ -2,7 +2,7 @@ import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import { kindOf, type Kind } from './guards';
 import { describe, oneOf } from './path';
-import type { AdaptiveOptions } from './adaptive';
+import type { AdaptiveOptions, Learning } from './adaptive';
 import { members, type MemberPrior, type Members } from './members';
 
 /**
@@ -72,6 +72,10 @@ export class PUnion<T> extends PNode<T> {
       ...this._prior,
       adaptive: options ?? {},
     });
+  }
+
+  _open(options: Learning): PUnion<T> {
+    return this.adaptive(options);
   }
 
   get _exact(): boolean {

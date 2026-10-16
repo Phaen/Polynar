@@ -249,10 +249,10 @@ describe('writeBucketed and readBucketed', () => {
     const values = boundaries(max);
     const enc = new Encoder();
     for (const v of values) {
-      writeBucketed(enc, table, v, max);
+      writeBucketed(enc, table.live(enc), v, max);
     }
     const dec = new Decoder(enc.output());
-    expect(values.map(() => readBucketed(dec, table, max))).toEqual(values);
+    expect(values.map(() => readBucketed(dec, table.live(dec), max))).toEqual(values);
     dec.finalize();
   });
 
@@ -260,7 +260,7 @@ describe('writeBucketed and readBucketed', () => {
     const top = 31 - Math.clz32(max);
     for (const v of [1, max, Math.ceil(max / 2)]) {
       const enc = new Encoder();
-      writeBucketed(enc, bucketTable(), v, max);
+      writeBucketed(enc, bucketTable().live(enc), v, max);
       const b = 31 - Math.clz32(v);
       const lo = 2 ** b;
       const hand = new Encoder();
@@ -279,17 +279,17 @@ describe('writeBucketed and readBucketed', () => {
       values.push(1);
       const table = bucketTable();
       const enc = new Encoder();
-      values.forEach((v) => writeBucketed(enc, table, v, 1000));
+      values.forEach((v) => writeBucketed(enc, table.live(enc), v, 1000));
       const reader = bucketTable();
       const dec = new Decoder(enc.output());
-      expect(values.map(() => readBucketed(dec, reader, 1000))).toEqual(values);
+      expect(values.map(() => readBucketed(dec, reader.live(dec), 1000))).toEqual(values);
       dec.finalize();
     }
   });
 
   it('caps the top bucket at the maximum', () => {
     const enc = new Encoder();
-    writeBucketed(enc, bucketTable(), 9, 9);
+    writeBucketed(enc, bucketTable().live(enc), 9, 9);
     const hand = new Encoder();
     hand.composeWeighted(6, 2, 8);
     hand.compose(1, 2);
@@ -301,7 +301,7 @@ describe('writeBucketed and readBucketed', () => {
     const table = bucketTable();
     const fixed = new Encoder();
     for (let i = 0; i < 64; i++) {
-      writeBucketed(learning, table, 5, 1000);
+      writeBucketed(learning, table.live(learning), 5, 1000);
       fixed.composeWeighted(4, 2, 20);
       fixed.compose(1, 4);
     }
@@ -319,16 +319,16 @@ describe('writeBucketed and readBucketed', () => {
       [1.5, new TypeError('Maximum must be an integer, got 1.5')],
       [NaN, new TypeError('Maximum must be an integer, got NaN')],
     ] as const) {
-      expect(() => writeBucketed(enc, table, 1, max)).toThrow(error);
-      expect(() => readBucketed(dec, table, max)).toThrow(error);
+      expect(() => writeBucketed(enc, table.live(enc), 1, max)).toThrow(error);
+      expect(() => readBucketed(dec, table.live(dec), max)).toThrow(error);
     }
-    expect(() => writeBucketed(enc, table, 0, 5)).toThrow(
+    expect(() => writeBucketed(enc, table.live(enc), 0, 5)).toThrow(
       new RangeError('Value 0 is below the minimum 1')
     );
-    expect(() => writeBucketed(enc, table, 6, 5)).toThrow(
+    expect(() => writeBucketed(enc, table.live(enc), 6, 5)).toThrow(
       new RangeError('Value 6 is above the maximum 5')
     );
-    expect(() => writeBucketed(enc, table, 2.5, 5)).toThrow(
+    expect(() => writeBucketed(enc, table.live(enc), 2.5, 5)).toThrow(
       new TypeError('Value must be an integer, got 2.5')
     );
   });
@@ -396,7 +396,7 @@ describe('Repeats', () => {
     });
 
   it('round-trips branches, flags and matches interleaved in one message', () => {
-    const repeats = new Repeats('w');
+    const repeats = new Repeats();
     const enc = new Encoder();
     write(repeats, enc, steps);
     const dec = new Decoder(enc.output());
@@ -423,7 +423,7 @@ describe('Repeats', () => {
         list.push({ kind: 'match', match: { distance, length }, maxDistance, maxLength });
       }
     }
-    const repeats = new Repeats('w');
+    const repeats = new Repeats();
     const enc = new Encoder();
     write(repeats, enc, list);
     const dec = new Decoder(enc.output());
@@ -433,7 +433,7 @@ describe('Repeats', () => {
 
   it('keeps the branch, each flag context, the kind and the lengths in tables of their own', () => {
     const enc = new Encoder();
-    const repeats = new Repeats('w');
+    const repeats = new Repeats();
     repeats.writeUsed(enc, true);
     repeats.writeFlag(enc, false, 0);
     repeats.writeFlag(enc, true, 0);
@@ -463,7 +463,7 @@ describe('Repeats', () => {
   });
 
   it('prices flags and matches as the live tables would code them, learning nothing', () => {
-    const repeats = new Repeats('w');
+    const repeats = new Repeats();
     const enc = new Encoder();
     const history: Step[] = [
       { kind: 'flag', match: true, context: 0 },
@@ -518,7 +518,7 @@ describe('Repeats', () => {
     ];
     write(repeats, enc, tail);
     const dec = new Decoder(enc.output());
-    const reader = new Repeats('w');
+    const reader = new Repeats();
     const cache = [9, 1, 9, 9];
     const readSteps = (list: readonly Step[]): Step[] =>
       list.map((step): Step => {
@@ -534,7 +534,7 @@ describe('Repeats', () => {
 
   it('prices a match as its head and its length', () => {
     const random = mulberry32(3);
-    for (const repeats of [new Repeats('w'), EVEN_REPEATS]) {
+    for (const repeats of [new Repeats(), EVEN_REPEATS]) {
       const enc = new Encoder();
       for (let i = 0; i < 50; i++) {
         const maxDistance = 1 + Math.floor(random() * 5000);
@@ -555,7 +555,7 @@ describe('Repeats', () => {
   });
 
   it('prices a recurring match cheaper than a fresh one', () => {
-    const repeats = new Repeats('w');
+    const repeats = new Repeats();
     const enc = new Encoder();
     const match: Match = { distance: 300, length: 40 };
     const fresh = repeats.priceMatch(enc, match, 1000, 100, 0);
@@ -568,14 +568,14 @@ describe('Repeats', () => {
 
   it('refuses a rep naming a distance further back than the position', () => {
     const enc = new Encoder();
-    new Repeats('w').writeMatch(enc, { distance: 3, length: 2, rep: 2 }, 3, 3);
-    expect(() => new Repeats('w').readMatch(new Decoder(enc.output()), 3, 3, [1, 2, 4, 3])).toThrow(
+    new Repeats().writeMatch(enc, { distance: 3, length: 2, rep: 2 }, 3, 3);
+    expect(() => new Repeats().readMatch(new Decoder(enc.output()), 3, 3, [1, 2, 4, 3])).toThrow(
       new CorruptInputError('Repeat distance 4 is above the maximum 3')
     );
   });
 
   it('refuses bounds and matches outside them', () => {
-    const repeats = new Repeats('w');
+    const repeats = new Repeats();
     const enc = new Encoder();
     const dec = new Decoder(new Encoder().output());
     const ok: Match = { distance: 1, length: MIN_MATCH };
@@ -708,8 +708,8 @@ describe('EVEN_REPEATS', () => {
 describe('Repeats learnFlag', () => {
   it('leaves the flag tables as writeFlag does, writing nothing', () => {
     const random = mulberry32(11);
-    const written = new Repeats('w');
-    const learned = new Repeats('w');
+    const written = new Repeats();
+    const learned = new Repeats();
     const enc1 = new Encoder();
     const enc2 = new Encoder();
     for (let i = 0; i < 300; i++) {

@@ -12,7 +12,7 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { writeLive, readLive } from './adaptive';
 import { Fenwick } from './fenwick';
 import { MAX_CLASS, STATIC_MAGNITUDE, classOf, type Magnitude } from './magnitude';
-import type { Method } from './methods';
+import type { Method, ValueProvider } from './methods';
 import type { Symbols } from './sequence';
 
 /** What a field spelling reads of the sequence it spells for. */
@@ -71,7 +71,7 @@ interface Io {
   uniform(value: number, radix: number): number;
 }
 
-/** Writes each number as it goes. */
+/** Writes each number as it goes, and learns it before the next. */
 const writer = (enc: Encoder): Io => ({
   bit(table, bit) {
     if (table === undefined) {
@@ -84,6 +84,7 @@ const writer = (enc: Encoder): Io => ({
   },
   scaled(scale, value, origin, lo, hi) {
     scale.write(enc, value, origin, lo, hi);
+    scale.learn(enc, value, origin, lo, hi);
     return value;
   },
   uniform(value, radix) {
@@ -92,7 +93,7 @@ const writer = (enc: Encoder): Io => ({
   },
 });
 
-/** Reads each number back. */
+/** Reads each number back, and learns it before the next. */
 const reader = (dec: Decoder): Io => ({
   bit(table) {
     if (table === undefined) {
@@ -103,14 +104,16 @@ const reader = (dec: Decoder): Io => ({
     return bit;
   },
   scaled(scale, _value, origin, lo, hi) {
-    return scale.read(dec, origin, lo, hi);
+    const value = scale.read(dec, origin, lo, hi);
+    scale.learn(dec, value, origin, lo, hi);
+    return value;
   },
   uniform(_value, radix) {
     return dec.parse(radix);
   },
 });
 
-/** Learns each number as though it were written. */
+/** Learns each number, written or not. */
 const learner = (side: Encoder | Decoder): Io => ({
   bit(table, bit) {
     if (table !== undefined) {
@@ -172,7 +175,6 @@ export class FieldScale implements Magnitude {
       const end = Math.min(2 * start - 1, up ? hi - origin : origin - lo);
       enc.compose(distance - start, end - start + 1);
     }
-    FieldScale.learnMember(table, member);
   }
 
   read(dec: Decoder, origin: number, lo: number, hi: number): number {
@@ -184,7 +186,6 @@ export class FieldScale implements Magnitude {
       const cum = residual < ups ? table.cum(at) : ups + table.cum(at) - below;
       return [at, cum, table.freq(at)] as const;
     });
-    FieldScale.learnMember(table, member);
     if (member === 0) {
       return origin;
     }
@@ -199,11 +200,8 @@ export class FieldScale implements Magnitude {
   learn(side: Encoder | Decoder, value: number, origin: number): void {
     const up = value >= origin;
     const cls = classOf(up ? value - origin : origin - value);
-    FieldScale.learnMember(this.table(side), cls === 0 ? 0 : up ? cls : MAX_CLASS + cls);
-  }
-
-  private static learnMember(table: Fenwick, member: number): void {
-    table.add(member, SCALE_GAIN);
+    const table = this.table(side);
+    table.add(cls === 0 ? 0 : up ? cls : MAX_CLASS + cls, SCALE_GAIN);
     if (table.total > SCALE_WINDOW) {
       table.halve(true);
     }
@@ -219,6 +217,8 @@ interface DigitLearning {
   readonly frame: Fenwick;
   /** Whether the widths are the previous value's, where they can be. */
   readonly widths: Fenwick;
+  /** The value the fields coded last, which they learned as they coded it. */
+  coded?: readonly number[];
 }
 
 /**
@@ -232,12 +232,13 @@ interface DigitLearning {
  * says they are the previous value's where their sum allows; then each
  * field's value. `learned`, the flags learn and every number sits on a
  * learned scale, a field's around the same field of the previous value,
- * each of the first `FIELD_SCALES` fields on a scale of its own; `delta`
- * alone puts the values on the static scale around that field, and
- * otherwise each is uniform over its width. Needs an alphabet that knows
- * its digits.
+ * each of the first `FIELD_SCALES` fields on a scale of its own, and every
+ * value the node codes that they could have spelled teaches them,
+ * whichever spelling it took; `delta` alone puts the values on the static
+ * scale around that field, and otherwise each is uniform over its width.
+ * Needs an alphabet that knows its digits.
  */
-export class DigitFields implements Method<number[]> {
+export class DigitFields implements Method<number[]>, ValueProvider<number[]> {
   private readonly digit: (item: number) => number;
   private readonly digitItem: (digit: number) => number;
   /** The item a field stands as in a spelled frame: the least digit the alphabet holds. */
@@ -248,11 +249,13 @@ export class DigitFields implements Method<number[]> {
   /** The scale of each field's value, by field; uniform where undefined. */
   private readonly scales: Magnitude[] = [];
 
+  private readonly learned: boolean;
+
   constructor(
     private readonly host: FieldHost,
-    private readonly learned: boolean,
-    delta: boolean
+    { learned = false, delta = false }: { readonly learned?: boolean; readonly delta?: boolean }
   ) {
+    this.learned = learned;
     const { symbols } = host;
     this.digit = (symbols.digit as (item: number) => number).bind(symbols);
     this.digitItem = (symbols.digitItem as (digit: number) => number).bind(symbols);
@@ -279,18 +282,26 @@ export class DigitFields implements Method<number[]> {
       : side.state(this, () => ({ frame: flag(side), widths: flag(side) }));
   }
 
-  /** The items last split, and their fields: a value's are split again for each spelling tried and as the next one's previous. */
-  private memo: [readonly number[], Fields][] = [];
+  /**
+   * The latest two values split or read, and their fields: a value's are
+   * needed again for each spelling tried, as it is learned, and as the next
+   * one's previous.
+   */
+  private readonly memo: [readonly number[], Fields][] = [];
 
   /** The fields of `items`. */
   private fields(items: readonly number[]): Fields {
-    const { memo } = this;
-    for (const [known, fields] of memo) {
+    for (const [known, fields] of this.memo) {
       if (known === items) {
         return fields;
       }
     }
-    const fields = this.split(items);
+    return this.remember(items, this.split(items));
+  }
+
+  /** Keeps `fields` as those of `items`, among the latest two, and returns them. */
+  private remember(items: readonly number[], fields: Fields): Fields {
+    const { memo } = this;
     memo.unshift([items, fields]);
     memo.length = Math.min(memo.length, 2);
     return fields;
@@ -333,20 +344,42 @@ export class DigitFields implements Method<number[]> {
 
   /** Digit fields stand for a value only once the node's previous value holds a digit. */
   available(side: Encoder | Decoder): boolean {
-    const prev = this.host.prev(side);
-    return prev !== undefined && prev.some((item) => this.digit(item) >= 0);
+    return this.host.prev(side)?.some((item) => this.digit(item) >= 0) === true;
   }
 
   write(enc: Encoder, items: number[]): void {
     this.walk(enc, writer(enc), this.fields(items));
+    this.coded(enc, items);
   }
 
   read(dec: Decoder): number[] {
-    return this.walk(dec, reader(dec), undefined);
+    const items = this.walk(dec, reader(dec), undefined);
+    this.coded(dec, items);
+    return items;
   }
 
+  /** Records `items` as the value the fields coded last on `side`, where they learn. */
+  private coded(side: Encoder | Decoder, items: readonly number[]): void {
+    const learning = this.learning(side);
+    if (learning !== undefined) {
+      const before = learning.coded;
+      learning.coded = items;
+      if (side.journal?.active === true) {
+        side.journal.call(() => {
+          learning.coded = before;
+        });
+      }
+    }
+  }
+
+  /**
+   * Absorbs `items`, a value another spelling coded, where digit fields
+   * could have spelled it; one they coded they learned as they coded it.
+   */
   learn(side: Encoder | Decoder, items: number[]): void {
-    this.walk(side, learner(side), this.fields(items), true);
+    if (this.learning(side)?.coded !== items && this.available(side)) {
+      this.walk(side, learner(side), this.fields(items), true);
+    }
   }
 
   /** Whether `a` and `b` hold the same gaps. */
@@ -363,7 +396,7 @@ export class DigitFields implements Method<number[]> {
   /**
    * Codes a value through `io`: `own`, the value's fields, when writing or
    * learning; read, the items it returns. `learnOnly` skips the frame,
-   * which the plain spelling neither writes nor learns.
+   * which only the body learns, as it spells it.
    */
   private walk(
     side: Encoder | Decoder,
@@ -421,7 +454,13 @@ export class DigitFields implements Method<number[]> {
         values.push(io.scaled(scale, value, clamp(origin, 0, radix - 1), 0, radix - 1));
       }
     }
-    return own === undefined ? this.build(gaps, widths, values) : [];
+    if (own !== undefined) {
+      return [];
+    }
+    // Each digit is one unit, so the frame takes the units the digits leave.
+    const items = this.build(gaps, widths, values);
+    this.remember(items, { gaps, widths, values, frame: span - digits });
+    return items;
   }
 
   /**
@@ -565,14 +604,19 @@ const EMPTY: Spot = { items: [], total: 0 };
  * new-or-seen flag learns per place, a seen item weighs by how often it
  * occurred there, and a new one's symbol by how often symbols came new to
  * any place of the node. The odds of a span learn from every value of it
- * the node spells, whichever spelling it takes.
+ * the node codes, whichever spelling it takes.
  */
-export class Positional implements Method<number[]> {
+export class Positional implements Method<number[]>, ValueProvider<number[]> {
+  private readonly learned: boolean;
+  private readonly gate: number;
+
   constructor(
     private readonly host: FieldHost,
-    private readonly learned: boolean,
-    private readonly gate: number
-  ) {}
+    { learned = false, gate }: { readonly learned?: boolean; readonly gate: number }
+  ) {
+    this.learned = learned;
+    this.gate = gate;
+  }
 
   private positions(side: Encoder | Decoder): Positions {
     return side.state(this, () => ({
@@ -756,11 +800,8 @@ export class Positional implements Method<number[]> {
     });
   }
 
-  /** The positions learn in `see`, from every value spelled. */
-  learn(): void {}
-
-  /** Learns `items`, a value of the current span the node spelled, whichever spelling it took. */
-  see(side: Encoder | Decoder, items: readonly number[]): void {
+  /** Learns `items`, a value of the current span the node coded, whichever spelling it took. */
+  learn(side: Encoder | Decoder, items: readonly number[]): void {
     const { layouts, symbols: table } = this.positions(side);
     const span = this.host.span(side);
     const journal = side.journal?.active === true ? side.journal : undefined;

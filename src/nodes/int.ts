@@ -1,11 +1,10 @@
 import { Encoder, Decoder } from '../packer';
-import { PNode } from './base';
 import { describe } from './path';
 import type { Kind } from './guards';
-import { IndexMethods, IndexRange, checkUnset } from './lattice';
+import { INDEX_METHODS, IndexMethods, IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 import type { AdaptiveOptions } from './adaptive';
-import { withMethod, type Spelling } from './methods';
+import { learningOf, MethodNode, type MethodSet } from './methods';
 
 /**
  * `value`, refused unless it is an integer. Strict, like every other node: a
@@ -20,27 +19,23 @@ const checkInteger = (value: number): number => {
 };
 
 /** Integer (strict: non-integers throw). `p.int`. */
-export class PInt extends PNode<number> {
+export class PInt extends MethodNode<number> {
   readonly _kinds: readonly Kind[] = ['number'];
 
   /** The value IS its own index on the lattice. */
   private readonly _range: IndexRange;
-  private readonly _spelling: Spelling;
-  private readonly _methods: IndexMethods;
+  /** The methods the node has, declared or open. */
+  readonly _methods: MethodSet;
+  readonly _methodNames = INDEX_METHODS;
+  private readonly _coding: IndexMethods;
   declare readonly _radix?: number;
 
-  constructor(
-    min?: number,
-    max?: number,
-    prior?: Prior,
-    adaptive?: AdaptiveOptions,
-    spelling: Spelling = {}
-  ) {
+  constructor(min?: number, max?: number, prior?: Prior, methods: MethodSet = {}) {
     super();
-    this._range = new IndexRange('p.int', min, max, prior, adaptive);
-    this._spelling = spelling;
-    this._methods = new IndexMethods(this._range, spelling, 'p.int');
-    if (this._methods.plain) {
+    this._range = new IndexRange('p.int', min, max, prior, learningOf(methods));
+    this._methods = methods;
+    this._coding = new IndexMethods(this._range, methods, 'p.int');
+    if (this._coding.plain) {
       this._radix = this._range.radix;
       this._fromDigit = this._range.fromDigit;
       const toDigit = this._range.toDigit;
@@ -52,14 +47,14 @@ export class PInt extends PNode<number> {
 
   min(n: number): PInt {
     checkUnset(this._range.lo, 'p.int', 'min');
-    const { hi, declared, adaptive } = this._range;
-    return new PInt(n, hi, declared, adaptive, this._spelling);
+    const { hi, declared } = this._range;
+    return new PInt(n, hi, declared, this._methods);
   }
 
   max(n: number): PInt {
     checkUnset(this._range.hi, 'p.int', 'max');
-    const { lo, declared, adaptive } = this._range;
-    return new PInt(lo, n, declared, adaptive, this._spelling);
+    const { lo, declared } = this._range;
+    return new PInt(lo, n, declared, this._methods);
   }
 
   /**
@@ -68,7 +63,7 @@ export class PInt extends PNode<number> {
    * cannot encode; everything else just gets cheaper or dearer.
    */
   cdf(fn: Cdf): PInt {
-    return new PInt(this._range.lo, this._range.hi, fn, this._range.adaptive, this._spelling);
+    return new PInt(this._range.lo, this._range.hi, fn, this._methods);
   }
 
   /**
@@ -76,7 +71,7 @@ export class PInt extends PNode<number> {
    * prior as `.cdf()`, given as the histogram instead of its running total.
    */
   weights(w: readonly number[]): PInt {
-    return new PInt(this._range.lo, this._range.hi, w, this._range.adaptive, this._spelling);
+    return new PInt(this._range.lo, this._range.hi, w, this._methods);
   }
 
   /**
@@ -99,8 +94,7 @@ export class PInt extends PNode<number> {
    * less than spelling it.
    */
   adaptive(options?: AdaptiveOptions): PInt {
-    const { lo, hi, declared } = this._range;
-    return new PInt(lo, hi, declared, options ?? {}, this._spelling);
+    return this._open(options ?? {});
   }
 
   /**
@@ -113,8 +107,7 @@ export class PInt extends PNode<number> {
    * cdf; values must lie within 2^53 - 1 of the min, else the max, else 0.
    */
   delta(): PInt {
-    const { lo, hi, declared, adaptive } = this._range;
-    return new PInt(lo, hi, declared, adaptive, withMethod(this._spelling, 'delta', 'p.int'));
+    return this._declare('delta', 'p.int');
   }
 
   /**
@@ -125,8 +118,13 @@ export class PInt extends PNode<number> {
    * recurs. The message's first value costs nothing extra.
    */
   recall(): PInt {
-    const { lo, hi, declared, adaptive } = this._range;
-    return new PInt(lo, hi, declared, adaptive, withMethod(this._spelling, 'recall', 'p.int'));
+    return this._declare('recall', 'p.int');
+  }
+
+  /** This node with `methods` in place of its own. */
+  _withMethods(methods: MethodSet): PInt {
+    const { lo, hi, declared } = this._range;
+    return new PInt(lo, hi, declared, methods);
   }
 
   get _exact(): boolean {
@@ -135,10 +133,10 @@ export class PInt extends PNode<number> {
 
   _write(enc: Encoder, value: number): void {
     // -0 packs as 0 on the lattice wire.
-    this._methods.write(enc, checkInteger(value), () => `Value ${value}`);
+    this._coding.write(enc, checkInteger(value), () => `Value ${value}`);
   }
 
   _read(dec: Decoder): number {
-    return this._methods.read(dec);
+    return this._coding.read(dec);
   }
 }
