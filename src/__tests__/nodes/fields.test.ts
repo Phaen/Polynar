@@ -118,6 +118,26 @@ describe('Positional', () => {
     );
   });
 
+  it('reads every place as new at a length it never met', () => {
+    // Corrupt input alone reaches this: a length positions never met.
+    const positions = new Positional(host(2), false, 1);
+    const dec = input((enc) => {
+      enc.compose(10, 13);
+      enc.compose(3, 13);
+    });
+    expect(positions.read(dec)).toEqual([10, 3]);
+  });
+
+  it('meets a length once it saw values of it often enough', () => {
+    const positions = new Positional(host(1), false, 2);
+    const enc = new Encoder();
+    expect(positions.met(enc)).toBe(false);
+    positions.see(enc, [10]);
+    expect(positions.met(enc)).toBe(false);
+    positions.see(enc, [11]);
+    expect(positions.met(enc)).toBe(true);
+  });
+
   it('refuses an item that overruns the span', () => {
     const [positions, dec] = after((enc) => {
       enc.compose(0, 2);

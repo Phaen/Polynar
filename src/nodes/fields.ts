@@ -588,8 +588,25 @@ export class Positional implements Method<number[]> {
     return layout !== undefined && layout.seen >= this.gate;
   }
 
-  /** The spot of place `k` in `layout`, standing in for one not built yet. */
-  private spot(layout: Layout, k: number): Spot {
+  /** Whether the node met some length often enough for positions to spell a value of it. */
+  met(side: Encoder | Decoder): boolean {
+    for (const layout of this.positions(side).layouts.values()) {
+      if (layout.seen >= this.gate) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The spot of place `k` in `layout`, standing in for one not built yet;
+   * empty where the node never met the length, which only a value whose
+   * end is spelled would have read (`./sequence`), from corrupt input.
+   */
+  private spot(layout: Layout | undefined, k: number): Spot {
+    if (layout === undefined) {
+      return EMPTY;
+    }
     const { spots, first } = layout;
     if (spots !== undefined) {
       return k < spots.length ? spots[k] : EMPTY;
@@ -654,7 +671,7 @@ export class Positional implements Method<number[]> {
   read(dec: Decoder): number[] {
     const { layouts, symbols: table } = this.positions(dec);
     const span = this.host.span(dec);
-    const layout = layouts.get(span) as Layout;
+    const layout = layouts.get(span);
     const { symbols } = this.host;
     const items: number[] = [];
     let units = 0;

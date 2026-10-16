@@ -6,7 +6,13 @@
  */
 
 import { Encoder, Decoder, CorruptInputError } from '../../index';
-import { Sequence, StaticLiterals, withSequenceMethod, type Symbols } from '../../nodes/sequence';
+import {
+  EndChoice,
+  Sequence,
+  StaticLiterals,
+  withSequenceMethod,
+  type Symbols,
+} from '../../nodes/sequence';
 import { buildWeights, writeTable } from '../../nodes/weights';
 import { costUnits } from '../../packer';
 import type { LengthBounds } from '../../nodes/lattice';
@@ -298,7 +304,30 @@ describe('Sequence', () => {
     });
 
     it('refers the first item of a value into the value before it, capped at its end', () => {
-      const sequence = new Sequence(toy(), { adaptive: {} });
+      // Lengths, not ends, close the values, so the end is known.
+      const open = jest.spyOn(EndChoice.prototype, 'open').mockReturnValue(false);
+      try {
+        const sequence = new Sequence(toy(), { adaptive: {} });
+        const first = random(4, 70);
+        const second = first.slice(5, 25);
+        const enc = new Encoder();
+        const { matches } = spy(() => {
+          sequence.write(enc, first);
+          sequence.write(enc, second);
+        });
+        // At the second value's first position: 65 items back, 70 in reach,
+        // and every unit of the second value left.
+        expect(matches).toEqual([[{ distance: 65, length: 20 }, 70, toy().count(second)]]);
+        const dec = new Decoder(enc.output());
+        expect([sequence.read(dec), sequence.read(dec)]).toEqual([first, second]);
+        dec.finalize();
+      } finally {
+        open.mockRestore();
+      }
+    });
+
+    it('codes a repeat under the largest bound where the end is spelled', () => {
+      const sequence = new Sequence(toy(), { adaptive: {} }, { terminated: true });
       const first = random(4, 70);
       const second = first.slice(5, 25);
       const enc = new Encoder();
@@ -306,9 +335,7 @@ describe('Sequence', () => {
         sequence.write(enc, first);
         sequence.write(enc, second);
       });
-      // At the second value's first position: 65 items back, 70 in reach,
-      // and every unit of the second value left.
-      expect(matches).toEqual([[{ distance: 65, length: 20 }, 70, toy().count(second)]]);
+      expect(matches).toEqual([[{ distance: 65, length: 20 }, 70, 2 ** 32 - 1]]);
       const dec = new Decoder(enc.output());
       expect([sequence.read(dec), sequence.read(dec)]).toEqual([first, second]);
       dec.finalize();
@@ -333,13 +360,19 @@ describe('Sequence', () => {
 
     it('writes the branch only once history plus span reaches the warm-up, and a repeat fits', () => {
       const branches = (values: number[][]): boolean[] => {
-        const sequence = new Sequence(toy(), { adaptive: withoutRecall({}) });
-        const enc = new Encoder();
-        const { used } = spy(() => values.forEach((value) => sequence.write(enc, value)));
-        const dec = new Decoder(enc.output());
-        expect(values.map(() => sequence.read(dec))).toEqual(values);
-        dec.finalize();
-        return used;
+        // Lengths, not ends, close the values.
+        const open = jest.spyOn(EndChoice.prototype, 'open').mockReturnValue(false);
+        try {
+          const sequence = new Sequence(toy(), { adaptive: withoutRecall({}) });
+          const enc = new Encoder();
+          const { used } = spy(() => values.forEach((value) => sequence.write(enc, value)));
+          const dec = new Decoder(enc.output());
+          expect(values.map(() => sequence.read(dec))).toEqual(values);
+          dec.finalize();
+          return used;
+        } finally {
+          open.mockRestore();
+        }
       };
       const twos = (n: number): number[] => Array<number>(n).fill(2);
       // 30, 59 and 63 units of history plus span: none.
@@ -516,13 +549,19 @@ describe('Sequence', () => {
     /** Two tailless values, seeded by `seeds`, with matches that stop short and resume, and the events of writing them. */
     const written = (seeds = [5, 12]): { values: number[][]; events: Event[] } => {
       const values = [mutated(seeds[0], 40, 12), mutated(seeds[1], 30, 10)];
-      const sequence = new Sequence(plain, { adaptive: {} });
-      const enc = new Encoder();
-      const events = record(() => values.forEach((value) => sequence.write(enc, value)));
-      const dec = new Decoder(enc.output());
-      expect(values.map(() => sequence.read(dec))).toEqual(values);
-      dec.finalize();
-      return { values, events };
+      // Lengths, not ends, close the values.
+      const open = jest.spyOn(EndChoice.prototype, 'open').mockReturnValue(false);
+      try {
+        const sequence = new Sequence(plain, { adaptive: {} });
+        const enc = new Encoder();
+        const events = record(() => values.forEach((value) => sequence.write(enc, value)));
+        const dec = new Decoder(enc.output());
+        expect(values.map(() => sequence.read(dec))).toEqual(values);
+        dec.finalize();
+        return { values, events };
+      } finally {
+        open.mockRestore();
+      }
     };
 
     /** The events of each value: a value starts at its first flag or literal after the last item of the one before. */

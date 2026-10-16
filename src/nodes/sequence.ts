@@ -29,7 +29,7 @@ import {
   type PriorOptions,
   type SequenceAdaptiveOptions,
 } from './adaptive';
-import { ContextModel, MAX_ORDER, WARMUP } from './contexts';
+import { ContextModel, MAX_ORDER, Stops, WARMUP } from './contexts';
 import { GrownAlphabet, GrownPrior } from './grown';
 import {
   Exclusion,
@@ -265,8 +265,46 @@ function cache(reps: number[], match: Match): void {
 const possible = (before: number, span: number, gate: number): boolean =>
   before + span >= gate && ((before >= 1 && span >= MIN_MATCH) || span >= MIN_MATCH + 1);
 
+/**
+ * Whether a value after `before` items of the message, its end spelled and
+ * its span unknown to the decoder, can hold a repeat: the items reach
+ * `gate` before it, and there is one to copy.
+ */
+const possibleOpen = (before: number, gate: number): boolean => before >= Math.max(gate, 1);
+
 /** The largest bound `Repeats` codes a distance or length under. */
 const MAX_REPEAT_BOUND = 2 ** 32 - 1;
+
+/**
+ * Where a value's end is a symbol, `end` past the alphabet's: the units a
+ * value spans at least and at most, `high` Infinity for no bound, each
+ * length spanning a multiple of `step` units, and whether the end is
+ * spelled instead of the length (`open`), or only learned after a value
+ * that spells its length, so the choice between the two can price it.
+ */
+export interface Ends {
+  readonly open: boolean;
+  readonly low: number;
+  readonly high: number;
+  readonly step: number;
+}
+
+/**
+ * Whether a value may end `units` into it, after an item of `last` units,
+ * 1 at its start: within the bounds, after a whole step, and never after
+ * an item of none, a prose shift, which always has an item after it.
+ */
+const endable = (ends: Ends, units: number, last: number): boolean =>
+  units >= ends.low && units < ends.high && units % ends.step === 0 && last > 0;
+
+/** The units of `lead` and of its last item, 1 for none. */
+function leadOf<T>(symbols: Symbols<T>, lead: readonly number[]): [number, number] {
+  let units = 0;
+  for (const item of lead) {
+    units += symbols.units(item);
+  }
+  return [units, lead.length === 0 ? 1 : symbols.units(lead[lead.length - 1])];
+}
 
 /**
  * Whether a repeat is decodable at a position with `at` items of the
@@ -311,21 +349,37 @@ function opening<T>(
 /**
  * How one symbol of a sequence is spelled, given the row it is priced in
  * and the previous symbols, newest first, with `except`, when given, ruled
- * out: `ContextModel` under adaptive, `StaticLiterals` otherwise. `price`
+ * out, and the end, the alphabet's size or the grown alphabet's, open
+ * where the value may end (`endable`): `ContextModel` under adaptive,
+ * `StaticLiterals` otherwise. `price`
  * is the cost, in `COST_UNITS`, `write` would give the symbol now,
  * learning nothing; `hitTop` is whether the last symbol coded was a
  * hit in the highest-order context.
  */
 interface Literals {
-  write(enc: Encoder, sym: number, row: number, history: readonly number[], except?: number): void;
-  read(dec: Decoder, row: number, history: readonly number[], except?: number): number;
+  write(
+    enc: Encoder,
+    sym: number,
+    row: number,
+    history: readonly number[],
+    except?: number,
+    endable?: boolean
+  ): void;
+  read(
+    dec: Decoder,
+    row: number,
+    history: readonly number[],
+    except?: number,
+    endable?: boolean
+  ): number;
   learn(side: Encoder | Decoder, sym: number, row: number, history: readonly number[]): void;
   price(
     enc: Encoder,
     sym: number,
     row: number,
     history: readonly number[],
-    except?: number
+    except?: number,
+    endable?: boolean
   ): number;
   hitTop(side: Encoder | Decoder): boolean;
   /** Whether the symbol `price` last priced would be a hit in the highest-order context. */
@@ -336,15 +390,20 @@ interface Literals {
  * The symbols at the alphabet's static odds, for repeats that do not
  * learn: each row's weights, or every symbol alike in one row, as one
  * weighted symbol with `except` ruled out. The previous symbols play no
- * part, nothing is learned, and no symbol is a context hit.
+ * part, and no symbol is a context hit. Where the value may end, the row's
+ * stop says first whether it does, the one thing that learns.
  */
 export class StaticLiterals implements Literals {
   private readonly tables: readonly Table[];
   /** The exclusion each symbol reuses. */
   private readonly exclusion: Exclusion;
+  /** The end: the alphabet's size. */
+  private readonly end: number;
+  private readonly stops = new Stops();
 
   constructor(symbols: Symbols<unknown>) {
     const { who, size, rows } = symbols;
+    this.end = size;
     this.tables = (rows ?? [new Array<number>(size).fill(1)]).map((weights) =>
       staticTable(buildWeights(weights, size, who))
     );
@@ -377,26 +436,43 @@ export class StaticLiterals implements Literals {
     sym: number,
     row: number,
     _history: readonly number[],
-    except?: number
+    except?: number,
+    endable = false
   ): void {
-    writeExcluded(enc, this.table(row), this.ruling(except), sym);
+    const table = this.table(row);
+    if (endable) {
+      this.stops.write(enc, row, sym === this.end);
+    }
+    if (sym !== this.end) {
+      writeExcluded(enc, table, this.ruling(except), sym);
+    }
   }
 
-  read(dec: Decoder, row: number, _history: readonly number[], except?: number): number {
-    return readExcluded(dec, this.table(row), this.ruling(except));
+  read(
+    dec: Decoder,
+    row: number,
+    _history: readonly number[],
+    except?: number,
+    endable = false
+  ): number {
+    const table = this.table(row);
+    return endable && this.stops.read(dec, row)
+      ? this.end
+      : readExcluded(dec, table, this.ruling(except));
   }
 
   learn(): void {}
 
   price(
-    _enc: Encoder,
+    enc: Encoder,
     sym: number,
     row: number,
     _history: readonly number[],
-    except?: number
+    except?: number,
+    endable = false
   ): number {
     const [, freq, total] = excludedBucket(this.table(row), this.ruling(except), sym);
-    return costUnits(freq, total);
+    return (endable ? this.stops.cost(enc, row, false) : 0) + costUnits(freq, total);
   }
 
   hitTop(): boolean {
@@ -413,7 +489,8 @@ export class StaticLiterals implements Literals {
  * of them, and the first is priced as the item after `lead`. `kind` picks
  * the model the symbols are priced in, where a body keeps more than one.
  * `first`, when given, is what is known of the first item's symbol, which
- * the body rules out what it can of.
+ * the body rules out what it can of. `ends`, when given, makes the end a
+ * symbol after the items.
  */
 interface Body {
   write(
@@ -422,15 +499,21 @@ interface Body {
     span: number,
     lead: readonly number[],
     kind: number,
-    first?: First
+    first?: First,
+    ends?: Ends
   ): void;
-  /** Reads items until their units reach `span`, and the units they add up to. */
+  /**
+   * Reads items until their units reach `span`, or, where `ends` is open,
+   * until it reads the end, `span` then the most units they may reach;
+   * returns them and the units they add up to.
+   */
   read(
     dec: Decoder,
     span: number,
     lead: readonly number[],
     kind: number,
-    first?: First
+    first?: First,
+    ends?: Ends
   ): [number[], number];
   /** Takes in `items`, a value another spelling coded, for repeats to copy from: where the body has them. */
   see?(side: Encoder | Decoder, items: readonly number[]): void;
@@ -468,6 +551,8 @@ class Spelled<T> implements Body {
   private readonly fast: boolean;
   /** The first symbols with one ruled out, built on first use. */
   private excluding?: StaticLiterals;
+  /** Whether a value ends where it may. */
+  private readonly stops = new Stops();
 
   constructor(
     private readonly symbols: Symbols<T>,
@@ -512,11 +597,16 @@ class Spelled<T> implements Body {
     _span: number,
     lead: readonly number[],
     _kind: number,
-    first?: First
+    first?: First,
+    ends?: Ends
   ): void {
-    const { symbols, spelling } = this;
+    const { symbols, spelling, stops } = this;
     let row = rowAfter(symbols, lead);
+    let [units, last] = leadOf(symbols, lead);
     for (let k = 0; k < items.length; k++) {
+      if (ends?.open === true && endable(ends, units, last)) {
+        stops.write(enc, row, false);
+      }
       const item = items[k];
       const symbol = symbols.symbol(item);
       if (k === 0 && first !== undefined) {
@@ -526,6 +616,11 @@ class Spelled<T> implements Body {
       }
       symbols.tail(enc, item, symbol);
       row = symbols.row(item);
+      last = symbols.units(item);
+      units += last;
+    }
+    if (ends?.open === true && units < ends.high) {
+      stops.write(enc, row, true);
     }
   }
 
@@ -534,24 +629,32 @@ class Spelled<T> implements Body {
     span: number,
     lead: readonly number[],
     _kind: number,
-    first?: First
+    first?: First,
+    ends?: Ends
   ): [number[], number] {
     const { symbols, spelling } = this;
-    if (this.fast && first === undefined) {
+    const open = ends?.open === true ? ends : undefined;
+    if (this.fast && first === undefined && open === undefined) {
       return [dec.parseMany(symbols.size, span), span];
     }
     const items: number[] = [];
     let units = 0;
     let row = rowAfter(symbols, lead);
+    const [before, start] = leadOf(symbols, lead);
+    let last = start;
     while (units < span) {
-      bounded(items.length, span);
+      bounded(items.length, open === undefined ? span : units + 1);
+      if (open !== undefined && endable(open, before + units, last) && this.stops.read(dec, row)) {
+        break;
+      }
       const symbol =
         items.length === 0 && first !== undefined
           ? this.readFirst(dec, row, first)
           : spelling.read(dec, row);
       const item = symbols.untail(dec, symbol);
       items.push(item);
-      units += symbols.units(item);
+      last = symbols.units(item);
+      units += last;
       row = symbols.row(item);
     }
     return [items, units];
@@ -593,6 +696,14 @@ class Engine<T> implements Body {
   private planEnd = -1;
   /** The positions a parse works in, from its first item on. */
   private readonly nodes: (Node | undefined)[] = [];
+  /** The symbol that ends a value: past the alphabet's, and past the grown alphabet's where it grows. */
+  private readonly end: number;
+  /**
+   * What the end of the value written or read last cost, in `COST_UNITS`,
+   * where `ends` came with it: as coded where spelled, as priced before
+   * the contexts learned it otherwise.
+   */
+  endUnits = 0;
 
   constructor(
     private readonly symbols: Symbols<T>,
@@ -601,7 +712,9 @@ class Engine<T> implements Body {
     private readonly gate: number,
     private readonly grown?: GrownAlphabet,
     private readonly words?: WordModel
-  ) {}
+  ) {
+    this.end = grown?.size ?? symbols.size;
+  }
 
   /** The symbol of `item` on `side`: its own once admitted, else the alphabet's. */
   private symbol(side: Encoder | Decoder, item: number): number {
@@ -612,6 +725,11 @@ class Engine<T> implements Body {
   /** Whether `sym`, an item's symbol, is an admitted item's, which carries no tail. */
   private admitted(sym: number): boolean {
     return sym > this.symbols.size;
+  }
+
+  /** Whether a tail follows `sym`: an alphabet symbol, not an admitted item's nor the end. */
+  private tailed(sym: number): boolean {
+    return sym < this.symbols.size;
   }
 
   /** Writes the tail of `item` after `sym`, the alphabet's: the grown alphabet's where it grows. */
@@ -655,7 +773,8 @@ class Engine<T> implements Body {
     span: number,
     lead: readonly number[],
     base: number,
-    model: Literals
+    model: Literals,
+    ends: Ends | undefined
   ): Walk {
     const { symbols, grown } = this;
     const symbol = (item: number): number => this.symbol(enc, item);
@@ -684,15 +803,29 @@ class Engine<T> implements Body {
     const histories: number[][] = [];
     const before = [0];
     let [row, history] = opening(symbols, lead, symbol);
-    for (let k = 0; k < items.length; k++) {
+    const n = items.length;
+    for (let k = 0; k < n; k++) {
       rows.push(row);
       histories.push(history);
       before.push(before[k] + symbols.units(items[k]));
       history = advance(history, syms[k]);
       row = symbols.row(items[k]);
     }
+    // The end, after the items.
+    syms.push(this.end);
+    rows.push(row);
+    histories.push(history);
+    const may: boolean[] = [];
+    let closed = false;
+    const [start, last] = ends === undefined ? [0, 1] : leadOf(symbols, lead);
+    if (ends?.open === true) {
+      for (let k = 0; k <= n; k++) {
+        may.push(endable(ends, start + before[k], k > 0 ? symbols.units(items[k - 1]) : last));
+      }
+      closed = start + before[n] < ends.high;
+    }
     const prev = lead.length > 0 ? lead[lead.length - 1] : -1;
-    return { model, base, span, syms, rows, histories, before, prev };
+    return { model, base, span, syms, rows, histories, before, prev, ends, start, may, closed };
   }
 
   /**
@@ -711,7 +844,8 @@ class Engine<T> implements Body {
     span: number,
     lead: readonly number[],
     kind: number,
-    first?: First
+    first?: First,
+    ends?: Ends
   ): void {
     const state = this.message(enc);
     const all = state.items;
@@ -722,8 +856,8 @@ class Engine<T> implements Body {
     if (enc.journal.active) {
       enc.journal.truncate(all, base);
     }
-    const walk = this.walk(enc, items, span, lead, base, this.model(kind));
-    if (!possible(base, span, this.gate)) {
+    const walk = this.walk(enc, items, span, lead, base, this.model(kind), ends);
+    if (ends?.open === true ? !possibleOpen(base, this.gate) : !possible(base, span, this.gate)) {
       this.spell(enc, state, walk, items, false, first?.except);
       return;
     }
@@ -751,18 +885,21 @@ class Engine<T> implements Body {
     except: number | undefined
   ): void {
     const { repeats } = this;
-    const { model, base, span, syms, rows, histories, before } = walk;
+    const { model, base, syms, rows, histories, may: endable } = walk;
+    const n = items.length;
     let context: FlagContext = 0;
     // A match whose flag ended the word before it.
     let ending: Match | undefined;
     this.planEnd = -1;
-    for (let k = 0; k < items.length; ) {
+    // Where the end is spelled, it is one more literal, after the items.
+    const last = walk.closed ? n + 1 : n;
+    for (let k = 0; k < last; ) {
       const at = base + k;
-      const limit = span - before[k];
+      const limit = limitAt(walk, k);
       let match = ending;
       ending = undefined;
       if (match === undefined && used && decodable(at, limit)) {
-        match = this.choose(enc, state, walk, k, context, except);
+        match = k < n ? this.choose(enc, state, walk, k, context, except) : undefined;
         repeats.writeFlag(enc, match !== undefined, context);
       }
       if (match !== undefined) {
@@ -773,7 +910,8 @@ class Engine<T> implements Body {
         }
         k += match.length;
         context = 2;
-        except = this.continuation(state.items, base + k, match.distance, k < items.length);
+        // The end, where spelled, is a literal after the match too.
+        except = this.continuation(state.items, base + k, match.distance, k < n || walk.closed);
         continue;
       }
       const prev = k === 0 ? walk.prev : items[k - 1];
@@ -783,13 +921,44 @@ class Engine<T> implements Body {
         continue;
       }
       const sym = syms[k];
-      model.write(enc, sym, rows[k], histories[k], except);
-      if (!this.admitted(sym)) {
+      model.write(enc, sym, rows[k], histories[k], except, endable[k]);
+      if (this.tailed(sym)) {
         this.tail(enc, items[k], sym);
       }
       context = model.hitTop(enc) ? 1 : 0;
       except = undefined;
       k++;
+    }
+    this.close(enc, model, walk.ends, walk.closed, rows[n], histories[n]);
+  }
+
+  /**
+   * After a value on `side` that came with `ends`, the end due in `row`
+   * after `history`: where it was spelled (`closed`), what it cost; where
+   * it only learns, what it would have cost, then the contexts learn it;
+   * where it was forced, at the most units, nothing, and the contexts
+   * learn it. A model that does not learn leaves it.
+   */
+  private close(
+    side: Encoder | Decoder,
+    model: Literals,
+    ends: Ends | undefined,
+    closed: boolean,
+    row: number,
+    history: readonly number[]
+  ): void {
+    if (ends === undefined || !(model instanceof ContextModel)) {
+      return;
+    }
+    if (closed) {
+      this.endUnits = model.endUnits;
+      return;
+    }
+    if (ends.open) {
+      this.endUnits = 0;
+      model.learn(side, this.end, row, history);
+    } else {
+      this.endUnits = model.absorb(side, this.end, row, history, undefined, true);
     }
   }
 
@@ -798,9 +967,9 @@ class Engine<T> implements Body {
     return this.symbols.letter?.(item) === true;
   }
 
-  /** Whether `item`, spelled as `sym`, writes no tail. */
+  /** Whether `item`, spelled as `sym`, writes no tail: the end writes none. */
   private plain(item: number, sym: number): boolean {
-    return this.admitted(sym) || this.symbols.tails(item, sym) === 1;
+    return !this.tailed(sym) || this.symbols.tails(item, sym) === 1;
   }
 
   /**
@@ -871,9 +1040,9 @@ class Engine<T> implements Body {
     const words = this.words as WordModel;
     const { repeats } = this;
     const model = walk.model as ContextModel;
-    const { base, span, syms, rows, histories, before } = walk;
+    const { base, syms, rows, histories, may: endable } = walk;
     const n = items.length;
-    const matchable = (j: number): boolean => used && decodable(base + j, span - before[j]);
+    const matchable = (j: number): boolean => used && decodable(base + j, limitAt(walk, j));
     const ruled = (j: number): number | undefined => (j === k ? except : undefined);
     /**
      * The match the plan takes at item `j` of the word. A plan made there
@@ -911,7 +1080,8 @@ class Engine<T> implements Body {
     if (end === undefined && e < n && e > k && matchable(e)) {
       end = pick(e);
     }
-    const literal = end === undefined && e < n;
+    // The end, where spelled, is the literal after the last item.
+    const literal = end === undefined && (e < n || walk.closed);
     let word = '';
     for (let j = k; j < e; j++) {
       word += String.fromCharCode(items[j]);
@@ -926,8 +1096,8 @@ class Engine<T> implements Body {
         if (e > k && matchable(e)) {
           repeats.writeFlag(enc, false, flag);
         }
-        model.write(enc, syms[e], rows[e], histories[e], ruled(e));
-        if (!this.admitted(syms[e])) {
+        model.write(enc, syms[e], rows[e], histories[e], ruled(e), endable[e]);
+        if (this.tailed(syms[e])) {
           this.tail(enc, items[e], syms[e]);
         }
       }
@@ -942,7 +1112,7 @@ class Engine<T> implements Body {
         if (j > k && matchable(j)) {
           repeats.writeFlag(enc, false, flag);
         }
-        model.write(enc, syms[j], rows[j], histories[j], ruled(j));
+        model.write(enc, syms[j], rows[j], histories[j], ruled(j), endable[j]);
         if (mixed && model.fell) {
           throw UNMIXED;
         }
@@ -1017,13 +1187,13 @@ class Engine<T> implements Body {
     except: number | undefined
   ): FlagContext {
     const model = walk.model as ContextModel;
-    const { base, span, syms, rows, histories, before } = walk;
+    const { base, syms, rows, histories, may: endable } = walk;
     let flag: FlagContext = 0;
     for (let j = k; j < e; j++) {
-      if (j > k && used && decodable(base + j, span - before[j])) {
+      if (j > k && used && decodable(base + j, limitAt(walk, j))) {
         this.learnFlag(enc, false, flag);
       }
-      model.absorb(enc, syms[j], rows[j], histories[j], j === k ? except : undefined);
+      model.absorb(enc, syms[j], rows[j], histories[j], j === k ? except : undefined, endable[j]);
       flag = model.hitTop(enc) ? 1 : 0;
     }
     return flag;
@@ -1090,8 +1260,8 @@ class Engine<T> implements Body {
    */
   private priceLiteral(enc: Encoder, walk: Walk, item: number, j: number, except?: number): number {
     const sym = walk.syms[j];
-    const price = walk.model.price(enc, sym, walk.rows[j], walk.histories[j], except);
-    return this.admitted(sym) ? price : price + log2Units(this.symbols.tails(item, sym));
+    const price = walk.model.price(enc, sym, walk.rows[j], walk.histories[j], except, walk.may[j]);
+    return this.tailed(sym) ? price + log2Units(this.symbols.tails(item, sym)) : price;
   }
 
   /**
@@ -1194,9 +1364,9 @@ class Engine<T> implements Body {
     finder: Finder
   ): void {
     const { repeats, plan, nodes } = this;
-    const { model, base, span, before, syms } = walk;
+    const { model, base, syms } = walk;
     const all = state.items;
-    const n = syms.length;
+    const n = syms.length - 1;
     plan.clear();
     this.planEnd = k0 + 1;
     if (
@@ -1239,7 +1409,7 @@ class Engine<T> implements Body {
       // up to the horizon is reached in a way a literal may follow.
       const { any, free } = nodes[j - k0] as Required<Node>;
       const at = base + j;
-      const limit = span - before[j];
+      const limit = limitAt(walk, j);
       const matchable = decodable(at, limit);
       let cost = this.priceLiteral(enc, walk, all[at], j, free.except);
       const top = model.pricedTop;
@@ -1283,7 +1453,7 @@ class Engine<T> implements Body {
             bucket = b;
             cost = head + repeats.priceLength(enc, { distance, length: l, rep }, limit);
           }
-          const ruled = this.continuation(all, base + e, distance, e < n);
+          const ruled = this.continuation(all, base + e, distance, e < n || walk.closed);
           const open = ruled === undefined || ruled !== syms[e];
           const target = nodes[e - k0];
           if (
@@ -1338,10 +1508,11 @@ class Engine<T> implements Body {
     const { base, span, before } = walk;
     const all = state.items;
     const at = base + k;
-    const limit = span - before[k];
-    // The items left in the value add up to exactly `limit` units, so a
-    // match, which the finder ends within the value, always fits them.
-    const candidates = finder.matches(all, at, limit).slice(-1);
+    const limit = limitAt(walk, k);
+    // The items left in the value add up to exactly the units the span
+    // leaves, so a match, which the finder ends within the value, always
+    // fits them.
+    const candidates = finder.matches(all, at, span - before[k]).slice(-1);
     const left = all.length - at;
     state.reps.forEach((distance, rep) => {
       if (repeats.cached && distance <= at) {
@@ -1400,34 +1571,52 @@ class Engine<T> implements Body {
     }
   }
 
-  /** Reads the items of a value of `span` units after `lead`, and the units they add up to. */
+  /**
+   * Reads the items of a value of `span` units after `lead`, or, where
+   * `ends` is open, up to the end it reads, `span` the most units; returns
+   * them and the units they add up to.
+   */
   read(
     dec: Decoder,
     span: number,
     lead: readonly number[],
     kind: number,
-    first?: First
+    first?: First,
+    ends?: Ends
   ): [number[], number] {
     const { symbols, repeats } = this;
     const model = this.model(kind);
     const state = this.message(dec);
     const all = state.items;
     const base = all.length;
-    const used = possible(base, span, this.gate) && repeats.readUsed(dec);
+    const open = ends?.open === true ? ends : undefined;
+    const used =
+      (open === undefined ? possible(base, span, this.gate) : possibleOpen(base, this.gate)) &&
+      repeats.readUsed(dec);
     let units = 0;
     let [row, history] = opening(symbols, lead, (item) => this.symbol(dec, item));
     let context: FlagContext = 0;
     let except = first?.except;
+    const [start, edge] = open === undefined ? [0, 1] : leadOf(symbols, lead);
+    let last = edge;
+    // Whether the end was read.
+    let done = false;
     const take = (item: number, sym: number): void => {
       all.push(item);
-      units += symbols.units(item);
+      last = symbols.units(item);
+      units += last;
       history = advance(history, sym);
       row = symbols.row(item);
     };
     /** The item `sym` read spells, its tail read. */
     const untail = (sym: number): number =>
       this.admitted(sym) ? (this.grown as GrownAlphabet).item(dec, sym) : this.untail(dec, sym);
-    const matchable = (): boolean => used && decodable(all.length, span - units);
+    /** Whether the value, spelling its end, may end after the items so far. */
+    const may = (): boolean => endable(open as Ends, start + units, last);
+    /** The units a repeat here is coded under: those the span leaves, up to the largest bound where the end is spelled. */
+    const limit = (): number =>
+      open === undefined ? span - units : Math.min(span - units, MAX_REPEAT_BOUND);
+    const matchable = (): boolean => used && decodable(all.length, limit());
     /**
      * Reads a word `writeWord` wrote, from its token to what ends it, and
      * returns whether that is a match's flag.
@@ -1435,7 +1624,7 @@ class Engine<T> implements Body {
     const readWord = (prev: number): boolean => {
       const words = this.words as WordModel;
       const contexts = model as ContextModel;
-      const start = all.length;
+      const begin = all.length;
       const id = words.read(dec, prev);
       let cost = 0;
       let hits = true;
@@ -1446,7 +1635,7 @@ class Engine<T> implements Body {
           // The flag before a letter is the letters' cost; the one before
           // what ends the word is either spelling's.
           let price = 0;
-          if (all.length > start) {
+          if (all.length > begin) {
             if (units >= span) {
               break;
             }
@@ -1458,8 +1647,19 @@ class Engine<T> implements Body {
               }
             }
           }
-          const sym = model.read(dec, row, history, all.length === start ? except : undefined);
+          const sym = model.read(
+            dec,
+            row,
+            history,
+            all.length === begin ? except : undefined,
+            open !== undefined && may()
+          );
           const paid = contexts.readUnits;
+          if (sym === this.end) {
+            hits &&= paid >= 0;
+            done = true;
+            break;
+          }
           const item = untail(sym);
           take(item, sym);
           if (!this.letter(item)) {
@@ -1483,7 +1683,14 @@ class Engine<T> implements Body {
         }
         const item = word.charCodeAt(j);
         const sym = this.symbol(dec, item);
-        const paid = contexts.absorb(dec, sym, row, history, j === 0 ? except : undefined);
+        const paid = contexts.absorb(
+          dec,
+          sym,
+          row,
+          history,
+          j === 0 ? except : undefined,
+          open !== undefined && may()
+        );
         hits &&= paid >= 0;
         cost += paid;
         take(item, sym);
@@ -1494,23 +1701,28 @@ class Engine<T> implements Body {
           this.closeWord(dec, prev, word, id, hits, cost);
           return true;
         }
-        const sym = model.read(dec, row, history);
+        const sym = model.read(dec, row, history, undefined, open !== undefined && may());
         const paid = contexts.readUnits;
-        const item = untail(sym);
-        hits &&= paid >= 0 && this.plain(item, sym);
-        take(item, sym);
+        if (sym === this.end) {
+          hits &&= paid >= 0;
+          done = true;
+        } else {
+          const item = untail(sym);
+          hits &&= paid >= 0 && this.plain(item, sym);
+          take(item, sym);
+        }
       }
       this.closeWord(dec, prev, word, id, hits, cost);
       return false;
     };
     let ending = false;
-    while (units < span) {
-      bounded(all.length - base, span);
+    while (!done && units < span) {
+      bounded(all.length - base, open === undefined ? span : units + 1);
       const at = all.length;
-      const limit = span - units;
-      if (ending || (used && decodable(at, limit) && repeats.readFlag(dec, context))) {
+      const left = limit();
+      if (ending || (used && decodable(at, left) && repeats.readFlag(dec, context))) {
         ending = false;
-        const match = repeats.readMatch(dec, at, limit, state.reps);
+        const match = repeats.readMatch(dec, at, left, state.reps);
         const { distance, length } = match;
         // The encoder holds a message's items in one JS array, so no match
         // it wrote grows them past the bound.
@@ -1536,7 +1748,9 @@ class Engine<T> implements Body {
         }
         cache(state.reps, match);
         context = 2;
-        except = this.continuation(all, all.length, distance, units < span);
+        // Where the end is spelled, a literal after the match is read even
+        // at the value's end: the end itself.
+        except = this.continuation(all, all.length, distance, open !== undefined || units < span);
         continue;
       }
       const prev = at > base ? all[at - 1] : lead.length > 0 ? lead[lead.length - 1] : -1;
@@ -1546,8 +1760,10 @@ class Engine<T> implements Body {
         except = undefined;
         continue;
       }
-      const sym = model.read(dec, row, history, except);
-      if (this.admitted(sym)) {
+      const sym = model.read(dec, row, history, except, open !== undefined && may());
+      if (sym === this.end) {
+        done = true;
+      } else if (this.admitted(sym)) {
         take((this.grown as GrownAlphabet).item(dec, sym), sym);
       } else {
         take(this.untail(dec, sym), sym);
@@ -1555,6 +1771,7 @@ class Engine<T> implements Body {
       context = model.hitTop(dec) ? 1 : 0;
       except = undefined;
     }
+    this.close(dec, model, ends, done, row, history);
     return [all.slice(base), units];
   }
 }
@@ -1628,7 +1845,25 @@ interface Walk {
   readonly before: readonly number[];
   /** The item before the value's first, -1 for none. */
   readonly prev: number;
+  /** Where the end is a symbol, its bounds; `syms`, `rows` and `histories` hold one more entry, the end's. */
+  readonly ends?: Ends;
+  /** The units of the start the value shares with another, where the end is a symbol. */
+  readonly start: number;
+  /** Where the end is spelled, whether the value may end before each item and after the last. */
+  readonly may: readonly boolean[];
+  /** Whether the end is spelled after the items: not where the value reaches its most units. */
+  readonly closed: boolean;
 }
+
+/**
+ * The units a repeat at item `j` of `walk` is coded under: those the span
+ * leaves, or where the end is spelled, those the most units leave, up to
+ * the largest bound.
+ */
+const limitAt = (walk: Walk, j: number): number =>
+  walk.ends?.open === true
+    ? Math.min(walk.ends.high - walk.start - walk.before[j], MAX_REPEAT_BOUND)
+    : walk.span - walk.before[j];
 
 /** The methods a sequence declares: those of `Spelling`, repeats, and the field spellings of text. */
 export interface SequenceSpelling extends Spelling {
@@ -1638,12 +1873,14 @@ export interface SequenceSpelling extends Spelling {
   readonly digits?: true;
   /** A value of a length the node met before by the items seen at each of its places (`./fields`). */
   readonly positional?: true;
+  /** No length prefix: the end of the value is one more symbol after its items. */
+  readonly terminated?: true;
 }
 
 /** `spelling` with `method` declared; `who` names the node in the error a second declaration throws. */
 export function withSequenceMethod(
   spelling: SequenceSpelling,
-  method: 'repeats' | 'digits' | 'positional',
+  method: 'repeats' | 'digits' | 'positional' | 'terminated',
   who: string
 ): SequenceSpelling {
   if (spelling[method] !== undefined) {
@@ -1652,13 +1889,93 @@ export function withSequenceMethod(
   return { ...spelling, [method]: true };
 }
 
+/** Thrown out of a try of positions, where the end would be spelled, for a length they never met. */
+const SPAN = new Error('Positions never met the length');
+
+/** The first of the learned choice's methods that read the length: digit fields, then positions, after the plain spelling and the delta. */
+const FIELDS = 2;
+
+/** How much of the lead each value keeps, so the choice of the end follows the node's latest values. */
+const KEEP = 15 / 16;
+
+/** One message's evidence for spelling a node's ends on one side. */
+interface Evidence {
+  /** How often each length met, by its distance from the floor, and how many values. */
+  readonly lengths: Map<number, number>;
+  values: number;
+  /**
+   * What the ends cost lately less what the lengths would have, in
+   * `COST_UNITS`, each value weighing `KEEP` times the one after it.
+   */
+  lead: number;
+}
+
+/**
+ * The choice of spelling a node's values with their end instead of their
+ * length, from evidence both sides keep alike, so no symbol carries it:
+ * while the ends have lately cost less than the lengths would have, the
+ * next value spells its end. `declared` pins it.
+ */
+export class EndChoice {
+  constructor(readonly declared: boolean) {}
+
+  private evidence(side: Encoder | Decoder): Evidence {
+    return side.state<Evidence>(this, () => ({ lengths: new Map(), values: 0, lead: 0 }));
+  }
+
+  /** Whether the node's next value on `side` spells its end. */
+  open(side: Encoder | Decoder): boolean {
+    return this.declared || this.evidence(side).lead < 0;
+  }
+
+  /**
+   * Counts a value on `side` `count` past the length's floor whose end
+   * cost `cost`, and moves the lead by that less what its length would
+   * have cost: its share of the node's values, or an escape to a new length
+   * on the gamma scale where the node never had it. A value a spelling that
+   * reads the length took (`fielded`), which writes it either way, leaves
+   * the lead as it was.
+   */
+  settle(side: Encoder | Decoder, count: number, cost: number, fielded: boolean): void {
+    const state = this.evidence(side);
+    const { journal } = side;
+    const { lengths, values, lead } = state;
+    const had = lengths.get(count);
+    const length =
+      had === undefined
+        ? log2Units(values + 1) + (2 * (31 - Math.clz32(count + 1)) + 1) * COST_UNITS
+        : log2Units(values + 1) - log2Units(had);
+    if (journal?.active === true) {
+      journal.call(() => {
+        if (had === undefined) {
+          lengths.delete(count);
+        } else {
+          lengths.set(count, had);
+        }
+        state.values = values;
+        state.lead = lead;
+      });
+    }
+    lengths.set(count, (had ?? 0) + 1);
+    state.values = values + 1;
+    if (!fielded) {
+      state.lead = (lead + cost - length) * KEEP;
+    }
+  }
+}
+
 /** How many values of a length a node spells before positions can spell the next one. */
 const POSITIONAL_GATE = 1;
 
-/** What one side knows of a sequence in a message: its previous value's items, and the span of the value being coded. */
+/**
+ * What one side knows of a sequence in a message: its previous value's
+ * items, the span of the value being coded, and whether that value spells
+ * its end, its span then known only to the encoder until it is read.
+ */
 interface Track {
   prev?: number[];
   span: number;
+  open: boolean;
 }
 
 /** No items: the start a value shares with none. */
@@ -1695,6 +2012,14 @@ const MAX_LENGTH_COSTS = 4096;
  * its span, every count alike or learned; then the items after them,
  * priced as the items after that shared start. The previous value is the
  * one the node last coded, recalled or spelled.
+ *
+ * Declared, `terminated` writes no length prefix: the end of the value is
+ * one more symbol after its items, which the delta may follow all of the
+ * previous value with. Adaptive with a length that varies and no length
+ * prior or field spelling declared, each value spells its end while ends
+ * have lately cost less than the lengths would (`EndChoice`); such a value
+ * can still take the field spellings after its length, positions once the
+ * node met any length.
  */
 export class Sequence<T> {
   private readonly length: IndexRange;
@@ -1726,6 +2051,11 @@ export class Sequence<T> {
   private readonly recall?: Recall<T>;
   /** The overrun error, `Code points overrun the length prefix`. */
   private readonly overrun: string;
+  /** The ends of a value that spells its end, and of one that only learns it, where the end is a symbol. */
+  private readonly spelled?: Ends;
+  private readonly learned?: Ends;
+  /** Whether a value spells its end, declared or learned. */
+  private readonly ending?: EndChoice;
 
   constructor(
     private readonly symbols: Symbols<T>,
@@ -1742,6 +2072,30 @@ export class Sequence<T> {
       spelling.delta !== undefined ||
       spelling.digits !== undefined ||
       spelling.positional !== undefined;
+    const fields = spelling.digits !== undefined || spelling.positional !== undefined;
+    const terminated = spelling.terminated !== undefined;
+    if (terminated && fields) {
+      throw new TypeError(
+        `${who} terminated cannot combine with digits or positional, which read the length`
+      );
+    }
+    if (terminated && bounds.prior !== undefined) {
+      throw new TypeError(`${who} terminated has no length for a cdf or weights to weigh`);
+    }
+    const hi = this.length.hi;
+    if (
+      terminated ||
+      (adaptive !== undefined && !fields && bounds.prior === undefined && hi !== this.min)
+    ) {
+      const ends = {
+        low: symbols.span(this.min),
+        high: hi === undefined ? Infinity : symbols.span(hi),
+        step: symbols.span(1),
+      };
+      this.spelled = { ...ends, open: true };
+      this.learned = { ...ends, open: false };
+      this.ending = new EndChoice(terminated);
+    }
     if (adaptive === undefined) {
       this.body =
         spelling.repeats === undefined
@@ -1762,7 +2116,8 @@ export class Sequence<T> {
       this.front = new LearnedMagnitude(false, adaptive, who, 'gamma');
     }
     const open = adaptive !== undefined && !this.declared;
-    if (symbols.digit !== undefined) {
+    // A declared end writes no length for the field spellings to read.
+    if (symbols.digit !== undefined && !terminated) {
       const host = this.host();
       if (open || spelling.digits !== undefined) {
         this.digits = this.seen(
@@ -1770,8 +2125,9 @@ export class Sequence<T> {
         );
       }
       if (open || spelling.positional !== undefined) {
-        this.positional = new Positional(host, adaptive !== undefined, POSITIONAL_GATE);
-        this.positions = this.seen(this.positional);
+        const positional = new Positional(host, adaptive !== undefined, POSITIONAL_GATE);
+        this.positional = positional;
+        this.positions = this.seen(positional, positional);
       }
     }
     if (open) {
@@ -1831,17 +2187,35 @@ export class Sequence<T> {
   }
 
   /**
-   * `method`, the body taking in each value it spells, so repeats of later
-   * values, of this node or another of its pool, can copy from it.
+   * `method`, a spelling that reads the value's span, the body taking in
+   * each value it spells, so repeats of later values, of this node or
+   * another of its pool, can copy from it. Where the value would spell its
+   * end, its length is written first; positions (`layouts`) are then
+   * available once the node met any length often enough, and refuse a
+   * value of a length they cannot spell.
    */
-  private seen(method: Method<number[]>): Method<number[]> {
+  private seen(method: Method<number[]>, layouts?: Positional): Method<number[]> {
     return {
-      available: (side) => method.available(side),
+      available: (side) =>
+        !this.track(side).open || layouts === undefined
+          ? method.available(side)
+          : layouts.met(side),
       write: (enc, items) => {
+        const track = this.track(enc);
+        if (track.open) {
+          if (!method.available(enc)) {
+            throw SPAN;
+          }
+          this.writeCount(enc, track.span / this.symbols.span(1));
+        }
         method.write(enc, items);
         this.body.see?.(enc, items);
       },
       read: (dec) => {
+        const track = this.track(dec);
+        if (track.open) {
+          track.span = this.readLength(dec);
+        }
         const items = method.read(dec);
         this.body.see?.(dec, items);
         return items;
@@ -1854,10 +2228,16 @@ export class Sequence<T> {
   private plain(engine: Engine<T>): Method<number[]> {
     return {
       available: () => true,
-      write: (enc, items) => engine.write(enc, items, this.track(enc).span, NONE, this.kind),
-      read: (dec) => this.readBody(dec, this.track(dec).span, NONE),
+      write: (enc, items) =>
+        engine.write(enc, items, this.track(enc).span, NONE, this.kind, undefined, this.ends(enc)),
+      read: (dec) => this.readBody(dec, this.track(dec).span, NONE, undefined, this.ends(dec)),
       learn: () => {},
     };
+  }
+
+  /** The ends of the value `side` codes now, as its track says: none where the end is no symbol. */
+  private ends(side: Encoder | Decoder): Ends | undefined {
+    return this.track(side).open ? this.spelled : this.learned;
   }
 
   /** The delta as a mode, once the node has a previous value: its shared start learns every value. */
@@ -1868,7 +2248,7 @@ export class Sequence<T> {
       read: (dec) => this.readDelta(dec, this.track(dec).span, this.previous(dec)),
       learn: (side, items) => {
         const prev = this.previous(side);
-        const bound = this.reach(prev, this.track(side).span);
+        const bound = this.bound(side, prev, this.track(side).span);
         scale.learn(side, this.sharing(items, prev, bound), 0, 0, bound);
       },
     };
@@ -1876,17 +2256,18 @@ export class Sequence<T> {
 
   /** This message's track of the node on `side`. */
   private track(side: Encoder | Decoder): Track {
-    return side.state<Track>(this, () => ({ span: 0 }));
+    return side.state<Track>(this, () => ({ span: 0, open: false }));
   }
 
   /** This message's track of the node on `enc`, about to change: a transaction open restores it as it stands. */
   private retrack(enc: Encoder): Track {
     const track = this.track(enc);
     if (enc.journal.active) {
-      const { prev, span } = track;
+      const { prev, span, open } = track;
       enc.journal.call(() => {
         track.prev = prev;
         track.span = span;
+        track.open = open;
       });
     }
     return track;
@@ -1895,6 +2276,15 @@ export class Sequence<T> {
   /** The items of the node's previous value on `side`, which the delta, available only once there is one, reads. */
   private previous(side: Encoder | Decoder): readonly number[] {
     return this.track(side).prev as number[];
+  }
+
+  /**
+   * The most items of `prev` a delta's value of `span` units on `side` can
+   * start with: as many as fit the span, or all of them where the value
+   * spells its end, its span unknown to the decoder.
+   */
+  private bound(side: Encoder | Decoder, prev: readonly number[], span: number): number {
+    return this.track(side).open ? prev.length : this.reach(prev, span);
   }
 
   /** The most items at the start of `prev` whose units fit in `span`. */
@@ -1937,7 +2327,7 @@ export class Sequence<T> {
     span: number,
     prev: readonly number[]
   ): void {
-    const bound = this.reach(prev, span);
+    const bound = this.bound(enc, prev, span);
     const shared = this.sharing(items, prev, bound);
     if (this.shared === undefined) {
       enc.compose(shared, bound + 1);
@@ -1945,21 +2335,36 @@ export class Sequence<T> {
       this.shared.write(enc, shared, 0, 0, bound);
     }
     const lead = prev.slice(0, shared);
-    this.body.write(enc, items.slice(shared), span - this.unitsOf(prev, shared), lead, this.kind);
+    const rest = span - this.unitsOf(prev, shared);
+    this.body.write(enc, items.slice(shared), rest, lead, this.kind, undefined, this.ends(enc));
   }
 
   /** Reads the items `writeDelta` wrote after the same `prev`. */
   private readDelta(dec: Decoder, span: number, prev: readonly number[]): number[] {
-    const bound = this.reach(prev, span);
+    const bound = this.bound(dec, prev, span);
     const shared =
       this.shared === undefined ? dec.parse(bound + 1) : this.shared.read(dec, 0, 0, bound);
     const lead = prev.slice(0, shared);
-    return lead.concat(this.readBody(dec, span - this.unitsOf(prev, shared), lead));
+    const rest = span - this.unitsOf(prev, shared);
+    return lead.concat(this.readBody(dec, rest, lead, undefined, this.ends(dec)));
   }
 
-  /** Reads the items of `span` units after `lead`, the first known as `first`, refusing any that overrun it. */
-  private readBody(dec: Decoder, span: number, lead: readonly number[], first?: First): number[] {
-    const [items, units] = this.body.read(dec, span, lead, this.kind, first);
+  /**
+   * Reads the items of `span` units after `lead`, the first known as
+   * `first`, refusing any that overrun it; where `ends` is open, up to the
+   * end, `span` the most units, which then become the track's span.
+   */
+  private readBody(
+    dec: Decoder,
+    span: number,
+    lead: readonly number[],
+    first?: First,
+    ends?: Ends
+  ): number[] {
+    const [items, units] = this.body.read(dec, span, lead, this.kind, first, ends);
+    if (ends?.open === true) {
+      this.track(dec).span = this.unitsOf(lead, lead.length) + units;
+    }
     // An item wider than one unit in the final slot, or a repeat copying
     // past the span, can overshoot it; no value encodes that way.
     if (units > span) {
@@ -2001,14 +2406,50 @@ export class Sequence<T> {
   private writeLength(enc: Encoder, value: T): number {
     const symbols = this.symbols;
     const count = symbols.count(value);
-    const subject = (): string => symbols.subject(value);
+    this.writeCount(enc, count, () => symbols.subject(value));
+    return symbols.span(count);
+  }
+
+  /**
+   * Writes the length prefix `count`, `subject` naming the value in an
+   * error; without one, of a value whose length was checked already.
+   */
+  private writeCount(enc: Encoder, count: number, subject?: () => string): void {
     if (this.lengths === undefined) {
       this.length.write(enc, count, subject);
     } else {
-      checkIndex(count, this.min, undefined, subject);
+      if (subject !== undefined) {
+        checkIndex(count, this.min, undefined, subject);
+      }
       this.lengths.write(enc, count, this.min, this.min, MAX_SAFE);
     }
+  }
+
+  /** The span of `value`, which spells its end instead of its length, refusing a length out of bounds. */
+  private spanOf(value: T): number {
+    const symbols = this.symbols;
+    const count = symbols.count(value);
+    checkIndex(count, this.min, this.length.hi, () => symbols.subject(value));
     return symbols.span(count);
+  }
+
+  /**
+   * Counts the end of the value on `side` of `span` units, as the body
+   * coded or priced it, where the choice of it learns.
+   */
+  private settle(side: Encoder | Decoder, span: number): void {
+    const { ending } = this;
+    if (ending !== undefined && !ending.declared) {
+      const count = span / this.symbols.span(1) - this.min;
+      // A learned choice comes only under adaptive, whose body is the engine.
+      ending.settle(side, count, (this.body as Engine<T>).endUnits, this.fielded());
+    }
+  }
+
+  /** Whether the node's latest value took a spelling that reads the length: digit fields or positions. */
+  private fielded(): boolean {
+    const choice = this.choice;
+    return choice !== undefined && choice.picked >= FIELDS;
   }
 
   /** Reads a length prefix `writeLength` wrote and returns the span of the items after it. */
@@ -2023,16 +2464,22 @@ export class Sequence<T> {
     return symbols.span(count);
   }
 
-  /** Writes `value` in full: its length, then its items by the method the node takes for it. */
+  /**
+   * Writes `value` in full: its length, unless it spells its end, then its
+   * items by the method the node takes for it.
+   */
   private spell(enc: Encoder, value: T): void {
-    const span = this.writeLength(enc, value);
+    const open = this.ending?.open(enc) === true;
+    const span = open ? this.spanOf(value) : this.writeLength(enc, value);
     const items = this.symbols.items(value);
-    if (!this.tracks) {
-      this.body.write(enc, items, span, NONE, this.kind);
-      return;
-    }
     const track = this.retrack(enc);
     track.span = span;
+    track.open = open;
+    if (!this.tracks) {
+      this.body.write(enc, items, span, NONE, this.kind, undefined, this.ends(enc));
+      this.settle(enc, span);
+      return;
+    }
     const { positions, digits } = this;
     if (this.choice !== undefined) {
       this.choice.write(enc, items);
@@ -2043,21 +2490,27 @@ export class Sequence<T> {
     } else if (track.prev !== undefined) {
       this.writeDelta(enc, items, span, track.prev);
     } else {
-      this.body.write(enc, items, span, NONE, this.kind);
+      this.body.write(enc, items, span, NONE, this.kind, undefined, this.ends(enc));
     }
+    this.settle(enc, span);
     this.positional?.see(enc, items);
     track.prev = items;
   }
 
   /** Reads a value `spell` wrote. */
   private unspell(dec: Decoder): T {
-    const symbols = this.symbols;
-    const span = this.readLength(dec);
-    if (!this.tracks) {
-      return symbols.build(this.readBody(dec, span, NONE));
-    }
+    const { symbols, ending } = this;
+    const open = ending?.open(dec) === true;
+    // Where the value spells its end, its items reach at most the most units.
     const track = this.track(dec);
-    track.span = span;
+    track.span = open ? (this.spelled as Ends).high : this.readLength(dec);
+    track.open = open;
+    if (!this.tracks) {
+      const items = this.readBody(dec, track.span, NONE, undefined, this.ends(dec));
+      this.settle(dec, track.span);
+      return symbols.build(items);
+    }
+    const span = track.span;
     let items: number[];
     const { positions, digits } = this;
     if (this.choice !== undefined) {
@@ -2069,8 +2522,9 @@ export class Sequence<T> {
     } else if (track.prev !== undefined) {
       items = this.readDelta(dec, span, track.prev);
     } else {
-      items = this.readBody(dec, span, NONE);
+      items = this.readBody(dec, span, NONE, undefined, this.ends(dec));
     }
+    this.settle(dec, track.span);
     this.positional?.see(dec, items);
     track.prev = items;
     return symbols.build(items);

@@ -22,10 +22,22 @@
  * context longer than `PRIOR_ORDER` coded it: a short context then counts
  * mostly what the longer ones failed to predict, which is what it gets to
  * code.
+ *
+ * A value whose end is spelled rather than its length ends with one more
+ * symbol, `end`, past the alphabet: the contexts learn it like any other,
+ * so `.com` or a closing quote soon predicts it. Where a value cannot end,
+ * the end is ruled out from the start. The prior never holds it: where
+ * every context escapes, a learned stop of the row says first whether the
+ * value ends, unless an escaped context already ruled the end out.
+ *
+ * An escape takes the bottom of its cell's states and an end the bottom of
+ * its stop's. A decode reads zeros once its input runs out, so a value cut
+ * short escapes every context and ends at the first place it may, where a
+ * hit at the bottom would let a context predict the same symbol forever.
  */
 
-import { SlotCache } from '../packer';
 import {
+  SlotCache,
   costUnits,
   type Encoder,
   type Decoder,
@@ -72,6 +84,9 @@ const INHERIT = 8;
 
 /** The hit and escape counts a cell starts at. */
 const CELL_START: readonly [number, number] = [4, 2];
+
+/** The counts a row's stop starts at: going on, and ending. */
+const STOP_START: readonly [number, number] = [8, 1];
 
 /**
  * The key of the escape cell of a context at index `index` among the
@@ -338,6 +353,62 @@ function learnCell(cell: [number, number], escaped: boolean, journal?: Journal):
 }
 
 /**
+ * Whether a value ends where it may, learned per row: a pair of counts,
+ * going on and ending, that learn as escape cells do, the end coded below
+ * going on. The contexts consult it where they all escape; a static
+ * spelling at every place a value may end.
+ */
+export class Stops {
+  /** Each message's pairs, by row, built on first use. */
+  private readonly messages = new SlotCache<([number, number] | undefined)[], Encoder | Decoder>(
+    this,
+    () => []
+  );
+
+  /** Learns `end` in `row` on `side` as `write` would code it, writing nothing. */
+  learn(side: Encoder | Decoder, row: number, end: boolean): void {
+    learnCell(this.pair(side, row), end, side.journal);
+  }
+
+  /** The pair of `row` on `side`. */
+  private pair(side: Encoder | Decoder, row: number): [number, number] {
+    const pairs = this.messages.get(side);
+    let pair = pairs[row];
+    if (pair === undefined) {
+      pair = [STOP_START[0], STOP_START[1]];
+      pairs[row] = pair;
+      if (side.journal?.active === true) {
+        side.journal.call(() => {
+          pairs[row] = undefined;
+        });
+      }
+    }
+    return pair;
+  }
+
+  /** Writes whether the value ends (`end`) in `row`, and learns it. */
+  write(enc: Encoder, row: number, end: boolean): void {
+    const pair = this.pair(enc, row);
+    enc.composeWeighted(end ? 0 : pair[1], pair[end ? 1 : 0], pair[0] + pair[1]);
+    learnCell(pair, end, enc.journal);
+  }
+
+  /** Reads whether the value ends in `row`, and learns it. */
+  read(dec: Decoder, row: number): boolean {
+    const pair = this.pair(dec, row);
+    const end = !dec.parseSplit(pair[1], pair[0] + pair[1]);
+    learnCell(pair, end, dec.journal);
+    return end;
+  }
+
+  /** The cost, in `COST_UNITS`, of `end` in `row` on `side`, learning nothing. */
+  cost(side: Encoder | Decoder, row: number, end: boolean): number {
+    const pair = this.pair(side, row);
+    return costUnits(pair[end ? 1 : 0], pair[0] + pair[1]);
+  }
+}
+
+/**
  * What the contexts escape to: a table over the symbols, by row, that codes
  * a symbol with members ruled out and learns every symbol the contexts code.
  * `AdaptivePrior` is one; `cost` is the cost, in `COST_UNITS`, the encoder's
@@ -355,7 +426,8 @@ export interface SymbolPrior {
 
 /**
  * PPM contexts above a prior over `size` symbols: learned contexts for each
- * history length from 1 to `MAX_ORDER`. `who` names the node.
+ * history length from 1 to `MAX_ORDER`, over the symbols and `end`, which
+ * is `size`. `who` names the node.
  *
  * A history lists the previous symbols newest first, exactly `MAX_ORDER`
  * of them, each in `[0, size]`, where a value no symbol coded takes, such
@@ -364,6 +436,10 @@ export interface SymbolPrior {
  */
 export class ContextModel {
   readonly size: number;
+  /** The symbol that ends a value: `size`, past the prior's. */
+  readonly end: number;
+  /** Whether a value ends, where every context escapes. */
+  private readonly stops = new Stops();
   /** The context orders, highest first. */
   private readonly orders: readonly number[];
   /** Each message's contexts. */
@@ -388,6 +464,10 @@ export class ContextModel {
   readUnits = -1;
   /** Whether the symbol `write` wrote last fell to the prior. */
   fell = false;
+  /** What the end `write` or `read` coded last cost, in `COST_UNITS`. */
+  endUnits = 0;
+  /** Whether the end is ruled out of the symbol being coded: where it may not end, or an escaped context had it. */
+  private ended = false;
   /** What `scan` returns. */
   private readonly scratch: Scan = { left: 0, sum: 0, below: 0, width: 0, found: false };
 
@@ -400,6 +480,7 @@ export class ContextModel {
       throw new TypeError(`${who} contexts span ${size} symbols, but their prior ${prior.members}`);
     }
     this.size = size;
+    this.end = size;
     const orders: number[] = [];
     for (let k = MAX_ORDER; k > 0; k--) {
       orders.push(k);
@@ -415,56 +496,117 @@ export class ContextModel {
    * decision goes first, through the context's cell, then on a hit the
    * symbol among those left; a context with none left writes nothing.
    * `except`, a symbol other than `sym`, is ruled out of every table from
-   * the start. The contexts and the prior learn `sym` as `teach` says.
+   * the start, and so is the end unless the value may end here
+   * (`endable`); `sym` is the end only where it may. Where every context
+   * escapes, the row's stop comes first where the end is still open. The
+   * contexts and the prior learn `sym` as `teach` says.
    */
-  write(enc: Encoder, sym: number, row: number, history: readonly number[], except?: number): void {
-    this.check(sym, row, history);
+  write(
+    enc: Encoder,
+    sym: number,
+    row: number,
+    history: readonly number[],
+    except?: number,
+    endable = false
+  ): void {
+    this.check(sym, row, history, endable);
     const state = this.message(enc);
     const { exclusion } = state;
     const contexts = this.visit(state, history);
-    this.open(exclusion, except);
+    this.open(state, except, endable);
+    const ending = sym === this.end;
     let hit = -1;
     let enter = 1;
+    let units = 0;
     const pricing = this.pricing(state);
     for (let i = 0; i < pricing; i++) {
       const context = contexts[i];
       // A context that has seen `sym` still has it left: the symbols ruled
-      // out are `except` and those of contexts that had not seen it, so
-      // it has a cell.
+      // out are `except`, the end where `sym` is not it, and those of
+      // contexts that had not seen it, so it has a cell.
       const scan = this.scan(context, exclusion, sym);
       const cell = this.cell(state, i, scan);
       if (scan.found) {
-        enc.composeWeighted(0, cell![0], cell![0] + cell![1]);
+        enc.composeWeighted(cell![1], cell![0], cell![0] + cell![1]);
         enc.composeWeighted(scan.below, scan.width, scan.sum);
+        if (ending) {
+          units += costUnits(cell![0], cell![0] + cell![1]) + costUnits(scan.width, scan.sum);
+        }
         enter = inherited(scan.width, scan.sum, cell![0], cell![1]);
         learnCell(cell!, false, enc.journal);
         hit = i;
         break;
       }
       if (cell !== undefined) {
-        enc.composeWeighted(cell[0], cell[1], cell[0] + cell[1]);
+        enc.composeWeighted(0, cell[1], cell[0] + cell[1]);
+        if (ending) {
+          units += costUnits(cell[1], cell[0] + cell[1]);
+        }
         learnCell(cell, true, enc.journal);
       }
       this.exclude(exclusion, context);
     }
     this.setTop(state, hit === 0);
     this.fell = hit < 0;
+    this.endUnits = units;
     if (hit < 0) {
-      this.prior.write(enc, sym, row, exclusion);
-    } else if (this.teachesPrior(hit)) {
+      this.writeFallen(enc, sym, row, state, endable);
+    } else if (!ending && this.teachesPrior(hit)) {
       this.prior.learn(enc, sym, row);
     }
     this.teach(state, contexts, sym, enter, hit);
   }
 
-  /** Reads a symbol written by `write` in `row` after `history` under the same `except`. */
-  read(dec: Decoder, row: number, history: readonly number[], except?: number): number {
+  /**
+   * Writes `sym` where every context escaped: the stop where it is coded,
+   * the end's cost going to `endUnits`, then any other symbol through the
+   * prior.
+   */
+  private writeFallen(
+    enc: Encoder,
+    sym: number,
+    row: number,
+    state: Contexts,
+    endable: boolean
+  ): void {
+    const ending = sym === this.end;
+    if (this.stopping(endable)) {
+      if (ending) {
+        this.endUnits += this.stops.cost(enc, row, true);
+      }
+      this.stops.write(enc, row, ending);
+    }
+    if (!ending) {
+      this.prior.write(enc, sym, row, state.exclusion);
+    }
+  }
+
+  /** Reads a symbol `writeFallen` wrote, the end's cost going to `endUnits`. */
+  private readFallen(dec: Decoder, row: number, state: Contexts, endable: boolean): number {
+    if (this.stopping(endable)) {
+      const cost = this.stops.cost(dec, row, true);
+      if (this.stops.read(dec, row)) {
+        this.endUnits += cost;
+        return this.end;
+      }
+    }
+    return this.prior.read(dec, row, state.exclusion);
+  }
+
+  /** Reads a symbol written by `write` in `row` after `history` under the same `except` and `endable`. */
+  read(
+    dec: Decoder,
+    row: number,
+    history: readonly number[],
+    except?: number,
+    endable = false
+  ): number {
     this.checkRow(row);
     this.checkHistory(history);
     const state = this.message(dec);
     const { exclusion } = state;
     const contexts = this.visit(state, history);
-    this.open(exclusion, except);
+    this.open(state, except, endable);
     let hit = -1;
     let sym = 0;
     let enter = 1;
@@ -476,7 +618,7 @@ export class ContextModel {
       const cell = this.cell(state, i, scan);
       if (cell !== undefined) {
         const [hits, escapes] = cell;
-        const escaped = dec.parseSplit(hits, hits + escapes);
+        const escaped = !dec.parseSplit(escapes, hits + escapes);
         learnCell(cell, escaped, dec.journal);
         units += costUnits(escaped ? escapes : hits, hits + escapes);
         if (!escaped) {
@@ -492,9 +634,10 @@ export class ContextModel {
     }
     this.readUnits = hit >= 0 ? units : -1;
     this.setTop(state, hit === 0);
+    this.endUnits = units;
     if (hit < 0) {
-      sym = this.prior.read(dec, row, exclusion);
-    } else if (this.teachesPrior(hit)) {
+      sym = this.readFallen(dec, row, state, endable);
+    } else if (sym !== this.end && this.teachesPrior(hit)) {
       this.prior.learn(dec, sym, row);
     }
     this.teach(state, contexts, sym, enter, hit);
@@ -502,26 +645,29 @@ export class ContextModel {
   }
 
   /**
-   * Learns `sym` as `write` would code it, writing nothing, on either side,
-   * and returns what `write` would charge it through the contexts, in
-   * `COST_UNITS`: the escape decisions and the bucket of the context that
-   * has seen it. Where none has, it returns -1, and the prior learns it as
-   * `learn` teaches it rather than as `write` codes it. `except` rules out
-   * a symbol other than `sym`; a corrupt input may name `sym` itself, which
-   * then rules out nothing.
+   * Learns `sym` as `write` would code it under `endable`, writing
+   * nothing, on either side, and returns what `write` would charge it
+   * through the contexts, in `COST_UNITS`: the escape decisions and the
+   * bucket of the context that has seen it. Where none has, it returns -1,
+   * and the prior learns it as `learn` teaches it rather than as `write`
+   * codes it; the end's cost, the stop's included, is returned either way.
+   * `except` rules out a symbol other than `sym`; a corrupt input may name
+   * `sym` itself, which then rules out nothing.
    */
   absorb(
     side: Encoder | Decoder,
     sym: number,
     row: number,
     history: readonly number[],
-    except?: number
+    except?: number,
+    endable = false
   ): number {
-    this.check(sym, row, history);
+    this.check(sym, row, history, endable);
     const state = this.message(side);
     const { exclusion } = state;
     const contexts = this.visit(state, history);
-    this.open(exclusion, except === sym ? undefined : except);
+    this.open(state, except === sym ? undefined : except, endable);
+    const ending = sym === this.end;
     let hit = -1;
     let enter = 1;
     let units = 0;
@@ -544,11 +690,17 @@ export class ContextModel {
       this.exclude(exclusion, context);
     }
     this.setTop(state, hit === 0);
-    if (hit < 0 || this.teachesPrior(hit)) {
+    if (hit < 0 && this.stopping(endable)) {
+      if (ending) {
+        units += this.stops.cost(side, row, true);
+      }
+      this.stops.learn(side, row, ending);
+    }
+    if (!ending && (hit < 0 || this.teachesPrior(hit))) {
       this.prior.learn(side, sym, row);
     }
     this.teach(state, contexts, sym, enter, hit);
-    return hit >= 0 ? units : -1;
+    return hit >= 0 || ending ? units : -1;
   }
 
   /** Whether the contexts on `side` are past the warm-up and price symbols. */
@@ -557,15 +709,18 @@ export class ContextModel {
   }
 
   /**
-   * Learns `sym` as if coded here, writing nothing: contexts update, the
-   * prior learns, the cells do not, and the last symbol counts as no hit.
+   * Learns `sym`, the end included, as if coded here, writing nothing:
+   * contexts update, the prior learns any other symbol, the cells do not,
+   * and the last symbol counts as no hit.
    */
   learn(side: Encoder | Decoder, sym: number, row: number, history: readonly number[]): void {
-    this.check(sym, row, history);
+    this.check(sym, row, history, true);
     const state = this.message(side);
     this.teach(state, this.visit(state, history), sym, 1, -1);
     this.setTop(state, false);
-    this.prior.learn(side, sym, row);
+    if (sym !== this.end) {
+      this.prior.learn(side, sym, row);
+    }
   }
 
   /**
@@ -578,23 +733,24 @@ export class ContextModel {
 
   /**
    * The cost, in `COST_UNITS`, the model on the encoder, as it stands,
-   * gives `sym` here under `except`: each context's escape
-   * decision and, on its hit, the symbol's bucket, or the prior's `cost`.
-   * Nothing learns, and a context not yet visited, which holds nothing, is
-   * left unbuilt.
+   * gives `sym`, never the end, here under `except` and `endable`: each
+   * context's escape decision and, on its hit, the symbol's bucket, or the
+   * stop and the prior's `cost`. Nothing learns, and a context not yet
+   * visited, which holds nothing, is left unbuilt.
    */
   price(
     enc: Encoder,
     sym: number,
     row: number,
     history: readonly number[],
-    except?: number
+    except?: number,
+    endable = false
   ): number {
     this.check(sym, row, history);
     let cost = 0;
     const state = this.message(enc);
     const { exclusion } = state;
-    this.open(exclusion, except);
+    this.open(state, except, endable);
     this.pricedTop = false;
     const found = this.found;
     const from = state.coded >= WARMUP ? this.lookup(state, history) : this.orders.length;
@@ -613,16 +769,42 @@ export class ContextModel {
       }
       this.exclude(exclusion, context);
     }
+    if (this.stopping(endable)) {
+      cost += this.stops.cost(enc, row, false);
+    }
     return cost + this.prior.cost(enc, sym, row, exclusion);
   }
 
-  /** Clears the exclusion, then rules out `except`, a symbol in `[0, size)`, when given. */
-  private open(exclusion: Exclusion, except: number | undefined): void {
+  /**
+   * Whether the stop is coded where every context escaped under `endable`:
+   * where the value may end and no escaped context ruled the end out.
+   */
+  private stopping(endable: boolean): boolean {
+    return endable && !this.ended;
+  }
+
+  /**
+   * Clears the exclusion, then rules out `except`, a symbol in `[0, size)`,
+   * when given, and the end where a value may not end here.
+   */
+  private open(state: Contexts, except: number | undefined, endable: boolean): void {
+    const { exclusion } = state;
     exclusion.clear();
     if (except !== undefined) {
       checkSymbol(except, this.size, this.who, 'excluded symbol');
       exclusion.add(except);
     }
+    this.ended = !endable;
+  }
+
+  /**
+   * How many of `context`'s symbols the exclusion may leave: all but the
+   * end where it is ruled out, the end being the last, as the largest.
+   */
+  private kept(context: Context): number {
+    const { syms } = context;
+    const n = syms.length;
+    return this.ended && n > 0 && syms[n - 1] === this.end ? n - 1 : n;
   }
 
   /**
@@ -663,7 +845,8 @@ export class ContextModel {
     let below = 0;
     let width = 0;
     let found = false;
-    for (let j = 0; j < syms.length; j++) {
+    const n = this.kept(context);
+    for (let j = 0; j < n; j++) {
       const s = syms[j];
       if (s === sym) {
         found = true;
@@ -694,14 +877,15 @@ export class ContextModel {
   private tally(context: Context, exclusion: Exclusion): Scan {
     const scan = this.scratch;
     const { syms, counts } = context;
+    const n = this.kept(context);
     if (exclusion.count === 0) {
-      scan.left = syms.length;
-      scan.sum = context.total;
+      scan.left = n;
+      scan.sum = n < syms.length ? context.total - counts[n] : context.total;
       return scan;
     }
     let left = 0;
     let sum = 0;
-    for (let j = 0; j < syms.length; j++) {
+    for (let j = 0; j < n; j++) {
       if (!exclusion.has(syms[j])) {
         left++;
         sum += counts[j];
@@ -777,7 +961,7 @@ export class ContextModel {
       const key = this.key(history, i, parent);
       let context = table.get(key);
       if (context === undefined) {
-        context = new Context(this.size, journal, table.size);
+        context = new Context(this.size + 1, journal, table.size);
         table.set(key, context);
         if (journal?.active === true) {
           journal.drop(table, key);
@@ -829,14 +1013,22 @@ export class ContextModel {
    * nor is it `except`, so at least that member stays in every table below.
    */
   private exclude(exclusion: Exclusion, context: Context): void {
-    for (const sym of context.syms) {
-      exclusion.add(sym);
+    const { syms } = context;
+    const n = syms.length;
+    // The end, the largest symbol, is ruled out apart: the prior never holds it.
+    const last = n > 0 && syms[n - 1] === this.end ? n - 1 : n;
+    for (let j = 0; j < last; j++) {
+      exclusion.add(syms[j]);
+    }
+    if (last < n) {
+      this.ended = true;
     }
   }
 
-  private check(sym: number, row: number, history: readonly number[]): void {
+  /** Refuses a row, symbol or history out of range: the end only `endable`. */
+  private check(sym: number, row: number, history: readonly number[], endable = false): void {
     this.checkRow(row);
-    checkSymbol(sym, this.size, this.who, 'symbol');
+    checkSymbol(sym, endable ? this.size + 1 : this.size, this.who, 'symbol');
     this.checkHistory(history);
   }
 

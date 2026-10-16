@@ -5,7 +5,7 @@
  * others share the states it would have taken and cost less.
  */
 
-import type { Encoder, Decoder, Bucket } from '../packer';
+import { CorruptInputError, type Encoder, type Decoder, type Bucket } from '../packer';
 import type { WeightTable } from './weights';
 
 /** The members an exclusion makes room for before it first grows. */
@@ -212,6 +212,11 @@ export function readExcluded(dec: Decoder, table: Table, exclusion: Exclusion | 
   excluded.subarray(0, count).sort();
   for (let i = 0; i < count; i++) {
     shed[i + 1] = shed[i] + table.freq(excluded[i]);
+  }
+  // A corrupt input can rule out every member that owns states, leaving
+  // nothing a valid message could have written.
+  if (table.total - shed[count] <= 0) {
+    throw new CorruptInputError('Input reads a symbol where every one is ruled out');
   }
   /** How many excluded members lie below `pos`, or at it too when `at`, `from` known to. */
   const below = (pos: number, at: boolean, from: number): number => {

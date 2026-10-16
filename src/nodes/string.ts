@@ -992,6 +992,22 @@ export class PString extends PNode<string> {
     return this._with(this._bounds, undefined, undefined, spelling);
   }
 
+  /**
+   * Spell no length: the end of the string is one more symbol after its
+   * characters, priced like them, so under `.adaptive()` a string that
+   * ends after a telling run, such as `.com` or a closing `"`, costs little
+   * for its end whatever its length. The bounds still hold: the end never
+   * comes below `.min()`, and comes unspelled at `.max()`. Under
+   * `.adaptive()` without it, a node spells its strings' ends while those
+   * have lately cost less than their lengths would. Not with `.digits()` or
+   * `.positional()`, which read the length, nor with a length `.cdf()` or
+   * `.weights()`.
+   */
+  terminated(): PString {
+    const spelling = withSequenceMethod(this._spelling, 'terminated', 'p.string');
+    return this._with(this._bounds, undefined, undefined, spelling);
+  }
+
   get _exact(): boolean {
     return true;
   }

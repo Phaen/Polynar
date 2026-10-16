@@ -247,6 +247,17 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
     return this._with(this._bounds, withSequenceMethod(this._spelling, 'repeats', 'p.binary'));
   }
 
+  /**
+   * Spell no length: the end of the buffer is one more symbol after its
+   * bytes, priced like them. The bounds still hold, and a typed array ends
+   * only after a whole element. Under `.adaptive()` without it, a node
+   * spells its buffers' ends while those have lately cost less than their
+   * lengths would. Not with a length `.cdf()` or `.weights()`.
+   */
+  terminated(): PBinary<A> {
+    return this._with(this._bounds, withSequenceMethod(this._spelling, 'terminated', 'p.binary'));
+  }
+
   /** This node with `bounds` and `spelling`, of the same element type. */
   private _with(bounds: SequenceBounds, spelling = this._spelling): PBinary<A> {
     return new PBinary(this._type, bounds, spelling);

@@ -335,7 +335,7 @@ describe('ContextModel', () => {
     // Only the order-2 escape and the prior, still static on its first
     // written value, write anything: 4 holds 1 of the 9 states 2 and 3 leave.
     expect(spy.mock.calls).toEqual([
-      [4, 2, 6],
+      [0, 2, 6],
       [8, 1, 9],
     ]);
     expect(spy).toHaveBeenCalledTimes(2);
@@ -443,7 +443,7 @@ describe('ContextModel', () => {
     // One symbol of count 1 left at index 1: cell 100, a hit at 4 of 6,
     // then the symbol, which holds every state left.
     expect(spy.mock.calls).toEqual([
-      [0, 4, 6],
+      [2, 4, 6],
       [0, 1, 1],
     ]);
     spy.mockRestore();
@@ -560,8 +560,12 @@ describe('ContextModel', () => {
     expect(() => model.write(enc, 5, 0, history)).toThrow(
       new RangeError('w symbol 5 is outside [0, 5)')
     );
+    // The end, 5, is a symbol only where a value may end.
     expect(() => model.learn(enc, -1, 0, history)).toThrow(
-      new RangeError('w symbol -1 is outside [0, 5)')
+      new RangeError('w symbol -1 is outside [0, 6)')
+    );
+    expect(() => model.write(enc, 6, 0, history, undefined, true)).toThrow(
+      new RangeError('w symbol 6 is outside [0, 6)')
     );
     expect(() => model.price(enc, 0.5, 0, history)).toThrow(
       new TypeError('w symbol 0.5 is not an integer')

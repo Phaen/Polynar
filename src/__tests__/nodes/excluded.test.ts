@@ -3,7 +3,7 @@
  * taken out, and the weighted symbols written and read under it.
  */
 
-import { Encoder, Decoder } from '../../packer';
+import { Encoder, Decoder, CorruptInputError } from '../../packer';
 import { AdaptiveTable, writeLive } from '../../nodes/adaptive';
 import {
   Exclusion,
@@ -231,5 +231,15 @@ describe('writeExcluded and readExcluded', () => {
     const exclusion = new Exclusion(3);
     exclusion.add(1);
     expect(() => writeExcluded(new Encoder(), table, exclusion, 1)).toThrow(RangeError);
+  });
+
+  it('refuse as corrupt to read where every member owning states is excluded', () => {
+    const table = new Fenwick([0, 4, 3]);
+    const exclusion = new Exclusion(3);
+    exclusion.add(1);
+    exclusion.add(2);
+    expect(() => readExcluded(new Decoder(empty()), table, exclusion)).toThrow(
+      new CorruptInputError('Input reads a symbol where every one is ruled out')
+    );
   });
 });

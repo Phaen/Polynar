@@ -98,6 +98,8 @@ export class ModeChoice<T> {
   private readonly exclusions = new Map<string, Exclusion>();
   /** The method the encoder last picked, which only orders its next tries. */
   private last = 0;
+  /** The method the latest value on either side was spelled by. */
+  picked = 0;
 
   constructor(
     readonly methods: readonly Method<T>[],
@@ -172,6 +174,7 @@ export class ModeChoice<T> {
     } else {
       this.methods[mode].write(enc, value);
     }
+    this.picked = mode;
     this.teach(enc, value, open, mode);
   }
 
@@ -188,6 +191,7 @@ export class ModeChoice<T> {
           : this.prior.read(dec, 0, this.exclusion(open));
     }
     const value = this.methods[mode].read(dec);
+    this.picked = mode;
     this.teach(dec, value, open, mode);
     return value;
   }
