@@ -629,6 +629,9 @@ class AnyRecord extends PNode<{ [key: string]: AnyValue }> {
   }
 }
 
+/** The options `p.any().adaptive()` takes: a window, as no node of it learns apart. */
+type AnyAdaptiveOptions = Pick<AdaptiveOptions, 'window'>;
+
 /** What every key's codec under `p.any().adaptive()` shares. */
 interface Learning {
   /** The options as declared, which every key's nodes adapt by. */
@@ -772,7 +775,7 @@ export class PAny extends PNode<AnyValue> {
   /** Under `.adaptive()`: the arrays and records coded in full, for recall. */
   readonly _trees?: Trees;
 
-  constructor(hints: readonly PNode<any>[] = [], adaptive?: AdaptiveOptions) {
+  constructor(hints: readonly PNode<any>[] = [], adaptive?: AnyAdaptiveOptions) {
     super();
     this._hints = [...hints];
     this._hints.forEach((hint, i) => {
@@ -815,7 +818,12 @@ export class PAny extends PNode<AnyValue> {
       tagRoot: new Lineage(),
       roots: new Map(OWN_TAGS.map((tag) => [tag, new Lineage()])),
       tiers: [...tiers, RARE_TIER],
-      key: new PRecall<string>(new PString().adaptive(withoutRecall(options)), same),
+      // A lineage of the key's own, so its tables learn apart from any
+      // declared string's.
+      key: new PRecall<string>(
+        new PString().adaptive(withLineage(withoutRecall(options), new Lineage())),
+        same
+      ),
       texts: new Recall<string>(true),
       shapes: new Recall<string[]>(true),
       hints: this._forms,
@@ -852,7 +860,7 @@ export class PAny extends PNode<AnyValue> {
    * out). Encoding and decoding take 5 to 40 times as long as without. Part
    * of the wire format.
    */
-  adaptive(options?: AdaptiveOptions): PAny {
+  adaptive(options?: AnyAdaptiveOptions): PAny {
     return new PAny(this._hints, options ?? {});
   }
 

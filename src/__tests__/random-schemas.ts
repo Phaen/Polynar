@@ -117,13 +117,20 @@ const randCdf = (shift: number): { fn: (v: number) => number; src: string } => {
 };
 
 /**
- * `.adaptive()` over `members` values with the default options or a window
+ * `.adaptive()` over `members` values with the default options, a window
  * of at least `members` that is often small enough for the counts to halve
- * within a message.
+ * within a message, or apart from its kin.
  */
 const randAdaptive = (members: number): Step => {
-  if (rand() < 0.5) {
+  const draw = rand();
+  if (draw < 0.4) {
     return { apply: (n) => n.adaptive(), src: '.adaptive()' };
+  }
+  if (draw < 0.6) {
+    return {
+      apply: (n) => n.adaptive({ separate: true }),
+      src: '.adaptive({ separate: true })',
+    };
   }
   const window = members + randInt(0, 64);
   return { apply: (n) => n.adaptive({ window }), src: `.adaptive({ window: ${window} })` };

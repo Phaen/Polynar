@@ -11,6 +11,7 @@ import {
   AdaptiveTable,
   BLEND_SHARE,
   DEFAULT_ADAPTIVE_WINDOW,
+  KIN,
   Lineage,
   LiveCounts,
   LADDER,
@@ -1044,7 +1045,9 @@ describe('Lineage', () => {
     const options = withLineage({ window: 5 }, lineage);
     expect(options.window).toBe(5);
     expect(lineageOf(options)).toBe(lineage);
-    expect(lineageOf({ window: 5 })).toBeUndefined();
+    expect(lineageOf(withLineage({ separate: true }, lineage))).toBe(lineage);
+    expect(lineageOf({ window: 5 })).toBe(KIN);
+    expect(lineageOf({ separate: true })).toBeUndefined();
     expect(lineageOf(undefined)).toBeUndefined();
   });
 });
@@ -1150,6 +1153,126 @@ describe('AdaptivePrior in a lineage', () => {
     const root = new Lineage();
     new AdaptivePrior([[2 ** 33, 1]], 2, undefined, 'w', root);
     expect(() => new AdaptivePrior([[2 ** 33, 1]], 2, undefined, 'w', new Lineage(root))).toThrow(
+      new RangeError(
+        'w adaptive prior 2 and window 1024 overflow with weights totalling 8830452761604'
+      )
+    );
+  });
+});
+
+describe('AdaptivePrior with its kin', () => {
+  const weights = [[5, 3, 2, 1, 1], ones(5)];
+  const kin = (who = 'w', rows: number[][] = weights, window?: number) =>
+    new AdaptivePrior(rows, rows[0].length, window, who, KIN);
+  const alone = () => new AdaptivePrior(weights, 5, undefined, 'w');
+  /** Member 4, the declared weights' least likely, nine times in ten. */
+  const unlikely = (seed: number, length: number) =>
+    sequence(seed, length, 4).map((value, i) => (i % 10 === 9 ? value : 4));
+
+  /** A message of `first` writing `before`, then `second` writing `after`. */
+  const message = (
+    first: AdaptivePrior,
+    before: readonly number[],
+    second: AdaptivePrior,
+    after: readonly number[]
+  ) => {
+    const enc = new Encoder();
+    before.forEach((value) => first.write(enc, value));
+    after.forEach((value) => second.write(enc, value));
+    return enc.output();
+  };
+
+  it('codes as it would without kin while no other of its kin learned', () => {
+    const script = sequence(5, 200, 5, 0.6);
+    expect(encodeAll(kin(), script)).toEqual(encodeAll(alone(), script));
+  });
+
+  it('takes up what its kin learned in place of its fastest rung', () => {
+    const wide = [ones(64)];
+    const [a, b] = [0, 1].map(() => new AdaptivePrior(wide, 64, undefined, 'w', KIN));
+    const pattern = [7, 19, 40, 7, 7, 19, 40, 7];
+    const before = Array.from({ length: 300 }, (_, i) => pattern[i % pattern.length]);
+    const bytes = message(a, before, b, pattern);
+    const separate = new AdaptivePrior(wide, 64, undefined, 'w');
+    expect(bytes.length).toBeLessThan(message(a, before, separate, pattern).length);
+    const dec = new Decoder(bytes);
+    expect(before.map(() => a.read(dec))).toEqual(before);
+    expect(pattern.map(() => b.read(dec))).toEqual(pattern);
+    dec.finalize();
+  });
+
+  it('learns with the priors of the same who, members, weights and window only', () => {
+    const before = unlikely(8, 300);
+    const after = unlikely(9, 12);
+    for (const [other, separate] of [
+      [kin('v'), alone()],
+      [
+        kin('w', [[5, 3, 2, 1, 2], ones(5)]),
+        new AdaptivePrior([[5, 3, 2, 1, 2], ones(5)], 5, undefined, 'w'),
+      ],
+      [kin('w', [weights[0]]), new AdaptivePrior([weights[0]], 5, undefined, 'w')],
+      [kin('w', weights, 64), new AdaptivePrior(weights, 5, 64, 'w')],
+    ]) {
+      expect(message(kin(), before, other, after)).toEqual(message(kin(), before, separate, after));
+    }
+  });
+
+  it('decodes what it encodes, rows, exclusions and values coded elsewhere included', () => {
+    const priors = [kin(), kin(), kin()];
+    const some = new Exclusion(5);
+    some.add(0);
+    const lone = new Exclusion(5);
+    [0, 1, 2, 3].forEach((pos) => lone.add(pos));
+    // The first prior teaches its kin; the second learns a value coded
+    // elsewhere before its selector and then follows them; the third
+    // goes its own way.
+    type Step = [
+      prior: number,
+      value: number,
+      row: number,
+      excluded?: Exclusion,
+      elsewhere?: boolean,
+    ];
+    const steps: Step[] = [];
+    unlikely(10, 200).forEach((value, i) =>
+      steps.push([0, value, i % 3 === 0 ? 1 : 0, i % 7 === 0 && value !== 0 ? some : undefined])
+    );
+    steps.push([1, 4, 0], [1, 4, 0, undefined, true], [1, 4, 0, lone]);
+    unlikely(11, 40).forEach((value, i) => steps.push([1, value, 0, undefined, i % 5 === 0]));
+    sequence(12, 60, 5).forEach((value) => steps.push([2, value, 1]));
+    const enc = new Encoder();
+    for (const [p, value, row, excluded, elsewhere] of steps) {
+      if (elsewhere === true) {
+        priors[p].learn(enc, value, row);
+      } else {
+        priors[p].write(enc, value, row, excluded);
+      }
+    }
+    const dec = new Decoder(enc.output());
+    for (const [p, value, row, excluded, elsewhere] of steps) {
+      if (elsewhere === true) {
+        priors[p].learn(dec, value, row);
+      } else {
+        expect(priors[p].read(dec, row, excluded)).toBe(value);
+      }
+    }
+    dec.finalize();
+  });
+
+  it('takes back what a rolled-back write taught its kin', () => {
+    const [a, b] = [kin(), kin()];
+    const after = unlikely(14, 12);
+    const enc = new Encoder();
+    const mark = enc.mark();
+    unlikely(13, 100).forEach((value) => a.write(enc, value));
+    after.forEach((value) => b.write(enc, value));
+    enc.rollback(mark);
+    after.forEach((value) => b.write(enc, value));
+    expect(enc.output()).toEqual(encodeAll(alone(), after));
+  });
+
+  it('refuses a kin whose gathered table, counted with its own, overflows', () => {
+    expect(() => new AdaptivePrior([[2 ** 33, 1]], 2, undefined, 'w', KIN)).toThrow(
       new RangeError(
         'w adaptive prior 2 and window 1024 overflow with weights totalling 8830452761604'
       )

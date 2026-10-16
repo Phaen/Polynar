@@ -274,12 +274,12 @@ const _sharedEncode: Uint8Array = Digit.encode(5, shared);
 Digit.decode(digitBytes, shared);
 Digit.decode(digitText, shared);
 
-// Only strings and binaries learn apart on request.
+// Declared nodes learn apart from their kin on request.
 p.string().adaptive({ separate: true });
 p.binary(Uint16Array).adaptive({ separate: true, window: 64 });
-// @ts-expect-error — an int's prior is its own already
 p.int().adaptive({ separate: true });
-// @ts-expect-error — nor does p.any take it
+p.optional(p.bool()).adaptive({ separate: true });
+// @ts-expect-error — p.any's keys learn from each other by design
 p.any().adaptive({ separate: true });
 
 // An object learns its recall alone, so it keeps its shape and takes no options.

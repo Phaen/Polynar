@@ -321,3 +321,61 @@ describe('p.object().follows()', () => {
     expect(trip(Trio.follows({ b: 'a' }), { a: 1, b: 1, c: 1 })).toEqual({ a: 1, b: 1, c: 1 });
   });
 });
+
+describe('optional fields of an adaptive object', () => {
+  type Thread = { id: number; count?: number; latest?: string; locked?: boolean; note?: string };
+  const thread = (optional: <T>(node: PNode<T>) => PNode<T | undefined>) =>
+    p.object({
+      id: p.int().min(0).adaptive(),
+      count: optional(p.int().min(0).adaptive()),
+      latest: optional(p.string().adaptive()),
+      locked: optional(p.bool().adaptive()),
+      note: optional(p.string()),
+    });
+  const learned = <T>(node: PNode<T>) => p.optional(node).adaptive();
+  const threads = (seed: number, n: number, together: boolean): Thread[] => {
+    const random = mulberry32(seed);
+    return Array.from({ length: n }, (_, id) => {
+      const replied = random() < 0.5;
+      const there = () => (together ? replied : random() < 0.5);
+      const item: Thread = { id };
+      if (there()) item.count = Math.floor(random() * 9);
+      if (there()) item.latest = `${1000 + Math.floor(random() * 50)}`;
+      if (there()) item.locked = random() < 0.1;
+      if (random() < 0.3) item.note = 'see above';
+      return item;
+    });
+  };
+  const node = p.array(thread(learned).adaptive()).adaptive() as unknown as PNode<Thread[]>;
+
+  it('learns fields that come and go together', () => {
+    const together = size(node, threads(1, 200, true));
+    const apart = size(node, threads(1, 200, false));
+    expect(together).toBeLessThan(apart - 25);
+  });
+
+  it('decodes every way the fields are there, under declared weights and inside a recall', () => {
+    const weighted = <T>(inner: PNode<T>) => p.optional(inner).weights([9, 1]).adaptive();
+    const recalled = thread(weighted).adaptive().recall();
+    const values = threads(2, 120, false);
+    expect(size(p.array(recalled).adaptive(), [...values, ...values.slice(0, 20)])).toBeGreaterThan(
+      0
+    );
+    expect(size(thread(learned).adaptive(), { id: 0 })).toBeGreaterThan(0);
+  });
+
+  it('leaves the flags to fields without .adaptive() and to an object without it', () => {
+    const fixed = <T>(inner: PNode<T>) => p.optional(inner);
+    const values = threads(3, 60, true);
+    expect(size(p.array(thread(fixed).adaptive()).adaptive(), values)).toBeGreaterThan(0);
+    expect(size(p.array(thread(learned)).adaptive(), values)).toBeGreaterThan(0);
+  });
+
+  it('refuses a missing required field among them', () => {
+    expect(() =>
+      thread(learned)
+        .adaptive()
+        .encode({ count: 1 } as Thread)
+    ).toThrow(new TypeError('id: Required field is missing'));
+  });
+});

@@ -3,7 +3,7 @@ import { PNode } from './base';
 import { typedArrayKind, type Kind, type TypedArray } from './guards';
 import { checkUnset } from './lattice';
 import type { Cdf } from './weights';
-import type { SequenceAdaptiveOptions } from './adaptive';
+import type { AdaptiveOptions } from './adaptive';
 import { withMethod } from './methods';
 import {
   Sequence,
@@ -195,8 +195,8 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * again; and the element count learns, on the magnitude scale from the
    * min when there is no max. The bytes
    * learn together with those of every other adaptive binary of the message
-   * with the same window, whatever its element type, unless `separate`. The
-   * declared
+   * with the same window, whatever its element type, and the count's prior
+   * may start from what its kin learned, unless `separate`. The declared
    * weights, or even ones when none are, are where the count's prior
    * starts. `window` is how many observations a prior's counts hold before
    * they halve, so the newest weigh most (1024 when left out, and raised to
@@ -207,7 +207,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * declared, an array the node already wrote may be recalled as under it,
    * at learned odds, whenever that costs less than spelling it.
    */
-  adaptive(options?: SequenceAdaptiveOptions): PBinary<A> {
+  adaptive(options?: AdaptiveOptions): PBinary<A> {
     return this._with({ ...this._bounds, adaptive: options ?? {} });
   }
 

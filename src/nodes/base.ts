@@ -153,6 +153,19 @@ export class POptional<TOut> extends PNode<TOut | undefined> {
   }
 
   /**
+   * Under `.adaptive()`, the prior of the presence flag in `contexts`
+   * contexts: the declared weights in each, learning as declared.
+   */
+  _presence(contexts: number): MemberPrior | undefined {
+    const adaptive = this._prior?.adaptive;
+    if (adaptive === undefined) {
+      return undefined;
+    }
+    const weights = this._prior?.weights ?? [1, 1];
+    return { rows: new Array<readonly number[]>(contexts).fill(weights), adaptive };
+  }
+
+  /**
    * Declare how likely the value is to be there, as `[present, absent]`
    * weights: a 99%-present value costs ~0.015 bits instead of a full bit.
    * A prior, not a constraint, and part of the wire format.

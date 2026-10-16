@@ -1,11 +1,12 @@
 import { Encoder, Decoder, ReplayDecoder, SlotCache } from '../packer';
 import type { InferShape } from './infer';
-import { PNode } from './base';
+import { PNode, POptional } from './base';
 import { atPath, describe } from './path';
 import type { Kind } from './guards';
 import { recallOf, withMethod, type Spelling } from './methods';
 import { copy, identity, unmeasured, type Recall } from './recall';
 import { Companion, Follow, Scope } from './companion';
+import { members, type Members } from './members';
 
 /**
  * The fields of a message's objects that companions are predicted from:
@@ -34,6 +35,28 @@ interface Message {
   readonly companions: readonly (Companion | undefined)[];
   /** For a field that `.follows()` another. */
   readonly follows: readonly (Follow | undefined)[];
+}
+
+/**
+ * How many of the optional fields before it an adaptive object's presence
+ * flag is coded in the context of, and the contexts that makes.
+ */
+const PRESENCE_DEPTH = 2;
+const PRESENCE_CONTEXTS = 2 ** PRESENCE_DEPTH;
+
+/**
+ * The context of the presence flag of an adaptive object's optional field
+ * `j`, by which of the `PRESENCE_DEPTH` optional fields before it are
+ * there, `present` holding at least those: a bit each, set where absent,
+ * the nearest lowest. A field with fewer before it counts the missing ones
+ * as there.
+ */
+function presenceContext(present: readonly boolean[], j: number): number {
+  let context = 0;
+  for (let k = PRESENCE_DEPTH; k >= 1; k--) {
+    context = context * 2 + (j >= k && !present[j - k] ? 1 : 0);
+  }
+  return context;
 }
 
 /** `value` as companions learn it: 0 for -0, which ints and decimals decode as 0. */
@@ -77,6 +100,12 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
   private readonly _recall?: Recall<InferShape<S>>;
   /** Set by `.follows()`: per field, the index of the field it follows. */
   private readonly _leaders?: readonly (number | undefined)[];
+  /**
+   * Under `.adaptive()`, with a `p.optional().adaptive()` field: per field,
+   * the presence flag the object codes for it, for each such field, in
+   * contexts by `presenceContext`.
+   */
+  private readonly _flags?: readonly (Members | undefined)[];
   private readonly _fields = new SlotCache<Fields, Encoder | Decoder>(FIELDS, () => ({
     scope: new Scope(),
     field: 0,
@@ -117,6 +146,16 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     this._adaptive = adaptive;
     this._recall = recallOf(spelling, adaptive ? {} : undefined, copy);
     this._leaders = leaders;
+    if (adaptive) {
+      const flags = this._keys.map((key) => {
+        const field = this._shape[key];
+        const prior = field instanceof POptional ? field._presence(PRESENCE_CONTEXTS) : undefined;
+        return prior === undefined ? undefined : members(2, prior, 'p.optional');
+      });
+      if (flags.some((flag) => flag !== undefined)) {
+        this._flags = flags;
+      }
+    }
   }
 
   /**
@@ -129,8 +168,11 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
    * an adaptive object it sits in, or of the last item before it predicts
    * it, as under `.follows()`, and once that has paid off codes a learned
    * flag ahead of its value. A field that `.follows()` keeps the field it
-   * names, at learned odds. The fields learn by their own `.adaptive()`.
-   * Part of the wire format.
+   * names, at learned odds. Whether each `p.optional().adaptive()` field
+   * is there is learned apart for each way the two such fields before it
+   * are there or not, so fields that come and go together soon cost next
+   * to nothing. The fields learn by their own `.adaptive()`. Part of the
+   * wire format.
    */
   adaptive(): PObject<S> {
     return new PObject<S>(this._shape, this._spelling, true, this._leaders);
@@ -272,7 +314,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
       const raw = (value as Record<string, unknown>)[keys[i]];
       if (companion !== undefined && scoped(raw)) {
         // The decoder's copy is what the field decoded.
-        const v = side instanceof Encoder ? canonical(this._shape[keys[i]], raw) : raw;
+        const v = side instanceof Encoder ? canonical(this._node(i, message), raw) : raw;
         scope.push(companion, learned(v), side.journal);
       }
     }
@@ -285,6 +327,9 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     const field = fields?.field;
     let i = 0;
     try {
+      if (message !== undefined && this._flags !== undefined) {
+        this._writePresence(enc, value, this._flags);
+      }
       for (; i < keys.length; i++) {
         if (fields !== undefined) {
           fields.field = ++fields.fields;
@@ -300,11 +345,56 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     }
   }
 
+  /** Writes whether each field with a flag in `flags` is in `value`. */
+  private _writePresence(
+    enc: Encoder,
+    value: InferShape<S>,
+    flags: readonly (Members | undefined)[]
+  ): void {
+    const record = value as Record<string, unknown>;
+    const present: boolean[] = [];
+    flags.forEach((flag, i) => {
+      if (flag !== undefined) {
+        const there = record[this._keys[i]] !== undefined;
+        flag.write(enc, there ? 0 : 1, presenceContext(present, present.length));
+        present.push(there);
+      }
+    });
+  }
+
+  /** Reads what `_writePresence` wrote: per field, whether it is absent. */
+  private _readPresence(dec: Decoder, flags: readonly (Members | undefined)[]): boolean[] {
+    const present: boolean[] = [];
+    return flags.map((flag) => {
+      if (flag === undefined) {
+        return false;
+      }
+      const there = flag.read(dec, presenceContext(present, present.length)) === 0;
+      present.push(there);
+      return !there;
+    });
+  }
+
+  /**
+   * The node field `i` is spelled by under `message`: an optional one
+   * whose presence the object coded spells only its value.
+   */
+  private _node(i: number, message: Message | undefined): PNode<any> {
+    const node = this._shape[this._keys[i]];
+    return message !== undefined && this._flags?.[i] !== undefined
+      ? (node as POptional<unknown>).inner
+      : node;
+  }
+
   /** Writes field `i`. */
   private _writeField(enc: Encoder, value: InferShape<S>, i: number, message?: Message): void {
     const record = value as Record<string, unknown>;
-    const field = this._shape[this._keys[i]];
+    const field = this._node(i, message);
     const v = record[this._keys[i]];
+    if (v === undefined && field !== this._shape[this._keys[i]]) {
+      // The object coded the field's absence.
+      return;
+    }
     // A field that takes `undefined` (an optional, or a union or `any` that
     // includes it) writes it like any other value, so an absent key and an
     // `undefined` value encode the same way.
@@ -327,7 +417,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     const learnedValue = learned(canon);
     if (follow !== undefined) {
       const at = this._leaders?.[i] as number;
-      const leader = learned(canonical(this._shape[this._keys[at]], record[this._keys[at]]));
+      const leader = learned(canonical(this._node(at, message), record[this._keys[at]]));
       const turn = follow.write(enc, leader, canon);
       if (!turn.hit) {
         field._write(enc, v);
@@ -354,11 +444,18 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     const keys = this._keys;
     const fields = this._adaptive && message !== undefined ? this._fields.get(dec) : undefined;
     const field = fields?.field;
+    const absent =
+      message === undefined || this._flags === undefined
+        ? undefined
+        : this._readPresence(dec, this._flags);
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i];
       const node = this._shape[key];
       if (fields !== undefined) {
         fields.field = ++fields.fields;
+      }
+      if (absent?.[i] === true) {
+        continue;
       }
       const v = message === undefined ? node._read(dec) : this._readField(dec, value, i, message);
       if (v === undefined) {
@@ -391,7 +488,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends PNode<InferSh
     i: number,
     message: Message
   ): unknown {
-    const node = this._shape[this._keys[i]];
+    const node = this._node(i, message);
     const companion = message.companions[i];
     const follow = message.follows[i];
     if (follow !== undefined) {
