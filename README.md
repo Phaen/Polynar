@@ -36,7 +36,7 @@ The first table is self-describing: keys and types travel with the data. Polynar
 | -------------- | -----------: | -----------: | -----------: | -----------: | ---------------: |
 | User profile   |  62.8 (64.3) |  44.6 (48.4) |  53.7 (38.7) |  49.5 (35.7) |  40.7 (**29.5**) |
 | GPS position   |  32.0 (36.0) |  27.0 (31.0) |  26.8 (20.0) |  24.7 (18.5) |  20.4 (**15.3**) |
-| Chat message   |  95.5 (89.3) |  69.1 (71.1) |  79.2 (58.3) |  72.8 (53.7) |  59.9 (**44.2**) |
+| Chat message   |  95.5 (89.3) |  69.1 (71.1) |  79.2 (58.0) |  72.8 (53.4) |  59.9 (**44.0**) |
 | Sensor reading |  53.8 (55.9) |  39.9 (43.7) |  42.9 (32.1) |  39.5 (29.4) |  32.6 (**24.3**) |
 | Shopping cart  | 124.4 (67.0) |  85.1 (61.9) | 100.6 (38.0) |  92.6 (35.0) |  76.1 (**28.8**) |
 | Status feed    | 521.8 (63.4) | 323.8 (60.4) | 384.9 (24.5) | 354.2 (22.6) | 290.8 (**18.6**) |
@@ -52,7 +52,7 @@ In the second table both sides share a schema and only the values are written. P
 | Sensor reading |  10.6 (14.6) |   7.2 (11.2) |   5.9 (5.9) |   5.3 (5.3) |   **4.6** (4.6) |
 | Shopping cart  |  37.2 (40.8) |  20.8 (24.8) | 18.5 (15.8) | 17.0 (14.6) | 14.1 (**12.1**) |
 | Status feed    | 102.0 (27.8) | 103.0 (28.1) |  24.0 (8.5) |  22.1 (7.9) |  18.3 (**6.6**) |
-| Lorem ipsum    |   1372 (629) |   1371 (632) |   968 (754) |   891 (693) |   732 (**570**) |
+| Lorem ipsum    |   1372 (629) |   1371 (632) |   968 (754) |   891 (693) |   732 (**569**) |
 
 Polynar's binary output is smaller than every binary format's on every row, plain or compressed, and its url-safe text is smaller than JSON on every row and rivals the binary formats.
 
@@ -370,7 +370,7 @@ Hints are nodes some values are expected to fit: `p.any([p.string().charset(Char
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.adaptive(options?: { window?: number })` | Builds a schema as the message goes: each key name gets its own type tags and adaptive int, float, string, array, record, map and set nodes the first time it appears, starting from what every key has learned so far, and an array's items sit under its key. Ints, floats and strings each pick their plain spelling or the difference from the key's previous one, strings also their digit fields or positions, and strings, key lists and whole arrays and records that recur are recalled, from the key's own first, then from the whole message. A value that follows an earlier key in its record or around it, like a session id that comes with the same user id each time, a count repeated under a second name, or a URL that is the key's previous one with the earlier key's new value in place of its old one, costs a learned flag once the key has seen that pay off. A number or a string of digits that sits close to an earlier key's, like a time sent just after the time it happened, is written as its difference from that one wherever that costs less, behind the same kind of flag. The characters of new strings and keys learn across the message, as English prose that the message takes over. Hints are used in their adaptive form where they have one, and a hint that takes only strings recalls them; a hinted string leaves the shared string learning. Encoding and decoding take 5–40× as long. See [Priors that learn](#priors-that-learn-adaptive). |
 
-Under `.adaptive()` the status feed's hundred strings from a set of three average 23 bytes instead of 292, an array of same-shaped objects pays for its keys once, and lorem costs less than under `.prose()`. Thirteen real JSON documents (GitHub and npm API responses, GeoJSON, a Slack export and more) take 91.8 kB, where JSON with brotli takes 128.9 kB.
+Under `.adaptive()` the status feed's hundred strings from a set of three average 23 bytes instead of 292, an array of same-shaped objects pays for its keys once, and lorem costs less than under `.prose()`. Thirteen real JSON documents (GitHub and npm API responses, GeoJSON, a Slack export and more) take 91.7 kB, where JSON with brotli takes 128.9 kB.
 
 ### Priors: `.weights()`
 

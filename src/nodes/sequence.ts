@@ -976,7 +976,7 @@ class Engine<T> implements Body {
   /**
    * Whether a literal on `side` after `prev`, -1 at a value's start, opens
    * a word: where the engine keeps words, after anything but a letter, once
-   * the contexts price symbols.
+   * the contexts' warm-up is over.
    */
   private opens(side: Encoder | Decoder, model: Literals, prev: number): boolean {
     return (
@@ -1877,6 +1877,12 @@ const FIELD_SPELLINGS: readonly MethodName[] = ['digits', 'positional'];
 /** How much of the lead each value keeps, so the choice of the end follows the node's latest values. */
 const KEEP = 15 / 16;
 
+/**
+ * What a node's first value weighs in the lead: its length is new whatever
+ * the node's lengths are like, so it only breaks the tie.
+ */
+const FIRST_WEIGHT = 1 / 16;
+
 /** One message's evidence for spelling a node's ends on one side. */
 interface Evidence {
   /** How often each length met, by its distance from the floor, and how many values. */
@@ -1911,8 +1917,9 @@ export class EndChoice {
    * Counts a value on `side` `count` past the length's floor whose end
    * cost `cost`, and moves the lead by that less what its length would
    * have cost: its share of the node's values, or an escape to a new length
-   * on the gamma scale where the node never had it. A value whose end the
-   * body neither coded nor priced, no `cost`, leaves the lead as it was.
+   * on the gamma scale where the node never had it, the node's first
+   * value at `FIRST_WEIGHT`. A value whose end the body neither coded nor
+   * priced, no `cost`, leaves the lead as it was.
    */
   settle(side: Encoder | Decoder, count: number, cost: number | undefined): void {
     const state = this.evidence(side);
@@ -1937,7 +1944,7 @@ export class EndChoice {
     lengths.set(count, (had ?? 0) + 1);
     state.values = values + 1;
     if (cost !== undefined) {
-      state.lead = (lead + cost - length) * KEEP;
+      state.lead = (lead + (cost - length) * (values === 0 ? FIRST_WEIGHT : 1)) * KEEP;
     }
   }
 }

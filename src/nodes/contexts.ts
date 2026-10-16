@@ -9,6 +9,13 @@
  * message teaches them, so both sides build the same ones from the symbols
  * coded so far.
  *
+ * The contexts price nothing through the warm-up, and after it only once
+ * they have earned it: until then a shadow prices each symbol through
+ * them as it would be coded, on escape cells of its own, against order 0,
+ * the symbols' counts so far. Both sides keep the shadow alike from the
+ * symbols, so no symbol says when the contexts turn on; on random-looking
+ * text they may never do.
+ *
  * Whether a context escapes is learned apart from its symbols: contexts
  * alike in their order, how many symbols they have left after exclusion
  * and how often those recurred, and in whether the symbol before was a hit
@@ -37,7 +44,9 @@
  */
 
 import {
+  COST_UNITS,
   costUnits,
+  log2Units,
   type Encoder,
   type Decoder,
   type Journal,
@@ -53,14 +62,40 @@ import { ProviderRef, poolKey, type Pool, type ProviderKind } from './providers'
 export const MAX_ORDER = 4;
 
 /**
- * The symbols a node codes in a message before its contexts price any: a
- * context has nothing to predict with until the message has taught it, and
- * a young one charges an escape for every symbol it guesses wrong, which on
- * a short message costs more than the few it guesses right. The contexts
- * learn from the first symbol on, so by the time they price they have seen
- * the whole message so far.
+ * The symbols a node codes in a message before its contexts may price any:
+ * a context has nothing to predict with until the message has taught it,
+ * and a young one charges an escape for every symbol it guesses wrong,
+ * which on a short message costs more than the few it guesses right. The
+ * contexts learn from the first symbol on, so by the time they price they
+ * have seen the whole message so far.
  */
 export const WARMUP = 64;
+
+/**
+ * The symbols a node codes in a message before their shadow counts as
+ * evidence: the first few find the contexts all but empty.
+ */
+const EVIDENCE_FROM = 16;
+
+/**
+ * How much of the contexts' lead over order 0 each symbol keeps, so the
+ * lead follows the message's latest symbols.
+ */
+const LEAD_KEEP = 127 / 128;
+
+/**
+ * How far behind order 0 the contexts may lag, in `COST_UNITS`, and still
+ * turn on: their shadow prices them young, below what they gain once
+ * pricing teaches them.
+ */
+const LEAD_SLACK = 4 * COST_UNITS;
+
+/**
+ * The escape count order 0 is priced with past its distinct symbols: a
+ * learned prior over a wide alphabet charges a symbol it saw more than its
+ * share of the symbols so far.
+ */
+const ZERO_ESCAPE = 16;
 
 /** The count sum past which a context halves its counts. */
 export const CONTEXT_LIMIT = 256;
@@ -275,10 +310,24 @@ export class Context implements Table, Undoable {
 interface Contexts {
   readonly tables: readonly KeyMap<Context>[];
   /** Each cell's `[hit, escape]` counts. */
-  readonly cells: ([number, number] | undefined)[];
+  cells: ([number, number] | undefined)[];
   readonly exclusion: Exclusion;
   /** The symbols coded or learned so far. */
   coded: number;
+  /** Whether the contexts price symbols. */
+  on: boolean;
+  /**
+   * While they are off, what the contexts would have charged the symbols
+   * learned so far less what order 0 would have, in `COST_UNITS`, each
+   * symbol weighing `LEAD_KEEP` times the one after it.
+   */
+  lead: number;
+  /** The escape cells of the contexts' shadow while they are off, which they take up where they turn on late. */
+  readonly shadows: ([number, number] | undefined)[];
+  /** Order 0 while the contexts are off: how often each symbol was learned, all of them, and the distinct ones. */
+  readonly zero: Map<number, number>;
+  total: number;
+  distinct: number;
   /** Whether the last symbol coded was a hit in the highest-order context. */
   top: boolean;
   /** The encoder's journal, which every change to its contexts records its undo in; none on a decoder. */
@@ -452,6 +501,12 @@ const CONTEXTS: ProviderKind<ContextsConfig, Contexts> = {
     cells: new Array<[number, number] | undefined>(CELL_KEYS),
     exclusion: new Exclusion(size),
     coded: 0,
+    on: false,
+    lead: 0,
+    shadows: new Array<[number, number] | undefined>(CELL_KEYS),
+    zero: new Map<number, number>(),
+    total: 0,
+    distinct: 0,
     top: false,
     journal: side.journal,
   }),
@@ -736,7 +791,7 @@ export class ContextModel {
     return hit >= 0 || ending ? units : -1;
   }
 
-  /** Whether the contexts on `side` are past the warm-up and price symbols. */
+  /** Whether the contexts on `side` are past the warm-up, whether or not they price symbols. */
   warm(side: Encoder | Decoder): boolean {
     return this.message(side).coded >= WARMUP;
   }
@@ -786,7 +841,7 @@ export class ContextModel {
     this.open(state, except, endable);
     this.pricedTop = false;
     const found = this.found;
-    const from = state.coded >= WARMUP ? this.lookup(state, history) : this.orders.length;
+    const from = state.on ? this.lookup(state, history) : this.orders.length;
     for (let i = from; i < this.orders.length; i++) {
       const context = found[i];
       const scan = this.scan(context, exclusion, sym);
@@ -845,13 +900,17 @@ export class ContextModel {
    * the exclusion: undefined when it has no symbols left, else the cell its
    * symbols left and their counts key, built at `CELL_START` on first use.
    */
-  private cell(state: Contexts, index: number, scan: Scan): [number, number] | undefined {
+  private cell(
+    state: Contexts,
+    index: number,
+    scan: Scan,
+    cells = state.cells
+  ): [number, number] | undefined {
     const { left, sum } = scan;
     if (left === 0) {
       return undefined;
     }
     const key = cellKey(index, left, sum, state.top);
-    const { cells } = state;
     let cell = cells[key];
     if (cell === undefined) {
       cell = [CELL_START[0], CELL_START[1]];
@@ -934,9 +993,9 @@ export class ContextModel {
     return this.contexts.get(side);
   }
 
-  /** How many of the contexts, highest order first, price the next symbol: none until the warm-up is over. */
+  /** How many of the contexts, highest order first, price the next symbol: none while they are off. */
   private pricing(state: Contexts): number {
-    return state.coded >= WARMUP ? this.orders.length : 0;
+    return state.on ? this.orders.length : 0;
   }
 
   /**
@@ -953,6 +1012,9 @@ export class ContextModel {
     enter: number,
     hit: number
   ): void {
+    if (!state.on) {
+      this.shadow(state, contexts, sym);
+    }
     const end = hit < 0 ? contexts.length : Math.min(hit + 2, contexts.length);
     for (let i = 0; i < end; i++) {
       contexts[i].update(sym, enter, hit >= 0 && i > hit ? 1 : 2);
@@ -960,6 +1022,85 @@ export class ContextModel {
     state.coded++;
     if (state.journal?.active === true) {
       state.journal.set(state, 'coded', state.coded - 1);
+    }
+  }
+
+  /**
+   * While the contexts are off, prices `sym`, any but the end, through
+   * them before they learn it, as they would code it with nothing ruled
+   * out, under the shadow's cells, which learn it, and moves the lead by
+   * that less what order 0 charges it; then order 0 learns it. Past the
+   * warm-up, the contexts turn on once the lead is under `LEAD_SLACK`,
+   * taking up the shadow's cells unless the warm-up just ended.
+   */
+  private shadow(state: Contexts, contexts: readonly Context[], sym: number): void {
+    const { zero, journal } = state;
+    const had = zero.get(sym) ?? 0;
+    if (sym !== this.end && state.coded >= EVIDENCE_FROM) {
+      const { exclusion } = state;
+      exclusion.clear();
+      this.ended = false;
+      let units = 0;
+      for (let i = 0; i < contexts.length; i++) {
+        const scan = this.scan(contexts[i], exclusion, sym);
+        const cell = this.cell(state, i, scan, state.shadows);
+        if (cell === undefined) {
+          continue;
+        }
+        const [hits, escapes] = cell;
+        learnCell(cell, !scan.found, journal);
+        if (scan.found) {
+          // Whatever a context saw, order 0 learned too.
+          const zeroUnits = log2Units(state.total + state.distinct + ZERO_ESCAPE) - log2Units(had);
+          units += costUnits(hits, hits + escapes) + costUnits(scan.width, scan.sum) - zeroUnits;
+          break;
+        }
+        units += costUnits(escapes, hits + escapes);
+        this.exclude(exclusion, contexts[i]);
+      }
+      if (journal?.active === true) {
+        journal.set(state, 'lead', state.lead);
+      }
+      state.lead = state.lead * LEAD_KEEP + units;
+      if (state.coded >= WARMUP - 1 && state.lead < LEAD_SLACK) {
+        this.turnOn(state);
+      }
+    }
+    if (journal?.active === true) {
+      journal.call(() => {
+        if (had === 0) {
+          zero.delete(sym);
+        } else {
+          zero.set(sym, had);
+        }
+      });
+      journal.set(state, 'total', state.total);
+      journal.set(state, 'distinct', state.distinct);
+    }
+    zero.set(sym, had + 1);
+    state.total++;
+    if (had === 0) {
+      state.distinct++;
+    }
+  }
+
+  /**
+   * Turns the contexts on: with fresh cells where the warm-up just ended,
+   * else with the shadow's.
+   */
+  private turnOn(state: Contexts): void {
+    const { journal, cells } = state;
+    if (journal?.active === true) {
+      journal.flag(state, 'on', false);
+    }
+    state.on = true;
+    if (state.coded >= WARMUP) {
+      if (journal?.active === true) {
+        journal.call(() => {
+          state.cells = cells;
+        });
+      }
+      state.cells = state.shadows;
     }
   }
 
