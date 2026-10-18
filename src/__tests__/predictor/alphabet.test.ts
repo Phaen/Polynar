@@ -1,5 +1,10 @@
 import { Ids, casePartnerCp, isLetterOrNumberCp } from '../../predictor/alphabet';
-import { CASE_PAIRS, CASE_PAIRS_BY_UPPER, LN_RANGES } from '../../predictor/unicode-tables';
+import {
+  CASE_PAIRS,
+  CASE_PAIRS_BY_UPPER,
+  LN_RANGES,
+  UNICODE_VERSION,
+} from '../../predictor/unicode-tables';
 import { BYTE_BASE, CP_BASE, DIGIT, END, STRUCT } from '../../predictor/types';
 import type { LoadedPrior } from '../../predictor/types';
 
@@ -232,6 +237,11 @@ describe('classes', () => {
   });
 });
 
+// The tables are pinned to the Unicode version they were generated from; the engine's own
+// String.prototype and regex follow the running Node's version, so they are only a reference
+// when the two versions match.
+const onPinnedUnicode = process.versions.unicode === UNICODE_VERSION ? it : it.skip;
+
 describe('unicode tables', () => {
   it('are sorted and pair up consistently', () => {
     for (const [table, count] of [
@@ -279,14 +289,14 @@ describe('unicode tables', () => {
     }
   });
 
-  it('agree with String.prototype and the regex on the whole of 0..0x3000', () => {
+  onPinnedUnicode('agree with String.prototype and the regex on the whole of 0..0x3000', () => {
     for (let c = 0; c < 0x3000; c++) {
       expect(casePartnerCp(c)).toBe(referencePartner(c));
       expect(isLetterOrNumberCp(c)).toBe(LN.test(String.fromCodePoint(c)));
     }
   });
 
-  it('agree with String.prototype and the regex on 20,000 random code points', () => {
+  onPinnedUnicode('agree with String.prototype and the regex on 20,000 random code points', () => {
     for (const c of sample(20000)) {
       expect(casePartnerCp(c)).toBe(referencePartner(c));
       expect(isLetterOrNumberCp(c)).toBe(LN.test(String.fromCodePoint(c)));
