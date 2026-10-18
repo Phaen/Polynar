@@ -98,3 +98,26 @@ export class KeyMap<V> {
     }
   }
 }
+
+/**
+ * The 48-bit context hashes of the symbols before position `t`: `out[k]` keys the last k symbols
+ * for k = 1..min(n, t); returns that count. Two 32-bit mixes run side by side, the prototype's
+ * and a second one with other constants; the key is the first's 32 bits above the second's top
+ * 16. The 32-bit operators of the predictor's tables are confined to this function.
+ */
+export function hashes(seq: Int32Array, t: number, n: number, out: Float64Array): number {
+  let h = 0;
+  let g = 0;
+  let k = 1;
+  for (; k <= n && k <= t; k++) {
+    const x = seq[t - k] + 0x9e37;
+    h = Math.imul(h ^ x, 0x85ebca6b);
+    h ^= h >>> 13;
+    h = Math.imul(h, 0xc2b2ae35);
+    g = Math.imul(g ^ x, 0x27d4eb2f);
+    g ^= g >>> 15;
+    g = Math.imul(g, 0x165667b1);
+    out[k] = ((h ^ (h >>> 16)) >>> 0) * 65536 + ((g ^ (g >>> 13)) >>> 16);
+  }
+  return k - 1;
+}
