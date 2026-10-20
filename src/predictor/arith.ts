@@ -60,6 +60,14 @@ for (let i = 1; i < POW2_NEG.length; i++) {
   POW2_NEG[i] = POW2_NEG[i - 1] * 0.5;
 }
 
+// Module bindings of the tables: a re-exported import is read through a getter once transpiled
+// to CommonJS.
+const EXP2 = EXP2_TABLE;
+const LOG2 = LOG2_TABLE;
+/** 2^-RB and 2^-(RB - TABLE_BITS): the shifts of `exp2Fix` as exact multiplications. */
+const INV_ONE = POW2_NEG[RB];
+const INV_FRAC = POW2_NEG[RB - TABLE_BITS];
+
 /** floor(a / b) for integers |a| < 2^53 and b >= 1. */
 export function div(a: number, b: number): number {
   return Math.floor(a / b);
@@ -108,7 +116,7 @@ export function log2Fix(x: number): number {
   const k = bitlen(x) - 1;
   const frac =
     k >= TABLE_BITS ? div(x, POW2[k - TABLE_BITS]) - 4096 : x * POW2[TABLE_BITS - k] - 4096;
-  return k * ONE + LOG2_TABLE[frac];
+  return k * ONE + LOG2[frac];
 }
 
 /**
@@ -119,16 +127,16 @@ export function exp2Fix(e: number): number {
   if (e < E_MIN) {
     return 0;
   }
-  const q = shr(e, RB);
+  const q = Math.floor(e * INV_ONE);
   if (q > 52) {
     throw new RangeError(`exp2Fix: exponent ${q} exceeds 52`);
   }
-  const m = EXP2_TABLE[div(e - q * ONE, POW2[RB - TABLE_BITS])];
+  const m = EXP2[Math.floor((e - q * ONE) * INV_FRAC)];
   if (q >= 24) {
     return m * POW2[q - 24];
   }
   const s = 24 - q;
-  return s > 52 ? 0 : shr(m, s);
+  return s > 52 ? 0 : Math.floor(m * POW2_NEG[s]);
 }
 
 /** x / 2^k rounded to nearest, ties upward; 1 <= k <= 52. */
