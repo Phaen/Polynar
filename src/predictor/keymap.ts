@@ -1,25 +1,25 @@
 /**
- * A map from safe integers to values, for the lookups an encoder or decoder
- * makes per symbol.
+ * The context tables' map from safe-integer keys to entry indices, and the
+ * context hashes they are keyed by.
  */
 
 import { div } from './arith';
 
-/** The slots a `KeyMap` starts with: 2^MAP_BITS. */
+/** The slots an `IndexMap` starts with: 2^MAP_BITS. */
 const MAP_BITS = 6;
 
 /**
- * Values by key, a safe integer: an open-addressing hash table with
+ * Entry indices by key, a safe integer: an open-addressing hash table with
  * linear probing, kept at most half full, which a hot lookup finds faster
- * than a Map does. No value is undefined.
+ * than a Map does. A slot holds 1 + an index, 0 when empty; the keys stay
+ * in the caller's key column `keys` (index to key), passed to every call.
  */
-export class KeyMap<V> {
-  private keys = new Float64Array(1 << MAP_BITS);
-  private values: (V | undefined)[] = new Array<V | undefined>(1 << MAP_BITS);
+export class IndexMap {
+  private slots = new Int32Array(1 << MAP_BITS);
   private mask = (1 << MAP_BITS) - 1;
   /** 32 less the bits a slot takes: a key's home is the top bits of its hash. */
   private shift = 32 - MAP_BITS;
-  /** The entries held. */
+  /** The indices held. */
   size = 0;
 
   /** The home slot of `key`. */
@@ -30,70 +30,45 @@ export class KeyMap<V> {
     return Math.imul(low ^ Math.imul(high, 0x85ebca6b), 0x9e3779b1) >>> this.shift;
   }
 
-  /** The slot holding `key`, else the empty slot where it would go. */
-  private slot(key: number): number {
-    const { keys, values, mask } = this;
-    let at = this.home(key);
-    while (values[at] !== undefined && keys[at] !== key) {
-      at = (at + 1) & mask;
-    }
-    return at;
-  }
-
-  get(key: number): V | undefined {
-    return this.values[this.slot(key)];
-  }
-
-  /** Sets `key`'s value to `value`. */
-  set(key: number, value: V): void {
-    const at = this.slot(key);
-    if (this.values[at] !== undefined) {
-      this.values[at] = value;
-      return;
-    }
-    this.keys[at] = key;
-    this.values[at] = value;
-    this.size++;
-    if (2 * this.size > this.values.length) {
-      this.grow();
-    }
-  }
-
-  /** Drops the entry of `key`, shifting back the entries probed past it. */
-  delete(key: number): boolean {
-    const { keys, values, mask } = this;
-    let at = this.slot(key);
-    if (values[at] === undefined) {
-      return false;
-    }
-    this.size--;
-    for (let next = (at + 1) & mask; values[next] !== undefined; next = (next + 1) & mask) {
-      const home = this.home(keys[next]);
-      // The entry at `next` may fill the hole at `at` when its home does not
-      // lie cyclically within (at, next].
-      if (at <= next ? home <= at || home > next : home <= at && home > next) {
-        keys[at] = keys[next];
-        values[at] = values[next];
-        at = next;
+  /** The index of `key`, −1 when absent. */
+  get(keys: Float64Array, key: number): number {
+    const { slots, mask } = this;
+    for (let at = this.home(key); slots[at] !== 0; at = (at + 1) & mask) {
+      if (keys[slots[at] - 1] === key) {
+        return slots[at] - 1;
       }
     }
-    values[at] = undefined;
-    return true;
+    return -1;
   }
 
-  /** Doubles the slots, placing every entry again. */
-  private grow(): void {
-    const { keys, values } = this;
-    this.keys = new Float64Array(keys.length * 2);
-    this.values = new Array<V | undefined>(values.length * 2);
-    this.mask = values.length * 2 - 1;
+  /** Adds index `x`, whose key `keys[x]` is absent. */
+  add(keys: Float64Array, x: number): void {
+    this.place(keys[x], x);
+    this.size++;
+    if (2 * this.size > this.slots.length) {
+      this.grow(keys);
+    }
+  }
+
+  /** Puts index `x` in the first empty slot from the home of `key`. */
+  private place(key: number, x: number): void {
+    const { slots, mask } = this;
+    let at = this.home(key);
+    while (slots[at] !== 0) {
+      at = (at + 1) & mask;
+    }
+    slots[at] = x + 1;
+  }
+
+  /** Doubles the slots, placing every index again. */
+  private grow(keys: Float64Array): void {
+    const old = this.slots;
+    this.slots = new Int32Array(old.length * 2);
+    this.mask = old.length * 2 - 1;
     this.shift--;
-    for (let i = 0; i < values.length; i++) {
-      const value = values[i];
-      if (value !== undefined) {
-        const at = this.slot(keys[i]);
-        this.keys[at] = keys[i];
-        this.values[at] = value;
+    for (let i = 0; i < old.length; i++) {
+      if (old[i] !== 0) {
+        this.place(keys[old[i] - 1], old[i] - 1);
       }
     }
   }

@@ -17,14 +17,21 @@ import {
   valueState,
 } from '../../predictor/features';
 import type { ValueState } from '../../predictor/features';
-import { Entry } from '../../predictor/tables';
+import { Entries } from '../../predictor/tables';
 
-function entryOf(counts: readonly number[], order0 = false): Entry {
-  const e = new Entry(order0);
+/** Loads `counts` as the followers 300.. of entry `x`. */
+function fill(tab: Entries, x: number, counts: readonly number[]): void {
   counts.forEach((c, i) => {
-    if (c > 0) e.load(300 + i, c);
+    if (c > 0) tab.load(x, 300 + i, c);
   });
-  return e;
+}
+
+/** A table with `counts` in entry 0 or, for a level entry, in a hashed entry beside it. */
+function entryOf(counts: readonly number[], order0 = false): { tab: Entries; x: number } {
+  const tab = new Entries(1);
+  const x = order0 ? 0 : tab.make(1, 1);
+  fill(tab, x, counts);
+  return { tab, x };
 }
 
 describe('buckets', () => {
@@ -49,11 +56,11 @@ describe('buckets', () => {
   });
 
   it('dist buckets distinct followers', () => {
-    expect(dist(entryOf([]))).toBe(0);
-    expect(dist(entryOf([3]))).toBe(0);
-    expect(dist(entryOf([1, 1]))).toBe(1);
-    expect(dist(entryOf([1, 1, 1]))).toBe(1);
-    expect(dist(entryOf([1, 1, 1, 1]))).toBe(2);
+    expect(dist(entryOf([]).tab.n[1])).toBe(0);
+    expect(dist(entryOf([3]).tab.n[1])).toBe(0);
+    expect(dist(entryOf([1, 1]).tab.n[1])).toBe(1);
+    expect(dist(entryOf([1, 1, 1]).tab.n[1])).toBe(1);
+    expect(dist(entryOf([1, 1, 1, 1]).tab.n[1])).toBe(2);
   });
 
   it('detBucket buckets distinct ring symbols', () => {
@@ -233,34 +240,36 @@ describe('level evidence', () => {
       return s % n;
     };
     for (let i = 0; i < 500; i++) {
-      const e0 = entryOf([1 + next(50), next(30), 1 + next(400), next(3)], true);
-      const lev = entryOf([next(40), next(5), next(9)]);
+      const tab = new Entries(1);
+      fill(tab, 0, [1 + next(50), next(30), 1 + next(400), next(3)]);
+      const x = tab.make(1, 1);
+      fill(tab, x, [next(40), next(5), next(9)]);
       for (let a = 300; a < 305; a++) {
-        const c0 = e0.count(a);
-        const d = e0.total + e0.n + 1;
-        const want = floating(c0, d, lev.count(a), lev.total);
-        expect(Math.abs(shadowCost(e0, lev, a) / ONE - want)).toBeLessThan(2 ** -10);
+        const c0 = tab.count(0, a);
+        const d = tab.total[0] + tab.n[0] + 1;
+        const want = floating(c0, d, tab.count(x, a), tab.total[x]);
+        expect(Math.abs(shadowCost(tab, x, a) / ONE - want)).toBeLessThan(2 ** -10);
       }
     }
   });
 
   it('shadowCostOf takes ring counts and stays exact-enough on huge totals', () => {
-    const e0 = entryOf([5, 3], true);
-    const d = e0.total + e0.n + 1;
-    const ring = shadowCostOf(e0, 300, 4, 6) / ONE;
+    const { tab } = entryOf([5, 3], true);
+    const d = tab.total[0] + tab.n[0] + 1;
+    const ring = shadowCostOf(tab, 300, 4, 6) / ONE;
     expect(Math.abs(ring - floating(5, d, 4, 6))).toBeLessThan(2 ** -10);
-    expect(shadowCostOf(e0, 300, 0, 0)).toBe(0);
+    expect(shadowCostOf(tab, 300, 0, 0)).toBe(0);
     const big = entryOf([2 ** 20, 7], true);
-    big.total = 2 ** 40;
-    const D = big.total + big.n + 1;
+    big.tab.total[0] = 2 ** 40;
+    const D = big.tab.total[0] + big.tab.n[0] + 1;
     for (const [c, total] of [
       [2 ** 20, 2 ** 30],
       [0, 2 ** 30],
       [2 ** 29, 2 ** 30],
     ]) {
       for (const a of [300, 301, 302]) {
-        const want = floating(big.count(a), D, c, total);
-        expect(Math.abs(shadowCostOf(big, a, c, total) / ONE - want)).toBeLessThan(2 ** -10);
+        const want = floating(big.tab.count(0, a), D, c, total);
+        expect(Math.abs(shadowCostOf(big.tab, a, c, total) / ONE - want)).toBeLessThan(2 ** -10);
       }
     }
   });

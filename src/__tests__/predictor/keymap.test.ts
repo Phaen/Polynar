@@ -1,71 +1,56 @@
 /**
- * The integer-keyed hash map behind the context tables and the finder,
- * against a Map over seeded operation sequences that crowd a few slots, so
- * probes wrap around the table and deletions shift entries back across
- * the wrap.
+ * The integer-keyed index map behind the context tables, against a Map over
+ * seeded key sequences that crowd a few slots, so probes wrap around the
+ * table and the slots double several times.
  */
 
-import { KeyMap } from '../../predictor/keymap';
+import { IndexMap } from '../../predictor/keymap';
 import { mulberry32 } from '../support';
 
-/** Asserts that `map` holds exactly `model`, and nothing at `absent`. */
-const expectModel = (map: KeyMap<number>, model: Map<number, number>, absent: number[]): void => {
-  expect(map.size).toBe(model.size);
-  for (const [key, value] of model) {
-    expect(map.get(key)).toBe(value);
-  }
-  for (const key of absent) {
-    if (!model.has(key)) {
-      expect(map.get(key)).toBeUndefined();
-    }
-  }
-};
-
-describe('KeyMap', () => {
+describe('IndexMap', () => {
   it('starts empty', () => {
-    const map = new KeyMap<string>();
+    const map = new IndexMap();
     expect(map.size).toBe(0);
-    expect(map.get(0)).toBeUndefined();
-    expect(map.delete(0)).toBe(false);
+    expect(map.get(new Float64Array(1), 0)).toBe(-1);
   });
 
-  it('sets, replaces and deletes', () => {
-    const map = new KeyMap<string>();
-    map.set(5, 'a');
-    map.set(-7, 'b');
-    map.set(2 ** 52 + 3, 'c');
-    map.set(5, 'd');
-    expect([map.get(5), map.get(-7), map.get(2 ** 52 + 3), map.size]).toEqual(['d', 'b', 'c', 3]);
-    expect(map.delete(-7)).toBe(true);
-    expect(map.delete(-7)).toBe(false);
-    expect([map.get(-7), map.size]).toEqual([undefined, 2]);
+  it('finds added indices by the keys of the caller', () => {
+    const keys = Float64Array.from([5, 7, 2 ** 52 + 3, 2 ** 32 + 9, 2 ** 32]);
+    const map = new IndexMap();
+    keys.forEach((_, x) => map.add(keys, x));
+    expect(map.size).toBe(5);
+    keys.forEach((key, x) => expect(map.get(keys, key)).toBe(x));
+    expect(map.get(keys, 6)).toBe(-1);
+    expect(map.get(keys, 2 ** 32 + 1)).toBe(-1);
   });
 
-  it.each([1, 2, 3])('matches a Map through growth and deletions (seed %p)', (seed) => {
+  it.each([1, 2, 3])('matches a Map through growth (seed %p)', (seed) => {
     const rand = mulberry32(seed);
-    const map = new KeyMap<number>();
-    const model = new Map<number, number>();
     // Keys from a small pool, half of them far apart in their high bits, so
     // entries collide and probes run long.
     const pool = Array.from({ length: 300 }, (_, i) =>
-      i % 2 === 0 ? i : Math.floor(rand() * 2 ** 53)
+      i % 2 === 0 ? i : Math.floor(rand() * 2 ** 48)
     );
-    for (let step = 0; step < 4000; step++) {
+    const keys = new Float64Array(pool.length);
+    const map = new IndexMap();
+    const model = new Map<number, number>();
+    while (model.size < pool.length) {
       const key = pool[Math.floor(rand() * pool.length)];
-      if (rand() < 0.6) {
-        map.set(key, step);
-        model.set(key, step);
-      } else {
-        expect(map.delete(key)).toBe(model.delete(key));
+      if (!model.has(key)) {
+        keys[model.size] = key;
+        map.add(keys, model.size);
+        model.set(key, model.size);
       }
-      if (step % 97 === 0) {
-        expectModel(map, model, pool);
+      expect(map.size).toBe(model.size);
+      if (model.size % 37 === 0) {
+        for (const [k, x] of model) {
+          expect(map.get(keys, k)).toBe(x);
+        }
       }
     }
-    expectModel(map, model, pool);
-    for (const key of [...model.keys()]) {
-      expect(map.delete(key)).toBe(true);
+    for (const key of pool) {
+      expect(map.get(keys, key)).toBe(model.get(key));
     }
-    expectModel(map, new Map(), pool);
+    expect(map.get(keys, 2 ** 47 + 1)).toBe(-1);
   });
 });

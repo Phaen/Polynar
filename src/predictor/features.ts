@@ -7,7 +7,7 @@
  */
 
 import { ONE, RB, bitlen, div, log2Fix, mulShr, shr } from './arith';
-import type { Entry } from './tables';
+import type { Entries } from './tables';
 import { HF } from './types';
 
 /** The recency bucket of frozen (built-in) votes, which have no position. */
@@ -19,9 +19,9 @@ export function recBucket(age: number): number {
   return lg >= 16 ? 4 : div(lg, 4);
 }
 
-/** The determinism bucket of an entry by its distinct followers: 1 / 2–3 / more. */
-export function dist(e: Entry): number {
-  return e.n <= 1 ? 0 : e.n <= 3 ? 1 : 2;
+/** The determinism bucket of an entry by its `n` distinct followers: 1 / 2–3 / more. */
+export function dist(n: number): number {
+  return n <= 1 ? 0 : n <= 3 ? 1 : 2;
 }
 
 /** The determinism bucket of a same-offset ring by its distinct symbols: 1 / 2–3 / 4–8 / more. */
@@ -258,15 +258,15 @@ export function valueAdvance(P: ValueState, a: number, off: number): void {
 
 /**
  * The shadow cost of a level in RB bits for symbol `a`: log2(p0) − log2(p) with the path's
- * order-0 estimate p0 = (c0 + 1) / D, D = e0.total + e0.n + 1, and the level's estimate
+ * order-0 estimate p0 = (c0 + 1) / D, D = total + n + 1 of entry 0 of `tab`, and the level's estimate
  * p = (c + p0) / (total + 1), where `c` and `total` are the level group's count of `a` and its
  * size (c ≤ total). Negative when the level predicts `a` better. When (total + 1) · D would pass
  * 2^52, D and c0 + 1 are shifted down by the excess first; with c = 0 the cost is then
  * log2(total + 1) directly, as p = p0 / (total + 1).
  */
-export function shadowCostOf(e0: Entry, a: number, c: number, total: number): number {
-  const c0 = e0.count(a);
-  const d = e0.total + e0.n + 1;
+export function shadowCostOf(tab: Entries, a: number, c: number, total: number): number {
+  const c0 = tab.count(0, a);
+  const d = tab.total[0] + tab.n[0] + 1;
   const head = log2Fix(c0 + 1) - log2Fix(d);
   const s = bitlen(total + 1) + bitlen(d) - 52;
   if (s <= 0) {
@@ -279,9 +279,9 @@ export function shadowCostOf(e0: Entry, a: number, c: number, total: number): nu
   return head - log2Fix(c * ds + shr(c0 + 1, s)) + log2Fix((total + 1) * ds);
 }
 
-/** `shadowCostOf` for the level entry `entry`. */
-export function shadowCost(e0: Entry, entry: Entry, a: number): number {
-  return shadowCostOf(e0, a, entry.count(a), entry.total);
+/** `shadowCostOf` for the level entry `x` of `tab`. */
+export function shadowCost(tab: Entries, x: number, a: number): number {
+  return shadowCostOf(tab, a, tab.count(x, a), tab.total[x]);
 }
 
 /** The level-evidence mean after one more shadow cost: decay 1 − 1/256. */

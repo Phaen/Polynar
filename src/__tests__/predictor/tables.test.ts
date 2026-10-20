@@ -1,5 +1,6 @@
 import {
-  Entry,
+  Arena,
+  Entries,
   Frozen,
   OffsetRing,
   Population,
@@ -10,10 +11,16 @@ import {
 } from '../../predictor/tables';
 import { END } from '../../predictor/types';
 
-/** The first `n` symbols, counts, last positions or offsets of an entry's followers. */
-function col(e: Entry, field: 'syms' | 'cnt' | 'last' | 'offs', n: number): number[] {
+/** The first `n` symbols, counts, last positions or offsets of the followers of entry `x`. */
+function col(
+  tab: Entries,
+  x: number,
+  field: 'syms' | 'cnt' | 'last' | 'offs',
+  n: number
+): number[] {
   const word = { syms: 0, cnt: 1, last: 2, offs: 3 }[field];
-  return Array.from({ length: n }, (_, j) => e.d[j * STRIDE + word]);
+  const d = tab.data(x);
+  return Array.from({ length: n }, (_, j) => d[tab.base[x] + j * STRIDE + word]);
 }
 
 /** A deterministic generator in [0, 1). */
@@ -36,18 +43,15 @@ class RefEntry {
   offs: number[] = [];
   pos = 0;
   total = 0;
-  top = 0;
   ring: Int32Array | null = null;
   ri = 0;
   add(s: number, t: number, off = 0): void {
     const j = this.syms.indexOf(s);
     if (j >= 0) {
-      const c = ++this.cnt[j];
+      this.cnt[j]++;
       this.last[j] = t;
       this.offs[j] = off;
-      if (c > this.top) this.top = c;
     } else {
-      if (this.top < 1) this.top = 1;
       this.syms.push(s);
       this.cnt.push(1);
       this.last.push(t);
@@ -181,15 +185,15 @@ class RefPop {
   }
 }
 
-function expectSameEntry(e: Entry, r: RefEntry): void {
-  expect(e.n).toBe(r.syms.length);
-  expect(Array.from(col(e, 'syms', e.n))).toEqual(r.syms);
-  expect(Array.from(col(e, 'cnt', e.n))).toEqual(r.cnt);
-  expect(Array.from(col(e, 'last', e.n))).toEqual(r.last);
-  expect(Array.from(col(e, 'offs', e.n))).toEqual(r.offs);
-  expect(e.total).toBe(r.total);
-  expect(e.top).toBe(r.top);
-  expect(e.pos).toBe(r.pos);
+function expectSameEntry(tab: Entries, x: number, r: RefEntry): void {
+  const n = tab.n[x];
+  expect(n).toBe(r.syms.length);
+  expect(col(tab, x, 'syms', n)).toEqual(r.syms);
+  expect(col(tab, x, 'cnt', n)).toEqual(r.cnt);
+  expect(col(tab, x, 'last', n)).toEqual(r.last);
+  expect(col(tab, x, 'offs', n)).toEqual(r.offs);
+  expect(tab.total[x]).toBe(r.total);
+  expect(tab.pos(x)).toBe(r.pos);
 }
 
 function expectSameState(p: Population, r: RefPop): void {
@@ -197,7 +201,7 @@ function expectSameState(p: Population, r: RefPop): void {
   expect(p.m).toBe(r.m);
   expect(p.n).toBe(r.n);
   for (let k = 0; k <= p.m; k++) {
-    expectSameEntry(p.E[k], r.E[k]);
+    expectSameEntry(p.tab, p.E[k], r.E[k]);
   }
   expect(p.nc).toBe(r.nc);
   expect(Array.from(p.cand.subarray(0, p.nc))).toEqual(r.cand);
@@ -244,70 +248,199 @@ function compare(
   return r;
 }
 
-describe('Entry', () => {
-  it('counts followers in a linear entry and grows past its capacity', () => {
-    const e = new Entry();
-    expect(e.slot).toBeNull();
-    expect(e.indexOf(7)).toBe(-1);
-    expect(e.add(7, 3, 2)).toBe(1);
-    expect(e.add(9, 4)).toBe(1);
-    expect(e.add(11, 5, 1)).toBe(1);
-    expect(e.add(7, 6, 5)).toBe(2);
-    expect(e.add(13, 8)).toBe(1);
-    expect(e.n).toBe(4);
-    expect(e.total).toBe(5);
-    expect(e.top).toBe(2);
-    expect(e.pos).toBe(8);
-    expect(e.indexOf(11)).toBe(2);
-    expect(e.indexOf(12)).toBe(-1);
-    expect(e.has(13)).toBe(true);
-    expect(e.has(12)).toBe(false);
-    expect(e.count(7)).toBe(2);
-    expect(e.count(12)).toBe(0);
-    expect(col(e, 'last', 1)[0]).toBe(6);
-    expect(col(e, 'offs', 1)[0]).toBe(5);
-    expect(col(e, 'offs', 2)[1]).toBe(0);
+describe('Arena', () => {
+  it('cuts power-of-two regions from one chunk and reuses freed ones zeroed', () => {
+    const a = new Arena();
+    a.alloc(8);
+    const id = a.id;
+    const chunk = a.chunks[id];
+    expect(a.b).toBe(0);
+    chunk[3] = 5;
+    a.alloc(5);
+    expect(a.id).toBe(id);
+    expect(a.b).toBe(8);
+    a.free(id, 0, 8);
+    a.alloc(7);
+    expect(a.id).toBe(id);
+    expect(a.b).toBe(0);
+    expect(chunk[3]).toBe(0);
+    a.alloc(8);
+    expect(a.b).toBe(16);
+  });
+
+  it('starts a new chunk when one is full, doubling chunks from 1024 words to 65536', () => {
+    const a = new Arena();
+    a.alloc(4);
+    const first = a.id;
+    expect(a.chunks[first].length).toBe(1024);
+    a.alloc(1024);
+    expect(a.id).not.toBe(first);
+    expect([a.b, a.chunks[a.id].length]).toEqual([0, 2048]);
+    a.alloc(1024);
+    expect(a.b).toBe(1024);
+    a.alloc(16384);
+    expect([a.b, a.chunks[a.id].length]).toEqual([0, 16384]);
+    a.alloc(16384);
+    expect([a.b, a.chunks[a.id].length]).toEqual([0, 32768]);
+    a.alloc(16384);
+    expect(a.b).toBe(16384);
+    a.alloc(16384);
+    expect([a.b, a.chunks[a.id].length]).toEqual([0, 65536]);
+    a.alloc(16384);
+    a.alloc(16384);
+    a.alloc(16384);
+    a.alloc(16384);
+    expect([a.b, a.chunks[a.id].length]).toEqual([0, 65536]);
+    expect(a.chunks.length).toBe(6);
+  });
+
+  it('gives a region above a quarter chunk its own array and drops it when freed', () => {
+    const a = new Arena();
+    a.alloc(20000);
+    const own = a.id;
+    expect(a.chunks[own].length).toBe(20000);
+    expect(a.b).toBe(0);
+    a.free(own, 0, 32768);
+    expect(a.chunks[own].length).toBe(0);
+    a.alloc(32768);
+    expect(a.id).not.toBe(own);
+    expect(a.chunks[a.id].length).toBe(32768);
+  });
+});
+
+describe('Entries', () => {
+  it('counts followers in a hashed entry and grows past its capacity', () => {
+    const tab = new Entries(1);
+    const x = tab.make(1, 42);
+    expect(tab.size).toBe(2);
+    expect(tab.find(1, 42)).toBe(x);
+    expect(tab.find(1, 43)).toBe(-1);
+    expect(tab.indexOf(x, 7)).toBe(-1);
+    expect(tab.add(x, 7, 3, 2)).toBe(1);
+    expect(tab.add(x, 9, 4)).toBe(1);
+    expect(tab.add(x, 11, 5, 1)).toBe(1);
+    expect(tab.add(x, 7, 6, 5)).toBe(2);
+    expect(tab.add(x, 13, 8)).toBe(1);
+    expect(tab.n[x]).toBe(4);
+    expect(tab.total[x]).toBe(5);
+    expect(tab.pos(x)).toBe(8);
+    expect(tab.indexOf(x, 11)).toBe(2);
+    expect(tab.indexOf(x, 12)).toBe(-1);
+    expect(tab.has(x, 13)).toBe(true);
+    expect(tab.has(x, 12)).toBe(false);
+    expect(tab.count(x, 7)).toBe(2);
+    expect(tab.count(x, 12)).toBe(0);
+    expect(col(tab, x, 'last', 1)[0]).toBe(6);
+    expect(col(tab, x, 'offs', 1)[0]).toBe(5);
+    expect(col(tab, x, 'offs', 2)[1]).toBe(0);
+  });
+
+  it('grows its columns past 128 entries and finds every entry', () => {
+    const tab = new Entries(2);
+    const xs: number[] = [];
+    for (let i = 0; i < 300; i++) {
+      const x = tab.make(1 + (i % 2), 1000 + i);
+      xs.push(x);
+      tab.add(x, 300 + i, i + 1);
+    }
+    expect(tab.size).toBe(301);
+    expect(tab.n.length).toBeGreaterThanOrEqual(301);
+    xs.forEach((x, i) => {
+      expect(tab.find(1 + (i % 2), 1000 + i)).toBe(x);
+      expect(tab.find(2 - (i % 2), 1000 + i)).toBe(-1);
+      expect(tab.count(x, 300 + i)).toBe(1);
+      expect(tab.pos(x)).toBe(i + 1);
+    });
   });
 
   it('indexes order-0 followers by symbol and grows the slot table', () => {
-    const e = new Entry(true);
-    expect(e.slot).not.toBeNull();
-    e.add(3, 1);
-    e.add(1000, 2);
-    e.add(3, 3);
-    expect(e.slot!.length).toBeGreaterThan(1000);
-    expect(e.indexOf(3)).toBe(0);
-    expect(e.indexOf(1000)).toBe(1);
-    expect(e.indexOf(4)).toBe(-1);
-    expect(e.indexOf(5000)).toBe(-1);
-    expect(e.has(1000)).toBe(true);
-    expect(e.count(3)).toBe(2);
-    expect(e.total).toBe(3);
-    expect(e.top).toBe(2);
+    const tab = new Entries(0);
+    tab.add(0, 3, 1);
+    tab.add(0, 1000, 2);
+    tab.add(0, 3, 3);
+    expect(tab.slot.length).toBeGreaterThan(1000);
+    expect(tab.indexOf(0, 3)).toBe(0);
+    expect(tab.indexOf(0, 1000)).toBe(1);
+    expect(tab.indexOf(0, 4)).toBe(-1);
+    expect(tab.indexOf(0, 5000)).toBe(-1);
+    expect(tab.has(0, 1000)).toBe(true);
+    expect(tab.count(0, 3)).toBe(2);
+    expect(tab.total[0]).toBe(3);
+  });
+
+  it('moves the order-0 followers to larger regions past 16', () => {
+    const tab = new Entries(0);
+    for (let s = 0; s < 40; s++) tab.add(0, s, s + 1, s % 3);
+    expect(tab.n[0]).toBe(40);
+    expect(col(tab, 0, 'syms', 40)).toEqual(Array.from({ length: 40 }, (_, s) => s));
+    expect(col(tab, 0, 'offs', 3)).toEqual([0, 1, 2]);
+    expect(tab.count(0, 39)).toBe(1);
+    expect(tab.pos(0)).toBe(40);
+  });
+
+  it('moves hashed followers into an array of its own and frees it on the next move', () => {
+    const tab = new Entries(1);
+    const x = tab.make(1, 5);
+    const y = tab.make(1, 6);
+    tab.add(y, 1, 1);
+    for (let s = 0; s < 4097; s++) tab.add(x, s, s + 1);
+    const own = tab.chunk[x];
+    expect(tab.chunks[own].length).toBe(32768);
+    expect(tab.base[x]).toBe(0);
+    for (let s = 4097; s < 8193; s++) tab.add(x, s, s + 1);
+    expect(tab.chunks[own].length).toBe(0);
+    expect(tab.chunk[x]).not.toBe(own);
+    expect(tab.n[x]).toBe(8193);
+    expect(col(tab, x, 'syms', 8193)).toEqual(Array.from({ length: 8193 }, (_, s) => s));
+    expect(tab.count(x, 8192)).toBe(1);
+    expect(tab.count(y, 1)).toBe(1);
   });
 
   it('loads counts without positions', () => {
-    const e = new Entry();
-    e.load(5, 4);
-    e.load(6, 2);
-    e.load(5, 3);
-    expect(e.count(5)).toBe(7);
-    expect(e.count(6)).toBe(2);
-    expect(e.total).toBe(9);
-    expect(e.top).toBe(7);
-    expect(e.pos).toBe(0);
-    expect(col(e, 'last', 1)[0]).toBe(0);
+    const tab = new Entries(1);
+    const x = tab.make(1, 9);
+    tab.load(x, 5, 4);
+    tab.load(x, 6, 2);
+    tab.load(x, 5, 3);
+    expect(tab.count(x, 5)).toBe(7);
+    expect(tab.count(x, 6)).toBe(2);
+    expect(tab.total[x]).toBe(9);
+    expect(tab.pos(x)).toBe(0);
+    expect(col(tab, x, 'last', 1)[0]).toBe(0);
   });
 
-  it('halves every count, keeping at least 1', () => {
-    const e = new Entry();
-    e.load(1, 9);
-    e.load(2, 1);
-    e.load(3, 4);
-    e.halve();
-    expect(Array.from(col(e, 'cnt', e.n))).toEqual([4, 1, 2]);
-    expect(e.total).toBe(7);
-    expect(e.top).toBe(4);
+  it('halves every count of every entry, keeping at least 1', () => {
+    const tab = new Entries(1);
+    const x = tab.make(1, 9);
+    tab.load(x, 1, 9);
+    tab.load(x, 2, 1);
+    tab.load(x, 3, 4);
+    tab.load(0, 8, 6);
+    tab.halve();
+    expect(col(tab, x, 'cnt', 3)).toEqual([4, 1, 2]);
+    expect(tab.total[x]).toBe(7);
+    expect(tab.count(0, 8)).toBe(3);
+    expect(tab.total[0]).toBe(3);
+  });
+
+  it('keeps ring positions through the byte counter stepping back', () => {
+    const tab = new Entries(1);
+    const x = tab.make(1, 9);
+    const y = tab.make(1, 10);
+    expect(tab.ring[x]).toBe(0);
+    for (let t = 1; t <= 7; t++) tab.remember(x, t, 4);
+    expect(tab.ri[x]).toBe(7);
+    tab.remember(x, 8, 4);
+    expect(tab.ri[x]).toBe(4);
+    for (let t = 9; t <= 100; t++) tab.remember(x, t, 4);
+    const r = tab.chunks[tab.ring[x] - 1];
+    const newest = (i: number): number => r[tab.rb[x] + ((tab.ri[x] - i) % 4)];
+    expect([1, 2, 3, 4].map(newest)).toEqual([100, 99, 98, 97]);
+    expect(tab.ri[x]).toBeLessThan(8);
+    expect(tab.ri[x] % 4).toBe(100 % 4);
+    tab.remember(y, 3, 4);
+    expect(tab.ring[y]).not.toBe(0);
+    expect(tab.ri[y]).toBe(1);
   });
 });
 
@@ -356,22 +489,24 @@ describe('hashes', () => {
 
 describe('exactCounts', () => {
   it('clamps each level to the one below it', () => {
-    const e0 = new Entry(true);
-    const e1 = new Entry();
-    const e2 = new Entry();
-    e0.load(4, 3);
-    e0.load(5, 6);
-    e1.load(4, 1);
-    e1.load(5, 6);
-    e2.load(4, 5);
-    e2.load(5, 2);
+    const tab = new Entries(2);
+    const e1 = tab.make(1, 1);
+    const e2 = tab.make(2, 2);
+    tab.load(0, 4, 3);
+    tab.load(0, 5, 6);
+    tab.load(e1, 4, 1);
+    tab.load(e1, 5, 6);
+    tab.load(e2, 4, 5);
+    tab.load(e2, 5, 2);
+    const E = Int32Array.from([0, e1, e2]);
+    const F = Int32Array.from([0, e2, e1]);
     const out = new Int32Array(3);
-    expect(Array.from(exactCounts([e0, e1, e2], 2, 4, out))).toEqual([3, 1, 1]);
-    expect(Array.from(exactCounts([e0, e1, e2], 2, 5, out))).toEqual([6, 6, 2]);
-    expect(Array.from(exactCounts([e0, e2, e1], 2, 5, out))).toEqual([6, 2, 2]);
-    expect(Array.from(exactCounts([e0, e1, e2], 2, 9, out))).toEqual([0, 0, 0]);
+    expect(Array.from(exactCounts(tab, E, 2, 4, out))).toEqual([3, 1, 1]);
+    expect(Array.from(exactCounts(tab, E, 2, 5, out))).toEqual([6, 6, 2]);
+    expect(Array.from(exactCounts(tab, F, 2, 5, out))).toEqual([6, 2, 2]);
+    expect(Array.from(exactCounts(tab, E, 2, 9, out))).toEqual([0, 0, 0]);
     out.fill(7);
-    exactCounts([e0, e1, e2], 1, 4, out);
+    exactCounts(tab, E, 1, 4, out);
     expect(Array.from(out)).toEqual([3, 1, 7]);
   });
 
@@ -382,7 +517,7 @@ describe('exactCounts', () => {
     for (let i = 0; i < 400; i++) {
       p.resolve();
       for (let s = 292; s < 295; s++) {
-        exactCounts(p.E, p.m, s, out);
+        exactCounts(p.tab, p.E, p.m, s, out);
         for (let k = 0; k < p.m; k++) {
           expect(out[k] - out[k + 1]).toBeGreaterThanOrEqual(0);
         }
@@ -427,23 +562,22 @@ describe('Population', () => {
     expect(p.t).toBe(21);
     expect(p.n).toBe(2);
     expect(p.m).toBe(2);
-    const [e0, e1, e2] = p.E;
-    expect(e0).toBe(p.e0);
-    expect([A, B, C, D].map((s) => e0.count(s))).toEqual([7, 7, 5, 1]);
-    expect(e0.total).toBe(20);
-    expect(e0.top).toBe(7);
-    for (const e of [e1, e2]) {
-      expect(e.n).toBe(2);
-      expect(Array.from(col(e, 'syms', 2))).toEqual([C, D]);
-      expect(Array.from(col(e, 'cnt', 2))).toEqual([5, 1]);
-      expect(Array.from(col(e, 'last', 2))).toEqual([18, 9]);
-      expect(Array.from(col(e, 'offs', 2))).toEqual([17, 8]);
-      expect(e.total).toBe(6);
-      expect(e.top).toBe(5);
-      expect(e.pos).toBe(18);
+    const tab = p.tab;
+    const [x0, x1, x2] = p.E;
+    expect(x0).toBe(0);
+    expect([A, B, C, D].map((s) => tab.count(0, s))).toEqual([7, 7, 5, 1]);
+    expect(tab.total[0]).toBe(20);
+    for (const x of [x1, x2]) {
+      expect(tab.n[x]).toBe(2);
+      expect(col(tab, x, 'syms', 2)).toEqual([C, D]);
+      expect(col(tab, x, 'cnt', 2)).toEqual([5, 1]);
+      expect(col(tab, x, 'last', 2)).toEqual([18, 9]);
+      expect(col(tab, x, 'offs', 2)).toEqual([17, 8]);
+      expect(tab.total[x]).toBe(6);
+      expect(tab.pos(x)).toBe(18);
     }
-    expect(e1.ring).toBeNull();
-    expect(e2.ri).toBe(6);
+    expect(tab.ring[x1]).toBe(0);
+    expect(tab.ri[x2]).toBe(6);
     expect(p.nc).toBe(6);
     expect(Array.from(p.cand.subarray(0, 6))).toEqual([18, 15, 12, 9, 6, 3]);
     expect(Array.from(p.candL.subarray(0, 6))).toEqual([8, 5, 2, 8, 5, 2]);
@@ -511,7 +645,7 @@ describe('Population', () => {
     });
     p.resolve();
     expect(p.m).toBe(2);
-    expect(p.E[2].ring).toBeNull();
+    expect(p.tab.ring[p.E[2]]).toBe(0);
     expect(p.nc).toBe(1);
     expect(p.cand[0]).toBe(18);
     expect(p.candL[0]).toBe(8);
@@ -541,18 +675,17 @@ describe('Population', () => {
       p.resolve();
       p.update(s);
     }
-    expect(p.e0.count(a)).toBe(3);
+    const tab = p.tab;
+    expect(tab.count(0, a)).toBe(3);
     p.resolve();
     const afterA = p.E[1];
     p.update(a);
-    expect(p.e0.count(a)).toBe(2);
-    expect(p.e0.count(b)).toBe(1);
-    expect(p.e0.total).toBe(3);
-    expect(p.e0.top).toBe(2);
-    expect(afterA.count(b)).toBe(1);
-    expect(afterA.count(a)).toBe(1);
-    expect(afterA.total).toBe(2);
-    expect(afterA.top).toBe(1);
+    expect(tab.count(0, a)).toBe(2);
+    expect(tab.count(0, b)).toBe(1);
+    expect(tab.total[0]).toBe(3);
+    expect(tab.count(afterA, b)).toBe(1);
+    expect(tab.count(afterA, a)).toBe(1);
+    expect(tab.total[afterA]).toBe(2);
     p.resolve();
     expect(p.m).toBe(1);
     expect(p.E[1]).toBe(afterA);
@@ -564,11 +697,11 @@ describe('Population', () => {
     for (let i = 0; i < 7; i++) {
       p.resolve();
       p.update(300);
-      counts.push(p.e0.count(300));
+      counts.push(p.tab.count(0, 300));
     }
     expect(counts).toEqual([1, 2, 1, 2, 3, 2, 3]);
-    p.halve();
-    expect(p.e0.count(300)).toBe(1);
+    p.tab.halve();
+    expect(p.tab.count(0, 300)).toBe(1);
   });
 });
 
@@ -594,27 +727,25 @@ describe('frozen', () => {
     const f = frozen(prior, fake);
     expect(f).toBeInstanceOf(Frozen);
     expect(f.K).toBe(1);
-    expect(Array.from(col(f.e0, 'syms', 3))).toEqual([END, 292, 293]);
-    expect(Array.from(col(f.e0, 'cnt', 3))).toEqual([3, 5, 2]);
-    expect(f.e0.total).toBe(10);
-    expect(f.e0.top).toBe(5);
+    expect(col(f.tab, 0, 'syms', 3)).toEqual([END, 292, 293]);
+    expect(col(f.tab, 0, 'cnt', 3)).toEqual([3, 5, 2]);
+    expect(f.tab.total[0]).toBe(10);
     expect(f.total).toBe(10);
 
     const h = new Float64Array(3);
     hashes(Int32Array.from([END, 292]), 2, 1, h);
     expect(f.lookup(h, 1)).toBe(1);
     expect(f.m).toBe(1);
-    expect(f.E[0]).toBe(f.e0);
+    expect(f.E[0]).toBe(0);
     const e = f.E[1];
-    expect(e.count(293)).toBe(4);
-    expect(e.count(END)).toBe(1);
-    expect(e.total).toBe(5);
-    expect(e.top).toBe(4);
-    expect(col(e, 'last', 1)[0]).toBe(0);
+    expect(f.tab.count(e, 293)).toBe(4);
+    expect(f.tab.count(e, END)).toBe(1);
+    expect(f.tab.total[e]).toBe(5);
+    expect(col(f.tab, e, 'last', 1)[0]).toBe(0);
 
     hashes(Int32Array.from([END]), 1, 1, h);
     expect(f.lookup(h, 1)).toBe(1);
-    expect(f.E[1].count(292)).toBe(2);
+    expect(f.tab.count(f.E[1], 292)).toBe(2);
 
     expect(f.lookup(h, 0)).toBe(0);
     hashes(Int32Array.from([END, 294]), 2, 1, h);
@@ -630,7 +761,7 @@ describe('frozen', () => {
     }
     p.resolve();
     expect(f.lookup(p.h, p.n)).toBe(1);
-    expect(f.E[1].count(292)).toBe(1);
+    expect(f.tab.count(f.E[1], 292)).toBe(1);
   });
 
   it('shares the population of a prior while the ids agree, and rebuilds when they differ', () => {
@@ -639,7 +770,7 @@ describe('frozen', () => {
     const other = { idOf: (cp: number): number => ids.get(cp)! + 10 };
     const g = frozen(prior, other);
     expect(g).not.toBe(f);
-    expect(Array.from(col(g.e0, 'syms', 3))).toEqual([END, 302, 303]);
+    expect(col(g.tab, 0, 'syms', 3)).toEqual([END, 302, 303]);
     expect(frozen(prior, other)).toBe(g);
   });
 });

@@ -55,7 +55,7 @@ import {
 } from './features';
 import type { ValueState } from './features';
 import { Population, STRIDE } from './tables';
-import type { Entry, Frozen } from './tables';
+import type { Entries, Frozen } from './tables';
 import { APM_B, BYTE_BASE, CP_BASE, DIGIT, END, HF, NSRC, SRC, levels } from './types';
 import type { AlphabetKind, Resolved, RunPrior } from './types';
 import { ValueStep, VSTEP_N } from './values';
@@ -359,8 +359,14 @@ export class SymbolPredictor {
   beginValue(): void {
     const c = this.core;
     c.valueId++;
+    const node = this.path.pop;
+    // A path's first value is, while it is open, the same sequence as the path's population.
     c.valuePop =
-      c.features.tree && (!c.valueFromSecond || c.valuesStarted) ? new Population(this.o) : null;
+      c.features.tree && (!c.valueFromSecond || c.valuesStarted)
+        ? node.t === 1
+          ? node
+          : new Population(this.o)
+        : null;
     c.valuesStarted = true;
     this.off = 0;
     this.inValue = true;
@@ -419,7 +425,7 @@ export class SymbolPredictor {
 
   /** The outside multiplier's log for symbol `s`: known to the path or not, by path maturity. */
   private osc(s: number): number {
-    return this.path.pop.e0.has(s) ? this.oscKnown : this.oscUnknown;
+    return this.path.pop.tab.has(0, s) ? this.oscKnown : this.oscUnknown;
   }
 
   private oscaled(src: number): boolean {
@@ -430,13 +436,15 @@ export class SymbolPredictor {
   }
 
   /**
-   * The votes of one context entry at level `k`, written straight into the log. At level 0 a
-   * follower votes with its count; above, with its count clamped to its vote one level down (every
-   * follower of a deeper entry is in the order-0 entry), and that vote keeps the difference.
+   * The votes of the context entry `x` of `tab` at level `k`, written straight into the log. At
+   * level 0 a follower votes with its count; above, with its count clamped to its vote one level
+   * down (every follower of a deeper entry is in the order-0 entry), and that vote keeps the
+   * difference.
    * `cellK` is the cell of rec 0 without offset agreement: rec adds its bucket, agreement 24.
    */
   private levelVotes(
-    e: Entry,
+    tab: Entries,
+    x: number,
     src: number,
     k: number,
     cellK: number,
@@ -451,17 +459,18 @@ export class SymbolPredictor {
     offOn: boolean
   ): void {
     const log = this.log;
-    const count = e.n;
+    const count = tab.n[x];
     log.reserve(log.n + count);
     const { pIdx, pN, memo, memoStamp } = this;
     const stepNo = this.stepNo;
     const bk = blockOf(src, k, this.K);
     const memoAt = bk * CELLS;
-    const known = this.path.pop.e0.slot as Int32Array;
+    const known = this.path.pop.tab.slot;
     const oscKnown = this.oscKnown;
     const oscUnknown = this.oscUnknown;
     const off = this.off;
-    const d = e.d;
+    const d = tab.data(x);
+    const b = tab.base[x];
     const lBlock = log.block;
     const lCell = log.cell;
     const lSym = log.sym;
@@ -481,7 +490,7 @@ export class SymbolPredictor {
     const tauV = tau ? 1 : 0;
     let i = log.n;
     for (let j = 0; j < count; j++) {
-      const o = j * STRIDE;
+      const o = b + j * STRIDE;
       const s = d[o];
       const c = d[o + 1];
       let n = c;
@@ -527,7 +536,7 @@ export class SymbolPredictor {
    * every vote carries its exact-level count. Long candidates then move one vote each from the
    * deepest level to their length bucket.
    */
-  private sweep(src: number, E: Entry[], m: number, pop: Population | null): void {
+  private sweep(src: number, tab: Entries, E: Int32Array, m: number, pop: Population | null): void {
     if (m < 0) {
       return;
     }
@@ -541,31 +550,32 @@ export class SymbolPredictor {
     const b = this.core.b;
     const off = this.off;
     const { pIdx } = this;
-    const e0 = E[0];
-    const cell0 = cellOf(0, frozen, 0, 0, dist(e0));
-    this.levelVotes(e0, src, 0, cell0, 0, osc, -1, -1, 0, false, t, frozen, false);
+    const n0 = tab.n[E[0]];
+    const cell0 = cellOf(0, frozen, 0, 0, dist(n0));
+    this.levelVotes(tab, E[0], src, 0, cell0, 0, osc, -1, -1, 0, false, t, frozen, false);
     const depthOn = f.depth;
     const offOn = f.offsetAgreement && !frozen;
     const G = isNode ? this.G : 0;
     for (let k = 1; k <= m; k++) {
-      const e = E[k];
+      const x = E[k];
+      const total = tab.total[x];
       const depth = anchorDepth(k, b, off, Infinity, depthOn);
       const li = frozen ? -1 : src * (K + 1) + k;
-      const ll = frozen ? 0 : lognL(e.total > 1 ? e.total : 1);
+      const ll = frozen ? 0 : lognL(total > 1 ? total : 1);
       const extra =
-        G + (isNode ? this.levTerm[k] : 0) + (frozen ? 0 : lognTerm(this.run.logn[li], e.total));
+        G + (isNode ? this.levTerm[k] : 0) + (frozen ? 0 : lognTerm(this.run.logn[li], total));
       const levI = isNode ? this.levIdx[k] : -1;
-      const cellK = cellOf(0, frozen, depth, 0, dist(e));
-      this.levelVotes(e, src, k, cellK, extra, osc, levI, li, ll, isNode, t, frozen, offOn);
+      const cellK = cellOf(0, frozen, depth, 0, dist(tab.n[x]));
+      this.levelVotes(tab, x, src, k, cellK, extra, osc, levI, li, ll, isNode, t, frozen, offOn);
     }
     if (frozen || m !== K || pop.nc === 0) {
       return;
     }
-    const eK = E[K];
-    const detK = dist(eK);
+    const totalK = tab.total[E[K]];
+    const detK = dist(tab.n[E[K]]);
     const liK = src * (K + 1) + K;
-    const llK = lognL(eK.total > 1 ? eK.total : 1);
-    const extraK = G + (isNode ? this.levTerm[K] : 0) + lognTerm(this.run.logn[liK], eK.total);
+    const llK = lognL(totalK > 1 ? totalK : 1);
+    const extraK = G + (isNode ? this.levTerm[K] : 0) + lognTerm(this.run.logn[liK], totalK);
     const levK = isNode ? this.levIdx[K] : -1;
     for (let c = 0; c < pop.nc; c++) {
       const L = pop.candL[c];
@@ -794,7 +804,7 @@ export class SymbolPredictor {
     node.resolve();
     if (msgF !== null) msgF.resolve();
     nodeF.resolve();
-    if (value !== null) value.resolve();
+    if (value !== null && value !== node) value.resolve();
     const ctx = msg === null ? node : msg;
     const B = this.builtin;
     if (B !== null) B.lookup(ctx.h, ctx.n);
@@ -828,12 +838,13 @@ export class SymbolPredictor {
     }
     const digits = ids.digitIds();
     const nl = ids.newlineId();
-    const e0 = ctx.e0;
+    const t0 = ctx.tab;
     let dsum = 10;
-    for (let d = 0; d < 10; d++) dsum += e0.count(digits[d]);
-    for (let d = 0; d < 10; d++) this.digitShare[d] = div((1 + e0.count(digits[d])) * P_ONE, dsum);
-    const cE = e0.count(END);
-    const cN = e0.count(nl);
+    for (let d = 0; d < 10; d++) dsum += t0.count(0, digits[d]);
+    for (let d = 0; d < 10; d++)
+      this.digitShare[d] = div((1 + t0.count(0, digits[d])) * P_ONE, dsum);
+    const cE = t0.count(0, END);
+    const cN = t0.count(0, nl);
     this.endShare = div((1 + cE) * P_ONE, 2 + cE + cN);
     this.nlShare = div((1 + cN) * P_ONE, 2 + cE + cN);
     if (f.outsideScale) {
@@ -851,22 +862,22 @@ export class SymbolPredictor {
 
     // Pass A.
     if (msg !== null) {
-      this.sweep(SRC.msg, msg.E, msg.m, msg);
+      this.sweep(SRC.msg, msg.tab, msg.E, msg.m, msg);
       this.mruVotes(msg, SRC.msg);
     }
-    this.sweep(SRC.node, node.E, node.m, node);
+    this.sweep(SRC.node, node.tab, node.E, node.m, node);
     if (msg === null) this.mruVotes(node, SRC.node);
     if (f.offsetRing) this.ringVotes(node);
-    if (B !== null) this.sweep(SRC.builtin, B.E, B.m, null);
-    if (msgF !== null) this.sweep(SRC.msgF, msgF.E, msgF.m, msgF);
-    this.sweep(SRC.nodeF, nodeF.E, nodeF.m, nodeF);
-    if (value !== null) this.sweep(SRC.value, value.E, value.m, value);
+    if (B !== null) this.sweep(SRC.builtin, B.tab, B.E, B.m, null);
+    if (msgF !== null) this.sweep(SRC.msgF, msgF.tab, msgF.E, msgF.m, msgF);
+    this.sweep(SRC.nodeF, nodeF.tab, nodeF.E, nodeF.m, nodeF);
+    if (value !== null) this.sweep(SRC.value, value.tab, value.E, value.m, value);
 
     // The escape's log-mass.
     let Lesc = run.escape + log2Fix(core.distinct + 1);
     this.pnovIdx = -1;
     if (f.pathNovelty) {
-      const n0 = node.e0.n;
+      const n0 = node.tab.n[0];
       this.pnovIdx =
         Math.min(7, bitlen(path.sinceNew + 1) - 1) * 4 +
         (n0 <= 4 ? 0 : n0 <= 16 ? 1 : n0 <= 64 ? 2 : 3);
@@ -1038,7 +1049,7 @@ export class SymbolPredictor {
 
     if (top >= 0) {
       const cm = ctx.m;
-      const row = (cm < 0 ? 0 : dist(ctx.E[cm])) * (K + 1) + (cm < 0 ? 0 : cm);
+      const row = (cm < 0 ? 0 : dist(ctx.tab.n[ctx.E[cm]])) * (K + 1) + (cm < 0 ? 0 : cm);
       const s16 = div(shl(tv, PB), Zp);
       let i = 0;
       while (i < APM_B - 2 && APM_EDGE[i + 1] <= s16) i++;
@@ -1154,7 +1165,7 @@ export class SymbolPredictor {
     const node = path.pop;
     const B = this.builtin;
     const seen = a < core.seen.length && core.seen[a] === 1;
-    const novel = !seen && !(B !== null && B.e0.has(a));
+    const novel = !seen && !(B !== null && B.tab.has(0, a));
     const af = ids.foldDigit(a);
     log.af = af === a ? -1 : af;
     if (af === DIGIT || af === ids.newlineId()) {
@@ -1204,7 +1215,7 @@ export class SymbolPredictor {
         const t = this.vList[i];
         const vs = this.VS[t];
         if (vs === 0) continue;
-        const cell = (node.e0.has(t) ? 3 : 0) + this.mat;
+        const cell = (node.tab.has(0, t) ? 3 : 0) + this.mat;
         let row = vs;
         if (this.text) {
           if (ids.partner(t) >= 0) row += mulShr(vs, this.lc, 24);
@@ -1232,22 +1243,22 @@ export class SymbolPredictor {
     }
     const off = this.off;
     if (f.levelEvidence) {
-      const e0 = node.e0;
+      const tab = node.tab;
       for (let k = 1; k <= node.m; k++)
-        path.sn[k] = decayedMean(path.sn[k], shadowCost(e0, node.E[k], a));
+        path.sn[k] = decayedMean(path.sn[k], shadowCost(tab, node.E[k], a));
       const r = node.offRing.get(off);
       if (r !== undefined) {
         let c = 0;
         for (let i = 0; i < r.len; i++) if (node.seq[r.at(i)] === a) c++;
-        path.so = decayedMean(path.so, shadowCostOf(e0, a, c, r.len));
+        path.so = decayedMean(path.so, shadowCostOf(tab, a, c, r.len));
       }
     }
-    path.sinceNew = node.e0.has(a) ? path.sinceNew + 1 : 0;
+    path.sinceNew = node.tab.has(0, a) ? path.sinceNew + 1 : 0;
     if (this.msg !== null) this.msg.update(a, off);
     node.update(a, off);
     if (this.msgF !== null) this.msgF.update(af, off);
     path.popF.update(af, off);
-    if (this.valuePop !== null) this.valuePop.update(a, off);
+    if (this.valuePop !== null && this.valuePop !== node) this.valuePop.update(a, off);
     core.b = ids.isBoundary(a) ? 0 : core.b + 1;
     core.n++;
     if (f.valueFeatures) valueAdvance(path.vfeat, a, off);
