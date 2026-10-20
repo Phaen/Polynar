@@ -12,7 +12,7 @@
 import { KeyMap, hashes } from './keymap';
 
 export { hashes };
-import { shl, shr } from './arith';
+import { div, shl, shr } from './arith';
 import { END } from './types';
 import type { LoadedPrior } from './types';
 
@@ -21,17 +21,17 @@ const MAX_AGREEMENT = 64;
 /** Offsets from this one on keep no same-offset ring. */
 const RING_OFFSETS = 64;
 
+/** Int32 words per follower in `Entry.d`: symbol, count, last position, value offset. */
+export const STRIDE = 4;
+
 /**
  * The followers of one context: per follower its symbol, count, the last position it followed at
- * and that position's value offset. Order-0 entries also index followers by symbol (`slot`), and
- * order-`order` entries remember the last positions that followed them (`ring`, newest at
- * `ri − 1`).
+ * and that position's value offset, interleaved in `d` (follower j at `j · STRIDE`). Order-0
+ * entries also index followers by symbol (`slot`), and order-`order` entries remember the last
+ * positions that followed them (`ring`, newest at `ri − 1`).
  */
 export class Entry {
-  syms: Int32Array;
-  cnt: Int32Array;
-  last: Int32Array;
-  offs: Int32Array;
+  d: Int32Array;
   /** Followers held. */
   n = 0;
   /** Sum of the counts. */
@@ -46,11 +46,7 @@ export class Entry {
   ri = 0;
 
   constructor(order0 = false) {
-    const capacity = order0 ? 16 : 2;
-    this.syms = new Int32Array(capacity);
-    this.cnt = new Int32Array(capacity);
-    this.last = new Int32Array(capacity);
-    this.offs = new Int32Array(capacity);
+    this.d = new Int32Array((order0 ? 16 : 2) * STRIDE);
     this.slot = order0 ? new Int32Array(256) : null;
   }
 
@@ -60,10 +56,11 @@ export class Entry {
     if (slot !== null) {
       return s < slot.length ? slot[s] - 1 : -1;
     }
-    const syms = this.syms;
-    for (let j = 0; j < this.n; j++) {
-      if (syms[j] === s) {
-        return j;
+    const d = this.d;
+    const end = this.n * STRIDE;
+    for (let o = 0; o < end; o += STRIDE) {
+      if (d[o] === s) {
+        return div(o, STRIDE);
       }
     }
     return -1;
@@ -76,7 +73,7 @@ export class Entry {
   /** The count of symbol `s`, 0 when absent. */
   count(s: number): number {
     const j = this.indexOf(s);
-    return j < 0 ? 0 : this.cnt[j];
+    return j < 0 ? 0 : this.d[j * STRIDE + 1];
   }
 
   /** Counts one more `s` following at position `t` with value offset `off`; returns its count. */
@@ -85,9 +82,11 @@ export class Entry {
     if (j < 0) {
       j = this.append(s);
     }
-    const c = ++this.cnt[j];
-    this.last[j] = t;
-    this.offs[j] = off;
+    const d = this.d;
+    const o = j * STRIDE;
+    const c = ++d[o + 1];
+    d[o + 2] = t;
+    d[o + 3] = off;
     if (c > this.top) {
       this.top = c;
     }
@@ -102,7 +101,7 @@ export class Entry {
     if (j < 0) {
       j = this.append(s);
     }
-    const v = (this.cnt[j] += c);
+    const v = (this.d[j * STRIDE + 1] += c);
     if (v > this.top) {
       this.top = v;
     }
@@ -111,12 +110,12 @@ export class Entry {
 
   /** Halves every count, rounding down but keeping at least 1. */
   halve(): void {
-    const cnt = this.cnt;
+    const d = this.d;
     let total = 0;
     let top = 0;
     for (let j = 0; j < this.n; j++) {
-      const c = Math.max(1, shr(cnt[j], 1));
-      cnt[j] = c;
+      const c = Math.max(1, shr(d[j * STRIDE + 1], 1));
+      d[j * STRIDE + 1] = c;
       total += c;
       if (c > top) {
         top = c;
@@ -129,11 +128,8 @@ export class Entry {
   /** A new follower `s` with count 0; returns its index. */
   private append(s: number): number {
     const j = this.n;
-    if (j === this.syms.length) {
-      this.syms = grow(this.syms, j * 2);
-      this.cnt = grow(this.cnt, j * 2);
-      this.last = grow(this.last, j * 2);
-      this.offs = grow(this.offs, j * 2);
+    if ((j + 1) * STRIDE > this.d.length) {
+      this.d = grow(this.d, this.d.length * 2);
     }
     let slot = this.slot;
     if (slot !== null) {
@@ -143,8 +139,7 @@ export class Entry {
       }
       slot[s] = j + 1;
     }
-    this.syms[j] = s;
-    this.cnt[j] = 0;
+    this.d[j * STRIDE] = s;
     this.n = j + 1;
     return j;
   }

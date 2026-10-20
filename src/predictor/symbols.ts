@@ -54,7 +54,7 @@ import {
   valueState,
 } from './features';
 import type { ValueState } from './features';
-import { Population } from './tables';
+import { Population, STRIDE } from './tables';
 import type { Entry, Frozen } from './tables';
 import { APM_B, BYTE_BASE, CP_BASE, DIGIT, END, HF, NSRC, SRC, levels } from './types';
 import type { AlphabetKind, Resolved, RunPrior } from './types';
@@ -461,7 +461,7 @@ export class SymbolPredictor {
     const oscKnown = this.oscKnown;
     const oscUnknown = this.oscUnknown;
     const off = this.off;
-    const { syms, cnt, last, offs } = e;
+    const d = e.d;
     const lBlock = log.block;
     const lCell = log.cell;
     const lSym = log.sym;
@@ -481,8 +481,9 @@ export class SymbolPredictor {
     const tauV = tau ? 1 : 0;
     let i = log.n;
     for (let j = 0; j < count; j++) {
-      const s = syms[j];
-      const c = cnt[j];
+      const o = j * STRIDE;
+      const s = d[o];
+      const c = d[o + 1];
       let n = c;
       let prev = -1;
       if (k > 0) {
@@ -492,8 +493,8 @@ export class SymbolPredictor {
       }
       let cell = cellK;
       if (!frozen) {
-        cell += recOf(t - last[j]);
-        if (offOn && offs[j] === off) cell += 24;
+        cell += recOf(t - d[o + 2]);
+        if (offOn && d[o + 3] === off) cell += 24;
       }
       const mk = memoAt + cell;
       const eL = (memoStamp[mk] === stepNo ? memo[mk] : this.base(bk, cell)) + extra;

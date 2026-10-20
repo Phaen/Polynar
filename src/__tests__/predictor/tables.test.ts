@@ -5,9 +5,16 @@ import {
   Population,
   exactCounts,
   frozen,
+  STRIDE,
   hashes,
 } from '../../predictor/tables';
 import { END } from '../../predictor/types';
+
+/** The first `n` symbols, counts, last positions or offsets of an entry's followers. */
+function col(e: Entry, field: 'syms' | 'cnt' | 'last' | 'offs', n: number): number[] {
+  const word = { syms: 0, cnt: 1, last: 2, offs: 3 }[field];
+  return Array.from({ length: n }, (_, j) => e.d[j * STRIDE + word]);
+}
 
 /** A deterministic generator in [0, 1). */
 function rng(seed: number): () => number {
@@ -176,10 +183,10 @@ class RefPop {
 
 function expectSameEntry(e: Entry, r: RefEntry): void {
   expect(e.n).toBe(r.syms.length);
-  expect(Array.from(e.syms.subarray(0, e.n))).toEqual(r.syms);
-  expect(Array.from(e.cnt.subarray(0, e.n))).toEqual(r.cnt);
-  expect(Array.from(e.last.subarray(0, e.n))).toEqual(r.last);
-  expect(Array.from(e.offs.subarray(0, e.n))).toEqual(r.offs);
+  expect(Array.from(col(e, 'syms', e.n))).toEqual(r.syms);
+  expect(Array.from(col(e, 'cnt', e.n))).toEqual(r.cnt);
+  expect(Array.from(col(e, 'last', e.n))).toEqual(r.last);
+  expect(Array.from(col(e, 'offs', e.n))).toEqual(r.offs);
   expect(e.total).toBe(r.total);
   expect(e.top).toBe(r.top);
   expect(e.pos).toBe(r.pos);
@@ -257,9 +264,9 @@ describe('Entry', () => {
     expect(e.has(12)).toBe(false);
     expect(e.count(7)).toBe(2);
     expect(e.count(12)).toBe(0);
-    expect(e.last[0]).toBe(6);
-    expect(e.offs[0]).toBe(5);
-    expect(e.offs[1]).toBe(0);
+    expect(col(e, 'last', 1)[0]).toBe(6);
+    expect(col(e, 'offs', 1)[0]).toBe(5);
+    expect(col(e, 'offs', 2)[1]).toBe(0);
   });
 
   it('indexes order-0 followers by symbol and grows the slot table', () => {
@@ -289,7 +296,7 @@ describe('Entry', () => {
     expect(e.total).toBe(9);
     expect(e.top).toBe(7);
     expect(e.pos).toBe(0);
-    expect(e.last[0]).toBe(0);
+    expect(col(e, 'last', 1)[0]).toBe(0);
   });
 
   it('halves every count, keeping at least 1', () => {
@@ -298,7 +305,7 @@ describe('Entry', () => {
     e.load(2, 1);
     e.load(3, 4);
     e.halve();
-    expect(Array.from(e.cnt.subarray(0, e.n))).toEqual([4, 1, 2]);
+    expect(Array.from(col(e, 'cnt', e.n))).toEqual([4, 1, 2]);
     expect(e.total).toBe(7);
     expect(e.top).toBe(4);
   });
@@ -427,10 +434,10 @@ describe('Population', () => {
     expect(e0.top).toBe(7);
     for (const e of [e1, e2]) {
       expect(e.n).toBe(2);
-      expect(Array.from(e.syms.subarray(0, 2))).toEqual([C, D]);
-      expect(Array.from(e.cnt.subarray(0, 2))).toEqual([5, 1]);
-      expect(Array.from(e.last.subarray(0, 2))).toEqual([18, 9]);
-      expect(Array.from(e.offs.subarray(0, 2))).toEqual([17, 8]);
+      expect(Array.from(col(e, 'syms', 2))).toEqual([C, D]);
+      expect(Array.from(col(e, 'cnt', 2))).toEqual([5, 1]);
+      expect(Array.from(col(e, 'last', 2))).toEqual([18, 9]);
+      expect(Array.from(col(e, 'offs', 2))).toEqual([17, 8]);
       expect(e.total).toBe(6);
       expect(e.top).toBe(5);
       expect(e.pos).toBe(18);
@@ -587,8 +594,8 @@ describe('frozen', () => {
     const f = frozen(prior, fake);
     expect(f).toBeInstanceOf(Frozen);
     expect(f.K).toBe(1);
-    expect(Array.from(f.e0.syms.subarray(0, 3))).toEqual([END, 292, 293]);
-    expect(Array.from(f.e0.cnt.subarray(0, 3))).toEqual([3, 5, 2]);
+    expect(Array.from(col(f.e0, 'syms', 3))).toEqual([END, 292, 293]);
+    expect(Array.from(col(f.e0, 'cnt', 3))).toEqual([3, 5, 2]);
     expect(f.e0.total).toBe(10);
     expect(f.e0.top).toBe(5);
     expect(f.total).toBe(10);
@@ -603,7 +610,7 @@ describe('frozen', () => {
     expect(e.count(END)).toBe(1);
     expect(e.total).toBe(5);
     expect(e.top).toBe(4);
-    expect(e.last[0]).toBe(0);
+    expect(col(e, 'last', 1)[0]).toBe(0);
 
     hashes(Int32Array.from([END]), 1, 1, h);
     expect(f.lookup(h, 1)).toBe(1);
@@ -632,7 +639,7 @@ describe('frozen', () => {
     const other = { idOf: (cp: number): number => ids.get(cp)! + 10 };
     const g = frozen(prior, other);
     expect(g).not.toBe(f);
-    expect(Array.from(g.e0.syms.subarray(0, 3))).toEqual([END, 302, 303]);
+    expect(Array.from(col(g.e0, 'syms', 3))).toEqual([END, 302, 303]);
     expect(frozen(prior, other)).toBe(g);
   });
 });
