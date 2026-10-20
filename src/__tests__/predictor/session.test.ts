@@ -1,4 +1,4 @@
-import { Decoder, Encoder } from '../../packer';
+import { CorruptInputError, Decoder, Encoder } from '../../packer';
 import { ONE } from '../../predictor/arith';
 import { loadPrior } from '../../predictor/prior';
 import { resolve } from '../../predictor/options';
@@ -116,12 +116,23 @@ describe('session', () => {
     expect(s.run.loaded).toBe(Priors.text);
   });
 
-  it('binds one prior per message', () => {
+  it('keeps a space of its own for each prior', () => {
     const s = new Session();
-    s.symbols('p', opts(), 'text');
-    s.symbols('q', opts(), 'text');
+    const a = s.symbols('p', opts(), 'text');
     const other = loadPrior(JSON.parse(JSON.stringify(shippedText)));
-    expect(() => s.symbols('r', resolve({}, other, 'test'), 'text')).toThrow(TypeError);
+    const o = resolve({}, other, 'test');
+    const b = s.symbols('p', o, 'text');
+    expect(b).not.toBe(a);
+    expect(s.space(other)).not.toBe(s.space(Priors.text));
+    expect(s.ids).toBe(s.space(Priors.text).ids);
+    expect(s.run).toBe(s.space(Priors.text).run);
+    expect(
+      trip([
+        { coder: strAt('p'), value: cps('hello') },
+        { coder: strAt('p', o), value: cps('hello') },
+        { coder: strAt('q', o), value: cps('help') },
+      ]).length
+    ).toBeGreaterThan(0);
   });
 
   it('caches predictors per path and alphabet, derived paths by node and index', () => {
@@ -222,6 +233,64 @@ describe('string coders', () => {
       RangeError
     );
     expect(() => c.write(enc, cps('ab'), 2, { min: 0, max: 3, fixed: true })).toThrow(RangeError);
+  });
+
+  it('counts astral code points as two units against the bounds', () => {
+    const two: Ends = { min: 0, max: 2, fixed: false };
+    trip([
+      { coder: strAt('u'), value: cps('😀'), ends: two },
+      { coder: strAt('u'), value: cps('a'), ends: two },
+      { coder: strAt('u'), value: cps('😀'), ends: { min: 2, max: 2, fixed: true } },
+    ]);
+    const c = new Session().string('u', opts(), 'text');
+    expect(() => c.write(new Encoder(), cps('😀a'), 2, two)).toThrow(RangeError);
+  });
+
+  it('refuses an astral code point read one unit before the max', () => {
+    const enc = new Encoder();
+    session(enc).string('u', opts(), 'text').write(enc, cps('a😀'), 2, OPEN);
+    const dec = new Decoder(enc.output());
+    expect(() =>
+      session(dec).string('u', opts(), 'text').read(dec, { min: 0, max: 2, fixed: false })
+    ).toThrow(CorruptInputError);
+  });
+
+  it('ends a value only after a whole step of units', () => {
+    const pairs: Ends = { min: 0, max: undefined, fixed: false, step: 2 };
+    trip([
+      { coder: strAt('w', opts(), 'bytes'), value: Int32Array.of(1, 2, 3, 4), ends: pairs },
+      { coder: strAt('w', opts(), 'bytes'), value: Int32Array.of(), ends: pairs },
+      { coder: textAt('w', opts(), 'bytes'), value: Int32Array.of(9, 9), ends: pairs },
+    ]);
+    const c = new Session().string('w', opts(), 'bytes');
+    expect(() => c.write(new Encoder(), Int32Array.of(1, 2, 3), 3, pairs)).toThrow(RangeError);
+  });
+
+  it('closes a text alphabet to its members, escaping the unseen ones by rank', () => {
+    const cjk = cps('一丁七万丈三');
+    const closed: Coder = (s) => s.string('c', opts(), 'text', cjk);
+    trip([
+      { coder: closed, value: cps('三丈万七丁一') },
+      { coder: closed, value: cps('一丁一丁') },
+      { coder: (s) => s.text('k', opts(), 'text', cjk), value: cps('七') },
+    ]);
+    const members = cps('abcxyz');
+    const s = new Session();
+    const pred = s.symbols('c', opts(), 'text', members);
+    const enc = new Encoder();
+    pred.beginValue();
+    pred.code(enc, s.ids.idOf(0x61));
+    const d = pred.distribution();
+    expect(d.indexOf(s.ids.idOf(0x41))).toBe(-1);
+    expect(() => pred.write(enc, s.ids.idOf(0x41))).toThrow(RangeError);
+  });
+
+  it('refuses to code inside a spelling the encoder tries', () => {
+    const enc = new Encoder();
+    enc.mark();
+    expect(() => session(enc).string('t', opts(), 'text').write(enc, cps('a'), 1, OPEN)).toThrow(
+      /inside a spelling/
+    );
   });
 
   it('codes bytes and structure values, implied ones included', () => {

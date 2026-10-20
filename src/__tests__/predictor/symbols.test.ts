@@ -282,9 +282,10 @@ describe('SymbolPredictor round trips', () => {
     pred.implied(a);
     pred.implied(a);
     pred.endValue();
-    expect(s.n).toBe(2);
-    expect(s.seen[a]).toBe(1);
-    expect(s.distinct).toBe(1);
+    const space = s.space(o.prior);
+    expect(space.n).toBe(2);
+    expect(space.seen[a]).toBe(1);
+    expect(space.distinct).toBe(1);
   });
 });
 
@@ -368,7 +369,7 @@ describe('SymbolPredictor tables', () => {
     expect(pred.dist.indexOf(z)).toBe(-1);
     pred.learn(z);
     expect(pred.log.novel).toBe(true);
-    expect(s.seen[z]).toBe(1);
+    expect(s.space(Priors.text).seen[z]).toBe(1);
   });
 
   it('matches exp2Fix and log2Fix in the log masses of a single vote', () => {

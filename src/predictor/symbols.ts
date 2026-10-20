@@ -268,6 +268,8 @@ export class SymbolPredictor {
   private readonly x = new Float64Array(HF);
   private off = 0;
   private inValue = false;
+  /** 1 for each id of a closed text alphabet (a charset). */
+  private inClosed: Uint8Array | null = null;
 
   // Per-symbol scratch, indexed by id.
   private V: Float64Array = new Float64Array(0);
@@ -329,9 +331,16 @@ export class SymbolPredictor {
     readonly run: RunPrior,
     private readonly builtin: Frozen | null,
     private readonly msg: Population | null,
-    private readonly msgF: Population | null
+    private readonly msgF: Population | null,
+    private readonly closed: Int32Array | null
   ) {
     this.K = o.order;
+    if (closed !== null) {
+      let top = 0;
+      for (const id of closed) top = Math.max(top, id);
+      this.inClosed = new Uint8Array(top + 1);
+      for (const id of closed) this.inClosed[id] = 1;
+    }
     this.text = alphabet === 'text';
     const cells = NSRC * levels(o.order) * CELLS;
     this.memo = new Float64Array(cells);
@@ -663,6 +672,9 @@ export class SymbolPredictor {
     if (id === END) {
       return this.allowEnd;
     }
+    if (this.inClosed !== null) {
+      return id < this.inClosed.length && this.inClosed[id] === 1;
+    }
     if (this.alphabet === 'text') {
       return id >= CP_BASE;
     }
@@ -707,13 +719,18 @@ export class SymbolPredictor {
 
   /** Members of a closed alphabet allowed at this step, in id order. */
   private memberCount(): number {
-    return (this.alphabet === 'bytes' ? 256 : DIGIT - 1) + (this.allowEnd ? 1 : 0);
+    const size =
+      this.closed !== null ? this.closed.length : this.alphabet === 'bytes' ? 256 : DIGIT - 1;
+    return size + (this.allowEnd ? 1 : 0);
   }
 
   private memberAt(k: number): number {
     const e = this.allowEnd ? 1 : 0;
     if (k < e) {
       return END;
+    }
+    if (this.closed !== null) {
+      return this.closed[k - e];
     }
     return this.alphabet === 'bytes' ? BYTE_BASE + k - e : k + 1 - e;
   }
@@ -964,7 +981,7 @@ export class SymbolPredictor {
     this.top = top;
 
     const total = this.o.quantisation;
-    const hasEscape = this.text || this.nc < this.memberCount();
+    const hasEscape = (this.text && this.closed === null) || this.nc < this.memberCount();
     let escMass = escC;
     let dropped: Uint8Array | null = null;
     const over = this.nc + 1 - div(total, 2);
@@ -1019,14 +1036,14 @@ export class SymbolPredictor {
     const d = this.dist;
     let i = d.indexOf(a);
     if (i < 0) {
-      if (!d.hasEscape) {
+      if (!d.hasEscape || !this.member(a)) {
         throw new RangeError(`symbol ${a} is not in the ${this.alphabet} alphabet`);
       }
       i = d.n - 1;
     }
     enc.composeWeighted(d.cum(i), d.freq(i), d.total);
     if (d.hasEscape && i === d.n - 1) {
-      if (this.text) {
+      if (this.text && this.closed === null) {
         const cp = this.core.ids.cpOf(a);
         const band = cp < 128 ? 0 : cp < 2048 ? 1 : 2;
         const lad = this.run.loaded.constants.ladder;
@@ -1056,7 +1073,7 @@ export class SymbolPredictor {
     if (!d.hasEscape || i !== d.n - 1) {
       return d.idAt(i);
     }
-    if (this.text) {
+    if (this.text && this.closed === null) {
       const lad = this.run.loaded.constants.ladder;
       const band = dec.parseMember(lad[0] + lad[1] + lad[2], {
         locate: (r) => (r < lad[0] ? 0 : r < lad[0] + lad[1] ? 1 : 2),
@@ -1076,6 +1093,9 @@ export class SymbolPredictor {
 
   /** The escape share's ladder bits for symbol `a`. */
   private ladderBits(a: number): number {
+    if (this.closed !== null) {
+      return bitlen(this.closed.length);
+    }
     if (!this.text) {
       return this.alphabet === 'bytes' ? BYTE_BITS : STRUCT_BITS;
     }

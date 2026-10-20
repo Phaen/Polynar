@@ -202,14 +202,19 @@ export const BYTE_BASE = 36;
 export const CP_BASE = BYTE_BASE + 256; // 292: first id a code point can take
 export const ESCAPE = -1;
 
-/** Which symbols a predictor codes. Charsets arrive in phase 2. */
+/** Which symbols a predictor codes; a charset is a text alphabet closed to its members. */
 export type AlphabetKind = 'text' | 'bytes' | 'structure';
 
-/** END rules of one value: END is not an entry below `min`, the value ends without a step at `max`, and never appears when `fixed`. */
+/**
+ * END rules of one value, in units (a symbol's UTF-16 code units for text, 1 for anything else):
+ * END is not an entry below `min` or between whole `step`s of units (1 when left out), the value
+ * ends without a step at `max`, and END never appears when `fixed`.
+ */
 export interface Ends {
   readonly min: number;
   readonly max: number | undefined;
   readonly fixed: boolean;
+  readonly step?: number;
 }
 
 /** The position of the symbol being coded, as the stream knows it (prototype `x`). */
