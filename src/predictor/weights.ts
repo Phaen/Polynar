@@ -10,6 +10,7 @@
  */
 
 import { E_MIN, HB, ONE, PB, POW2, RB, bitlen, clampi, div, mulShr, shl, shr } from './arith';
+import { CELL_X } from './features';
 import { HF, SRC, levels } from './types';
 import type { LoadedPrior, PriorConstants, RunPrior } from './types';
 
@@ -128,8 +129,8 @@ function grownFloat(a: Float64Array, cap: number): Float64Array {
 export class VoteLog {
   n = 0;
   block: Int32Array = new Int32Array(0);
-  /** HF features per vote, RB. */
-  x: Float64Array = new Float64Array(0);
+  /** The vote's feature cell (features.ts `cellOf`); its features are `CELL_X` in RB. */
+  cell: Int32Array = new Int32Array(0);
   sym: Int32Array = new Int32Array(0);
   /** The exact-level count. */
   count: Float64Array = new Float64Array(0);
@@ -192,7 +193,7 @@ export class VoteLog {
       c *= 2;
     }
     this.block = grownInt(this.block, c);
-    this.x = grownFloat(this.x, c * HF);
+    this.cell = grownInt(this.cell, c);
     this.sym = grownInt(this.sym, c);
     this.count = grownFloat(this.count, c);
     this.eLearn = grownFloat(this.eLearn, c);
@@ -234,7 +235,7 @@ export class VoteLog {
   /** Appends a vote (masses 0 until pass B) and returns its index. */
   push(
     block: number,
-    x: ArrayLike<number>,
+    cell: number,
     sym: number,
     count: number,
     eLearn: number,
@@ -253,10 +254,7 @@ export class VoteLog {
       this.reserve(i + 1);
     }
     this.block[i] = block;
-    const o = i * HF;
-    for (let f = 0; f < HF; f++) {
-      this.x[o + f] = x[f];
-    }
+    this.cell[i] = cell;
     this.sym[i] = sym;
     this.count[i] = count;
     this.eLearn[i] = eLearn;
@@ -353,9 +351,9 @@ export function learn(
         touched[nt++] = b;
       }
       const o = b * HF;
-      const xo = i * HF;
+      const xo = log.cell[i] * HF;
       for (let f = 0; f < HF; f++) {
-        G[o + f] += q * log.x[xo + f];
+        G[o + f] += q * CELL_X[xo + f];
       }
     }
     if (log.tau[i] === 1) {

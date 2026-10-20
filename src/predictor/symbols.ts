@@ -37,12 +37,13 @@ import {
 import type { Ids } from './alphabet';
 import { Distribution } from './distribution';
 import {
-  FROZEN_REC,
   anchorDepth,
   decayedMean,
   detBucket,
   dist,
-  featureVector,
+  CELLS,
+  CELL_UNITS,
+  cellOf,
   levBucket,
   longBucket,
   lognTerm,
@@ -221,8 +222,6 @@ const STRUCT_BITS = 4;
 
 const P_ONE = POW2[PB];
 const LAMBDA_MAX = POW2[24];
-/** Exponent memo cells per block: rec slot 0..5, det 0..3, offset agreement 0..1, depth 0..3. */
-const CELLS = 192;
 const LOGN_MAX = 16 * ONE;
 /** log2Fix of the small counts. */
 const LOG2_SMALL = new Float64Array(4096);
@@ -265,7 +264,6 @@ export class SymbolPredictor {
   readonly log = new VoteLog(256);
   private readonly K: number;
   private readonly text: boolean;
-  private readonly x = new Float64Array(HF);
   private off = 0;
   private inValue = false;
   /** 1 for each id of a closed text alphabet (a charset). */
@@ -299,6 +297,9 @@ export class SymbolPredictor {
   private deltas: PathDeltas | null = null;
   private G = 0;
   private mat = 0;
+  /** The outside multiplier's logs this step for a symbol known to the path and for one not. */
+  private oscKnown = 0;
+  private oscUnknown = 0;
   private Lesc = 0;
   private pnovIdx = -1;
   private escC = 0;
@@ -389,17 +390,9 @@ export class SymbolPredictor {
     this.rStamp = grownI(this.rStamp, size);
   }
 
-  /** The base exponent of a block at a feature cell, memoised for the step; fills `x`. */
-  private base(
-    block: number,
-    rec: number,
-    frozen: boolean,
-    depth: number,
-    offAg: number,
-    det: number
-  ): number {
-    featureVector(this.x, rec, frozen, depth, offAg, det);
-    const k = block * CELLS + ((depth * 2 + offAg) * 4 + det) * 6 + (frozen ? FROZEN_REC : rec);
+  /** The base exponent of a block at a feature cell, memoised for the step. */
+  private base(block: number, cell: number): number {
+    const k = block * CELLS + cell;
     if (this.memoStamp[k] === this.stepNo) {
       return this.memo[k];
     }
@@ -407,8 +400,12 @@ export class SymbolPredictor {
     // product is the exact integer product.
     const h = this.run.hybrid;
     const o = block * HF;
-    const r = frozen ? 0 : rec;
-    const fz = frozen ? 1 : 0;
+    const u = cell * HF;
+    const r = CELL_UNITS[u + 1];
+    const fz = CELL_UNITS[u + 2];
+    const depth = CELL_UNITS[u + 3];
+    const offAg = CELL_UNITS[u + 4];
+    const det = CELL_UNITS[u + 5];
     let e =
       h[o] + r * h[o + 1] + fz * h[o + 2] + depth * h[o + 3] + offAg * h[o + 4] + det * h[o + 5];
     const d = this.deltas === null ? undefined : this.deltas.get(block);
@@ -422,7 +419,7 @@ export class SymbolPredictor {
 
   /** The outside multiplier's log for symbol `s`: known to the path or not, by path maturity. */
   private osc(s: number): number {
-    return this.run.oscale[(this.path.pop.e0.has(s) ? 3 : 0) + this.mat];
+    return this.path.pop.e0.has(s) ? this.oscKnown : this.oscUnknown;
   }
 
   private oscaled(src: number): boolean {
@@ -430,6 +427,97 @@ export class SymbolPredictor {
       this.core.features.outsideScale &&
       (src === SRC.msg || src === SRC.msgF || src === SRC.value || src === SRC.builtin)
     );
+  }
+
+  /**
+   * The votes of one context entry at level `k`, written straight into the log. At level 0 a
+   * follower votes with its count; above, with its count clamped to its vote one level down (every
+   * follower of a deeper entry is in the order-0 entry), and that vote keeps the difference.
+   * `cellK` is the cell of rec 0 without offset agreement: rec adds its bucket, agreement 24.
+   */
+  private levelVotes(
+    e: Entry,
+    src: number,
+    k: number,
+    cellK: number,
+    extra: number,
+    osc: boolean,
+    levI: number,
+    li: number,
+    ll: number,
+    tau: boolean,
+    t: number,
+    frozen: boolean,
+    offOn: boolean
+  ): void {
+    const log = this.log;
+    const count = e.n;
+    log.reserve(log.n + count);
+    const { pIdx, pN, memo, memoStamp } = this;
+    const stepNo = this.stepNo;
+    const bk = blockOf(src, k, this.K);
+    const memoAt = bk * CELLS;
+    const known = this.path.pop.e0.slot as Int32Array;
+    const oscKnown = this.oscKnown;
+    const oscUnknown = this.oscUnknown;
+    const off = this.off;
+    const { syms, cnt, last, offs } = e;
+    const lBlock = log.block;
+    const lCell = log.cell;
+    const lSym = log.sym;
+    const lCount = log.count;
+    const lLearn = log.eLearn;
+    const lCode = log.eCode;
+    const lShare = log.share16;
+    const lSrc = log.src;
+    const lLevel = log.level;
+    const lLev = log.levIndex;
+    const lLogn = log.lognIndex;
+    const lLognL = log.lognL;
+    const lTau = log.tau;
+    const lMassL = log.massLearn;
+    const lMassC = log.massCode;
+    const lPrev = log.prev;
+    const tauV = tau ? 1 : 0;
+    let i = log.n;
+    for (let j = 0; j < count; j++) {
+      const s = syms[j];
+      const c = cnt[j];
+      let n = c;
+      let prev = -1;
+      if (k > 0) {
+        n = c < pN[s] ? c : pN[s];
+        prev = pIdx[s];
+        lCount[prev] -= n;
+      }
+      let cell = cellK;
+      if (!frozen) {
+        cell += recOf(t - last[j]);
+        if (offOn && offs[j] === off) cell += 24;
+      }
+      const mk = memoAt + cell;
+      const eL = (memoStamp[mk] === stepNo ? memo[mk] : this.base(bk, cell)) + extra;
+      lBlock[i] = bk;
+      lCell[i] = cell;
+      lSym[i] = s;
+      lCount[i] = n;
+      lLearn[i] = eL;
+      lCode[i] = osc ? eL + (s < known.length && known[s] > 0 ? oscKnown : oscUnknown) : eL;
+      lShare[i] = P_ONE;
+      lSrc[i] = src;
+      lLevel[i] = k;
+      lLev[i] = levI;
+      lLogn[i] = li;
+      lLognL[i] = ll;
+      lTau[i] = tauV;
+      lMassL[i] = 0;
+      lMassC[i] = 0;
+      lPrev[i] = prev;
+      pIdx[s] = i;
+      pN[s] = n;
+      i++;
+    }
+    log.n = i;
   }
 
   /**
@@ -451,76 +539,23 @@ export class SymbolPredictor {
     const t = frozen ? 0 : pop.t;
     const b = this.core.b;
     const off = this.off;
-    const { pIdx, pN } = this;
+    const { pIdx } = this;
     const e0 = E[0];
-    const det0 = dist(e0);
-    const b0 = blockOf(src, 0, K);
-    for (let j = 0; j < e0.n; j++) {
-      const s = e0.syms[j];
-      const n = e0.cnt[j];
-      const rec = frozen ? 0 : recOf(t - e0.last[j]);
-      const e = this.base(b0, rec, frozen, 0, 0, det0);
-      const i = log.push(
-        b0,
-        this.x,
-        s,
-        n,
-        e,
-        osc ? e + this.osc(s) : e,
-        P_ONE,
-        src,
-        0,
-        -1,
-        -1,
-        0,
-        false,
-        -1
-      );
-      pIdx[s] = i;
-      pN[s] = n;
-    }
+    const cell0 = cellOf(0, frozen, 0, 0, dist(e0));
+    this.levelVotes(e0, src, 0, cell0, 0, osc, -1, -1, 0, false, t, frozen, false);
     const depthOn = f.depth;
     const offOn = f.offsetAgreement && !frozen;
     const G = isNode ? this.G : 0;
     for (let k = 1; k <= m; k++) {
       const e = E[k];
-      const det = dist(e);
-      const bk = blockOf(src, k, K);
       const depth = anchorDepth(k, b, off, Infinity, depthOn);
       const li = frozen ? -1 : src * (K + 1) + k;
       const ll = frozen ? 0 : lognL(e.total > 1 ? e.total : 1);
       const extra =
         G + (isNode ? this.levTerm[k] : 0) + (frozen ? 0 : lognTerm(this.run.logn[li], e.total));
       const levI = isNode ? this.levIdx[k] : -1;
-      for (let j = 0; j < e.n; j++) {
-        // Every follower is in the order-0 entry, so it has voted at a lower level.
-        const s = e.syms[j];
-        const c = e.cnt[j];
-        const n = c < pN[s] ? c : pN[s];
-        const rec = frozen ? 0 : recOf(t - e.last[j]);
-        const offAg = offOn && e.offs[j] === off ? 1 : 0;
-        const eL = this.base(bk, rec, frozen, depth, offAg, det) + extra;
-        const prev = pIdx[s];
-        const i = log.push(
-          bk,
-          this.x,
-          s,
-          n,
-          eL,
-          osc ? eL + this.osc(s) : eL,
-          P_ONE,
-          src,
-          k,
-          levI,
-          li,
-          ll,
-          isNode,
-          prev
-        );
-        log.count[prev] -= n;
-        pIdx[s] = i;
-        pN[s] = n;
-      }
+      const cellK = cellOf(0, frozen, depth, 0, dist(e));
+      this.levelVotes(e, src, k, cellK, extra, osc, levI, li, ll, isNode, t, frozen, offOn);
     }
     if (frozen || m !== K || pop.nc === 0) {
       return;
@@ -546,10 +581,11 @@ export class SymbolPredictor {
       const offAg = offOn && pop.offs[p] === off ? 1 : 0;
       const depth = anchorDepth(L, b, off, Infinity, depthOn);
       const block = blockOf(src, lb, K);
-      const eL = this.base(block, recOf(t - p), false, depth, offAg, detK) + extraK;
+      const cell = cellOf(recOf(t - p), false, depth, offAg, detK);
+      const eL = this.base(block, cell) + extraK;
       log.push(
         block,
-        this.x,
+        cell,
         s,
         1,
         eL,
@@ -605,9 +641,9 @@ export class SymbolPredictor {
       const depth = anchorDepth(L, this.core.b, this.off, Infinity, f.depth);
       const block = blockOf(SRC.sticky, lb, K);
       const deep = lb >= 1;
-      const eL =
-        this.base(block, recOf(t - p), false, depth, 1, det) + (deep ? this.G : 0) + lev + ln;
-      this.log.push(block, this.x, seq[p], 1, eL, eL, P_ONE, SRC.node, lb, levI, li, ll, deep, -1);
+      const cell = cellOf(recOf(t - p), false, depth, 1, det);
+      const eL = this.base(block, cell) + (deep ? this.G : 0) + lev + ln;
+      this.log.push(block, cell, seq[p], 1, eL, eL, P_ONE, SRC.node, lb, levI, li, ll, deep, -1);
     }
   }
 
@@ -626,11 +662,12 @@ export class SymbolPredictor {
       const lb = L <= K ? L : longBucket(L, K);
       const depth = anchorDepth(L, this.core.b, this.off, Infinity, depthOn);
       const block = blockOf(SRC.sticky, lb, K);
-      const eL = this.base(block, recOf(d), false, depth, 0, 0);
+      const cell = cellOf(recOf(d), false, depth, 0, 0);
+      const eL = this.base(block, cell);
       const s = pop.seq[p];
       this.log.push(
         block,
-        this.x,
+        cell,
         s,
         1,
         eL,
@@ -779,6 +816,8 @@ export class SymbolPredictor {
     this.deltas = f.deltas ? path.deltas : null;
     const age = node.t - 1;
     this.mat = age < 64 ? 0 : age < 512 ? 1 : 2;
+    this.oscUnknown = run.oscale[this.mat];
+    this.oscKnown = run.oscale[3 + this.mat];
     if (f.levelEvidence) {
       for (let k = 1; k <= K; k++) {
         const bk = levBucket(path.sn[k]);

@@ -1,4 +1,5 @@
 import { E_MIN, ONE, PB, RB, div } from '../../predictor/arith';
+import { cellOf } from '../../predictor/features';
 import { HF, NSRC, SRC, levels } from '../../predictor/types';
 import type { LoadedPrior, PriorConstants } from '../../predictor/types';
 import {
@@ -112,6 +113,9 @@ const rq = (a: number, b: number): number => Math.floor((2 * a * 65536 + b) / (2
 const X = (rec = 0, frozen = 0, depth = 0, off = 0, det = 0): number[] =>
   [1, rec, frozen, depth, off, det].map((v) => v * ONE);
 
+/** The feature cell of a vector made by X. */
+const C = (x: number[]): number => cellOf(x[1] / ONE, x[2] > 0, x[3] / ONE, x[4] / ONE, x[5] / ONE);
+
 describe('newRunPrior', () => {
   it('copies every learned table', () => {
     const p = prior();
@@ -217,12 +221,12 @@ describe('VoteLog', () => {
     const log = new VoteLog(2);
     for (let i = 0; i < 40; i++) {
       expect(
-        log.push(i, X(1), 100 + i, i, -i, -2 * i, 65536, 1, 2, -1, 3, ONE, i % 2 === 0, -1)
+        log.push(i, C(X(1)), 100 + i, i, -i, -2 * i, 65536, 1, 2, -1, 3, ONE, i % 2 === 0, -1)
       ).toBe(i);
     }
     expect(log.n).toBe(40);
     expect(log.block[39]).toBe(39);
-    expect(log.x[39 * HF + 1]).toBe(ONE);
+    expect(log.cell[39]).toBe(C(X(1)));
     expect(log.sym[0]).toBe(100);
     expect(log.count[5]).toBe(5);
     expect(log.eLearn[5]).toBe(-5);
@@ -275,8 +279,8 @@ describe('learn', () => {
     const b = blockOf(SRC.msg, 1, ORDER);
     const x1 = X(2, 0, 1, 1, 0);
     const x2 = X(0, 0, 0, 0, 3);
-    log.push(b, x1, 7, 3, 0, 0, 65536, SRC.msg, 1, -1, -1, 0, false, -1);
-    log.push(b, x2, 8, 1, 0, 0, 65536, SRC.msg, 1, -1, -1, 0, false, -1);
+    log.push(b, C(x1), 7, 3, 0, 0, 65536, SRC.msg, 1, -1, -1, 0, false, -1);
+    log.push(b, C(x2), 8, 1, 0, 0, 65536, SRC.msg, 1, -1, -1, 0, false, -1);
     log.massLearn[0] = 3000;
     log.massLearn[1] = 1000;
     log.massEsc = 500;
@@ -317,8 +321,8 @@ describe('learn', () => {
     const log = new VoteLog();
     const bb = blockOf(SRC.builtin, 0, ORDER);
     const bn = blockOf(SRC.node, 0, ORDER);
-    log.push(bb, X(), 1, 1, 0, 0, 65536, SRC.builtin, 0, -1, -1, 0, false, -1);
-    log.push(bn, X(), 2, 1, 0, 0, 65536, SRC.node, 0, -1, -1, 0, false, -1);
+    log.push(bb, C(X()), 1, 1, 0, 0, 65536, SRC.builtin, 0, -1, -1, 0, false, -1);
+    log.push(bn, C(X()), 2, 1, 0, 0, 65536, SRC.node, 0, -1, -1, 0, false, -1);
     log.massLearn[0] = 100;
     log.massLearn[1] = 100;
     const deltas: PathDeltas = new Map();
@@ -342,9 +346,9 @@ describe('learn', () => {
     const bf = blockOf(SRC.msgF, 0, ORDER);
     const bm = blockOf(SRC.msg, 0, ORDER);
     const x = X(1);
-    log.push(bf, x, 35, 4, 0, 0, 16384, SRC.msgF, 0, -1, -1, 0, false, -1);
-    log.push(bm, x, 35, 4, 0, 0, 65536, SRC.msg, 0, -1, -1, 0, false, -1);
-    log.push(bm, x, 48, 4, 0, 0, 65536, SRC.msg, 0, -1, -1, 0, false, -1);
+    log.push(bf, C(x), 35, 4, 0, 0, 16384, SRC.msgF, 0, -1, -1, 0, false, -1);
+    log.push(bm, C(x), 35, 4, 0, 0, 65536, SRC.msg, 0, -1, -1, 0, false, -1);
+    log.push(bm, C(x), 48, 4, 0, 0, 65536, SRC.msg, 0, -1, -1, 0, false, -1);
     log.massLearn[0] = 4000;
     log.massLearn[1] = 0;
     log.massLearn[2] = 1000;
@@ -361,7 +365,7 @@ describe('learn', () => {
     // Without af the folded vote is compared with a itself.
     const run2 = newRunPrior(prior());
     log.reset();
-    log.push(bf, x, 48, 4, 0, 0, 65536, SRC.nodeF, 0, -1, -1, 0, false, -1);
+    log.push(bf, C(x), 48, 4, 0, 0, 65536, SRC.nodeF, 0, -1, -1, 0, false, -1);
     log.massLearn[0] = 1000;
     learn(run2, log, 1000, 1000, 48, null, 0);
     // A vote holding all of Sa and Z has gradient 0.
@@ -373,8 +377,8 @@ describe('learn', () => {
     const log = new VoteLog();
     const b = blockOf(SRC.msg, 2, ORDER);
     const x = X(0, 1, 2, 0, 1);
-    log.push(b, x, 9, 1, 0, 0, 65536, SRC.msg, 2, -1, -1, 0, false, -1);
-    log.push(b, x, 10, 1, 0, 0, 65536, SRC.msg, 2, -1, -1, 0, false, -1);
+    log.push(b, C(x), 9, 1, 0, 0, 65536, SRC.msg, 2, -1, -1, 0, false, -1);
+    log.push(b, C(x), 10, 1, 0, 0, 65536, SRC.msg, 2, -1, -1, 0, false, -1);
     const m1 = 2 ** 36 - 12345;
     const m2 = 2 ** 35 + 777;
     log.massLearn[0] = m1;
@@ -406,8 +410,8 @@ describe('learn', () => {
     const deltas: PathDeltas = new Map();
     for (let step = 0; step < 200; step++) {
       log.reset();
-      log.push(b, X(4), 1, 1, 0, 0, 65536, SRC.node, 0, -1, -1, 0, false, -1);
-      log.push(b + 1, X(4), 2, 1, 0, 0, 65536, SRC.node, 1, -1, -1, 0, false, -1);
+      log.push(b, C(X(4)), 1, 1, 0, 0, 65536, SRC.node, 0, -1, -1, 0, false, -1);
+      log.push(b + 1, C(X(4)), 2, 1, 0, 0, 65536, SRC.node, 1, -1, -1, 0, false, -1);
       log.massLearn[0] = 1;
       log.massLearn[1] = 1000;
       learn(run, log, 1, 1001, 1, deltas, 0, fast);
@@ -416,8 +420,8 @@ describe('learn', () => {
     expect(deltas.get(b)![1]).toBe(c.clamps.delta);
     for (let step = 0; step < 200; step++) {
       log.reset();
-      log.push(b, X(4), 1, 1, 0, 0, 65536, SRC.node, 0, -1, -1, 0, false, -1);
-      log.push(b + 1, X(4), 2, 1, 0, 0, 65536, SRC.node, 1, -1, -1, 0, false, -1);
+      log.push(b, C(X(4)), 1, 1, 0, 0, 65536, SRC.node, 0, -1, -1, 0, false, -1);
+      log.push(b + 1, C(X(4)), 2, 1, 0, 0, 65536, SRC.node, 1, -1, -1, 0, false, -1);
       log.massLearn[0] = 1000;
       log.massLearn[1] = 1;
       learn(run, log, 1, 1001, 2, deltas, 0, fast);
@@ -429,7 +433,7 @@ describe('learn', () => {
   it('learns the escape and pnov from novelty, with clamps', () => {
     const run = newRunPrior(prior());
     const log = new VoteLog();
-    log.push(0, X(), 1, 1, 0, 0, 65536, SRC.node, 0, -1, -1, 0, false, -1);
+    log.push(0, C(X()), 1, 1, 0, 0, 65536, SRC.node, 0, -1, -1, 0, false, -1);
     log.massLearn[0] = 1000;
     log.massEsc = 1000;
     log.novel = true;
@@ -458,9 +462,9 @@ describe('learn', () => {
   it('learns the value-feature slopes from the tau votes', () => {
     const run = newRunPrior(prior());
     const log = new VoteLog();
-    log.push(0, X(), 1, 1, 0, 0, 65536, SRC.node, 3, -1, -1, 0, true, -1);
-    log.push(0, X(), 2, 1, 0, 0, 65536, SRC.node, 3, -1, -1, 0, true, -1);
-    log.push(0, X(), 3, 1, 0, 0, 65536, SRC.msg, 3, -1, -1, 0, false, -1);
+    log.push(0, C(X()), 1, 1, 0, 0, 65536, SRC.node, 3, -1, -1, 0, true, -1);
+    log.push(0, C(X()), 2, 1, 0, 0, 65536, SRC.node, 3, -1, -1, 0, true, -1);
+    log.push(0, C(X()), 3, 1, 0, 0, 65536, SRC.msg, 3, -1, -1, 0, false, -1);
     log.massLearn[0] = 3000;
     log.massLearn[1] = 1000;
     log.massLearn[2] = 4000;
@@ -481,7 +485,7 @@ describe('learn', () => {
     // A zero gradient leaves the slopes alone.
     const before = Array.from(run.vfeat);
     log.reset();
-    log.push(0, X(), 1, 1, 0, 0, 65536, SRC.node, 3, -1, -1, 0, true, -1);
+    log.push(0, C(X()), 1, 1, 0, 0, 65536, SRC.node, 3, -1, -1, 0, true, -1);
     log.massLearn[0] = 1000;
     log.vx.set([1, 1, 1, 1, 1]);
     learn(run, log, 1000, 1000, 1, null, 0);
@@ -491,8 +495,8 @@ describe('learn', () => {
   it('learns level-evidence cells and log-n slopes', () => {
     const run = newRunPrior(prior());
     const log = new VoteLog();
-    log.push(0, X(), 1, 1, 0, 0, 65536, SRC.node, 1, 2, 4, 3 * ONE, false, -1);
-    log.push(0, X(), 2, 1, 0, 0, 65536, SRC.node, 1, 2, 4, 5 * ONE, false, -1);
+    log.push(0, C(X()), 1, 1, 0, 0, 65536, SRC.node, 1, 2, 4, 3 * ONE, false, -1);
+    log.push(0, C(X()), 2, 1, 0, 0, 65536, SRC.node, 1, 2, 4, 5 * ONE, false, -1);
     log.massLearn[0] = 2000;
     log.massLearn[1] = 2000;
     learn(run, log, 2000, 8000, 1, null, 0);

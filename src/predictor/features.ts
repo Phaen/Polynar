@@ -8,6 +8,7 @@
 
 import { ONE, RB, bitlen, div, log2Fix, mulShr, shr } from './arith';
 import type { Entry } from './tables';
+import { HF } from './types';
 
 /** The recency bucket of frozen (built-in) votes, which have no position. */
 export const FROZEN_REC = 5;
@@ -69,6 +70,41 @@ export function featureVector(
   out[4] = offAg * ONE;
   out[5] = det * ONE;
   return out;
+}
+
+/**
+ * Feature cells: every (rec, frozen, depth, offAg, det) a vote can take, as one index
+ * `((depth · 2 + offAg) · 4 + det) · 6 + recSlot` with `recSlot` the recency bucket, or
+ * `FROZEN_REC` for frozen votes. Depth and det are 0..3, rec 0..4.
+ */
+export const CELLS = 192;
+
+/** The feature cell of a vote. */
+export function cellOf(
+  rec: number,
+  frozen: boolean,
+  depth: number,
+  offAg: number,
+  det: number
+): number {
+  return ((depth * 2 + offAg) * 4 + det) * 6 + (frozen ? FROZEN_REC : rec);
+}
+
+/** Per cell, HF small integers: the feature vector in units of ONE. */
+export const CELL_UNITS = new Int32Array(CELLS * HF);
+/** Per cell, the feature vector in RB (`featureVector`). */
+export const CELL_X = new Float64Array(CELLS * HF);
+for (let depth = 0; depth < 4; depth++) {
+  for (let offAg = 0; offAg < 2; offAg++) {
+    for (let det = 0; det < 4; det++) {
+      for (let slot = 0; slot < 6; slot++) {
+        const frozen = slot === FROZEN_REC;
+        const c = cellOf(slot, frozen, depth, offAg, det);
+        featureVector(CELL_X.subarray(c * HF, c * HF + HF), slot, frozen, depth, offAg, det);
+        for (let f = 0; f < HF; f++) CELL_UNITS[c * HF + f] = div(CELL_X[c * HF + f], ONE);
+      }
+    }
+  }
 }
 
 /** The largest log-n feature: 16 bits. */
