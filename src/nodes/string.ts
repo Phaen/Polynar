@@ -3,22 +3,23 @@
  * 7 bits for ASCII, 18 to 27 for everything else — and round-trips any JS
  * string bit-exact, lone surrogates included. `.prose()` swaps the ladder
  * for the order-1 frequency model over lowercase text, its casing and
- * separators carried by a shape; `.adaptive()` without either codes English
- * prose whose odds the message takes over. An explicit charset trades
- * generality for density over a known alphabet. `p.string`.
+ * separators carried by a shape. An explicit charset trades generality for
+ * density over a known alphabet. `.adaptive()` hands the code points to the
+ * similarity predictor. `p.string`.
  */
 import { Encoder, Decoder, Alphabet, CorruptInputError, costUnits } from '../packer';
 import type { Charset } from '../packer';
-import type { Run } from './base';
+import { checkAdaptive, resolve } from '../predictor/options';
+import { Priors } from '../predictor/prior';
+import type { AdaptiveOptions } from '../predictor/types';
+import { PNode, type Run } from './base';
 import { describe } from './path';
 import { checkUnset, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
-import type { Learning, LearningOptions } from './adaptive';
 import type { Kind } from './guards';
 import {
   TEXT_DIRECT_MAX,
   TEXT_FIRST_RADIX,
-  codePointBand,
   codePointSymbol,
   codePointTailRadix,
   composeCodePoint,
@@ -37,17 +38,9 @@ import {
   type ShiftedTable,
 } from './prose';
 import { buildWeights } from './weights';
-import {
-  bare,
-  itemsLearn,
-  learningOf,
-  MethodNode,
-  type MethodName,
-  type MethodSet,
-} from './methods';
 import { members, type Members } from './members';
 import { LOWER, MIXED, SHAPE_COUNT, SHAPE_WEIGHTS, plain, restore, shapesOf } from './shape';
-import { Sequence, TEXT_METHODS, type Ascent, type Symbols } from './sequence';
+import { Learned, PlainText, type Ascent, type Symbols } from './text';
 
 /** What every text alphabet shares: a length prefix counting UTF-16 code units. */
 abstract class Text {
@@ -68,34 +61,10 @@ abstract class Text {
   subject(value: string): string {
     return `String length ${value.length}`;
   }
-
-  // Every alphabet spells distinct strings apart, so a string is its own identity.
-  identity(value: string): string {
-    return value;
-  }
 }
 
 /** Whether `code` is an ASCII capital. */
 const isCapital = (code: number): boolean => code >= 65 && code <= 90;
-
-/** Whether `code` is an ASCII letter. */
-const isAsciiLetter = (code: number): boolean => (code | 32) >= 97 && (code | 32) <= 122;
-
-/** Whether the code unit `code` is a letter by its Unicode class. */
-const isLetter = (code: number): boolean => /\p{L}/u.test(String.fromCharCode(code));
-
-/** Whether each symbol of a prose table is a letter, by symbol: its code point a letter of one code unit. */
-const tableLetters = new WeakMap<ProseTable, Uint8Array>();
-
-/** The letters of `table`, worked out once per table. */
-function lettersOf(table: ProseTable): Uint8Array {
-  let letters = tableLetters.get(table);
-  if (letters === undefined) {
-    letters = Uint8Array.from(table.codes, (code) => (code <= 0xffff && isLetter(code) ? 1 : 0));
-    tableLetters.set(table, letters);
-  }
-  return letters;
-}
 
 /** The code points a string is built from at a time: few enough to pass as arguments. */
 const BUILD_CHUNK = 4096;
@@ -128,14 +97,6 @@ abstract class CodePoints extends Text {
     return code > 0xffff ? 2 : 1;
   }
 
-  digit(code: number): number {
-    return code >= 48 && code <= 57 ? code - 48 : -1;
-  }
-
-  digitItem(digit: number): number {
-    return digit + 48;
-  }
-
   build(codes: number[]): string {
     let value = '';
     for (let at = 0; at < codes.length; at += BUILD_CHUNK) {
@@ -147,7 +108,6 @@ abstract class CodePoints extends Text {
 
 /** The laddered default: the first slot is the symbol, the band offset its tail. */
 class Ladder extends CodePoints implements Symbols<string> {
-  readonly pool = 'ladder';
   readonly size = TEXT_FIRST_RADIX;
 
   symbol(code: number): number {
@@ -170,16 +130,6 @@ class Ladder extends CodePoints implements Symbols<string> {
     return 0;
   }
 
-  /** The code points a slot past ASCII spells with its band offset, which the learned ladder may admit (`./grown`). */
-  range(symbol: number): readonly [number, number] | undefined {
-    return codePointBand(symbol);
-  }
-
-  /** The ASCII letters, the only letters spelled without a tail. */
-  letter(code: number): boolean {
-    return code < 128 && isAsciiLetter(code);
-  }
-
   /**
    * The first slot keeps the order of the code points, ASCII one apiece;
    * a string above another that holds an astral code point where they
@@ -199,8 +149,8 @@ class Ladder extends CodePoints implements Symbols<string> {
  * row of its own.
  */
 class Prose extends CodePoints implements Symbols<string> {
-  /** The model, or its shifted table: the same model compiles to the same tables. */
-  readonly pool: object;
+  /** The model, or its shifted table: the same model compiles to the same tables, which the costs are kept by. */
+  readonly key: object;
   readonly size: number;
   readonly rows: readonly (readonly number[])[];
   override readonly start: number;
@@ -217,13 +167,13 @@ class Prose extends CodePoints implements Symbols<string> {
     super();
     this.escape = table.escape;
     if (shifted === undefined) {
-      this.pool = model;
+      this.key = model;
       this.size = table.escape + 1;
       this.rows = model.weights;
       this.start = table.start;
       this.shift = -1;
     } else {
-      this.pool = shifted;
+      this.key = shifted;
       this.size = shifted.shift + 1;
       this.rows = shifted.rows;
       this.start = shifted.start;
@@ -289,15 +239,6 @@ class Prose extends CodePoints implements Symbols<string> {
     return code === SHIFT ? this.shift : proseContext(this.table, code);
   }
 
-  /** The model's letters: the characters it holds that are letters, never a shift. */
-  letter(code: number): boolean {
-    if (code === SHIFT) {
-      return false;
-    }
-    const sym = proseContext(this.table, code);
-    return sym < this.table.escape && lettersOf(this.table)[sym] === 1;
-  }
-
   /** The text of the items, refusing a shift that a lowercase letter does not follow. */
   override build(items: number[]): string {
     if (this.shift < 0) {
@@ -319,187 +260,19 @@ class Prose extends CodePoints implements Symbols<string> {
   }
 }
 
-/**
- * The learned text model's symbols for a prose model: its characters, then
- * one per first slot of the ladder whose code points it does not hold, the
- * ASCII capitals among them. `rows` are the model's, a capital weighing
- * what a shift before its letter would, every other slot an equal share of
- * the escape, then `SEEN_SHARE` such shares for a code point seen before;
- * `live` lifts every symbol of a row by `LIVE_SHARE` of its mean weight.
- */
-interface LearnedTable {
-  readonly size: number;
-  readonly rows: readonly (readonly number[])[];
-  readonly live: readonly (readonly number[])[];
-  /** The symbol of each ladder slot outside the model, -1 for a slot inside it. */
-  readonly slots: Int32Array;
-  /** The ladder slot of each symbol from the model's escape on. */
-  readonly ladder: readonly number[];
-}
-
-/**
- * The share of a row's mean weight every symbol gains in the tables that
- * learn, as tenths: odds a prose model all but rules out stay within reach
- * of text that is not prose, while the static coding keeps the model's own.
- */
-const LIVE_SHARE = 3;
-
-/** What a code point seen before weighs, in shares of the escape. */
-const SEEN_SHARE = 3;
-
-const learnedTables = new WeakMap<ProseModel, LearnedTable>();
-
-/** The learned tables of `model`, built once per model. */
-function learnedTable(model: ProseModel): LearnedTable {
-  let learned = learnedTables.get(model);
-  if (learned === undefined) {
-    const table = compileProse(model);
-    const shift = shiftedTable(model);
-    const n = table.escape;
-    const slots = new Int32Array(TEXT_FIRST_RADIX).fill(-1);
-    const ladder: number[] = [];
-    for (let slot = 0; slot < TEXT_FIRST_RADIX; slot++) {
-      if (slot > 127 || table.ascii[slot] === n) {
-        slots[slot] = n + ladder.length;
-        ladder.push(slot);
-      }
-    }
-    // A capital's share of a shift: its letter's weight at the start of a word.
-    const start = model.weights[table.start];
-    const letter = (code: number): number => {
-      const sym = table.ascii[code + 32];
-      return sym < n ? start[sym] : 0;
-    };
-    let letters = 0;
-    for (let code = 65; code <= 90; code++) {
-      letters += letter(code);
-    }
-    const rows = model.weights.map((row, r) => {
-      const out = row.slice(0, n);
-      const share = Math.max(1, Math.round(row[n] / ladder.length));
-      for (const slot of ladder) {
-        out.push(
-          isCapital(slot) && letters > 0
-            ? Math.max(1, Math.round((shift.rows[r][shift.shift] * letter(slot)) / letters))
-            : share
-        );
-      }
-      out.push(SEEN_SHARE * share);
-      return out;
-    });
-    const live = rows.map((row) => {
-      const total = row.reduce((sum, weight) => sum + weight, 0);
-      const lift = Math.max(1, Math.round((LIVE_SHARE * total) / (10 * row.length)));
-      return row.map((weight) => weight + lift);
-    });
-    learned = { size: n + ladder.length, rows, live, slots, ladder };
-    learnedTables.set(model, learned);
-  }
-  return learned;
-}
-
-/**
- * Text under a prose model that learns: every code point a symbol, those
- * the model holds as their characters and every other as its ladder slot
- * followed by its band offset, capitals included. A code point spelled
- * with a band offset grows the symbols by one of its own once the message
- * has met it (`./grown`). A symbol is priced in the model's row of the
- * character before it, a capital's that of its lowercase letter, any other
- * slot's that of the escape.
- */
-class LearnedText extends CodePoints implements Symbols<string> {
-  /** The tables: the same model shares them. */
-  readonly pool: object;
-  readonly size: number;
-  readonly rows: readonly (readonly number[])[];
-  readonly prior: { readonly live: readonly (readonly number[])[]; readonly keep: true };
-  override readonly start: number;
-  private readonly learned: LearnedTable;
-
-  constructor(
-    model: ProseModel,
-    private readonly table: ProseTable
-  ) {
-    super();
-    const learned = learnedTable(model);
-    this.learned = learned;
-    this.pool = learned;
-    this.size = learned.size;
-    this.rows = learned.rows;
-    this.prior = { live: learned.live, keep: true };
-    this.start = table.start;
-  }
-
-  symbol(code: number): number {
-    const sym = proseContext(this.table, code);
-    return sym < this.table.escape ? sym : this.learned.slots[codePointSymbol(code)];
-  }
-
-  /** The ladder slot of `symbol`, -1 for one of the model's characters. */
-  private slot(symbol: number): number {
-    const at = symbol - this.table.escape;
-    return at < 0 ? -1 : this.learned.ladder[at];
-  }
-
-  tail(enc: Encoder, code: number, symbol: number): void {
-    const slot = this.slot(symbol);
-    if (slot >= 0) {
-      composeCodePointTail(enc, code, slot);
-    }
-  }
-
-  tails(_code: number, symbol: number): number {
-    const slot = this.slot(symbol);
-    return slot < 0 ? 1 : codePointTailRadix(slot);
-  }
-
-  range(symbol: number): readonly [number, number] | undefined {
-    const slot = this.slot(symbol);
-    return slot < 0 ? undefined : codePointBand(slot);
-  }
-
-  untail(dec: Decoder, symbol: number): number {
-    const slot = this.slot(symbol);
-    return slot < 0 ? this.table.codes[symbol] : parseCodePointTail(dec, slot);
-  }
-
-  row(code: number): number {
-    const sym = proseContext(this.table, code);
-    return sym === this.table.escape && isCapital(code) ? proseContext(this.table, code + 32) : sym;
-  }
-
-  /**
-   * The letters spelled without a tail: the ASCII letters, capitals
-   * included, and the model's other characters that are letters.
-   */
-  letter(code: number): boolean {
-    if (code < 128) {
-      return isAsciiLetter(code);
-    }
-    const sym = proseContext(this.table, code);
-    return sym < this.table.escape && lettersOf(this.table)[sym] === 1;
-  }
-}
-
 /** An explicit charset: each character is its digit in the alphabet. */
 class CharsetText extends Text implements Symbols<string> {
   readonly item = 'character';
   readonly tailless = true;
   readonly size: number;
-  /** The charset, a range by its ends: the same charset is the same alphabet. */
-  readonly pool: string;
 
   /** Whether the digits follow the characters' code units: a range, or a charset listed ascending. */
   private readonly ascending: boolean;
-  /** Whether each character is a letter, by digit, worked out on first use. */
-  private letters?: Uint8Array;
 
   constructor(private readonly alphabet: Alphabet) {
     super();
     this.size = alphabet.size;
     const charset = alphabet.charset;
-    this.pool =
-      typeof charset === 'string' ? `charset ${charset}` : `range ${charset[0]} ${charset[1]}`;
     let ascending = true;
     if (typeof charset === 'string') {
       for (let i = 1; i < charset.length; i++) {
@@ -536,15 +309,6 @@ class CharsetText extends Text implements Symbols<string> {
     return 1;
   }
 
-  digit(item: number): number {
-    const code = this.alphabet.charAt(item).charCodeAt(0);
-    return code >= 48 && code <= 57 ? code - 48 : -1;
-  }
-
-  digitItem(digit: number): number {
-    return this.alphabet.digitOf(48 + digit);
-  }
-
   symbol(digit: number): number {
     return digit;
   }
@@ -563,15 +327,6 @@ class CharsetText extends Text implements Symbols<string> {
     return 0;
   }
 
-  /** The characters that are letters by their Unicode class. */
-  letter(digit: number): boolean {
-    const { alphabet } = this;
-    this.letters ??= Uint8Array.from({ length: alphabet.size }, (_, d) =>
-      isLetter(alphabet.charAt(d).charCodeAt(0)) ? 1 : 0
-    );
-    return this.letters[digit] === 1;
-  }
-
   build(digits: number[]): string {
     let value = '';
     for (const digit of digits) {
@@ -579,9 +334,15 @@ class CharsetText extends Text implements Symbols<string> {
     }
     return value;
   }
+
+  /** The code unit of each digit, in digit order. */
+  codes(): Int32Array {
+    const alphabet = this.alphabet;
+    return Int32Array.from({ length: alphabet.size }, (_, d) => alphabet.charAt(d).charCodeAt(0));
+  }
 }
 
-/** How a node codes its strings: one spelling, or a learned pick among several. */
+/** How a plain node codes its strings: one spelling, or the cheapest of several. */
 interface TextCodec {
   write(enc: Encoder, value: string): void;
   read(dec: Decoder): string;
@@ -589,19 +350,11 @@ interface TextCodec {
   run(ascent: Ascent): Run<string>;
 }
 
-/** The cost, in `COST_UNITS`, of each symbol in each row of a pool's static tables, row by row. */
+/** The cost, in `COST_UNITS`, of each symbol in each row of a prose model's static tables, row by row. */
 const unitTables = new WeakMap<object, Int32Array>();
 
 /** The longest string whose priced shape a node keeps, and how many it keeps before starting over. */
 const PICKED_LENGTH = 64;
-
-/**
- * The kinds of text a learned prose node codes, each in contexts and a
- * prior of its own while sharing the repeats: lowercase words, the text of
- * every shape but `mixed`, and the verbatim text of `mixed`.
- */
-const WORDS = 0;
-const VERBATIM = 1;
 const MAX_PICKS = 4096;
 
 /** The cost of the ladder's first slot after an escape. */
@@ -619,8 +372,8 @@ const SHAPE_UNITS: readonly number[] = (() => {
  * code points included: what writing it charges after the length prefix.
  */
 function priceText(prose: Prose, text: string): number {
-  const { size, pool, rows } = prose;
-  let units = unitTables.get(pool);
+  const { size, key, rows } = prose;
+  let units = unitTables.get(key);
   if (units === undefined) {
     units = new Int32Array(rows.length * size);
     rows.forEach((row, r) => {
@@ -629,7 +382,7 @@ function priceText(prose: Prose, text: string): number {
         (units as Int32Array)[r * size + sym] = costUnits(freq, total);
       });
     });
-    unitTables.set(pool, units);
+    unitTables.set(key, units);
   }
   const shifts = prose.size > prose.escape + 1;
   let cost = 0;
@@ -663,58 +416,34 @@ function priceText(prose: Prose, text: string): number {
  * Strings in a prose model: a shape, then the text as the shape codes it,
  * lowercase words joined by spaces, in the model; under `mixed` the string
  * itself, each capital a shift. Each string takes the cheapest shape that
- * restores it exactly: priced from the static tables where nothing learns
- * and nothing but the characters follows the length, else by writing each.
- * The shapes are weighed statically, or learned under `learn`. Where the
- * characters learn (`itemsLearn`) the text is `LearnedText`, `mixed`
- * keeping its capitals as they are, and the words and the mixed text learn
- * their odds and contexts apart.
+ * restores it exactly, priced from the static tables.
  */
 export class ProseText implements TextCodec {
   private readonly lower: Prose;
   private readonly shifted: Prose;
   /** The text of every shape but `mixed`, which has no capitals. */
-  private readonly words: Sequence<string>;
-  /** The text of `mixed`: its capitals shifted, or as they are where the characters learn. */
-  private readonly mixed: Sequence<string>;
+  private readonly words: PlainText<string>;
+  /** The text of `mixed`, its capitals shifted. */
+  private readonly mixed: PlainText<string>;
   private readonly shapes: Members;
-  /** Whether the shapes are priced instead of tried. */
-  private readonly priced: boolean;
   /** The shape and text priced for each short string with a choice of them, until there are too many. */
   private readonly picks = new Map<string, [number, string]>();
-  /** The shape the encoder last picked, which only orders its next tries. */
-  private last = 0;
 
-  constructor(model: ProseModel, bounds: LengthBounds, methods: MethodSet) {
+  constructor(model: ProseModel, bounds: LengthBounds) {
     const table = compileProse(model);
     this.lower = new Prose(model, table);
     this.shifted = new Prose(model, table, shiftedTable(model));
-    if (!itemsLearn(methods)) {
-      this.words = new Sequence(this.lower, bounds, methods);
-      this.mixed = new Sequence(this.shifted, bounds, methods);
-    } else {
-      const text = new LearnedText(model, table);
-      this.words = new Sequence(text, bounds, methods, WORDS);
-      this.mixed = new Sequence(text, bounds, methods, VERBATIM);
-    }
-    this.shapes = members(
-      SHAPE_COUNT,
-      { weights: SHAPE_WEIGHTS, learn: learningOf(methods) },
-      'p.string'
-    );
-    this.priced = bare(methods);
+    this.words = new PlainText(this.lower, bounds);
+    this.mixed = new PlainText(this.shifted, bounds);
+    this.shapes = members(SHAPE_COUNT, { weights: SHAPE_WEIGHTS }, 'p.string');
   }
 
   write(enc: Encoder, value: string): void {
-    this.shape(enc, value, (shape, text) => this.spell(enc, shape, text));
+    this.shape(value, (shape, text) => this.spell(enc, shape, text));
   }
 
-  /**
-   * Writes `value` by `spell` of a shape that restores it and its text,
-   * and returns those.
-   */
+  /** Writes `value` by `spell` of the cheapest shape that restores it and its text, and returns those. */
   private shape(
-    enc: Encoder,
     value: string,
     spell: (shape: number, text: string) => void
   ): readonly [number, string] {
@@ -732,49 +461,38 @@ export class ProseText implements TextCodec {
       spell(shapes[0][0], shapes[0][1]);
       return shapes[0];
     }
-    if (this.priced) {
-      const pick = this.cheapest(shapes);
-      if (value.length <= PICKED_LENGTH) {
-        if (this.picks.size === MAX_PICKS) {
-          this.picks.clear();
-        }
-        this.picks.set(value, pick);
+    const pick = this.cheapest(shapes);
+    if (value.length <= PICKED_LENGTH) {
+      if (this.picks.size === MAX_PICKS) {
+        this.picks.clear();
       }
-      spell(pick[0], pick[1]);
-      return pick;
+      this.picks.set(value, pick);
     }
-    const priority = shapes.map((_, i) => i);
-    const first = shapes.findIndex(([shape]) => shape === this.last);
-    const order = first > 0 ? [first, ...priority.filter((i) => i !== first)] : priority;
-    const picked = enc.decide(priority, order, (i) => {
-      spell(shapes[i][0], shapes[i][1]);
-    });
-    this.last = shapes[picked][0];
-    return shapes[picked];
+    spell(pick[0], pick[1]);
+    return pick;
   }
 
   /**
    * A run of strings, each a shape and its text, the text after the start
    * it shares with the text of the run's previous string spelled by the same
-   * sequence. The order of the strings says nothing of the order of their
+   * codec. The order of the strings says nothing of the order of their
    * texts, so the run of texts is one of `any` ascent.
    */
   run(): Run<string> {
-    const prev = new Map<Sequence<string>, number[]>();
-    const sequence = (shape: number): Sequence<string> =>
-      shape === MIXED ? this.mixed : this.words;
+    const prev = new Map<PlainText<string>, number[]>();
+    const codec = (shape: number): PlainText<string> => (shape === MIXED ? this.mixed : this.words);
     return {
       write: (enc, value) => {
-        const [shape, text] = this.shape(enc, value, (s, t) => {
+        const [shape, text] = this.shape(value, (s, t) => {
           this.shapes.write(enc, s);
-          sequence(s).writeNext(enc, t, prev.get(sequence(s)), 'any');
+          codec(s).writeNext(enc, t, prev.get(codec(s)), 'any');
         });
-        const spelled = sequence(shape);
+        const spelled = codec(shape);
         prev.set(spelled, spelled.items(text));
       },
       read: (dec) => {
         const shape = this.shapes.read(dec);
-        const spelled = sequence(shape);
+        const spelled = codec(shape);
         const [text, items] = spelled.readNext(dec, prev.get(spelled), 'any');
         prev.set(spelled, items);
         return shape === MIXED ? text : restore(shape, text);
@@ -785,7 +503,7 @@ export class ProseText implements TextCodec {
   /**
    * The shape of `shapes` whose writing charges least, and its text, from
    * the static tables, the length prefix priced only where the texts' lengths
-   * differ; a tie goes to the earlier shape, as a written try's would.
+   * differ; a tie goes to the earlier shape.
    */
   private cheapest(shapes: readonly [number, string][]): [number, string] {
     const length = shapes[0][1].length;
@@ -803,10 +521,7 @@ export class ProseText implements TextCodec {
     return shapes[best];
   }
 
-  /**
-   * The cost of `text` under `shape` from the static tables, its length
-   * aside: what writing it charges, where the shapes are priced.
-   */
+  /** The cost of `text` under `shape` from the static tables, its length aside. */
   price(shape: number, text: string): number {
     return SHAPE_UNITS[shape] + priceText(shape === MIXED ? this.shifted : this.lower, text);
   }
@@ -828,7 +543,7 @@ export class ProseText implements TextCodec {
   }
 }
 
-export class PString extends MethodNode<string> {
+export class PString extends PNode<string> {
   readonly _kinds: readonly Kind[] = ['string'];
 
   private readonly _bounds: LengthBounds;
@@ -836,28 +551,23 @@ export class PString extends MethodNode<string> {
   private readonly _alphabet?: Alphabet;
   /** Prose model replacing the flat ladder, as given. */
   private readonly _prose?: ProseModel;
-  /** The methods the node has, declared or open. */
-  readonly _methods: MethodSet;
-  readonly _methodNames = TEXT_METHODS;
-  /** Whether `.adaptive()` opened the node, which then learns from English prose without a charset or model. */
-  private readonly _adapted: boolean;
-  /**
-   * The length and the characters, in the ladder, the prose model or the
-   * charset; adapted without either, in English prose.
-   */
+  /** The options `.adaptive()` set, which hand the code points to the predictor. */
+  readonly _adaptive?: AdaptiveOptions;
+  /** The length and the characters, in the ladder, the prose model or the charset. */
   private readonly _text: TextCodec;
+  /** The characters through the predictor, under `.adaptive()`. */
+  private readonly _learned?: Learned<string>;
 
   constructor(
     bounds: LengthBounds = {},
     charset?: Charset,
     prose?: ProseModel,
-    methods: MethodSet = {},
-    adapted = false
+    adaptive?: AdaptiveOptions
   ) {
     super();
     this._bounds = bounds;
-    this._methods = methods;
-    this._adapted = adapted;
+    this._adaptive = adaptive;
+    let charsetText: CharsetText | undefined;
     if (charset !== undefined) {
       if (prose !== undefined) {
         throw new TypeError('p.string cannot combine prose with a charset');
@@ -866,42 +576,41 @@ export class PString extends MethodNode<string> {
       // of the array can't change the node. One character is a legal
       // alphabet: each character then costs nothing.
       this._alphabet = new Alphabet(charset, 1);
-      this._text = new Sequence(new CharsetText(this._alphabet), bounds, methods);
+      charsetText = new CharsetText(this._alphabet);
+      this._text = new PlainText(charsetText, bounds);
     } else if (prose !== undefined) {
       this._prose = prose;
-      this._text = new ProseText(prose, bounds, methods);
+      this._text = new ProseText(prose, bounds);
     } else {
-      this._text = adapted
-        ? new ProseText(ProseModels.english, bounds, methods)
-        : new Sequence(new Ladder(), bounds, methods);
+      this._text = new PlainText(new Ladder(), bounds);
     }
+    if (adaptive === undefined) {
+      return;
+    }
+    if (prose !== undefined && prose !== ProseModels.english) {
+      throw new TypeError(
+        'p.string adaptive cannot take a prose model: its text model is the prior it learns from'
+      );
+    }
+    if (bounds.prior !== undefined) {
+      throw new TypeError(
+        'p.string adaptive cannot weigh the length: an adaptive string ends with a symbol'
+      );
+    }
+    const options = resolve(adaptive, Priors.text, 'p.string');
+    this._learned =
+      charsetText === undefined
+        ? new Learned(new Ladder(), this, options, 'text', bounds)
+        : new Learned(charsetText, this, options, 'text', bounds, charsetText.codes());
   }
 
-  /** This node with `bounds`, `charset` and `prose`, keeping its methods. */
+  /** This node with `bounds`, `charset` and `prose`, keeping its adaptive options. */
   private _with(
     bounds: LengthBounds,
     charset = this._alphabet?.charset,
-    prose = this._prose,
-    methods = this._methods
+    prose = this._prose
   ): PString {
-    return new PString(bounds, charset, prose, methods, this._adapted);
-  }
-
-  /** The node opened as `.adaptive()` leaves it: without a charset or model, it learns from English prose. */
-  override _open(learning?: Learning, except?: readonly MethodName[]): this {
-    const node = super._open(learning, except) as PString;
-    return new PString(
-      node._bounds,
-      node._alphabet?.charset,
-      node._prose,
-      node._methods,
-      true
-    ) as this;
-  }
-
-  /** This node with `methods` in place of its own. */
-  _withMethods(methods: MethodSet): PString {
-    return this._with(this._bounds, undefined, undefined, methods);
+    return new PString(bounds, charset, prose, this._adaptive);
   }
 
   /** A floor on the length; the prefix then counts up from it. */
@@ -928,7 +637,7 @@ export class PString extends MethodNode<string> {
   /**
    * Declare a prior over the LENGTH as an integer CDF: `fn(n)` is the
    * cumulative weight of lengths below `n`. Requires a max; a zero-weight
-   * length cannot encode.
+   * length cannot encode. Not with `.adaptive()`.
    */
   cdf(fn: Cdf): PString {
     return this._with({ ...this._bounds, prior: fn });
@@ -937,89 +646,31 @@ export class PString extends MethodNode<string> {
   /**
    * Declare how likely each length from min (or 0) to max is, lowest first.
    * Same prior as `.cdf()`, given as the histogram instead of its running
-   * total.
+   * total. Not with `.adaptive()`.
    */
   weights(w: readonly number[]): PString {
     return this._with({ ...this._bounds, prior: w });
   }
 
   /**
-   * Let the node's own priors learn from the message: the characters' odds,
-   * which the charset or the prose model sets, and the length's, on the
-   * magnitude scale from the min when there is no max. Under `.prose()` a
-   * mixed-case string keeps its capitals, and the model only sets where the
-   * odds start, until the message's own counts outweigh it, so ids, hashes
-   * and numbers soon cost what their characters do; without a charset or a
-   * model, the ladder's slots start out alike. The characters learn together with
-   * those of every other string of the message with the same charset or
-   * prose model and window, unless `separate`. The declared length
-   * weights, or even ones when none are, are where the length's prior
-   * starts; from its second value on, each prior spends one bit to stay
-   * static, or a few to name the learning rate that paid off. The length
-   * takes weights, not a cdf.
-   */
-  learn(): PString {
-    return this._declare('learn', 'p.string');
-  }
-
-  /**
-   * What the node's learning goes by, for `.learn()` and the methods that
-   * learn: `window` is how many observations a table's counts hold before
-   * they halve, so the newest weigh most (1024 when left out, and raised to
-   * the number of values counted when smaller), and `separate` keeps the
-   * characters, words and repeats apart from the other strings' and the
-   * node's tables from starting where others of their kind got to. Set
+   * Code the strings through the similarity predictor: each code point is
+   * predicted from what came before it in the message, the node's own past
+   * strings and the prior, and the string ends with a symbol of its own
+   * instead of a length. A string the node already wrote costs a few bits.
+   * The bounds still hold. A charset closes the alphabet to its characters;
+   * `.prose()` adds nothing, and a prose model of its own is refused. Set
    * once.
    */
-  learning(options: LearningOptions): PString {
-    return this._learning(options, 'p.string');
-  }
-
-  /**
-   * Price each character by the four before it, as the message so far has
-   * followed them, falling back to the characters' learned odds, which
-   * this turns on. The contexts price nothing until the message holds 64
-   * characters, and after that only once they would have cost less than
-   * the odds alone. A mixed-case string learns its contexts apart from the
-   * words of the other shapes.
-   */
-  contexts(): PString {
-    return this._declare('contexts', 'p.string');
-  }
-
-  /**
-   * Spell a run of letters the message already spelled as one token of its
-   * words, priced by the word before it and by how lately the message used
-   * it, once the message holds 64 characters; a new word is an escape and
-   * then its letters. Letters are the characters that are letters by their
-   * Unicode class and take no escape. With `.contexts()` the encoder spells
-   * a known word both ways and it costs what the two give it together.
-   */
-  words(): PString {
-    return this._declare('words', 'p.string');
-  }
-
-  /**
-   * Let a character outside the alphabet's own, which pays for its code
-   * point, become a character of its own once the message has it: later
-   * occurrences cost what the learned odds give it, and a new one's code
-   * point is priced by the blocks the message's characters came from. Turns
-   * on the characters' learned odds; a charset has no such characters.
-   */
-  codepoints(): PString {
-    return this._declare('codepoints', 'p.string');
-  }
-
-  /**
-   * Learn with every method the node has: `.learn()`, `.contexts()`,
-   * `.words()`, `.codepoints()` and `.repeats()` on, and `.delta()`,
-   * `.recall()`, `.digits()`, `.positional()` and `.terminated()` open to a
-   * choice per value unless declared, under `options` as `.learning()`
-   * takes them. Without a charset or a model, the characters start from
-   * English prose, as under `.prose()`.
-   */
-  adaptive(options?: LearningOptions): PString {
-    return this._adapt(options, 'p.string');
+  adaptive(options?: AdaptiveOptions): PString {
+    if (this._adaptive !== undefined) {
+      throw new TypeError('p.string adaptive is already set');
+    }
+    return new PString(
+      this._bounds,
+      this._alphabet?.charset,
+      this._prose,
+      checkAdaptive(options, 'p.string')
+    );
   }
 
   charset(c: Charset): PString {
@@ -1037,90 +688,10 @@ export class PString extends MethodNode<string> {
    * fits is coded as it is, each capital a shift before its letter, likely
    * opening a word and rare inside one. Still encodes any string — code
    * points outside the model pay an escape on top of their laddered cost.
-   * English by default; any other `ProseModel` swaps the matrix. Where the
-   * characters learn, the model is where their odds start, as English is
-   * for a learning string without `.prose()`.
+   * English by default; any other `ProseModel` swaps the matrix.
    */
   prose(model: ProseModel = ProseModels.english): PString {
     return this._with(this._bounds, this._alphabet?.charset, model);
-  }
-
-  /**
-   * Spell each string after the node's first by the start it shares with
-   * the node's previous string: after the length, how many of its leading
-   * characters are the previous string's, at learned odds, then only the
-   * characters after them, priced as following that start. Suits sorted
-   * keys, paths and URLs. Under `.adaptive()` without it, each string picks
-   * the plain spelling or this one by a learned mode.
-   */
-  delta(): PString {
-    return this._declare('delta', 'p.string');
-  }
-
-  /**
-   * Spell a string this node already wrote in the message by its place
-   * among the distinct strings it wrote, and a new one as an escape and
-   * then in full, at learned odds: a string that keeps recurring soon costs
-   * a bit or two, and the escape next to nothing where strings never recur.
-   * The message's first string costs nothing extra.
-   */
-  recall(): PString {
-    return this._declare('recall', 'p.string');
-  }
-
-  /**
-   * Copy a stretch of characters this node already wrote in the message
-   * instead of spelling it again: each string spends one bit on whether it
-   * copies any, and one that does a bit at each position on whether a copy
-   * starts there, and for a copy how far back it starts and how long it
-   * runs, all at learned odds, from the message's 64th character on. The
-   * strings of one alphabet and window copy from each other's, unless
-   * `separate`.
-   */
-  repeats(): PString {
-    return this._declare('repeats', 'p.string');
-  }
-
-  /**
-   * Spell each run of digits as one integer of its width, leading zeros
-   * kept, and the text around the runs as a frame: after the node's first
-   * string, one bit says the frame is the previous string's, else the
-   * frame is spelled with a digit standing for each run. Each run is then
-   * on a learned scale around the same run of the previous string, so
-   * timestamps, versions and numbered ids cost what their changing digits
-   * do. Under `.adaptive()` without it, a string after one holding a digit
-   * picks this spelling by the learned mode.
-   */
-  digits(): PString {
-    return this._declare('digits', 'p.string');
-  }
-
-  /**
-   * Spell a string whose length the node already wrote by its characters
-   * at each place: per place, whether the character is one seen there in a
-   * string of that length and which, or a new one in full, at learned odds,
-   * so a constant place soon costs next to nothing and a hex digit four
-   * bits: uuids, hashes, tokens and fixed-format codes. A string of a new length is spelled as without it.
-   * Under `.adaptive()` without it, a string of a length the node met
-   * before picks this spelling by the learned mode.
-   */
-  positional(): PString {
-    return this._declare('positional', 'p.string');
-  }
-
-  /**
-   * Spell no length: the end of the string is one more symbol after its
-   * characters, priced like them, so with `.contexts()` a string that ends
-   * after a telling run, such as `.com` or a closing `"`, costs little for
-   * its end whatever its length. The bounds still hold: the end never
-   * comes below `.min()`, and comes unspelled at `.max()`. Under
-   * `.adaptive()` without it, a node spells its strings' ends while those
-   * have lately cost less than their lengths would. Not with `.digits()` or
-   * `.positional()`, which read the length, nor with a length `.cdf()` or
-   * `.weights()`.
-   */
-  terminated(): PString {
-    return this._declare('terminated', 'p.string');
   }
 
   get _exact(): boolean {
@@ -1128,19 +699,24 @@ export class PString extends MethodNode<string> {
   }
 
   _write(enc: Encoder, value: string): void {
-    this._text.write(enc, value);
+    if (this._learned === undefined) {
+      this._text.write(enc, value);
+    } else {
+      this._learned.write(enc, value);
+    }
   }
 
   /**
    * A run of strings ascending by UTF-16 code units: each value after the
    * start it shares with the one before it, spelled as the node spells its
-   * strings.
+   * strings. Never asked of an adaptive node, whose runs `./runs` codes one
+   * value at a time.
    */
   _run(unique: boolean): Run<string> {
     return this._text.run(unique ? 'unique' : 'sorted');
   }
 
   _read(dec: Decoder): string {
-    return this._text.read(dec);
+    return this._learned === undefined ? this._text.read(dec) : this._learned.read(dec);
   }
 }

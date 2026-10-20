@@ -821,10 +821,7 @@ export class PAny extends PNode<AnyValue> {
       tiers: [...tiers, RARE_TIER],
       // A lineage of the key's own, so its tables learn apart from any
       // declared string's.
-      key: new PRecall<string>(
-        new PString()._open({ ...options, lineage: new Lineage() }, RECALLED),
-        same
-      ),
+      key: new PRecall<string>(new PString().adaptive(), same),
       texts: new Recall<string>(),
       shapes: new Recall<string[]>(),
       hints: this._forms,
@@ -893,13 +890,10 @@ export class PAny extends PNode<AnyValue> {
           journal.drop(children, key);
         }
       } else if (message.overflow === undefined) {
+        // Past `MAX_KEYS` keys only objects lead, whose key text goes through the predictor,
+        // which codes inside no try: the shared codec is never built in one.
         child = this._build(undefined);
         message.overflow = child;
-        if (journal?.active === true) {
-          journal.call(() => {
-            message.overflow = undefined;
-          });
-        }
       } else {
         child = message.overflow;
       }
@@ -932,7 +926,7 @@ export class PAny extends PNode<AnyValue> {
         case TAG_FLOAT:
           return new PFloat()._open(adaptive, RECALLED);
         case TAG_STRING: {
-          const text = new PString()._open(adaptive, RECALLED);
+          const text = new PString().adaptive();
           return new PRecall(new PRecall(text, same, texts), same);
         }
         case TAG_ARRAY: {

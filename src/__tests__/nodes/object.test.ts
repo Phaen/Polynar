@@ -91,6 +91,34 @@ const schema = (adaptive: boolean, shape = (o: PObject<any>) => o): PNode<Event[
   return p.array(adaptive ? event.adaptive() : event).adaptive() as unknown as PNode<Event[]>;
 };
 
+/**
+ * The events with numbers in place of strings, and their schema. The
+ * predictor codes strings and refuses to inside a write the encoder takes
+ * back, so the rollbacks run on numbers.
+ */
+const numbered = (rows: Event[]) =>
+  rows.map(({ id, user, meta, stars, watchers }) => ({
+    id,
+    user: Number(user.slice(1)),
+    meta: { session: Number.parseInt(meta.session, 16), ip: Number(meta.ip.split('.')[3]) },
+    stars,
+    watchers,
+  }));
+
+const numberedSchema = (shape: (o: PObject<any>) => PObject<any>): PNode<any> => {
+  const number = () => p.int().min(0).adaptive();
+  const event = shape(
+    p.object({
+      id: number(),
+      user: number(),
+      meta: p.object({ session: number(), ip: number() }).adaptive(),
+      stars: number(),
+      watchers: number(),
+    })
+  );
+  return p.array(event.adaptive()).adaptive();
+};
+
 const size = <T>(node: PNode<T>, value: T): number => {
   expect(trip(node, value)).toEqual(value);
   return node.encode(value).length;
@@ -180,10 +208,10 @@ describe('companions of an adaptive object', () => {
   });
 
   it('takes back what a rolled-back write learned and left in scope', () => {
-    const node = schema(true, (o) => o.recall());
-    const before = events(7, 20, true);
-    const tried = events(8, 100, true);
-    const after = [...events(9, 40, true), ...before.slice(0, 5)];
+    const node = numberedSchema((o) => o.recall());
+    const before = numbered(events(7, 20, true));
+    const tried = numbered(events(8, 100, true));
+    const after = [...numbered(events(9, 40, true)), ...before.slice(0, 5)];
     const enc = new Encoder();
     node._write(enc, before);
     const mark = enc.mark();
@@ -266,10 +294,10 @@ describe('p.object().follows()', () => {
   });
 
   it('takes back what a rolled-back write of a followed field learned', () => {
-    const node = schema(true, starred);
-    const before = events(7, 20, true);
-    const tried = events(8, 100, true);
-    const after = events(9, 40, true);
+    const node = numberedSchema(starred);
+    const before = numbered(events(7, 20, true));
+    const tried = numbered(events(8, 100, true));
+    const after = numbered(events(9, 40, true));
     const enc = new Encoder();
     node._write(enc, before);
     const mark = enc.mark();

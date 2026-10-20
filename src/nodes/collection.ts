@@ -4,7 +4,7 @@ import { atPath } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
-import type { LearningOptions, Learning } from './adaptive';
+import type { LearningOptions } from './adaptive';
 import {
   checkOrder,
   ordinal,
@@ -41,7 +41,7 @@ export interface Layout<T> {
    * The node the keys go through under `.adaptive()`, for a layout whose
    * keys have no node of the caller's to adapt; the declared key otherwise.
    */
-  learnedKey?(learning: Learning): PNode<any>;
+  learnedKey?(): PNode<any>;
 }
 
 export const MAP: Layout<Map<any, any>> = {
@@ -73,7 +73,7 @@ export const RECORD: Layout<Record<string, any>> = {
     // instead of replacing the prototype.
     return Object.fromEntries(entries);
   },
-  learnedKey: (learning) => new PString().adaptive(learning),
+  learnedKey: () => new PString().adaptive(),
 };
 
 /**
@@ -115,7 +115,7 @@ export class PCollection<T> extends MethodNode<T> {
     this._key = key;
     const learning = learningOf(methods);
     this._keys =
-      learning === undefined || layout.learnedKey === undefined ? key : layout.learnedKey(learning);
+      learning === undefined || layout.learnedKey === undefined ? key : layout.learnedKey();
     this._value = value;
     this._bounds = bounds;
     this._count = lengthRange(bounds, layout.who, 'count', learning);

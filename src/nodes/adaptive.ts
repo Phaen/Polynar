@@ -10,7 +10,6 @@
 import {
   Encoder,
   SlotCache,
-  costUnits,
   type Decoder,
   type Bucket,
   type Journal,
@@ -25,7 +24,7 @@ import {
   writeExcluded,
 } from './excluded';
 import { Fenwick } from './fenwick';
-import { ProviderRef, poolKey, type Pool, type ProviderKind } from './providers';
+import { ProviderRef, type ProviderKind } from './providers';
 import { buildWeights, readTable, type WeightTable } from './weights';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
@@ -75,23 +74,6 @@ export function lineageOf(learning: Learning | undefined): Kinship | undefined {
     return learning.lineage;
   }
   return learning.separate === true ? undefined : KIN;
-}
-
-/**
- * How an adaptive prior over several rows learns, beyond its weights:
- * `pooled` rows learn into one set of counts instead of each its own;
- * `live` rows are what the learned codings weigh against those counts,
- * the declared rows when left out, which the static coding always keeps;
- * and under `keep` the counts halve rounding up, so a member seen in the
- * message keeps a count. Within a `pool`, every prior of that pool learns
- * into the same odds; such a prior learns with no lineage nor kin, whose
- * tables stay its own.
- */
-export interface PriorOptions {
-  readonly pooled?: boolean;
-  readonly live?: readonly (readonly number[])[];
-  readonly keep?: boolean;
-  readonly pool?: Pool;
 }
 
 /** The observations an adaptive prior holds before halving, unless declared; a table with more members holds that many. */
@@ -176,10 +158,8 @@ export function readLive(dec: Decoder, table: LiveTable): number {
  * the weights' total. Integer throughout: member `pos` weighs
  * `weight(pos)·prior + learned(pos)·T` out of `T·(prior + observations)`,
  * which is the declared ratio blended with the observed frequencies. The
- * learned counts halve whenever they exceed `window`, rounding down, or up
- * under `keep`, so a member seen never falls back to its weight alone. The
- * counts record
- * their changes in `journal`, an encoder's. Given `learned`, another
+ * learned counts halve whenever they exceed `window`, rounding down. The
+ * counts record their changes in `journal`, an encoder's. Given `learned`, another
  * table's learned counts, the table shares them, and learning in either
  * learns in both.
  */
@@ -192,8 +172,7 @@ export class LiveCounts implements LiveTable {
     readonly prior: number,
     private readonly window: number,
     journal?: Journal,
-    learned?: Fenwick,
-    private readonly keep = false
+    learned?: Fenwick
   ) {
     this.learned = learned ?? Fenwick.zeros(base.freqs.length, journal);
   }
@@ -257,12 +236,12 @@ export class LiveCounts implements LiveTable {
 
   /**
    * Learns one observation of member `pos`, halving the learned counts past
-   * the window, rounding up when the table keeps every member it has seen.
+   * the window.
    */
   learn(pos: number): void {
     this.learned.add(pos, 1);
     if (this.learned.total > this.window) {
-      this.learned.halve(this.keep);
+      this.learned.halve();
     }
   }
 }
@@ -727,8 +706,6 @@ interface Writing {
   /** Whether the live tables exist; the pending values are replayed when they are first built. */
   live: boolean;
   readonly lives: (LiveCounts[] | undefined)[];
-  /** The learned counts every row shares, when the rows are pooled. */
-  shared?: Fenwick;
   /** The encoder's journal, which every change to the view records its undo in. */
   readonly journal: Journal;
 }
@@ -745,24 +722,20 @@ interface Reading {
   /** Whether the fastest rung is the kin's blend, settled with the selector. */
   kinned: boolean;
   readonly lives: (LiveCounts | undefined)[];
-  /** The learned counts every row shares, when the rows are pooled. */
-  shared?: Fenwick;
 }
 
-/** The pool a prior's odds are shared within, if any, and the members they span. */
+/** The members a prior's odds span. */
 interface OddsConfig {
-  readonly pool?: Pool;
   readonly members: number;
 }
 
 /**
  * The odds a prior learns in a message, as the encoder's view and the
- * decoder's. Every prior of one pool learns into one, as the character
- * odds of one kind of value do across a learned spelling's nodes.
+ * decoder's.
  */
 const WRITER: ProviderKind<OddsConfig, Writing, Encoder> = {
   name: 'odds-writer',
-  key: ({ pool, members }) => poolKey(pool, members),
+  key: () => undefined,
   init: (_, { journal }) => ({
     written: 0,
     kinned: false,
@@ -774,7 +747,7 @@ const WRITER: ProviderKind<OddsConfig, Writing, Encoder> = {
 };
 const READER: ProviderKind<OddsConfig, Reading, Decoder> = {
   name: 'odds-reader',
-  key: ({ pool, members }) => poolKey(pool, members),
+  key: () => undefined,
   init: () => ({ read: 0, pending: [], coding: 0, kinned: false, lives: [] }),
 };
 
@@ -794,9 +767,7 @@ function blended(state: Reading): boolean {
  * selector before the second value tells the decoder how the rest are
  * spelled: 0 static, `i` the `i`-th rung, a tie going to the lower index.
  * The selector weighs static as all rungs together, so staying static costs
- * one bit. Every row learns only the values coded in it, unless `options`
- * pool the rows, and may weigh its learned counts against live rows of
- * their own (`PriorOptions`).
+ * one bit. Every row learns only the values coded in it.
  *
  * A value may come with members excluded, ruled out by a model consulted
  * before this one: they own no states in any coding. A value whose
@@ -822,12 +793,6 @@ export class AdaptivePrior {
   readonly bases: readonly WeightTable[];
   /** The static table of each row as exclusion reads it. */
   readonly statics: readonly Table[];
-  /** The table of each row the live tables weigh their prior by. */
-  private readonly liveBases: readonly WeightTable[];
-  /** Whether every row learns into one set of counts. */
-  private readonly pooled: boolean;
-  /** Whether the learned counts keep every member seen. */
-  private readonly keep: boolean;
   /** The prior of each adaptive coding, in selector order from 1. */
   readonly rungs: readonly number[];
   private readonly window: number;
@@ -851,12 +816,10 @@ export class AdaptivePrior {
     readonly members: number,
     window: number | undefined,
     who: string,
-    lineage?: Kinship,
-    options: PriorOptions = {}
+    lineage?: Kinship
   ) {
-    const odds = { pool: options.pool, members };
-    this.writer = new ProviderRef(WRITER, odds);
-    this.reader = new ProviderRef(READER, odds);
+    this.writer = new ProviderRef(WRITER, { members });
+    this.reader = new ProviderRef(READER, { members });
     if (rows.length === 0) {
       throw new TypeError(`${who} adaptive prior needs at least one row of weights`);
     }
@@ -875,24 +838,12 @@ export class AdaptivePrior {
     const { bases, statics } = parent ?? rowTables(rows, members, who);
     this.bases = bases;
     this.statics = statics;
-    const { live, pooled = false, keep = false } = options;
-    if (live !== undefined && live.length !== rows.length) {
-      throw new TypeError(
-        `${who} adaptive prior has ${rows.length} rows, but ${live.length} live rows`
-      );
-    }
-    this.liveBases = live === undefined ? bases : rowTables(live, members, who).bases;
-    this.pooled = pooled;
-    this.keep = keep;
     this.window = Math.max(window ?? DEFAULT_ADAPTIVE_WINDOW, members);
     const { rungs, selector, choices } = ladderOf(members);
     this.rungs = rungs;
     this.selector = selector;
     this.choices = choices;
-    const total = [...this.bases, ...this.liveBases].reduce(
-      (most, base) => Math.max(most, base.total),
-      0
-    );
+    const total = this.bases.reduce((most, base) => Math.max(most, base.total), 0);
     // From the slowest learner down, so an overflow names the rung it binds.
     for (const prior of [...this.rungs].reverse()) {
       checkOverflow(total, prior, this.window, who);
@@ -1045,14 +996,9 @@ export class AdaptivePrior {
       } else {
         if (state.written === 1) {
           state.kinned = this.kin !== undefined && this.kinLearned(enc);
-          // The odds are the group, as every prior of a pool codes in them.
           enc.composeSelector(state, this.choices);
         }
-        const buckets = rungBuckets(this.liveBases[row], this.rowLives(state, row), excluded, pos);
-        // The static coding keeps the declared rows where the live ones differ.
-        if (this.liveBases !== this.bases) {
-          buckets[0] = excludedBucket(table, excluded, pos);
-        }
+        const buckets = rungBuckets(this.bases[row], this.rowLives(state, row), excluded, pos);
         if (state.kinned) {
           buckets[1] = excludedBucket(this.blend(enc, row), excluded, pos);
         }
@@ -1079,13 +1025,7 @@ export class AdaptivePrior {
     // The slowest rung, twice the members, is above the fastest, at most
     // half of them, so there are always at least two.
     const lives = this.rowLives(this.writing(enc), row);
-    return rungBuckets(this.liveBases[row], [lives[1]], excluded, pos)[1];
-  }
-
-  /** The cost, in `COST_UNITS`, of the bucket `estimate` gives. */
-  cost(enc: Encoder, pos: number, row: number, excluded?: Exclusion): number {
-    const [, freq, total] = this.estimate(enc, pos, row, excluded);
-    return costUnits(freq, total);
+    return rungBuckets(this.bases[row], [lives[1]], excluded, pos)[1];
   }
 
   /** Reads a member written by `write` in context `row` under the same exclusion. */
@@ -1174,8 +1114,7 @@ export class AdaptivePrior {
   /**
    * The encoder's live tables of `row`, one per rung. The first request
    * builds the tables of every row learned so far from the pending values;
-   * from then on the values learn directly and a new row starts empty, or
-   * from the counts the rows pool.
+   * from then on the values learn directly and a new row starts empty.
    */
   private rowLives(state: Writing, row: number): LiveCounts[] {
     const { journal, lives } = state;
@@ -1198,19 +1137,10 @@ export class AdaptivePrior {
     if (tables === undefined) {
       // Every rung learns the same values under the same window, so their
       // learned counts are one table, which the first rung learns into.
-      const base = this.liveBases[row];
-      const first = new LiveCounts(
-        base,
-        this.rungs[0],
-        this.window,
-        journal,
-        this.pooled ? (state.shared ??= Fenwick.zeros(this.members, journal)) : undefined,
-        this.keep
-      );
+      const base = this.bases[row];
+      const first = new LiveCounts(base, this.rungs[0], this.window, journal);
       tables = this.rungs.map((prior, i) =>
-        i === 0
-          ? first
-          : new LiveCounts(base, prior, this.window, journal, first.learned, this.keep)
+        i === 0 ? first : new LiveCounts(base, prior, this.window, journal, first.learned)
       );
       lives[row] = tables;
       if (journal.active) {
@@ -1258,12 +1188,9 @@ export class AdaptivePrior {
   /** The live table of `row` under the rung a message's selector chose. */
   private live(state: Reading, row: number): LiveCounts {
     return (state.lives[row] ??= new LiveCounts(
-      this.liveBases[row],
+      this.bases[row],
       this.rungs[state.coding - 1],
-      this.window,
-      undefined,
-      this.pooled ? (state.shared ??= Fenwick.zeros(this.members)) : undefined,
-      this.keep
+      this.window
     ));
   }
 }

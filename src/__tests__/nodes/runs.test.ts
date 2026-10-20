@@ -18,9 +18,6 @@ const ITEMS: [string, () => PNode<string>][] = [
   ['adaptive', () => p.string().adaptive()],
   ['prose', () => p.string().prose()],
   ['adaptive prose', () => p.string().prose().adaptive()],
-  ['repeats', () => p.string().repeats()],
-  ['recall', () => p.string().recall()],
-  ['delta', () => p.string().delta()],
 ];
 
 /** Sets of strings meeting at every edge: empties, shared starts, prefixes, surrogates. */
@@ -118,14 +115,48 @@ describe('Restricted runs of strings', () => {
     ]);
   });
 
-  it('take a string the node recalls from elsewhere in the message', () => {
-    const name = p.string().recall();
-    const node = p.object({ first: name, all: p.array(name).unordered().unique() });
-    const value = { first: 'beta', all: ['gamma', 'beta', 'alpha'] };
-    const back = trip(node, value);
-    expect(back).toEqual({ first: 'beta', all: ['alpha', 'beta', 'gamma'] });
-    const once = p.object({ first: p.string(), all: p.array(p.string()).unordered().unique() });
-    expect(node.encode(value).length).toBeLessThanOrEqual(once.encode(value).length);
+  describe('of adaptive strings', () => {
+    const adaptive = () => p.string().adaptive();
+    const words = ['pear', 'apple', 'plum', 'apricot', 'peach', 'fig'];
+
+    it('round-trip a sorted run', () => {
+      expect(trip(p.array(adaptive()).sorted(), ascending(words))).toEqual(ascending(words));
+    });
+
+    it('round-trip a sorted unique run', () => {
+      const node = p.array(adaptive()).sorted().unique();
+      expect(trip(node, ascending(words))).toEqual(ascending(words));
+    });
+
+    it('round-trip an unordered run, decoding it ascending', () => {
+      const values = [...words, 'fig', 'plum'];
+      expect(trip(p.array(adaptive()).unordered(), values)).toEqual(ascending(values));
+      expect([...trip(p.set(adaptive()).unordered(), new Set(words))]).toEqual(ascending(words));
+    });
+
+    it('keep the order of a unique run and write no ordering choice', () => {
+      const node = p.array(adaptive()).unique();
+      expect(trip(node, words)).toEqual(words);
+      // The values go one by one, as an array without the restriction writes them.
+      expect(node.encode(words)).toEqual(p.array(adaptive()).encode(words));
+    });
+
+    it('keep the order of a unique run of mixed starts', () => {
+      const urls = Array.from({ length: 12 }, (_, i) => `https://example.com/items/${11 - i}`);
+      expect(trip(p.array(adaptive()).unique(), urls)).toEqual(urls);
+    });
+
+    it('refuse a descent in a sorted run, located', () => {
+      expect(() => p.array(adaptive()).sorted().encode(['b', 'a'])).toThrow(
+        new RangeError('[1]: Value "a" is below the one before it')
+      );
+    });
+
+    it('refuse a repeat in a unique run, located', () => {
+      expect(() => p.array(adaptive()).unique().encode(['a', 'b', 'a'])).toThrow(
+        new RangeError('[2]: Value "a" repeats an earlier one')
+      );
+    });
   });
 
   it('spell a value as the length, the shared start on the gamma scale, then the rest', () => {
@@ -145,7 +176,7 @@ describe('Restricted runs of strings', () => {
   it('cost less than the same strings in their own order', () => {
     const words = 'the quick brown fox jumps over the lazy dog and then some more words follow';
     const values = [...new Set(words.split(' '))];
-    for (const item of [p.string(), p.string().adaptive(), p.string().charset([97, 122])]) {
+    for (const item of [p.string(), p.string().charset([97, 122])]) {
       const ordered = p.array(item).encode(values).length;
       expect(p.array(item).unordered().unique().encode(values).length).toBeLessThan(ordered);
     }

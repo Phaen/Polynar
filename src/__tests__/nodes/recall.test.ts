@@ -601,12 +601,6 @@ describe('.adaptive() recall', () => {
   const int = <N extends MethodNode<any>>(node: N): N => node._open({}, RECALLED);
 
   it('recalls by default under .adaptive(), at learned odds, unless declared', () => {
-    const values = ['north', 'south', 'north', 'north', 'east', 'south'];
-    const open = inOne(p.string().adaptive(), values);
-    expect(open.back).toEqual(values);
-    expect(open.bytes.length).toBeLessThan(
-      inOne(p.string()._open({}, RECALLED), values).bytes.length
-    );
     const ints = [1e9, 7, 1e9, 1e9, 7];
     expect(inOne(p.int().adaptive(), ints).bytes.length).toBeLessThan(
       inOne(int(p.int()), ints).bytes.length
@@ -619,10 +613,8 @@ describe('.adaptive() recall', () => {
   });
 
   it('costs next to nothing where values never recur', () => {
-    const distinct = Array.from({ length: 1000 }, (_, i) => `user-${i * 7919}`);
     const ids = Array.from({ length: 1000 }, (_, i) => 1000 + i * 3);
     const cases: [PNode<any>, PNode<any>, unknown[]][] = [
-      [p.array(p.string().adaptive()), p.array(p.string()._open({}, RECALLED)), distinct],
       [p.array(p.int().min(0).adaptive()), p.array(int(p.int().min(0))), ids],
       [
         p.array(p.object({ id: int(p.int().min(0)) }).adaptive()),

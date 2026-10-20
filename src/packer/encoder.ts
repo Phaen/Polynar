@@ -439,53 +439,19 @@ export class Encoder {
     this.mix(
       weights.map((weight) => weight > 0),
       write,
-      () => layout
-    );
-  }
-
-  /**
-   * `composeMixture` of `count` choices whose weights follow from what
-   * their spellings cost: every choice is written, then `weigh` gets each
-   * one's cost in `COST_UNITS`, as `bitsSince` prices it times 2^20, and
-   * returns the weights, `count` of them. Where only one has positive
-   * weight, its spelling is the value's, with no choice to put back.
-   *
-   * Choice `kept`, when given, keeps what its spelling changes in the
-   * message state, and the choices after it are written from the state it
-   * leaves: for a value whose state after it is the one that spelling
-   * leaves, which the caller would otherwise teach it again. Where any
-   * spelling throws, every change is taken back.
-   */
-  composePriced(
-    count: number,
-    weigh: (units: readonly number[]) => readonly number[],
-    write: (choice: number) => void,
-    kept = -1
-  ): void {
-    this.mix(
-      new Array<boolean>(count).fill(true),
-      write,
-      (units) => {
-        const weights = weigh(units);
-        if (weights.length !== count) {
-          throw new RangeError(`Expected ${count} weights, got ${weights.length}`);
-        }
-        return new MixtureLayout(weights);
-      },
-      kept
+      layout
     );
   }
 
   /**
    * Writes the spelling of each choice `written` names, each from the
-   * message state as it stands and taken back but for choice `kept`'s, then
-   * the mixture of them `lay` lays out from their costs.
+   * message state as it stands and taken back, then the mixture of them
+   * `layout` lays out, which has at least two choices of positive weight.
    */
   private mix(
     written: readonly boolean[],
     write: (choice: number) => void,
-    lay: (units: readonly number[]) => MixtureLayout,
-    kept = -1
+    layout: MixtureLayout
   ): void {
     if (this.mixing) {
       throw new TypeError('A mixture spelling cannot write a mixture');
@@ -499,8 +465,6 @@ export class Encoder {
     const spellings: (Spelling | undefined)[] = [];
     const costs: number[] = [];
     this.mixing = true;
-    // Taken with no try running, so taking it back leaves `running` be.
-    const outer = kept >= 0 ? this.mark() : undefined;
     try {
       for (let j = 0; j < written.length; j++) {
         if (!written[j]) {
@@ -509,7 +473,6 @@ export class Encoder {
           continue;
         }
         const mark = this.mark();
-        let keep = false;
         try {
           write(j);
           if (this.opened.length !== mark.groups || this.pending.length !== mark.pending) {
@@ -523,23 +486,10 @@ export class Encoder {
             weighted: this.weighted.slice(at),
           });
           costs.push(this.unitsSince(mark));
-          keep = j === kept;
         } finally {
-          if (keep) {
-            this.unlog(mark);
-          } else {
-            this.rollback(mark);
-          }
+          this.rollback(mark);
         }
       }
-      if (outer !== undefined) {
-        this.commit(outer);
-      }
-    } catch (error) {
-      if (outer !== undefined) {
-        this.rollback(outer);
-      }
-      throw error;
     } finally {
       this.mixing = false;
       running.push(...spent);
@@ -547,8 +497,7 @@ export class Encoder {
       ties.push(...sides);
     }
 
-    const layout = lay(costs);
-    const { top, cums: choices, total, only } = layout;
+    const { top, cums: choices, total } = layout;
     const start = this.totals.length;
     const { cums, freqs, totals, weighted } = spellings[top] as Spelling;
     for (let i = 0; i < totals.length; i++) {
@@ -558,13 +507,11 @@ export class Encoder {
       this.weighted.push(weighted[i]);
     }
     const units = mixtureUnits(costs.filter((_, j) => layout.weights[j] > 0));
-    if (only < 0) {
-      this.cums.push(choices[top]);
-      this.freqs.push(layout.weights[top] as Radix);
-      this.totals.push(total as Radix);
-      this.weighted.push(true);
-      this.mixtures.push({ start, at: this.totals.length - 1, layout, spellings, units });
-    }
+    this.cums.push(choices[top]);
+    this.freqs.push(layout.weights[top] as Radix);
+    this.totals.push(total as Radix);
+    this.weighted.push(true);
+    this.mixtures.push({ start, at: this.totals.length - 1, layout, spellings, units });
     if (running.length > 0) {
       this.charge(units);
     }
@@ -742,20 +689,6 @@ export class Encoder {
         this.running[k] = running[k];
       }
     }
-  }
-
-  /**
-   * Keeps the changes to the message state since `mark`, the innermost open
-   * transaction, and closes it, but drops the symbols logged since, which
-   * wrote no selector, alternatives or mixture.
-   */
-  private unlog(mark: Mark): void {
-    this.journal.release(mark.journal);
-    const at = mark.events;
-    this.cums.length = at;
-    this.freqs.length = at;
-    this.totals.length = at;
-    this.weighted.length = at;
   }
 
   /** Keep everything written since `mark`, the innermost open transaction, and close it. */

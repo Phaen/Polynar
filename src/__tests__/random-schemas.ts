@@ -163,17 +163,8 @@ const hotGen = <T>(draw: () => T): (() => T) => {
   return () => (rand() < 0.8 ? pick(hot) : draw());
 };
 
-/** A method a node may declare, as its type has them: the learning of its priors, on a string or binary its contexts, on a string its words and grown alphabet too. */
-type Method =
-  | 'learn'
-  | 'contexts'
-  | 'words'
-  | 'codepoints'
-  | 'delta'
-  | 'recall'
-  | 'repeats'
-  | 'digits'
-  | 'positional';
+/** A method a node may declare, as its type has them: the learning of its priors, the difference from the previous value, recall. */
+type Method = 'learn' | 'delta' | 'recall';
 
 /**
  * `c` with each of `methods` declared a third of the time, in the order
@@ -195,18 +186,6 @@ const withMethods = (c: Case, methods: readonly Method[]): Case => {
 
 /** The methods of a number: its learning, the difference from the previous value, and recall. */
 const NUMBER_METHODS: readonly Method[] = ['learn', 'delta', 'recall'];
-
-/** The methods of a binary: those of a number, the contexts and repeats. */
-const SEQUENCE_METHODS: readonly Method[] = ['learn', 'contexts', 'delta', 'recall', 'repeats'];
-
-/** The methods of a string: those of a binary, words, the grown alphabet, digit fields and positions. */
-const TEXT_METHODS: readonly Method[] = [
-  ...SEQUENCE_METHODS,
-  'words',
-  'codepoints',
-  'digits',
-  'positional',
-];
 
 /** A string with digit runs, some with leading zeros and some past a field's 15 digits, or of one length, mostly. */
 const fieldString = (): string => {
@@ -403,33 +382,24 @@ const decimalCase = (): Case => {
 
 const STRING_CHARSETS = ['digit', 'hex', 'alpha', 'asciiSafe', 'urlSafe'] as const;
 
-/**
- * The ladder's first slot, the most characters a string under it or a
- * prose model drawn here learns over.
- */
-const LADDER_FIRST = 131;
-
-/** `c` with its characters learning a third of the time, over `members` characters. */
-const learnsCharacters = (c: Case, members = LADDER_FIRST): Case => {
+/** `c` on the predictor a third of the time, its strings mostly from three drawn up front then. */
+const learnsCharacters = (c: Case): Case => {
   if (rand() >= 0.3) {
     return c;
   }
-  const a = randAdaptive(members);
-  return { build: (m) => a.apply(c.build(m)), gen: c.gen, src: `${c.src}${a.src}` };
+  const a = randAdaptive(rand() < 0.5 ? 1 : 256);
+  return { build: (m) => a.apply(c.build(m)), gen: hotGen(c.gen), src: `${c.src}${a.src}` };
 };
 
 const stringCase = (): Case => {
   switch (randInt(0, 3)) {
     case 0:
-      return withMethods(
-        learnsCharacters({
-          build: (m) => m.p.string(),
-          gen: () =>
-            rand() < 0.4 ? randString(10) : rand() < 0.3 ? `pre${randString(3)}` : fieldString(),
-          src: 'p.string()',
-        }),
-        TEXT_METHODS
-      );
+      return learnsCharacters({
+        build: (m) => m.p.string(),
+        gen: () =>
+          rand() < 0.4 ? randString(10) : rand() < 0.3 ? `pre${randString(3)}` : fieldString(),
+        src: 'p.string()',
+      });
     case 1: {
       // A bounded length packs as a radix slot instead of a term; a floor
       // half the time, which the prefix then counts up from.
@@ -438,75 +408,61 @@ const stringCase = (): Case => {
       const build = (m: Lib): Node => m.p.string().min(min).max(max);
       const src = `p.string().min(${min}).max(${max})`;
       if (rand() < 0.3) {
-        // The length and the characters learn; a few lengths recur.
+        // On the predictor, its ends bounded; a few lengths recur.
         const length = hotGen(() => randInt(min, max));
         const gen = (): string => {
           const n = length();
           const s = randString(n);
           return s + 'x'.repeat(n - s.length);
         };
-        return adaptiveCase(build, src, gen, max - min + 1, LADDER_FIRST);
+        const a = randAdaptive(max - min + 1);
+        return { build: (m) => a.apply(build(m)), gen, src: `${src}${a.src}` };
       }
-      return withMethods(
-        { build, gen: () => 'x'.repeat(min) + randString(max - min), src },
-        TEXT_METHODS
-      );
+      return { build, gen: () => 'x'.repeat(min) + randString(max - min), src };
     }
     case 2: {
       // English half the time, else a model counted from random text.
       if (rand() < 0.5) {
-        return withMethods(
-          learnsCharacters({
-            build: (m) => m.p.string().prose(),
-            gen: () =>
-              rand() < 0.5
-                ? randString(10)
-                : pick(['the cat', 'Hello, world!', 'qu', 'Ab 12', 'Cd 34']),
-            src: 'p.string().prose()',
-          }),
-          TEXT_METHODS
-        );
+        return learnsCharacters({
+          build: (m) => m.p.string().prose(),
+          gen: () =>
+            rand() < 0.5
+              ? randString(10)
+              : pick(['the cat', 'Hello, world!', 'qu', 'Ab 12', 'Cd 34']),
+          src: 'p.string().prose()',
+        });
       }
       const corpus = 'q' + randString(30);
-      return learnsCharacters({
+      return {
         build: (m) => m.p.string().prose(m.buildProseModel(corpus, { minCount: 1 })),
         gen: () => randString(10),
         src: `p.string().prose(buildProseModel(${json(corpus)}, { minCount: 1 }))`,
-      });
+      };
     }
     default: {
       // Both charset kinds: an indexed alphabet and a code-unit range.
       if (rand() < 0.5) {
         const name = pick(STRING_CHARSETS);
         const alphabet = lib.CharSets[name];
-        return withMethods(
-          learnsCharacters(
-            {
-              build: (m) => m.p.string().charset(m.CharSets[name]),
-              gen: () =>
-                Array.from({ length: randInt(0, 10) }, () =>
-                  alphabet.charAt(randInt(0, alphabet.length - 1))
-                ).join(''),
-              src: `p.string().charset(CharSets.${name})`,
-            },
-            alphabet.length
-          ),
-          TEXT_METHODS
-        );
+        return learnsCharacters({
+          build: (m) => m.p.string().charset(m.CharSets[name]),
+          gen: () =>
+            Array.from({ length: randInt(0, 10) }, () =>
+              alphabet.charAt(randInt(0, alphabet.length - 1))
+            ).join(''),
+          src: `p.string().charset(CharSets.${name})`,
+        });
       }
       const lo = randInt(0, 50000);
       const hi = lo + randInt(1, 5000);
-      return learnsCharacters(
-        {
-          build: (m) => m.p.string().charset([lo, hi]),
-          gen: () =>
-            Array.from({ length: randInt(0, 10) }, () => String.fromCharCode(randInt(lo, hi))).join(
-              ''
-            ),
-          src: `p.string().charset([${lo}, ${hi}])`,
-        },
-        hi - lo + 1
-      );
+      return learnsCharacters({
+        build: (m) => m.p.string().charset([lo, hi]),
+        gen: () =>
+          Array.from({ length: randInt(0, 10) }, () => String.fromCharCode(randInt(lo, hi))).join(
+            ''
+          ),
+        src: `p.string().charset([${lo}, ${hi}])`,
+      });
     }
   }
 };
@@ -641,46 +597,35 @@ const binaryCase = (): Case => {
   if (rand() < 0.5) {
     const name = pick(['Int16Array', 'Float64Array', 'BigUint64Array'] as const);
     const type = globalThis[name];
-    return withMethods(
-      {
-        build: (m) => m.p.binary(type as typeof Int16Array).max(max),
-        gen: () =>
-          new type(randBytes(randInt(0, max) * type.BYTES_PER_ELEMENT).buffer as ArrayBuffer),
-        src: `p.binary(${name}).max(${max})`,
-      },
-      SEQUENCE_METHODS
-    );
+    return learnsCharacters({
+      build: (m) => m.p.binary(type as typeof Int16Array).max(max),
+      gen: () =>
+        new type(randBytes(randInt(0, max) * type.BYTES_PER_ELEMENT).buffer as ArrayBuffer),
+      src: `p.binary(${name}).max(${max})`,
+    });
   }
   switch (randInt(0, 3)) {
     case 3: {
       const length = hotGen(() => randInt(0, max));
-      return adaptiveCase(
-        (m) => m.p.binary().max(max),
-        `p.binary().max(${max})`,
-        () => randBytes(length()),
-        max + 1
-      );
+      const a = randAdaptive(max + 1);
+      return {
+        build: (m) => a.apply(m.p.binary().max(max)),
+        gen: () => randBytes(length()),
+        src: `p.binary().max(${max})${a.src}`,
+      };
     }
-    case 0: {
-      const a = rand() < 0.25 ? randAdaptive(256) : undefined;
-      return withMethods(
-        {
-          build: (m) => (a ? a.apply(m.p.binary()) : m.p.binary()),
-          gen: () => randBytes(randInt(0, max)),
-          src: `p.binary()${a ? a.src : ''}`,
-        },
-        SEQUENCE_METHODS
-      );
-    }
+    case 0:
+      return learnsCharacters({
+        build: (m) => m.p.binary(),
+        gen: () => randBytes(randInt(0, max)),
+        src: 'p.binary()',
+      });
     case 1:
-      return withMethods(
-        {
-          build: (m) => m.p.binary().max(max),
-          gen: () => randBytes(randInt(0, max)),
-          src: `p.binary().max(${max})`,
-        },
-        SEQUENCE_METHODS
-      );
+      return {
+        build: (m) => m.p.binary().max(max),
+        gen: () => randBytes(randInt(0, max)),
+        src: `p.binary().max(${max})`,
+      };
     default:
       // A fixed count spends nothing on the prefix.
       return {

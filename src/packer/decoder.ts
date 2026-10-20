@@ -48,24 +48,6 @@ const MAX_COUNT = 2 ** 32 - 1;
  */
 const FREE_CHOICES = 64;
 
-/** Splits the residuals of a `parseSplit` at `low`: false below it, true from it on. */
-class SplitLocator implements Locator<boolean> {
-  low = 0;
-  total = 0;
-
-  locate(residual: number, span: Span): boolean {
-    const low = this.low;
-    if (residual < low) {
-      span.cum = 0;
-      span.freq = low;
-      return false;
-    }
-    span.cum = low;
-    span.freq = this.total - low;
-    return true;
-  }
-}
-
 /** A table of members that locates its own residuals, as `parseMember` reads it. */
 export interface MemberTable {
   /** The member whose bucket holds `residual`, an integer in `[0, total)`. */
@@ -115,7 +97,6 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
    * them before the next takes them over.
    */
   private readonly tuples = new TupleLocator<unknown>();
-  private readonly split = new SplitLocator();
   private readonly members = new MemberLocator();
   /** Where a read of a single state has its locator leave the bucket. */
   protected readonly span = new Span();
@@ -312,28 +293,11 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
   }
 
   /**
-   * `parseWeighted` for the packer's own models, trusted to pass a total
-   * that is a radix and a `locator` that finds the bucket holding the
-   * residual. A model builds its totals and buckets from the symbols read
-   * before, never from the input itself, so corrupt input cannot break
-   * either: checking them would catch a bug in the model, and no input.
+   * Read a member of `table`, of `total` states: its position. Trusted, as
+   * the packer's own models are, to pass a total that is a radix and a table
+   * that finds the bucket holding the residual: a model builds both from the
+   * symbols read before, never from the input itself.
    */
-  parseLocated<T>(total: number, locator: Locator<T>): T {
-    return this.parseLocator(total, locator, false);
-  }
-
-  /**
-   * Read a symbol of two buckets of `total` states, `[0, low)` and
-   * `[low, total)`, as `parseLocated` would: whether it is the second.
-   */
-  parseSplit(low: number, total: number): boolean {
-    const split = this.split;
-    split.low = low;
-    split.total = total;
-    return this.parseLocator(total, split, false);
-  }
-
-  /** Read a member of `table`, of `total` states, as `parseLocated` would: its position. */
   parseMember(total: number, table: MemberTable): number {
     const members = this.members;
     members.table = table;

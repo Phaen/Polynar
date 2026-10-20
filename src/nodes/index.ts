@@ -37,5 +37,6 @@ export type { Cdf } from './weights';
 export { members } from './members';
 export type { Members, MemberPrior } from './members';
 export type { LearningOptions } from './adaptive';
+export type { AdaptiveOptions, Prior } from '../predictor/types';
 export { ProseModels, buildProseModel } from './prose';
 export type { ProseModel, ProseModelOptions } from './prose';

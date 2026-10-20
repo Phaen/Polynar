@@ -46,24 +46,10 @@ export type MethodFlag = 'declared' | 'open';
 export interface MethodSet {
   /** The node's own priors learn from the message: those its weights, model or charset set, or its defaults. */
   readonly learn?: MethodFlag;
-  /** Each item priced by the items before it, over learned odds of the items alone (`./contexts`). */
-  readonly contexts?: MethodFlag;
-  /** A run of letters the message already spelled as one token of its vocabulary (`./words`). */
-  readonly words?: MethodFlag;
-  /** An item spelled with a tail a symbol of its own once the message has it (`./grown`). */
-  readonly codepoints?: MethodFlag;
   /** Each value after the first as its difference from the node's previous one. */
   readonly delta?: MethodFlag;
   /** Each value as its place among the distinct values the node already wrote, or as new. */
   readonly recall?: MethodFlag;
-  /** Stretches the node already wrote in the message copied instead of spelled again. */
-  readonly repeats?: MethodFlag;
-  /** Each run of digits as an integer of its width, the text around the runs a frame (`./fields`). */
-  readonly digits?: MethodFlag;
-  /** A value of a length the node met before by the items seen at each of its places (`./fields`). */
-  readonly positional?: MethodFlag;
-  /** No length prefix: the end of the value is one more symbol after its items. */
-  readonly terminated?: MethodFlag;
   /** What the tables of the node's methods learn under, as `.learning()` sets it. */
   readonly learning?: Learning;
 }
@@ -145,14 +131,6 @@ export function learns(methods: MethodSet): boolean {
   return methods.learn !== undefined;
 }
 
-/**
- * Whether the odds of the node's items learn: under `learn`, and for the
- * contexts and the grown alphabet, which build on them.
- */
-export function itemsLearn(methods: MethodSet): boolean {
-  return learns(methods) || methods.contexts !== undefined || methods.codepoints !== undefined;
-}
-
 /** What the tables of the node's methods learn under: the defaults unless set. */
 export function optionsOf(methods: MethodSet): Learning {
   return methods.learning ?? {};
@@ -161,11 +139,6 @@ export function optionsOf(methods: MethodSet): Learning {
 /** What the node's own priors learn under: none unless they learn. */
 export function learningOf(methods: MethodSet): Learning | undefined {
   return learns(methods) ? optionsOf(methods) : undefined;
-}
-
-/** Whether the node has no method at all, declared or open. */
-export function bare(methods: MethodSet): boolean {
-  return Object.keys(methods).every((key) => key === 'learning');
 }
 
 /** Whether the node declares any of `names`. */

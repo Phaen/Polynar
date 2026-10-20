@@ -63,8 +63,11 @@ export function writeRun(
     }
     seen?.add(value);
   }
+  // A node on the predictor codes inside no try, so its values go one by one: ascending, or
+  // in their own order where they keep it (spec D11).
+  const adaptive = node._adaptive !== undefined;
   const at = values.map((_, i) => i);
-  if (order.sorted === undefined) {
+  if (order.sorted === undefined && !(adaptive && kept(order))) {
     at.sort((a, b) => ascending(values[a], values[b]));
   }
   const spell = (write: (value: unknown) => void, i: number): void => {
@@ -80,6 +83,12 @@ export function writeRun(
       spell((value) => run.write(enc, value), i);
     }
   };
+  if (adaptive) {
+    for (const i of at) {
+      spell((value) => node._write(enc, value), i);
+    }
+    return at;
+  }
   if (!kept(order)) {
     ascend();
     return at;
@@ -112,6 +121,12 @@ export function readRun(
   choice?: Members
 ): unknown[] {
   const values: unknown[] = [];
+  if (node._adaptive !== undefined) {
+    for (let k = 0; k < count; k++) {
+      values.push(node._read(dec));
+    }
+    return values;
+  }
   if (kept(order) && (choice as Members).read(dec) === PLAIN) {
     for (let k = 0; k < count; k++) {
       values.push(node._read(dec));

@@ -16,6 +16,7 @@
  */
 import { Encoder, Decoder } from '../packer';
 import type { CodecOptions, DecodeOptions, OutputType } from '../packer';
+import type { AdaptiveOptions } from '../predictor/types';
 import type { Kind } from './guards';
 import type { Learning } from './adaptive';
 import type { MethodName } from './methods';
@@ -55,6 +56,9 @@ export abstract class PNode<TOut> {
    * by their digits.
    */
   _toDigit?(value: TOut): number;
+
+  /** The options of `.adaptive()` on a node that codes through the predictor. */
+  readonly _adaptive?: AdaptiveOptions;
 
   /**
    * A run of the node's values, which containers code ascending by JS `<`

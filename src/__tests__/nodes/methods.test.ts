@@ -11,7 +11,6 @@ import { Exclusion } from '../../nodes/excluded';
 import {
   ModeChoice,
   Previous,
-  bare,
   chooses,
   declaresAny,
   learningOf,
@@ -92,18 +91,17 @@ describe('withMethod', () => {
     expect(() => withMethod(delta, 'delta', 'p.int')).toThrow(
       new TypeError('p.int delta is already set')
     );
-    expect(withMethod({ repeats: 'open' }, 'repeats', 'toy')).toEqual({ repeats: 'declared' });
+    expect(withMethod({ recall: 'open' }, 'recall', 'toy')).toEqual({ recall: 'declared' });
   });
 });
 
 describe('opened', () => {
   it('opens every method named that is not declared, and learns under the options given', () => {
-    const declared = withMethod({ digits: 'open' }, 'delta', 'p.string');
-    expect(opened(declared, ['learn', 'delta', 'recall'], { window: 8 })).toEqual({
+    const declared = withMethod({ recall: 'open' }, 'delta', 'p.int');
+    expect(opened(declared, ['learn', 'delta'], { window: 8 })).toEqual({
       learn: 'open',
       delta: 'declared',
       recall: 'open',
-      digits: 'open',
       learning: { window: 8 },
     });
     // Opened again, the latest options hold.
@@ -131,25 +129,18 @@ describe('method set queries', () => {
     expect(learns({ learn: 'open' })).toBe(true);
   });
 
-  it('is bare with no method at all, whatever the options', () => {
-    expect(bare({})).toBe(true);
-    expect(bare({ learning: {} })).toBe(true);
-    expect(bare({ repeats: 'declared' })).toBe(false);
-    expect(bare({ learn: 'open', learning: {} })).toBe(false);
-  });
-
   it('declares any of the names only where one is declared', () => {
-    const names: MethodName[] = ['digits', 'positional'];
-    expect(declaresAny({ delta: 'declared', digits: 'open' }, names)).toBe(false);
-    expect(declaresAny({ positional: 'declared' }, names)).toBe(true);
+    const names: MethodName[] = ['delta', 'recall'];
+    expect(declaresAny({ learn: 'declared', recall: 'open' }, names)).toBe(false);
+    expect(declaresAny({ recall: 'declared' }, names)).toBe(true);
   });
 
   it('chooses with one of the names open and none declared', () => {
-    const names: MethodName[] = ['delta', 'digits'];
+    const names: MethodName[] = ['delta', 'recall'];
     expect(chooses({}, names)).toBe(false);
-    expect(chooses({ recall: 'open' }, names)).toBe(false);
-    expect(chooses({ digits: 'open' }, names)).toBe(true);
-    expect(chooses({ delta: 'open', digits: 'declared' }, names)).toBe(false);
+    expect(chooses({ learn: 'open' }, names)).toBe(false);
+    expect(chooses({ recall: 'open' }, names)).toBe(true);
+    expect(chooses({ delta: 'open', recall: 'declared' }, names)).toBe(false);
   });
 });
 
@@ -339,8 +330,6 @@ describe('.adaptive()', () => {
   }
 
   const index: MethodName[] = ['learn', 'delta', 'recall'];
-  const bytes: MethodName[] = ['learn', 'contexts', 'delta', 'recall', 'repeats', 'terminated'];
-  const text: MethodName[] = [...bytes, 'words', 'codepoints', 'digits', 'positional'];
   const container: MethodName[] = ['learn', 'recall'];
 
   const random = mulberry32(11);
@@ -355,9 +344,6 @@ describe('.adaptive()', () => {
     ['p.decimal', p.decimal(0.01), index, ints.map((v) => v / 100)],
     ['p.date', p.date().precision('day'), index, ints.map((v) => new Date(v * 86400000))],
     ['p.float', p.float(), ['learn', 'delta'], ints.map((v) => v / 8 + 0.1)],
-    ['p.string', p.string(), text, many(() => pick(words))],
-    ['a charset', p.string().charset('0123456789abcdef-'), text, many((i) => `${i % 9}-ab${i}`)],
-    ['p.binary', p.binary(), bytes, many((i) => Uint8Array.of(i % 5, 7, i % 3))],
     ['p.array', p.array(p.int().min(0).max(9)), container, many((i) => [i % 3, 4, i % 5])],
     ['p.set', p.set(p.int().min(0).max(9)), container, many((i) => new Set([i % 3, 9]))],
     ['p.record', p.record(p.bool()), container, many((i) => ({ [pick(words)]: i % 2 === 0 }))],
@@ -386,12 +372,11 @@ describe('.adaptive()', () => {
       delta: 'declared',
       recall: 'open',
     });
-    expect(p.string().terminated().adaptive()._methods.terminated).toBe('declared');
   });
 
   it('carries its options into the set it opens', () => {
     const options = { window: 64, separate: true };
-    expect(p.string().adaptive(options)._methods.learning).toEqual(options);
+    expect(p.int().adaptive(options)._methods.learning).toEqual(options);
   });
 
   const priors = [
@@ -435,17 +420,17 @@ describe('.adaptive()', () => {
     const long = Array.from({ length: 200 }, (_, i) => 1000 + i * 3);
     const delta = (n: PNode<number>) => p.array(n).encode(long).length;
     expect(delta(p.int().delta())).toBeLessThan(delta(p.int()));
-    const names = Array.from({ length: 200 }, (_, i) => ['alpha', 'bravo', 'charlie'][i % 3]);
-    const recall = (n: PNode<string>) => p.array(n).encode(names).length;
-    expect(recall(p.string().recall())).toBeLessThan(recall(p.string()));
+    const ids = Array.from({ length: 200 }, (_, i) => [1000, 52000, 777000][i % 3]);
+    const recall = (n: PNode<number>) => p.array(n).encode(ids).length;
+    expect(recall(p.int().recall())).toBeLessThan(recall(p.int()));
     const list = p.array(p.int().delta());
     expect(list.decode(list.encode(long))).toEqual(long);
   });
 
   it('leaves the methods p.any names closed, and adapts a node without methods', () => {
-    const text = p.string()._open({ window: 8 }, ['recall']);
-    expect(text._methods.recall).toBeUndefined();
-    expect(text._methods.delta).toBe('open');
+    const number = p.int()._open({ window: 8 }, ['recall']);
+    expect(number._methods.recall).toBeUndefined();
+    expect(number._methods.delta).toBe('open');
     const flags = Array.from({ length: 40 }, (_, i) => i % 5 === 0);
     const adapted = p.array(p.bool()._open({ window: 16 })).encode(flags);
     expect(adapted).toEqual(p.array(p.bool().adaptive({ window: 16 })).encode(flags));

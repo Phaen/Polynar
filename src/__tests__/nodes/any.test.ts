@@ -46,8 +46,9 @@ const LEARNING_VALUE = {
   big: -12n,
 };
 const LEARNING_BYTES = [
-  13, 57, 89, 58, 204, 91, 78, 210, 112, 93, 165, 250, 178, 222, 62, 161, 216, 29, 51, 98, 97, 101,
-  78, 195, 172, 101, 138, 190, 31, 202, 70, 186, 216, 194, 164, 104, 155, 113, 131, 205,
+  1, 127, 136, 167, 148, 239, 49, 136, 178, 131, 34, 207, 134, 253, 199, 65, 88, 150, 210, 194, 125,
+  216, 149, 91, 67, 201, 134, 237, 92, 126, 189, 64, 248, 194, 76, 87, 94, 163, 249, 60, 155, 113,
+  131, 205,
 ];
 
 /** The tags of the kinds the hand-built messages use. */
@@ -267,14 +268,12 @@ describe('Schema any', () => {
     expect(trip(p.any().adaptive(), value)).toEqual(value);
   });
 
-  it('recalls a Map key among string values, and a record key apart from them', () => {
+  it('recalls a Map key among string values, and round-trips a record key', () => {
     const node = p.any().adaptive();
     const recalled = node.encode(new Map([['hello', 'hello']]));
     expect(recalled.length).toBeLessThan(node.encode(new Map([['hello', 'world']])).length);
-    // Spelled on the ladder, where an anagram costs the same.
     const record = { éè: 'éè' };
     expect(trip(node, record)).toEqual(record);
-    expect(node.encode(record).length).toEqual(node.encode({ éè: 'èé' }).length);
   });
 
   it('round-trips Maps and Sets of any values, keys included', () => {
@@ -884,26 +883,28 @@ describe('p.any().adaptive() key cap', () => {
     expect(trip(node, value)).toEqual(value);
   });
 
-  it('drops the codecs a rolled-back write built, the shared one included', () => {
+  it('drops the codecs a rolled-back write built', () => {
     const node = p.any().adaptive();
-    const many = Object.fromEntries(Array.from({ length: MAX_KEYS + 2 }, (_, i) => [`k${i}`, i]));
+    const nested = [[1, 2], [[3]]];
     const tried = new Encoder();
     const mark = tried.mark();
-    node._write(tried, many);
+    node._write(tried, nested);
     tried.rollback(mark);
     const state = tried.state(node, () => ({
       children: new Map(),
       overflow: undefined,
       scope: new Scope(),
-    })) as {
-      children: Map<string, unknown>;
-      overflow?: unknown;
-    };
+    })) as { children: Map<string, unknown> };
     expect(state.children.size).toBe(0);
-    expect(state.overflow).toBeUndefined();
-    node._write(tried, { a: 1 });
+    node._write(tried, [5]);
     const plain = new Encoder();
-    node._write(plain, { a: 1 });
+    node._write(plain, [5]);
     expect(tried.output()).toEqual(plain.output());
+  });
+
+  it('refuses to write an object inside a try: its keys go through the predictor', () => {
+    const tried = new Encoder();
+    tried.mark();
+    expect(() => p.any().adaptive()._write(tried, { a: 1 })).toThrow(/inside a spelling/);
   });
 });
