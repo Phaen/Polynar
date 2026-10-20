@@ -442,28 +442,57 @@ export interface IdLookup {
   idOf(cp: number): number;
 }
 
-/** The built-in population of a prior with the session's symbol ids; −1 in the prior is END. */
+/** The last built-in population of each prior and the ids it was built under. */
+const FROZEN_CACHE = new WeakMap<object, { ids: Int32Array; f: Frozen }>();
+
+/**
+ * The built-in population of a prior with the session's symbol ids; −1 in the prior is END. The
+ * ids are taken in the same order on every call, so their assignment does not depend on the
+ * cache. A population built under the same ids is shared: nothing writes to it but `lookup`,
+ * whose `E` and `m` are read within the same step.
+ */
 export function frozen(
   prior: Pick<LoadedPrior, 'builtinSymbols' | 'builtinCounts0' | 'builtinContexts1'>,
   ids: IdLookup
 ): Frozen {
-  const f = new Frozen();
   const id = (cp: number): number => (cp < 0 ? END : ids.idOf(cp));
+  const symbols = prior.builtinSymbols;
+  const contexts = prior.builtinContexts1;
+  const got = new Int32Array(symbols.length + 2 * contexts.length);
+  let w = 0;
+  for (const cp of symbols) got[w++] = id(cp);
+  for (const [prev, next] of contexts) {
+    got[w++] = id(prev);
+    got[w++] = id(next);
+  }
+  const hit = FROZEN_CACHE.get(prior);
+  if (hit !== undefined && sameIds(hit.ids, got)) {
+    return hit.f;
+  }
+  const f = new Frozen();
   f.e0.load(END, prior.builtinCounts0[0]);
-  prior.builtinSymbols.forEach((cp, i) => f.e0.load(id(cp), prior.builtinCounts0[i + 1]));
+  for (let i = 0; i < symbols.length; i++) f.e0.load(got[i], prior.builtinCounts0[i + 1]);
   const seq = new Int32Array(1);
   const h = new Float64Array(2);
   const map = f.maps[1];
-  for (const [prev, next, c] of prior.builtinContexts1) {
-    seq[0] = id(prev);
+  w = symbols.length;
+  for (const [, , c] of contexts) {
+    seq[0] = got[w++];
     hashes(seq, 1, 1, h);
     let e = map.get(h[1]);
     if (e === undefined) {
       e = new Entry();
       map.set(h[1], e);
     }
-    e.load(id(next), c);
+    e.load(got[w++], c);
   }
   f.total = f.e0.total;
+  FROZEN_CACHE.set(prior, { ids: got, f });
   return f;
+}
+
+/** Equal id lists; both come from one prior, so their lengths agree. */
+function sameIds(a: Int32Array, b: Int32Array): boolean {
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }

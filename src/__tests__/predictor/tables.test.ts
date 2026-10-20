@@ -625,4 +625,14 @@ describe('frozen', () => {
     expect(f.lookup(p.h, p.n)).toBe(1);
     expect(f.E[1].count(292)).toBe(1);
   });
+
+  it('shares the population of a prior while the ids agree, and rebuilds when they differ', () => {
+    const f = frozen(prior, fake);
+    expect(frozen(prior, fake)).toBe(f);
+    const other = { idOf: (cp: number): number => ids.get(cp)! + 10 };
+    const g = frozen(prior, other);
+    expect(g).not.toBe(f);
+    expect(Array.from(g.e0.syms.subarray(0, 3))).toEqual([END, 302, 303]);
+    expect(frozen(prior, other)).toBe(g);
+  });
 });
