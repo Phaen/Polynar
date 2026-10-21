@@ -284,7 +284,9 @@ describe('Schema string prose', () => {
   it('builds a model of the lowercase text', () => {
     expect(buildProseModel('The Cat. THE CAT.').alphabet).toBe(' .aceht');
     expect(buildProseModel('abab', { alphabet: 'aAbB' }).alphabet).toBe('ab');
-    expect(() => buildProseModel('AB', { alphabet: 'AB' })).toThrow('no characters to model');
+    expect(() => buildProseModel('AB', { alphabet: 'AB' })).toThrow(
+      'alphabet holds no characters outside A–Z'
+    );
   });
 
   it('leaves rare characters of a built model to the escape', () => {
@@ -295,8 +297,12 @@ describe('Schema string prose', () => {
     const lone = buildProseModel('a\udc00a\ud800a', { minCount: 1 });
     expect(lone.alphabet).toBe('a');
     expect(trip(p.string().prose(lone), 'a\ud800\ud800a')).toBe('a\ud800\ud800a');
-    expect(() => buildProseModel('abc')).toThrow('no characters to model');
-    expect(() => buildProseModel('aa', { alphabet: '' })).toThrow('no characters to model');
+    expect(() => buildProseModel('abc')).toThrow(
+      'buildProseModel found no character the corpus uses at least 2 times; a lower minCount or an alphabet sets them'
+    );
+    expect(() => buildProseModel('aa', { alphabet: '' })).toThrow(
+      'alphabet holds no characters outside A–Z'
+    );
     expect(() => buildProseModel('aa', { minCount: 0 })).toThrow(
       new RangeError('buildProseModel minCount must be a positive integer, got 0')
     );
@@ -470,7 +476,7 @@ describe('p.string().adaptive()', () => {
 
     it('round-trips every member in order and a repetitive string', () => {
       expect(trip(hex, CharSets.hex)).toBe(CharSets.hex);
-      expect(trip(hex, 'ABABABABABABABABABABABAB')).toBe('ABABABABABABABABABABABAB');
+      expect(trip(hex, 'abababababababababababab')).toBe('abababababababababababab');
     });
 
     it('refuses a character outside it as the plain node does', () => {

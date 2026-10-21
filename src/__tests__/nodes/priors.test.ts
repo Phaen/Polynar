@@ -235,7 +235,9 @@ describe('Schema priors', () => {
     expect(aList(aWeights).encode(aValues)).toEqual(aList(aCdf).encode(aValues));
 
     // A change to the range re-checks the count against it.
-    expect(() => tWeights.precision('hour')).toThrow('one weight per value');
+    expect(() => p.date().min(0).max(1).weights([1, 1]).precision('day')).toThrow(
+      'one weight per value'
+    );
     expect(() => p.array(p.bool()).max(4).weights(aw).min(0)).toThrow('one weight per value');
     expect(() => dWeights.max(1.5)).toThrow('p.decimal max is already set');
   });

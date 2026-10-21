@@ -93,6 +93,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
    * count cannot encode.
    */
   cdf(fn: Cdf): PArray<TItem> {
+    checkUnset(this._bounds.prior, 'p.array', 'prior');
     return this._with({ ...this._bounds, prior: fn });
   }
 
@@ -102,6 +103,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
    * total.
    */
   weights(w: readonly number[]): PArray<TItem> {
+    checkUnset(this._bounds.prior, 'p.array', 'prior');
     return this._with({ ...this._bounds, prior: w });
   }
 
@@ -271,8 +273,13 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     if (restricts(this._order)) {
       return readRun(dec, item, count, this._order, this._choice) as TItem[];
     }
-    for (let i = 0; i < count; i++) {
-      value.push(item._read(dec));
+    let i = 0;
+    try {
+      for (; i < count; i++) {
+        value.push(item._read(dec));
+      }
+    } catch (error) {
+      throw atPath(error, i);
     }
     return value;
   }

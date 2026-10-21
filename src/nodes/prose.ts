@@ -447,7 +447,11 @@ export function buildProseModel(text: string, options: ProseModelOptions = {}): 
       .join('');
   }
   if (chars === '') {
-    throw new RangeError('buildProseModel found no characters to model');
+    throw new RangeError(
+      options.alphabet === undefined
+        ? `buildProseModel found no character the corpus uses at least ${minCount} times; a lower minCount or an alphabet sets them`
+        : 'buildProseModel alphabet holds no characters outside A–Z'
+    );
   }
   const codes = Array.from(chars, (ch) => ch.codePointAt(0)!);
   const index = new Map(codes.map((code, i) => [code, i]));

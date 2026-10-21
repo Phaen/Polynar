@@ -3,6 +3,7 @@ import { PNode } from './base';
 import { kindOf, type Kind } from './guards';
 import { describe, oneOf } from './path';
 import type { LearningOptions } from './adaptive';
+import { checkUnset } from './lattice';
 import { members, type MemberPrior, type Members } from './members';
 import { MethodNode, PRIOR_METHODS, learningOf, type MethodSet } from './methods';
 
@@ -64,6 +65,7 @@ export class PUnion<T> extends MethodNode<T> {
    * of the wire format.
    */
   weights(w: readonly number[]): PUnion<T> {
+    checkUnset(this._prior?.weights, 'p.union', 'weights');
     return new PUnion<T>(this._members, { ...this._prior, weights: w }, this._methods);
   }
 

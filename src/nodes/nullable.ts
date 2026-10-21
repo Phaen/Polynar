@@ -2,6 +2,7 @@ import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import type { Kind } from './guards';
 import type { LearningOptions } from './adaptive';
+import { checkUnset } from './lattice';
 import { members, type MemberPrior, type Members } from './members';
 import { MethodNode, PRIOR_METHODS, learningOf, type MethodSet } from './methods';
 
@@ -44,7 +45,8 @@ export class PNullable<T> extends MethodNode<T | null> {
    * Declare how likely each side is, as `[value, null]`. A prior, not a
    * constraint, and part of the wire format.
    */
-  weights(w: readonly number[]): PNullable<T> {
+  weights(w: readonly [number, number]): PNullable<T> {
+    checkUnset(this._prior?.weights, 'p.nullable', 'weights');
     return new PNullable<T>(this.inner, { ...this._prior, weights: w }, this._methods);
   }
 

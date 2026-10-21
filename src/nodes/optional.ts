@@ -2,6 +2,7 @@ import { Encoder, Decoder } from '../packer';
 import { PNode } from './base';
 import type { Kind } from './guards';
 import type { LearningOptions } from './adaptive';
+import { checkUnset } from './lattice';
 import { members, type MemberPrior, type Members } from './members';
 import { MethodNode, PRIOR_METHODS, learningOf, type MethodSet } from './methods';
 
@@ -63,6 +64,7 @@ export class POptional<TOut> extends MethodNode<TOut | undefined> {
    * A prior, not a constraint, and part of the wire format.
    */
   weights(w: readonly [number, number]): POptional<TOut> {
+    checkUnset(this._prior?.weights, 'p.optional', 'weights');
     return new POptional<TOut>(this.inner, { ...this._prior, weights: w }, this._methods);
   }
 

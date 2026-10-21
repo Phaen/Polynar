@@ -97,7 +97,7 @@ assert.deepStrictEqual(User.decode(bytes), user);
 
 ## API
 
-Each `p.*` factory creates a node for one type, and the node's methods narrow which values it allows. Every method changes the encoding, usually making it denser, rather than only checking values. Methods return a new node; they never change the one they're called on. A schema that contradicts itself, such as `.min(5).max(2)`, throws as soon as it's defined where that can be seen up front, and so does setting `.min` or `.max` a second time. A value outside a declared bound, step, length or list throws when it's encoded, and is never rounded to fit. Values the TypeScript types rule out, like a string where a number belongs, aren't checked at runtime. The exceptions are mistakes that would otherwise encode wrong without an error, such as a missing required field or a class instance given to `p.any()`. Object keys outside the shape are dropped.
+Each `p.*` factory creates a node for one type, and the node's methods narrow which values it allows. Every method changes the encoding, usually making it denser, rather than only checking values. Methods return a new node; they never change the one they're called on. A schema that contradicts itself, such as `.min(5).max(2)`, throws as soon as it's defined where that can be seen up front, and so does setting `.min`, `.max`, a prior or any other method a second time. A value outside a declared bound, step, length or list throws when it's encoded, and is never rounded to fit. Values the TypeScript types rule out, like a string where a number belongs, aren't checked at runtime. The exceptions are mistakes that would otherwise encode wrong without an error, such as a missing required field or a class instance given to `p.any()`. Object keys outside the shape are dropped.
 
 - [`p.int`](#pint)
 - [`p.decimal`](#pdecimalstep-number)
@@ -205,7 +205,7 @@ A boolean, one bit. Infers `boolean`.
 
 | Method                                                         | Description                                                                                                             |
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `.weights(w: number[])`                                        | Prior: one weight per value, as `[true, false]`.                                                                        |
+| `.weights(w: [number, number])`                                | Prior: one weight per value, as `[true, false]`.                                                                        |
 | `.learn()`                                                     | Prior that learns from the message; see [Priors that learn](#priors-that-learn-learn-and-adaptive).                     |
 | `.adaptive(options?: { window?: number; separate?: boolean })` | `.learn()`, with `options` as `.learning()` takes them; see [Priors that learn](#priors-that-learn-learn-and-adaptive). |
 
@@ -313,13 +313,13 @@ A value or `null`: `p.nullable(p.string())` is `string | null`, written the same
 
 | Method                                                         | Description                                                                                                             |
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `.weights(w: number[])`                                        | Prior: one weight per side, as `[value, null]`.                                                                         |
+| `.weights(w: [number, number])`                                | Prior: one weight per side, as `[value, null]`.                                                                         |
 | `.learn()`                                                     | Prior that learns from the message; see [Priors that learn](#priors-that-learn-learn-and-adaptive).                     |
 | `.adaptive(options?: { window?: number; separate?: boolean })` | `.learn()`, with `options` as `.learning()` takes them; see [Priors that learn](#priors-that-learn-learn-and-adaptive). |
 
 ### `p.union(members: PNode[])`
 
-One of several members: `p.union([p.string(), p.int(), p.array(p.string())])` is `string | number | string[]`. The member is picked by the value's kind: string, number, bigint, boolean, null, undefined, date, regular expression, array, map, set, object, ArrayBuffer, DataView, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. Members must know their kinds, so `p.lazy` and custom nodes without `_kinds` can't be members. `p.any()` takes nearly every kind, so it overlaps with almost any other member. A value whose kind has no member throws. Recording which member was used costs log2(members) bits.
+One of several members: `p.union([p.string(), p.int(), p.array(p.string())])` is `string | number | string[]`. The member is picked by the value's kind: string, number, bigint, boolean, null, undefined, date, regular expression, array, map, set, object, ArrayBuffer, DataView, or the class of a typed array. Each kind can belong to one member, so two array or two object members throw, and so does `p.enum(['bold', 'italic'])` next to `p.string()`: an enum has the kind of its members. Members must know their kinds, so `p.lazy`, a `p.nullable` or `p.optional` around one, and custom nodes without `_kinds` can't be members; `p.lazy` inside a container, like `p.array(p.lazy(…))`, is fine. `p.any()` takes nearly every kind, so it overlaps with almost any other member. A value whose kind has no member throws. Recording which member was used costs log2(members) bits.
 
 | Method                                                         | Description                                                                                                             |
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
@@ -348,23 +348,23 @@ The tag costs log2(members) bits and is never written as text. The order of the 
 
 ### `p.lazy(resolve: () => PNode)`
 
-A node looked up on first use, so a schema can contain itself or refer to one defined further down; it costs nothing on the wire. Infers the resolved node's type. Its kinds are unknown until first use, so it can't be a `p.union` member; `p.nullable` and `p.optional` take it either way round. No methods.
+A node looked up on first use, so a schema can contain itself or refer to one defined further down; it costs nothing on the wire. Infers the resolved node's type. Its kinds are unknown until first use, so it can't be a `p.union` member; `p.nullable` and `p.optional` take it either way round. A value nested more than 512 lazy references deep, which includes a value that contains itself, throws a `RangeError` without the path in front, and a `p.lazy` that comes back to itself without reaching a node throws a `TypeError` on first use. No methods.
 
 ### `p.versioned(first: PNode, ...later: (PNode | [PNode, (previous) => next])[])`
 
 A schema that can change after data has been written. The first argument is the first version. Each later argument is either a plain node, when old values still fit it (a wider bound, an added optional field, a removed field), or `[node, migrate]`, where `migrate` turns a value of the previous version into one of the new. Infers the newest version's type. Earlier versions stay in the list: replacing one instead of adding after it makes data written with it undecodable.
 
-Data written by any listed version decodes and is migrated step by step to the newest. Each step's result is checked by that version's node, and the newest is read back from its own bytes, so old data comes out exactly as newest data would. A result a version can't encode throws as encoding it would, with the versions named: a bug in the schema, not bad input, so never a `CorruptInputError`. The encoder always writes the newest, so decoding old data and encoding it again gives new bytes. Data from a version the schema doesn't list throws `UnknownVersionError`. The version number costs a couple of bits. The wrapper has to be there before the first data is written: data written without it carries no version, and nothing can tell its versions apart later.
+Data written by any listed version decodes and is migrated step by step to the newest. Each step's result is checked by that version's node, and the newest is read back from its own bytes, so old data comes out exactly as newest data would. A result a version can't encode throws as encoding it would, with the versions named: a bug in the schema, not bad input, so never a `CorruptInputError`. The encoder always writes the newest, so decoding old data and encoding it again gives new bytes. Data from a version the schema doesn't list throws `UnknownVersionError`, whose `version` is the version the data was written by and `known` how many versions the schema lists. The version number costs a couple of bits. The wrapper has to be there before the first data is written: data written without it carries no version, and nothing can tell its versions apart later.
 
-| Method                       | Description                                                                                                                                                                        |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.walk(value, from?: PNode)` | Upgrades a value of an older version to the newest, as decoding old data does: an object already in hand, with its version known. The value is of the first version, or of `from`. |
+| Method                                 | Description                                                                                                                                                                                                                                                                                                       |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.walk(value, from?: PNode \| number)` | Upgrades a value of an older version to the newest, as decoding old data does: an object already in hand, with its version known. The value is of the first version, of the version whose node is `from`, or of version `from` counting from 1. The migrations get a copy, so the value passed in stays as it is. |
 
 `User.walk({ name: 'Ada' })` gives what data written by the first version decodes to.
 
 ### `p.any(hints?: PNode[])`
 
-Self-describing escape hatch: numbers, bigints, strings, booleans, dates, regular expressions, null, undefined, ArrayBuffers, DataViews, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values; an object typed with an interface needs an index signature to count as one. Numbers round-trip as they do through `p.float`, though written their own way, so sizes differ: `255` takes 2 bytes against 4, `2 ** 52` 8 against 2. Everything else round-trips bit-exact, and a typed array decodes as the same class. A regular expression keeps its source and flags but not its `lastIndex`, and a DataView decodes over a new buffer of just its bytes. Shared references and holes in sparse arrays aren't kept: an object that appears twice comes back as two separate copies, and a hole comes back as `undefined`. A subclass of any of these, such as a `Buffer` or a class extending `RegExp` or `Map`, decodes as the built-in class. Any other class instance throws a `TypeError`, and so do errors and boxed primitives like `new Number(1)`. Nesting containers more than 512 levels deep, which includes a value that contains itself, throws a `RangeError` without the path in front. Costs more than a precise node.
+Self-describing escape hatch: numbers, bigints, strings, booleans, dates, regular expressions, null, undefined, ArrayBuffers, DataViews, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values; an object typed with an interface needs an index signature to count as one. Numbers round-trip as they do through `p.float`, though written their own way, so sizes differ: `255` takes 2 bytes against 4, `2 ** 52` 8 against 2. Everything else round-trips bit-exact, and a typed array decodes as the same class. A regular expression keeps its source and flags but not its `lastIndex`, and a DataView decodes over a new buffer of just its bytes. A key holding `undefined` is kept, where `p.object` leaves it out. Only an object's own enumerable string keys and an array's elements travel: symbol keys, non-enumerable properties and extra properties on an array are left out, and an object with a null prototype decodes as a plain one. Shared references and holes in sparse arrays aren't kept: an object that appears twice comes back as two separate copies, and a hole comes back as `undefined`. A subclass of any of these, such as a `Buffer` or a class extending `RegExp` or `Map`, decodes as the built-in class. Any other class instance throws a `TypeError`, and so do errors and boxed primitives like `new Number(1)`. Nesting containers more than 512 levels deep, which includes a value that contains itself, throws a `RangeError` without the path in front. Costs more than a precise node.
 
 Hints are nodes some values are expected to fit: `p.any([p.string().charset(CharSets.hex).length(32)])`. Each value, at any depth, tries the hints that take its kind in order, and the first that writes it codes it behind a tag of its own. A hint only takes values it gives back unchanged. A hint needs declared kinds, so `p.lazy` and custom nodes without `_kinds` throw.
 
@@ -501,7 +501,8 @@ User.decode(ascii, { charset: CharSets.asciiSafe });
 | Name                    | Characters                      |
 | ----------------------- | ------------------------------- |
 | `CharSets.digit`        | `0123456789`                    |
-| `CharSets.hex`          | `0123456789ABCDEF`              |
+| `CharSets.hex`          | `0123456789abcdef`              |
+| `CharSets.hihex`        | `0123456789ABCDEF`              |
 | `CharSets.lowalpha`     | `a`–`z`                         |
 | `CharSets.hialpha`      | `A`–`Z`                         |
 | `CharSets.alpha`        | all letters                     |
@@ -533,9 +534,9 @@ A value that can't be encoded throws with its path in front and the limit it bro
 - `Kind` — the kinds `p.union` tells apart, and the type of `_kinds`.
 - `ProseModel`, `ProseModelOptions` — a prose matrix and the options of `buildProseModel`.
 - `TypedArray`, `TypedArrayClass` — what `p.binary` takes and returns.
-- `Charset` — `string | [number, number]`, for output and `.charset()`.
+- `Charset` — `string | readonly [number, number]`, for output and `.charset()`.
 - `OutputType` — `'binary' | 'text'`.
-- `CodecOptions` — the options of `encode` and `decode`. Without a type argument it has no `type`, so one options object works for both forms; `CodecOptions<'text'>` and `CodecOptions<'binary'>` include it.
+- `CodecOptions` — the options of `encode` and `decode`. Without a type argument it has no `type`, so one options object works for both forms; `CodecOptions<'text'>` requires `type: 'text'`, so `encode` with it returns a string, and `CodecOptions<'binary'>` and `CodecOptions<OutputType>` take it optionally.
 
 The node classes are exported too (`PNode`, `PInt`, `PString`, `PObject`, …), along with `ProseModels`, `buildProseModel`, `members` and `MessageState`.
 

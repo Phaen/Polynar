@@ -79,9 +79,7 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
   _read(dec: Decoder): T {
     const index = VERSION.read(dec);
     if (index >= this._nodes.length) {
-      throw new UnknownVersionError(
-        `Data was written by version ${index + 1}; this schema knows ${this._nodes.length}`
-      );
+      throw new UnknownVersionError(index + 1, this._nodes.length);
     }
     const value = this._nodes[index]._read(dec);
     return index === this._nodes.length - 1 ? value : this._upgrade(value, index);
@@ -89,20 +87,37 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
 
   /**
    * Upgrades a value of an older version to the newest, the same way `decode`
-   * upgrades old data. The value is of the first version, or of the version
-   * whose node is passed as `from`.
+   * upgrades old data: the value is written with its version's node and read
+   * back before the migrations see it, so they can't change the caller's
+   * object. The value is of the first version, of the version whose node is
+   * passed as `from`, or of version `from` counting from 1.
    */
   walk(value: TFirst): T;
   walk<S>(value: S, from: PNode<S>): T;
-  walk(value: unknown, from?: PNode<unknown>): T {
-    const start = from === undefined ? 0 : this._nodes.indexOf(from);
-    if (from !== undefined && this._nodes.lastIndexOf(from) !== start) {
+  walk(value: unknown, from: number): T;
+  walk(value: unknown, from?: PNode<unknown> | number): T {
+    const start =
+      from === undefined ? 0 : typeof from === 'number' ? from - 1 : this._nodes.indexOf(from);
+    if (
+      typeof from === 'number' &&
+      !(Number.isInteger(from) && from >= 1 && from <= this._nodes.length)
+    ) {
+      throw new RangeError(
+        `p.versioned walk got version ${from}; this schema knows 1 to ${this._nodes.length}`
+      );
+    }
+    if (typeof from === 'object' && this._nodes.lastIndexOf(from) !== start) {
       throw new TypeError('p.versioned walk got a node listed as more than one version');
     }
     if (start === -1) {
       throw new TypeError('p.versioned walk got a node that is not one of its versions');
     }
-    return this._upgrade(value, start);
+    if (start === this._nodes.length - 1) {
+      return this._upgrade(value, start);
+    }
+    const enc = new Encoder();
+    this._nodes[start]._write(enc, value);
+    return this._upgrade(this._nodes[start]._read(new ReplayDecoder(enc)), start);
   }
 
   /**

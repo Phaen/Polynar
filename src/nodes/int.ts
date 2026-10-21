@@ -63,6 +63,7 @@ export class PInt extends MethodNode<number> {
    * cannot encode; everything else just gets cheaper or dearer.
    */
   cdf(fn: Cdf): PInt {
+    checkUnset(this._range.declared, 'p.int', 'prior');
     return new PInt(this._range.lo, this._range.hi, fn, this._methods);
   }
 
@@ -71,6 +72,7 @@ export class PInt extends MethodNode<number> {
    * prior as `.cdf()`, given as the histogram instead of its running total.
    */
   weights(w: readonly number[]): PInt {
+    checkUnset(this._range.declared, 'p.int', 'prior');
     return new PInt(this._range.lo, this._range.hi, w, this._methods);
   }
 

@@ -128,11 +128,11 @@ describe('Text charset validation', () => {
       /is not in the charset/
     );
     expect(() => new Decoder('a', { charset: '一丁' }).parse(2)).toThrow(
-      'Character at 0 is not in the charset'
+      'Character "a" at 0 is not in the charset'
     );
     // '[' (code 91) is one beyond the maximum of the [65, 90] range.
     expect(() => new Decoder('Z[', { charset: [65, 90] }).parse(1001)).toThrow(
-      'Character at 1 is not in the charset'
+      'Character "[" at 1 is not in the charset'
     );
   });
 });
@@ -217,7 +217,7 @@ describe('Byte output', () => {
 
   it('throws when a byte is not in the charset', () => {
     expect(() => new Decoder(Uint8Array.of(10, 200), { charset: [0, 100] }).parse(1000)).toThrow(
-      'Byte at 1 is not in the charset'
+      'Byte 200 at 1 is not in the charset'
     );
   });
 });

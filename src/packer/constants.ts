@@ -7,7 +7,8 @@
  */
 export const CharSets = {
   digit: '0123456789',
-  hex: '0123456789ABCDEF',
+  hex: '0123456789abcdef',
+  hihex: '0123456789ABCDEF',
   lowalpha: 'abcdefghijklmnopqrstuvwxyz',
   hialpha: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
   alpha: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',

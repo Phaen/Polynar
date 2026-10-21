@@ -5,6 +5,7 @@
  * key.
  */
 
+import { inspect } from 'node:util';
 import { p, PNode, Encoder, Decoder } from '../../index';
 import type { CodecOptions } from '../../index';
 import { trip } from '../support';
@@ -39,6 +40,11 @@ class PMaybeWord extends PNode<string | undefined> {
 }
 
 describe('Custom nodes', () => {
+  it('shows as its class name when logged', () => {
+    expect(inspect(p.object({ a: p.int() }))).toBe('PObject');
+    expect(inspect([p.string()])).toBe('[ PString ]');
+  });
+
   it('share one encoder with other nodes and read back in write order', () => {
     const age = p.int().min(0).max(100);
     const name = p.string().max(10);

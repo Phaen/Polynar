@@ -15,7 +15,7 @@ describe('Schema nullable', () => {
 
   it('lists weights value first', () => {
     const nulls = Array(64).fill(null);
-    const list = (weights: number[]) =>
+    const list = (weights: [number, number]) =>
       p.array(p.nullable(p.int().min(0).max(9)).weights(weights)).length(64);
     expect(trip(list([1, 99]), nulls)).toEqual(nulls);
     expect(list([1, 99]).encode(nulls).length).toBeLessThan(list([99, 1]).encode(nulls).length);
@@ -52,7 +52,7 @@ describe('Schema nullable', () => {
 
 describe('p.nullable adaptive', () => {
   const plain = p.nullable(p.int().min(0).max(3));
-  const weights = [1, 9];
+  const weights: [number, number] = [1, 9];
   const run = (length: number, seed: number) => {
     const rnd = mulberry32(seed);
     return Array.from({ length }, () => (rnd() < 0.9 ? null : Math.floor(rnd() * 4)));
@@ -127,9 +127,6 @@ describe('p.nullable adaptive', () => {
       new RangeError(
         'p.nullable adaptive prior 4 and window 1024 overflow with weights totalling 70368744177664'
       )
-    );
-    expect(() => plain.adaptive().weights([1])).toThrow(
-      new TypeError('p.nullable weights must list one weight per value: expected 2, got 1')
     );
   });
 });

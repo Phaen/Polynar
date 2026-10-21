@@ -623,7 +623,11 @@ class AnyRecord extends PNode<{ [key: string]: AnyValue }> {
     const keys = this._shape._read(dec);
     const entries = new Map<unknown, unknown>();
     for (const key of keys) {
-      entries.set(key, this._any._child(dec, key)._read(dec));
+      try {
+        entries.set(key, this._any._child(dec, key)._read(dec));
+      } catch (error) {
+        throw atPath(error, key);
+      }
     }
     return RECORD.build(entries);
   }
@@ -986,7 +990,7 @@ export class PAny extends PNode<AnyValue> {
         throw unlocated(new RangeError(`p.any nests deeper than ${MAX_DEPTH} levels`));
       }
       // The encoder never nests deeper, and deeper input could overflow the stack.
-      throw new CorruptInputError(`p.any input nests deeper than ${MAX_DEPTH} levels`);
+      throw unlocated(new CorruptInputError(`p.any input nests deeper than ${MAX_DEPTH} levels`));
     }
     message.depth++;
     try {
@@ -1058,6 +1062,9 @@ export class PAny extends PNode<AnyValue> {
    */
   _tagOf(enc: Encoder, value: unknown): number {
     const kind = kindOf(value);
+    if (kind === 'date' && isNaN((value as Date).getTime())) {
+      throw new TypeError('p.any expected a valid Date, got Invalid Date');
+    }
     for (const i of trials.has(enc) ? [] : (this._byKind.get(kind) ?? [])) {
       if (this._takes(i, value)) {
         return TAG_COUNT + i;

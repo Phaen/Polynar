@@ -825,7 +825,7 @@ export class PFloat extends MethodNode<number> {
     // A term is open-ended where a radix is not: anything past NaN's slot is
     // a wire state the encoder cannot emit.
     if (zigzag > EXPONENT_ZIGZAG_MAX) {
-      throw new CorruptInputError('Float exponent is outside the range of doubles');
+      throw new CorruptInputError('Float value is outside the range of doubles');
     }
     const exponent =
       zigzag % 2 === 0 ? EXPONENT_BIAS + zigzag / 2 : EXPONENT_BIAS - (zigzag + 1) / 2;
@@ -845,7 +845,7 @@ export class PFloat extends MethodNode<number> {
       if (sel === SIG_DYADIC5) {
         f = unzigNonzero(dec.parseTerm());
         if (Math.abs(f) > FIVE_SHIFT_MAX) {
-          throw new CorruptInputError('Five-realm shift is outside the range of doubles');
+          throw new CorruptInputError('Float value is outside the range of doubles');
         }
       }
 

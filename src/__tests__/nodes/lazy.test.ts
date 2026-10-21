@@ -2,7 +2,7 @@
  * `p.lazy()`: recursive and forward references.
  */
 
-import { p, type PNode } from '../../index';
+import { p, CorruptInputError, type PNode } from '../../index';
 import { trip } from '../support';
 
 type Block =
@@ -70,5 +70,43 @@ describe('Schema lazy', () => {
 
   it('is no union member: its kinds are unknown until first use', () => {
     expect(() => p.union([p.lazy(() => p.string()), p.null()])).toThrow('must declare their kinds');
+  });
+
+  describe('nesting', () => {
+    type Chain = { next?: Chain };
+    const Chain: PNode<Chain> = p.object({ next: p.optional(p.lazy(() => Chain)) });
+    const chain = (depth: number): Chain => {
+      let value: Chain = {};
+      for (let i = 0; i < depth; i++) {
+        value = { next: value };
+      }
+      return value;
+    };
+
+    it('takes 512 lazy references and refuses one more, a cycle included', () => {
+      expect(trip(Chain, chain(512))).toEqual(chain(512));
+      const deeper = new RangeError('p.lazy nests deeper than 512 levels');
+      expect(() => Chain.encode(chain(513))).toThrow(deeper);
+      const cycle: Chain = {};
+      cycle.next = cycle;
+      expect(() => Chain.encode(cycle)).toThrow(deeper);
+    });
+
+    it('refuses input nested deeper than the encoder goes', () => {
+      // One more level with the same wire, whose outermost reference is not lazy.
+      const Outer = p.object({ next: p.optional(Chain) });
+      expect(() => Chain.decode(Outer.encode(chain(513)))).toThrow(
+        new CorruptInputError('p.lazy input nests deeper than 512 levels')
+      );
+    });
+  });
+
+  it('refuses a reference that resolves to itself, directly or through others', () => {
+    const self: PNode<number> = p.lazy(() => self);
+    expect(() => self.encode(1)).toThrow(new TypeError('p.lazy resolves to itself'));
+    const a: PNode<number> = p.lazy(() => b);
+    const b: PNode<number> = p.lazy(() => a);
+    expect(() => a.encode(1)).toThrow(new TypeError('p.lazy resolves to itself'));
+    expect(() => b.decode(new Uint8Array())).toThrow(new TypeError('p.lazy resolves to itself'));
   });
 });

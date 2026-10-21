@@ -1083,7 +1083,7 @@ export class Encoder {
   }
 
   /** The message as bytes, or as text when `type` is `'text'`. */
-  output(options: CodecOptions<'text'> & { type: 'text' }): string;
+  output(options: CodecOptions<'text'>): string;
   output(options?: CodecOptions<'binary'>): Uint8Array;
   output(options?: CodecOptions<OutputType>): Uint8Array | string;
   output(options: CodecOptions<OutputType> = {}): Uint8Array | string {

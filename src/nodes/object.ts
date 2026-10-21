@@ -457,7 +457,12 @@ export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<In
       if (absent?.[i] === true) {
         continue;
       }
-      const v = message === undefined ? node._read(dec) : this._readField(dec, value, i, message);
+      let v: unknown;
+      try {
+        v = message === undefined ? node._read(dec) : this._readField(dec, value, i, message);
+      } catch (error) {
+        throw atPath(error, key);
+      }
       if (v === undefined) {
         continue;
       }

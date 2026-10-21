@@ -43,6 +43,82 @@ describe('Error paths', () => {
     );
   });
 
+  it('names a missing tag field as a missing required field', () => {
+    const Shape = p.tagged('type', { a: p.object({}), b: p.object({}) });
+    expect(() => Shape.encode({} as never)).toThrow(
+      new TypeError('type: Required field is missing')
+    );
+  });
+
+  it('names p.any for an invalid Date, under a map key', () => {
+    const bad = new Map<never, never>([[new Date(NaN) as never, 1 as never]]);
+    expect(() => p.any().encode({ m: bad })).toThrow(
+      new TypeError('m[0].<key>: p.any expected a valid Date, got Invalid Date')
+    );
+  });
+
+  it.each<[string, () => unknown]>([
+    [
+      'p.int prior',
+      () =>
+        p
+          .int()
+          .min(0)
+          .max(1)
+          .weights([1, 1])
+          .cdf((v) => v),
+    ],
+    [
+      'p.decimal prior',
+      () =>
+        p
+          .decimal(1)
+          .min(0)
+          .max(1)
+          .cdf((v) => v)
+          .weights([1, 1]),
+    ],
+    ['p.date prior', () => p.date().min(0).max(1).weights([1, 1]).weights([1, 1])],
+    ['p.date precision', () => p.date().precision('day').precision('hour')],
+    ['p.string prior', () => p.string().max(1).weights([1, 1]).weights([1, 1])],
+    ['p.string charset', () => p.string().charset('ab').charset('cd')],
+    ['p.string prose', () => p.string().prose().prose()],
+    [
+      'p.binary prior',
+      () =>
+        p
+          .binary()
+          .max(1)
+          .cdf((v) => v)
+          .cdf((v) => v),
+    ],
+    ['p.array prior', () => p.array(p.int()).max(1).weights([1, 1]).weights([1, 1])],
+    [
+      'p.map prior',
+      () =>
+        p
+          .map(p.int(), p.int())
+          .max(1)
+          .weights([1, 1])
+          .cdf((v) => v),
+    ],
+    ['p.bool weights', () => p.bool().weights([1, 2]).weights([2, 1])],
+    ['p.enum weights', () => p.enum(['a', 'b']).weights([1, 2]).weights([2, 1])],
+    ['p.nullable weights', () => p.nullable(p.int()).weights([1, 2]).weights([2, 1])],
+    ['p.optional weights', () => p.optional(p.int()).weights([1, 2]).weights([2, 1])],
+    ['p.union weights', () => p.union([p.int(), p.null()]).weights([1, 2]).weights([2, 1])],
+    [
+      'p.tagged weights',
+      () =>
+        p
+          .tagged('t', { a: p.object({}), b: p.object({}) })
+          .weights([1, 2])
+          .weights([2, 1]),
+    ],
+  ])('refuses %s set twice', (setting, build) => {
+    expect(build).toThrow(new TypeError(`${setting} is already set`));
+  });
+
   it('keeps the error class, with the path on the stack too', () => {
     let caught: unknown;
     try {

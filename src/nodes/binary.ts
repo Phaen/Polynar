@@ -13,7 +13,7 @@ import { Learned, PlainText, type Symbols } from './text';
  * The element type comes from `prototype`, which keeps the plain class
  * (`Int16Array`) rather than the buffer-specific one its constructor returns.
  */
-export interface TypedArrayClass<A extends TypedArray> {
+export interface TypedArrayClass<A extends TypedArray = TypedArray> {
   readonly prototype: A;
   readonly BYTES_PER_ELEMENT: number;
   new (buffer: ArrayBuffer): TypedArray;
@@ -172,6 +172,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * count cannot encode. Not with `.adaptive()`.
    */
   cdf(fn: Cdf): PBinary<A> {
+    checkUnset(this._bounds.prior, 'p.binary', 'prior');
     return this._with({ ...this._bounds, prior: fn });
   }
 
@@ -181,6 +182,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * running total. Not with `.adaptive()`.
    */
   weights(w: readonly number[]): PBinary<A> {
+    checkUnset(this._bounds.prior, 'p.binary', 'prior');
     return this._with({ ...this._bounds, prior: w });
   }
 

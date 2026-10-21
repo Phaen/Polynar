@@ -4,6 +4,7 @@ import type { InferTagged } from './infer';
 import type { PObject } from './object';
 import { atPath, oneOf, describe } from './path';
 import type { LearningOptions } from './adaptive';
+import { checkUnset } from './lattice';
 import { members, type MemberPrior, type Members } from './members';
 import { MethodNode, PRIOR_METHODS, learningOf, type MethodSet } from './methods';
 
@@ -48,7 +49,7 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
       // order the members were written in.
       if (/^(0|[1-9]\d{0,9})$/.test(tag) && Number(tag) < 2 ** 32 - 1) {
         throw new TypeError(
-          `p.tagged tag ${describe(tag)} is a number, which JS reorders; use a tag that starts with a letter`
+          `p.tagged tag ${describe(tag)} is an array index, which JS lists before other keys; a non-digit like "v${tag}" keeps the order`
         );
       }
       if (this._members[tag]._has(key)) {
@@ -68,6 +69,7 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
    * of the wire format.
    */
   weights(w: readonly number[]): PTagged<K, M> {
+    checkUnset(this._prior?.weights, 'p.tagged', 'weights');
     return new PTagged<K, M>(
       this._key,
       this._members,
@@ -111,6 +113,9 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
   _write(enc: Encoder, value: InferTagged<K, M>): void {
     const tag = (value as Record<string, unknown>)[this._key];
     const pos = this._index.get(tag as string);
+    if (tag === undefined) {
+      throw atPath(new TypeError('Required field is missing'), this._key);
+    }
     if (pos === undefined) {
       throw atPath(new RangeError(`Value ${describe(tag)} is not ${oneOf(this._tags)}`), this._key);
     }

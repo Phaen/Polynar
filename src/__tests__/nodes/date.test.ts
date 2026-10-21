@@ -85,18 +85,13 @@ describe('Schema date', () => {
     );
   });
 
-  it('rejects swapped bounds at construction, even within one bucket', () => {
-    expect(() =>
-      p
-        .date()
-        .precision('day')
-        .min(new Date('2020-01-01T12:00:00Z'))
-        .max(new Date('2020-01-01T06:00:00Z'))
-    ).toThrow(
-      new RangeError(
-        'p.date range is empty: min 2020-01-01T12:00:00.000Z exceeds max 2020-01-01T06:00:00.000Z'
-      )
-    );
+  it('rejects swapped bounds at construction, unless they share a bucket', () => {
+    const oneDay = p
+      .date()
+      .precision('day')
+      .min(new Date('2020-01-01T12:00:00Z'))
+      .max(new Date('2020-01-01T06:00:00Z'));
+    expect(trip(oneDay, new Date('2020-01-01T09:00:00Z'))).toEqual(new Date('2020-01-01Z'));
     expect(() => p.date().min(new Date('2021-01-01Z')).max(new Date('2020-01-01Z'))).toThrow(
       new RangeError(
         'p.date range is empty: min 2021-01-01T00:00:00.000Z exceeds max 2020-01-01T00:00:00.000Z'
@@ -127,12 +122,15 @@ describe('Schema date', () => {
     expect(() => p.date().min(1.5)).toThrow('bounds must be Dates or integer timestamps');
   });
 
-  it('rejects a date whose bucket starts before the earliest Date', () => {
+  it('reads the bucket that starts before the earliest Date as the earliest Date', () => {
     // The first representable instant is mid-April of year -271821.
-    expect(() => p.date().precision('month').encode(new Date(-8.64e15))).toThrow(
-      'starts before the earliest Date'
-    );
-    expect(trip(p.date().precision('day'), new Date(-8.64e15))).toEqual(new Date(-8.64e15));
+    const earliest = new Date(-8.64e15);
+    for (const unit of ['week', 'month', 'year'] as const) {
+      expect(trip(p.date().precision(unit), earliest)).toEqual(earliest);
+      expect(trip(p.date().precision(unit), new Date(-8.64e15 + 1e6))).toEqual(earliest);
+      expect(trip(p.date().precision(unit).min(earliest).max(0), earliest)).toEqual(earliest);
+    }
+    expect(trip(p.date().precision('day'), earliest)).toEqual(earliest);
   });
 
   it('reads a bucket past the Date range as corrupt input', () => {
@@ -238,15 +236,10 @@ describe('Digit reads', () => {
     expect(() => bounded._toDigit?.(new Date('2020-01-04Z'))).toThrow(
       new RangeError('Date 2020-01-04T00:00:00.000Z is above the maximum 2020-01-03T00:00:00.000Z')
     );
-    // A first bucket inside the Date range leaves the earliest Dates in one
-    // that starts before it.
-    const late = p.date().min(-8.6e15).max(0).precision('week');
-    expect(() => late._toDigit?.(new Date(-8.64e15))).toThrow(
-      'falls in a bucket that starts before the earliest Date'
-    );
     expect(p.date()._toDigit).toBeUndefined();
     expect(bounded.weights([1, 1, 1])._toDigit).toBeUndefined();
-    expect(p.date().min(-8.64e15).max(-8.6e15).precision('week')._toDigit).toBeUndefined();
+    const earliest = p.date().min(-8.64e15).max(-8.6e15).precision('week');
+    expect(earliest._fromDigit?.(0)).toEqual(new Date(-8.64e15));
   });
 });
 

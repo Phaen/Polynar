@@ -541,12 +541,8 @@ export function lengthRange(
   return new IndexRange(who, min ?? 0, max, prior, learning);
 }
 
-/** Refuses a second `min`, `max` or order restriction on one node: each is set once. */
-export function checkUnset(
-  current: unknown,
-  who: string,
-  bound: 'min' | 'max' | 'sorted' | 'unique' | 'unordered'
-): void {
+/** Refuses a second `min`, `max`, prior or other one-off setting on one node: each is set once. */
+export function checkUnset(current: unknown, who: string, bound: string): void {
   if (current !== undefined) {
     throw new TypeError(`${who} ${bound} is already set`);
   }

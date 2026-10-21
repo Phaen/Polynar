@@ -66,7 +66,7 @@ describe('Schema array of single-digit items', () => {
     [
       'p.date with a first bucket before the Date range',
       p.date().min(-8.64e15).max(-8.6e15).precision('week'),
-      undefined,
+      66_138,
     ],
     ['p.optional', p.optional(p.bool()), undefined],
     ['p.lazy', p.lazy(() => p.bool()), undefined],

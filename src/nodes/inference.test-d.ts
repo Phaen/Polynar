@@ -9,7 +9,7 @@ import { PVersioned } from './versioned';
 import type { Infer } from './infer';
 import type { AnyValue } from './any';
 import type { TypedArray } from './guards';
-import type { CodecOptions } from '../packer';
+import type { CodecOptions, OutputType } from '../packer';
 
 type Equals<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -267,6 +267,15 @@ const textOptions: CodecOptions<'text'> = { type: 'text', charset: [0x4e00, 0x9f
 Digit.decode(digitText, textOptions);
 // @ts-expect-error — text options are not for bytes
 Digit.decode(digitBytes, textOptions);
+
+// Text options held in a variable still encode to text; options of either type decode either form.
+const textOut = Digit.encode(3, textOptions);
+const _textOut: Equals<typeof textOut, string> = true;
+// @ts-expect-error — text options say so
+const _untyped: CodecOptions<'text'> = { charset: '01' };
+const eitherOptions: CodecOptions<OutputType> = { type: anyType };
+Digit.decode(digitBytes, eitherOptions);
+Digit.decode(digitText, eitherOptions);
 
 // Options without a type fit encode and decode of either form.
 const shared: CodecOptions = { charset: '0123456789', checksum: 8 };

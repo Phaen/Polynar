@@ -118,6 +118,7 @@ export class PDecimal extends MethodNode<number> {
    * encode.
    */
   cdf(fn: Cdf): PDecimal {
+    checkUnset(this._range.declared, 'p.decimal', 'prior');
     return this._with({ prior: fn });
   }
 
@@ -126,6 +127,7 @@ export class PDecimal extends MethodNode<number> {
    * prior as `.cdf()`, given as the histogram instead of its running total.
    */
   weights(w: readonly number[]): PDecimal {
+    checkUnset(this._range.declared, 'p.decimal', 'prior');
     return this._with({ prior: w });
   }
 

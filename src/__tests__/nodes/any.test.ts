@@ -6,6 +6,7 @@ import { p, Encoder, CorruptInputError, type AnyValue, type PNode, type PAny } f
 import { MAX_DEPTH, MAX_KEYS, TAG_TIERS, sameValue, treeKey } from '../../nodes/any';
 import { members } from '../../nodes/members';
 import { Scope } from '../../nodes/companion';
+import { DEPTH } from '../../nodes/lazy';
 import { mulberry32, trip } from '../support';
 
 /** The static tag table inside a plain `p.any`. */
@@ -669,6 +670,7 @@ describe('p.any hints', () => {
     );
     const enc = new Encoder();
     enc.state(Any, () => ({ depth: -1, children: new Map(), scope: new Scope() }));
+    enc.state(DEPTH, () => ({ depth: -1 }));
     Any._write(enc, deep);
     expect(() => Any.decode(enc.output())).toThrow(
       new CorruptInputError(`p.any input nests deeper than ${MAX_DEPTH} levels`)

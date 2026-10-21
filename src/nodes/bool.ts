@@ -1,6 +1,7 @@
 import { Encoder, Decoder } from '../packer';
 import type { Kind } from './guards';
 import type { LearningOptions } from './adaptive';
+import { checkUnset } from './lattice';
 import { members, type MemberPrior, type Members } from './members';
 import { MethodNode, PRIOR_METHODS, learningOf, type MethodSet } from './methods';
 
@@ -29,7 +30,8 @@ export class PBool extends MethodNode<boolean> {
    * Declare how likely each value is, as `[true, false]`. A prior, not a
    * constraint, and part of the wire format.
    */
-  weights(w: readonly number[]): PBool {
+  weights(w: readonly [number, number]): PBool {
+    checkUnset(this._prior?.weights, 'p.bool', 'weights');
     return new PBool({ ...this._prior, weights: w }, this._methods);
   }
 

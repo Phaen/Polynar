@@ -27,9 +27,30 @@ export interface Run<T> {
   read(dec: Decoder): T;
 }
 
+/** Refuses, as `never`, options whose `type` names the one form `input` isn't. */
+type FormOf<I, T> = [T] extends [never]
+  ? unknown
+  : [T] extends ['text']
+    ? [I] extends [Uint8Array]
+      ? never
+      : unknown
+    : [T] extends ['binary']
+      ? [I] extends [string]
+        ? never
+        : unknown
+      : unknown;
+
+/** The method Node's `util.inspect`, and with it `console.log`, calls to show a value. */
+const INSPECT: unique symbol = Symbol.for('nodejs.util.inspect.custom');
+
 /** Base class for every schema node. `_t` is a phantom carrying the output type. */
 export abstract class PNode<TOut> {
   declare readonly _t: TOut;
+
+  /** Shows the node's class in place of its internals. */
+  [INSPECT](): string {
+    return this.constructor.name;
+  }
 
   /**
    * The JS kinds this node's values can have, which `p.union` uses to pick a
@@ -102,7 +123,7 @@ export abstract class PNode<TOut> {
   abstract _read(dec: Decoder): TOut;
 
   /** Encode to bytes, or to text when `type` is `'text'`. Both sides must agree on the options. */
-  encode(value: TOut, options: CodecOptions<'text'> & { type: 'text' }): string;
+  encode(value: TOut, options: CodecOptions<'text'>): string;
   encode(value: TOut, options?: CodecOptions<'binary'>): Uint8Array;
   encode(value: TOut, options?: CodecOptions<OutputType>): Uint8Array | string;
   encode(value: TOut, options?: CodecOptions<OutputType>): Uint8Array | string {
@@ -112,11 +133,9 @@ export abstract class PNode<TOut> {
   }
 
   /** Decode bytes or text produced by `encode` with the same options. */
-  decode<I extends Uint8Array | string>(
+  decode<I extends Uint8Array | string, T extends OutputType = never>(
     input: I,
-    options?: DecodeOptions<
-      I extends string ? 'text' : I extends Uint8Array ? 'binary' : OutputType
-    >
+    options?: DecodeOptions<T> & FormOf<I, T>
   ): TOut {
     const dec = new Decoder(input, options);
     const value = this._read(dec);

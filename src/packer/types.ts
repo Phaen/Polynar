@@ -8,7 +8,7 @@
  * the characters themselves; binary output uses their codes as byte values,
  * so every code must be a byte.
  */
-export type Charset = string | [number, number];
+export type Charset = string | readonly [number, number];
 
 /** The form of a message: a `Uint8Array` or a string. */
 export type OutputType = 'binary' | 'text';
@@ -16,11 +16,14 @@ export type OutputType = 'binary' | 'text';
 /**
  * How a message is laid out; encoder and decoder must agree on it. Without a
  * type argument it carries no `type`, so one options object fits both
- * `encode` and `decode` of either form.
+ * `encode` and `decode` of either form. With `'text'` alone the `type` is
+ * required, since output is binary when it is omitted.
  */
-export interface CodecOptions<T extends OutputType = never> {
-  /** The output form, binary when omitted. Decoding reads it off the input, so there it only guides the types. */
-  type?: T;
+export type CodecOptions<T extends OutputType = never> = Layout &
+  ([T] extends [never] ? { type?: never } : [T] extends ['text'] ? { type: 'text' } : { type?: T });
+
+/** The options every form shares. */
+interface Layout {
   /** The symbols of the output: bytes 0–255 for binary and Base64 for text when omitted. */
   charset?: Charset;
   /** Width of the checksum in bits, 1 to 32; none when omitted. */
@@ -28,7 +31,9 @@ export interface CodecOptions<T extends OutputType = never> {
 }
 
 /** What decoding takes: the message's layout, and how much it may read past its end. */
-export interface DecodeOptions<T extends OutputType = never> extends CodecOptions<T> {
+export interface DecodeOptions<T extends OutputType = never> extends Layout {
+  /** The input's form, which decoding reads off the input, so it only guides the types. */
+  type?: T;
   /**
    * How many values a decode may read after its input runs out, where every
    * value reads as zero for free, a mixture's choice put back past the first

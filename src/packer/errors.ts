@@ -18,4 +18,13 @@ export class CorruptInputError extends Error {
  */
 export class UnknownVersionError extends CorruptInputError {
   readonly name: string = 'UnknownVersionError';
+
+  constructor(
+    /** The version the data was written by, counting from 1. */
+    readonly version: number,
+    /** How many versions the schema knows. */
+    readonly known: number
+  ) {
+    super(`Data was written by version ${version}; this schema knows ${known}`);
+  }
 }

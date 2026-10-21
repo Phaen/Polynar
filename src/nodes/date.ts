@@ -134,6 +134,8 @@ export class PDate extends MethodNode<Date> {
   private readonly _unit: DateUnit;
   private readonly _step: number;
   private readonly _calendar: Calendar;
+  /** The bucket holding the earliest Date. */
+  private readonly _first: number;
   /** Bucket indices on the UTC calendar, the epoch's bucket at 0. */
   private readonly _range: IndexRange;
   /** The methods the node has, declared or open. */
@@ -163,39 +165,32 @@ export class PDate extends MethodNode<Date> {
     // Bounds lie within the Date range, like the dates they admit.
     checkInRange(this._min, 'min');
     checkInRange(this._max, 'max');
-    // Two bounds in one bucket compare equal there, so an inverted pair is
-    // caught on the raw timestamps.
-    if (this._min !== undefined && this._max !== undefined && this._min > this._max) {
-      throw new RangeError(
-        `p.date range is empty: min ${iso(this._min)} exceeds max ${iso(this._max)}`
-      );
-    }
 
     this._unit = unit;
     this._step = step;
     this._calendar = calendar(unit, step);
+    this._first = this._calendar.index(-MAX_TIMESTAMP);
     // Bounds compare buckets, so every decoded date, min's bucket start
-    // included, encodes again.
+    // included, encodes again, and two bounds in one bucket admit it.
     const lo = this._min === undefined ? undefined : this._calendar.index(this._min);
     const hi = this._max === undefined ? undefined : this._calendar.index(this._max);
+    if (lo !== undefined && hi !== undefined && lo > hi) {
+      throw new RangeError(
+        `p.date range is empty: min ${iso(this._min as number)} exceeds max ${iso(this._max as number)}`
+      );
+    }
     this._range = new IndexRange('p.date', lo, hi, prior, learningOf(methods), (b) =>
       iso(this._calendar.start(b))
     );
     this._methods = methods;
     this._coding = new IndexMethods(this._range, methods, 'p.date');
     // Bucket starts rise with the index and none starts after its bound,
-    // which lies within the Date range, so when the first bucket starts
-    // within it every bucket does, and reading a digit cannot fail. Only a
-    // first bucket straddling the earliest Date starts before it.
+    // which lies within the Date range, and the first bucket reads as the
+    // earliest Date, so with a min reading a digit cannot fail.
     const fromDigit = this._range.fromDigit;
-    if (
-      this._coding.plain &&
-      lo !== undefined &&
-      fromDigit !== undefined &&
-      !isNaN(new Date(this._calendar.start(lo)).getTime())
-    ) {
+    if (this._coding.plain && lo !== undefined && fromDigit !== undefined) {
       this._radix = this._range.radix;
-      this._fromDigit = (digit) => new Date(this._calendar.start(fromDigit(digit)));
+      this._fromDigit = (digit) => new Date(this._start(fromDigit(digit)));
       const toDigit = this._range.toDigit;
       if (toDigit !== undefined) {
         this._toDigit = (value) =>
@@ -216,6 +211,7 @@ export class PDate extends MethodNode<Date> {
 
   /** Coarsen to buckets of `step` UTC calendar units. */
   precision(unit: DateUnit, step = 1): PDate {
+    checkUnset(this._exact ? undefined : this._unit, 'p.date', 'precision');
     return this._with({ unit, step });
   }
 
@@ -227,6 +223,7 @@ export class PDate extends MethodNode<Date> {
    * zero-weight bucket cannot encode.
    */
   cdf(fn: Cdf): PDate {
+    checkUnset(this._range.declared, 'p.date', 'prior');
     return this._with({ prior: fn });
   }
 
@@ -235,6 +232,7 @@ export class PDate extends MethodNode<Date> {
    * prior as `.cdf()`, given as the histogram instead of its running total.
    */
   weights(w: readonly number[]): PDate {
+    checkUnset(this._range.declared, 'p.date', 'prior');
     return this._with({ prior: w });
   }
 
@@ -316,20 +314,21 @@ export class PDate extends MethodNode<Date> {
     if (isNaN(value.getTime())) {
       throw new TypeError(`p.date expected a valid Date, got ${describe(value)}`);
     }
-    const bucket = this._calendar.index(value.getTime());
-    // The earliest Dates sit in a bucket that starts before the Date range,
-    // so the decoder could never rebuild them.
-    if (isNaN(new Date(this._calendar.start(bucket)).getTime())) {
-      throw new RangeError(
-        `Date ${value.toISOString()} falls in a bucket that starts before the earliest Date`
-      );
-    }
-    return bucket;
+    return this._calendar.index(value.getTime());
+  }
+
+  /**
+   * The first instant of `bucket`: the earliest Date for the bucket holding
+   * it, which may start before the Date range; NaN or out of the Date range
+   * for a bucket no Date falls in.
+   */
+  private _start(bucket: number): number {
+    return bucket === this._first ? -MAX_TIMESTAMP : this._calendar.start(bucket);
   }
 
   _read(dec: Decoder): Date {
     const bucket = this._coding.read(dec);
-    const date = new Date(this._calendar.start(bucket));
+    const date = new Date(this._start(bucket));
     // A bucket starting beyond the ±8.64e15 ms Date range can only come from
     // a corrupted input or from a bucket that straddles the range's edge.
     if (isNaN(date.getTime())) {

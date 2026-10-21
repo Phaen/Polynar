@@ -24,7 +24,7 @@ describe('p.bool digits', () => {
 
 describe('p.bool adaptive', () => {
   const plain = p.bool();
-  const weights = [9, 1];
+  const weights: [number, number] = [9, 1];
   const run = (length: number, seed: number) => {
     const rnd = mulberry32(seed);
     return Array.from({ length }, () => rnd() < 0.9);
@@ -100,9 +100,6 @@ describe('p.bool adaptive', () => {
       new RangeError(
         'p.bool adaptive prior 4 and window 1024 overflow with weights totalling 70368744177664'
       )
-    );
-    expect(() => plain.adaptive().weights([1])).toThrow(
-      new TypeError('p.bool weights must list one weight per value: expected 2, got 1')
     );
   });
 });

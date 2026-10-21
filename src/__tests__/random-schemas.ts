@@ -501,7 +501,7 @@ const boolCase = (): Case => {
     case 1: {
       const w = randWeights(2, 200);
       return {
-        build: (m) => m.p.bool().weights(w),
+        build: (m) => m.p.bool().weights(w as [number, number]),
         gen: () => rand() < 0.5,
         src: `p.bool().weights(${json(w)})`,
       };
@@ -509,7 +509,7 @@ const boolCase = (): Case => {
     default: {
       const w = [randInt(2 ** 30, 2 ** 45), randInt(1, 3)];
       return {
-        build: (m) => m.p.bool().weights(w),
+        build: (m) => m.p.bool().weights(w as [number, number]),
         gen: () => rand() < 0.95,
         src: `p.bool().weights(${json(w)})`,
       };
@@ -1259,7 +1259,11 @@ const stepCase = (): Case => {
   if (rand() < 0.5) {
     const length = 32 * randInt(1, 6);
     return {
-      build: (m) => m.p.object({ flag: m.p.bool().weights(w), data: m.p.binary().length(length) }),
+      build: (m) =>
+        m.p.object({
+          flag: m.p.bool().weights(w as [number, number]),
+          data: m.p.binary().length(length),
+        }),
       gen: () => ({ flag: rand() < 0.5, data: randBytes(length) }),
       src: `p.object({ ${flag}, data: p.binary().length(${length}) })`,
     };
@@ -1267,7 +1271,10 @@ const stepCase = (): Case => {
   const length = 256 * randInt(1, 6);
   return {
     build: (m) =>
-      m.p.object({ flag: m.p.bool().weights(w), bits: m.p.array(m.p.bool()).length(length) }),
+      m.p.object({
+        flag: m.p.bool().weights(w as [number, number]),
+        bits: m.p.array(m.p.bool()).length(length),
+      }),
     gen: () => ({ flag: rand() < 0.5, bits: Array.from({ length }, () => rand() < 0.5) }),
     src: `p.object({ ${flag}, bits: p.array(p.bool()).length(${length}) })`,
   };

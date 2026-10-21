@@ -640,6 +640,7 @@ export class PString extends PNode<string> {
    * length cannot encode. Not with `.adaptive()`.
    */
   cdf(fn: Cdf): PString {
+    checkUnset(this._bounds.prior, 'p.string', 'prior');
     return this._with({ ...this._bounds, prior: fn });
   }
 
@@ -649,6 +650,7 @@ export class PString extends PNode<string> {
    * total. Not with `.adaptive()`.
    */
   weights(w: readonly number[]): PString {
+    checkUnset(this._bounds.prior, 'p.string', 'prior');
     return this._with({ ...this._bounds, prior: w });
   }
 
@@ -674,6 +676,7 @@ export class PString extends PNode<string> {
   }
 
   charset(c: Charset): PString {
+    checkUnset(this._alphabet?.charset, 'p.string', 'charset');
     return this._with(this._bounds, c);
   }
 
@@ -691,6 +694,7 @@ export class PString extends PNode<string> {
    * English by default; any other `ProseModel` swaps the matrix.
    */
   prose(model: ProseModel = ProseModels.english): PString {
+    checkUnset(this._prose, 'p.string', 'prose');
     return this._with(this._bounds, this._alphabet?.charset, model);
   }
 

@@ -45,11 +45,15 @@ describe('Schema tagged', () => {
     expect(trip(One, { type: 'only', pos: 7 })).toEqual({ type: 'only', pos: 7 });
   });
 
-  it('rejects numeric tags, which JS would reorder', () => {
+  it('rejects array-index tags, which JS would reorder', () => {
     expect(() => p.tagged('t', { a: p.object({}), '2': p.object({}) })).toThrow(
-      'p.tagged tag "2" is a number'
+      new TypeError(
+        'p.tagged tag "2" is an array index, which JS lists before other keys; a non-digit like "v2" keeps the order'
+      )
     );
-    expect(() => p.tagged('t', { v01: p.object({}), '01': p.object({}) })).not.toThrow();
+    for (const tag of ['01', '-1', '1.5', '4294967295']) {
+      expect(() => p.tagged('t', { a: p.object({}), [tag]: p.object({}) })).not.toThrow();
+    }
   });
 
   it('rejects an empty member map and a member that declares the tag key', () => {

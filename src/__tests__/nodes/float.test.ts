@@ -198,7 +198,7 @@ describe('Schema float', () => {
     enc.compose(0, 2);
     enc.composeTerm(2049);
     expect(() => p.float().decode(enc.output())).toThrow(
-      new CorruptInputError('Float exponent is outside the range of doubles')
+      new CorruptInputError('Float value is outside the range of doubles')
     );
   });
 
@@ -265,7 +265,7 @@ describe('Schema float', () => {
       (enc: Encoder) => {
         enc.composeTerm(2 * 501);
       },
-      'Five-realm shift is outside the range of doubles',
+      'Float value is outside the range of doubles',
     ],
   ])('rejects %s', (_name, sel, significand, message) => {
     expect(() => p.float().decode(spelled(sel, significand))).toThrow(

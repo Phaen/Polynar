@@ -101,12 +101,7 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
   /** Where a read of a single state has its locator leave the bucket. */
   protected readonly span = new Span();
 
-  constructor(
-    input: I,
-    options: DecodeOptions<
-      I extends string ? 'text' : I extends Uint8Array ? 'binary' : OutputType
-    > = {}
-  ) {
+  constructor(input: I, options: DecodeOptions<OutputType> = {}) {
     this.input = input;
     // The input's own form decides; `type` only pairs the options with it for TypeScript.
     this.alphabet = outputAlphabet(typeof input === 'string' ? 'text' : 'binary', options.charset);
@@ -214,7 +209,8 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
     const digit = this.alphabet.digitOf(text ? input.charCodeAt(i) : input[i]);
     if (digit === -1) {
       throw new CorruptInputError(
-        (text ? 'Character' : 'Byte') + ' at ' + i + ' is not in the charset'
+        (text ? `Character ${JSON.stringify(input.charAt(i))}` : `Byte ${input[i]}`) +
+          ` at ${i} is not in the charset`
       );
     }
     return digit;

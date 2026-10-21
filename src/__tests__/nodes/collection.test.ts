@@ -75,7 +75,7 @@ describe('Schema map', () => {
     expect(() => node.weights([1, 2])).toThrow('p.map weights requires a max count');
   });
 
-  it('names an entry by its string key, or else by its position', () => {
+  it('names an entry by its string key, or else by its position, and a bad key apart', () => {
     const digit = p.int().min(0).max(9);
     expect(() =>
       p.map(p.string(), digit).encode(
@@ -92,7 +92,33 @@ describe('Schema map', () => {
           [10, 1],
         ])
       )
+    ).toThrow('[1].<key>: Value 10 is above the maximum 9');
+    expect(() =>
+      p.map(digit, digit).encode(
+        new Map([
+          [1, 1],
+          [2, 10],
+        ])
+      )
     ).toThrow('[1]: Value 10 is above the maximum 9');
+  });
+
+  it('names where a decode fails: an item, a key or a value', () => {
+    // A min-only date reads its bucket as a min-only int does, so an int can
+    // forge a bucket past the Date range.
+    const late = p.date().min(new Date(8.64e15)).precision('day');
+    const message = 'Date is outside the representable time range';
+    expect(() => p.set(late).decode(p.array(p.int().min(0)).encode([1]))).toThrow(
+      new CorruptInputError(`[0]: ${message}`)
+    );
+    const forged = p.map(p.int().min(0), p.int()).encode(new Map([[1, 0]]));
+    expect(() => p.map(late, p.int()).decode(forged)).toThrow(
+      new CorruptInputError(`[0].<key>: ${message}`)
+    );
+    const byName = p.map(p.string(), p.int().min(0)).encode(new Map([['a', 1]]));
+    expect(() => p.map(p.string(), late).decode(byName)).toThrow(
+      new CorruptInputError(`a: ${message}`)
+    );
   });
 
   it('reads a repeated key as one entry holding the last value', () => {

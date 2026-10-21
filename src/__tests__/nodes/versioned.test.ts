@@ -47,6 +47,34 @@ describe('Schema versioned', () => {
     expect(() => Again.walk({ name: 'Ada' }, V1)).toThrow('more than one version');
   });
 
+  it('walk takes the version as a number too', () => {
+    const All = p.versioned(V1, [V2, toV2], [V3, (user: V2) => ({ ...user, active: true })]);
+    expect(All.walk({ name: 'Ada', age: 36 }, 2)).toEqual({ name: 'Ada', age: 36, active: true });
+    expect(All.walk({ name: 'Ada', age: 36, active: false }, 3)).toEqual({
+      name: 'Ada',
+      age: 36,
+      active: false,
+    });
+    for (const version of [0, 4, 1.5]) {
+      expect(() => All.walk({ name: 'Ada' }, version)).toThrow(
+        new RangeError(`p.versioned walk got version ${version}; this schema knows 1 to 3`)
+      );
+    }
+  });
+
+  it("walk leaves the caller's value alone when a migration mutates its input", () => {
+    const Mutating = p.versioned(V1, [
+      V2,
+      (user: V1) => {
+        user.name = 'changed';
+        return { ...user, age: 0 };
+      },
+    ]);
+    const value = { name: 'Ada' };
+    expect(Mutating.walk(value)).toEqual({ name: 'changed', age: 0 });
+    expect(value).toEqual({ name: 'Ada' });
+  });
+
   it('data written by an earlier version decodes, migrated', () => {
     const old = p.versioned(V1).encode({ name: 'Ada' });
     expect(Current.decode(old)).toEqual({ name: 'Ada', age: 0 });
@@ -107,7 +135,7 @@ describe('Schema versioned', () => {
     expect(() => Old.decode(bytes)).toThrow(CorruptInputError);
     expect(() => Old.decode(bytes)).toThrow('Data was written by version 2; this schema knows 1');
     expect(() => Old.decode(bytes)).toThrow(
-      expect.objectContaining({ name: 'UnknownVersionError' })
+      expect.objectContaining({ name: 'UnknownVersionError', version: 2, known: 1 })
     );
   });
 

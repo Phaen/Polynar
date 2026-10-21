@@ -153,6 +153,7 @@ export class PCollection<T> extends MethodNode<T> {
    * count cannot encode.
    */
   cdf(fn: Cdf): PCollection<T> {
+    checkUnset(this._bounds.prior, this._layout.who, 'prior');
     return this._with({ ...this._bounds, prior: fn });
   }
 
@@ -162,6 +163,7 @@ export class PCollection<T> extends MethodNode<T> {
    * total.
    */
   weights(w: readonly number[]): PCollection<T> {
+    checkUnset(this._bounds.prior, this._layout.who, 'prior');
     return this._with({ ...this._bounds, prior: w });
   }
 
@@ -298,6 +300,10 @@ export class PCollection<T> extends MethodNode<T> {
     for (const [key, item] of this._layout.entries(value)) {
       try {
         this._keys._write(enc, key);
+      } catch (error) {
+        throw atPath(this._value === undefined ? error : atPath(error, '<key>'), i);
+      }
+      try {
         this._value?._write(enc, item);
       } catch (error) {
         throw atPath(error, this._segment(key, i));
@@ -327,9 +333,18 @@ export class PCollection<T> extends MethodNode<T> {
       return this._layout.build(entries);
     }
     for (let i = 0; i < count; i++) {
-      const key = this._keys._read(dec);
-      // A repeated key overwrites, as it does in an object literal.
-      entries.set(key, this._value?._read(dec));
+      let key: unknown;
+      try {
+        key = this._keys._read(dec);
+      } catch (error) {
+        throw atPath(this._value === undefined ? error : atPath(error, '<key>'), i);
+      }
+      try {
+        // A repeated key overwrites, as it does in an object literal.
+        entries.set(key, this._value?._read(dec));
+      } catch (error) {
+        throw atPath(error, this._segment(key, i));
+      }
     }
     return this._layout.build(entries);
   }

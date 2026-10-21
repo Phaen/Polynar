@@ -2,6 +2,7 @@ import { Encoder, Decoder } from '../packer';
 import { kindOf, type Kind } from './guards';
 import { oneOf, describe } from './path';
 import type { LearningOptions } from './adaptive';
+import { checkUnset } from './lattice';
 import { members, type MemberPrior, type Members } from './members';
 import { MethodNode, PRIOR_METHODS, learningOf, type MethodSet } from './methods';
 
@@ -55,6 +56,7 @@ export class PEnum<T> extends MethodNode<T> {
    * of the wire format.
    */
   weights(w: readonly number[]): PEnum<T> {
+    checkUnset(this._prior?.weights, 'p.enum', 'weights');
     return new PEnum<T>(this._list, { ...this._prior, weights: w }, this._methods);
   }
 
