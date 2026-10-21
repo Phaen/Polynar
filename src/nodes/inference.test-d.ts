@@ -8,7 +8,8 @@ import { p } from './p';
 import { PVersioned } from './versioned';
 import type { Infer } from './infer';
 import type { AnyValue } from './any';
-import type { TypedArray } from './guards';
+import type { Float16ArrayLike, TypedArray } from './guards';
+import type { TypedArrayClass } from './binary';
 import type { CodecOptions, OutputType } from '../packer';
 
 type Equals<A, B> =
@@ -168,6 +169,11 @@ const _flags: Equals<Infer<typeof Flags>, Map<'a' | 'b', boolean>> = true;
 // A binary node decodes to the class it was given.
 const Samples = p.binary(Int16Array);
 const _int16: Equals<Infer<typeof Samples>, Int16Array> = true;
+// A Float16Array class, which the ES2020 lib lacks, fits as well, in p.any too.
+declare const Float16: TypedArrayClass<Float16ArrayLike>;
+const Halves = p.binary(Float16);
+const _halves: Equals<Infer<typeof Halves>, Float16ArrayLike> = true;
+p.any().encode({ halves: new Float16(new ArrayBuffer(2)) });
 
 // A versioned node infers the newest version's type.
 const UserV1 = p.object({ name: p.string() });

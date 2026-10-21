@@ -1,11 +1,11 @@
 import { Encoder, Decoder, CorruptInputError, ReplayDecoder, type Journal } from '../packer';
-import { isPlainObject, kindOf, type Kind, type TypedArray } from './guards';
+import { isPlainObject, kindOf, type Float16ArrayLike, type Kind, type TypedArray } from './guards';
 import { PNode } from './base';
 import { PInt } from './int';
 import { PFloat } from './float';
 import { PString } from './string';
 import { PDate } from './date';
-import { PBinary } from './binary';
+import { PBinary, type TypedArrayClass } from './binary';
 import { PEnum } from './enum';
 import { PNull } from './null';
 import { PArray } from './array';
@@ -49,7 +49,7 @@ export type AnyValue =
 
 // Type tags for the self-describing `any` codec: absent values, then scalars,
 // then containers, then raw bytes: an ArrayBuffer, a DataView and one tag per
-// typed-array class in TYPED_ARRAYS order. Each boolean is a tag of its own,
+// typed-array class in TYPED_ARRAYS order, Float16Array last. Each boolean is a tag of its own,
 // so an adaptive tag table learns them like any other tag.
 const TAG_UNDEFINED = 0;
 const TAG_NULL = 1;
@@ -84,7 +84,12 @@ const TYPED_ARRAYS = [
   BigUint64Array,
 ] as const;
 
-const TAG_COUNT = TAG_TYPED + TYPED_ARRAYS.length;
+/** `Float16Array`, where the environment has it. */
+const FLOAT16 = (globalThis as { Float16Array?: TypedArrayClass<Float16ArrayLike> }).Float16Array;
+
+// Float16Array's tag follows the others whether or not the class exists here,
+// so every environment numbers the tags alike.
+const TAG_COUNT = TAG_TYPED + TYPED_ARRAYS.length + 1;
 
 const COMMON_TAGS: ReadonlySet<number> = new Set([
   TAG_NULL,
@@ -256,6 +261,34 @@ class AnyDataView extends PNode<DataView> {
   }
 }
 
+/**
+ * Stands in for the node of a typed-array class the environment lacks: no
+ * value of it can be written here, and one read can't be built.
+ */
+export class AnyMissing extends PNode<never> {
+  readonly _kinds: readonly Kind[];
+
+  constructor(kind: string) {
+    super();
+    this._kinds = [kind];
+  }
+
+  _write(): never {
+    throw new TypeError(`p.any cannot encode ${this._kinds[0]} values here: the class is missing`);
+  }
+
+  _read(): never {
+    throw new TypeError(`p.any read a ${this._kinds[0]}, which this environment lacks`);
+  }
+}
+
+/** The node behind the tag of typed-array class `type`, named `kind`, which may be missing. */
+export const typedNode = (
+  type: TypedArrayClass | undefined,
+  kind: string
+): PBinary<TypedArray> | AnyMissing =>
+  type === undefined ? new AnyMissing(kind) : new PBinary(type);
+
 // The default nodes behind the scalar tags. Module singletons: no option of
 // `any` changes them.
 const ANY_UNDEFINED = new PEnum([undefined]);
@@ -268,7 +301,10 @@ const ANY_BIGINT = new AnyBigInt();
 const ANY_STRING = new PString();
 const ANY_DATE = new PDate();
 const ANY_REGEXP = new AnyRegExp();
-const ANY_BINARY = TYPED_ARRAYS.map((type) => new PBinary<TypedArray>(type));
+const ANY_BINARY = [
+  ...TYPED_ARRAYS.map((type) => new PBinary<TypedArray>(type)),
+  typedNode(FLOAT16, 'Float16Array'),
+];
 const ANY_BYTES = new PBinary(Uint8Array);
 const ANY_ARRAY_BUFFER = new AnyArrayBuffer();
 const ANY_DATA_VIEW = new AnyDataView();

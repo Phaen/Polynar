@@ -48,6 +48,7 @@ export type {
   Prior,
   ProseModel,
   ProseModelOptions,
+  Float16ArrayLike,
   TypedArray,
   TypedArrayClass,
 } from './nodes';

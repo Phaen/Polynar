@@ -36,10 +36,10 @@ The first table is self-describing: keys and types travel with the data. Polynar
 | -------------- | -----------: | -----------: | -----------: | -----------: | ---------------: |
 | User profile   |  62.8 (64.3) |  44.6 (48.4) |  53.7 (41.9) |  49.5 (38.5) |  40.7 (**31.7**) |
 | GPS position   |  32.0 (36.0) |  27.0 (31.0) |  26.8 (20.2) |  24.7 (18.6) |  20.4 (**15.4**) |
-| Chat message   |  95.5 (89.3) |  69.1 (71.1) |  79.2 (58.9) |  72.8 (54.3) |  59.9 (**44.5**) |
+| Chat message   |  95.5 (89.3) |  69.1 (71.1) |  79.2 (58.9) |  72.8 (54.3) |  59.9 (**44.6**) |
 | Sensor reading |  53.8 (55.9) |  39.9 (43.7) |  42.9 (34.1) |  39.5 (31.3) |  32.6 (**25.7**) |
 | Shopping cart  | 124.4 (67.0) |  85.1 (61.9) | 100.6 (37.9) |  92.6 (34.9) |  76.1 (**28.7**) |
-| Status feed    | 521.8 (63.4) | 323.8 (60.4) | 384.9 (26.1) | 354.2 (24.1) | 290.8 (**19.9**) |
+| Status feed    | 521.8 (63.4) | 323.8 (60.4) | 385.0 (26.1) | 354.2 (24.1) | 290.8 (**19.9**) |
 | Lorem ipsum    |   1375 (641) |   1372 (631) |   1596 (711) |   1469 (654) |   1206 (**537**) |
 
 In the second table both sides share a schema and only the values are written. Protobuf and Avro get the same decimal steps as scaled integers, but only Polynar can use the bounds. Protobuf tags every field and rounds it up to whole bytes, Avro drops the tags but keeps the bytes, and Polynar spends fractional bits.
@@ -188,7 +188,7 @@ The built-in model is English (`ProseModels.english`). Any other is a matrix: `{
 
 ### `p.binary(type?: TypedArrayClass)`
 
-A typed array: a `Uint8Array` by default, or any typed array class, like `p.binary(Int16Array)`. Infers that class and decodes to a new array of it. Elements are stored as their raw bytes, plus the element count, so floats keep NaN payloads and `-0`.
+A typed array: a `Uint8Array` by default, or any typed array class, like `p.binary(Int16Array)`. Infers that class and decodes to a new array of it. Elements are stored as their raw bytes, plus the element count, so floats keep NaN payloads and `-0`. `Float16Array` works too where the environment has it (Node 24 and later, recent browsers).
 
 | Method                                 | Description                                                                                                                                                                 |
 | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -364,7 +364,7 @@ Data written by any listed version decodes and is migrated step by step to the n
 
 ### `p.any(hints?: PNode[])`
 
-Self-describing escape hatch: numbers, bigints, strings, booleans, dates, regular expressions, null, undefined, ArrayBuffers, DataViews, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values; an object typed with an interface needs an index signature to count as one. Numbers round-trip as they do through `p.float`, though written their own way, so sizes differ: `255` takes 2 bytes against 4, `2 ** 52` 8 against 2. Everything else round-trips bit-exact, and a typed array decodes as the same class. A regular expression keeps its source and flags but not its `lastIndex`, and a DataView decodes over a new buffer of just its bytes. A key holding `undefined` is kept, where `p.object` leaves it out. Only an object's own enumerable string keys and an array's elements travel: symbol keys, non-enumerable properties and extra properties on an array are left out, and an object with a null prototype decodes as a plain one. Shared references and holes in sparse arrays aren't kept: an object that appears twice comes back as two separate copies, and a hole comes back as `undefined`. A subclass of any of these, such as a `Buffer` or a class extending `RegExp` or `Map`, decodes as the built-in class. Any other class instance throws a `TypeError`, and so do errors and boxed primitives like `new Number(1)`. Nesting containers more than 512 levels deep, which includes a value that contains itself, throws a `RangeError` without the path in front. Costs more than a precise node.
+Self-describing escape hatch: numbers, bigints, strings, booleans, dates, regular expressions, null, undefined, ArrayBuffers, DataViews, typed arrays (`Float16Array` included, where the environment has it), arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values; an object typed with an interface needs an index signature to count as one. Numbers round-trip as they do through `p.float`, though written their own way, so sizes differ: `255` takes 2 bytes against 4, `2 ** 52` 8 against 2. Everything else round-trips bit-exact, and a typed array decodes as the same class. A regular expression keeps its source and flags but not its `lastIndex`, and a DataView decodes over a new buffer of just its bytes. A key holding `undefined` is kept, where `p.object` leaves it out. Only an object's own enumerable string keys and an array's elements travel: symbol keys, non-enumerable properties and extra properties on an array are left out, and an object with a null prototype decodes as a plain one. Shared references and holes in sparse arrays aren't kept: an object that appears twice comes back as two separate copies, and a hole comes back as `undefined`. A subclass of any of these, such as a `Buffer` or a class extending `RegExp` or `Map`, decodes as the built-in class. Any other class instance throws a `TypeError`, and so do errors and boxed primitives like `new Number(1)`. Nesting containers more than 512 levels deep, which includes a value that contains itself, throws a `RangeError` without the path in front. Costs more than a precise node.
 
 Hints are nodes some values are expected to fit: `p.any([p.string().charset(CharSets.hex).length(32)])`. Each value, at any depth, tries the hints that take its kind in order, and the first that writes it codes it behind a tag of its own. A hint only takes values it gives back unchanged. A hint needs declared kinds, so `p.lazy` and custom nodes without `_kinds` throw.
 
@@ -534,6 +534,7 @@ A value that can't be encoded throws with its path in front and the limit it bro
 - `Kind` — the kinds `p.union` tells apart, and the type of `_kinds`.
 - `ProseModel`, `ProseModelOptions` — a prose matrix and the options of `buildProseModel`.
 - `TypedArray`, `TypedArrayClass` — what `p.binary` takes and returns.
+- `Float16ArrayLike` — a `Float16Array` as `TypedArray` describes it, for TypeScript setups whose `lib` has no `Float16Array`.
 - `Charset` — `string | readonly [number, number]`, for output and `.charset()`.
 - `OutputType` — `'binary' | 'text'`.
 - `CodecOptions` — the options of `encode` and `decode`. Without a type argument it has no `type`, so one options object works for both forms; `CodecOptions<'text'>` requires `type: 'text'`, so `encode` with it returns a string, and `CodecOptions<'binary'>` and `CodecOptions<OutputType>` take it optionally.

@@ -12,7 +12,7 @@ export type { FloatWeights } from './float';
 export { PString } from './string';
 export { PBinary } from './binary';
 export type { TypedArrayClass } from './binary';
-export type { TypedArray } from './guards';
+export type { Float16ArrayLike, TypedArray } from './guards';
 export { PLazy } from './lazy';
 export { PBool } from './bool';
 export { PEnum } from './enum';

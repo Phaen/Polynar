@@ -66,7 +66,20 @@ export type TypedArray =
   | Float32Array
   | Float64Array
   | BigInt64Array
-  | BigUint64Array;
+  | BigUint64Array
+  | Float16ArrayLike;
+
+/**
+ * A `Float16Array` as polynar uses one. The class is newer than the ES2020
+ * lib the package builds against, and than Node 18 to 22, so it is described
+ * here rather than named; a real `Float16Array` fits it.
+ */
+export interface Float16ArrayLike extends ArrayBufferView {
+  readonly BYTES_PER_ELEMENT: number;
+  readonly length: number;
+  readonly [Symbol.toStringTag]: 'Float16Array';
+  [index: number]: number;
+}
 
 /**
  * The built-in class name of a typed array (or `'DataView'`), read from its

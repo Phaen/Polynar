@@ -3,7 +3,17 @@
  */
 
 import { p, Encoder, CorruptInputError, type AnyValue, type PNode, type PAny } from '../../index';
-import { MAX_DEPTH, MAX_KEYS, TAG_TIERS, sameValue, treeKey } from '../../nodes/any';
+import {
+  AnyMissing,
+  MAX_DEPTH,
+  MAX_KEYS,
+  TAG_TIERS,
+  sameValue,
+  treeKey,
+  typedNode,
+} from '../../nodes/any';
+import { PBinary, type TypedArrayClass } from '../../nodes/binary';
+import type { Float16ArrayLike } from '../../nodes/guards';
 import { members } from '../../nodes/members';
 import { Scope } from '../../nodes/companion';
 import { DEPTH } from '../../nodes/lazy';
@@ -47,9 +57,8 @@ const LEARNING_VALUE = {
   big: -12n,
 };
 const LEARNING_BYTES = [
-  1, 127, 136, 167, 148, 239, 49, 136, 178, 131, 34, 207, 134, 253, 199, 65, 88, 150, 210, 194, 125,
-  216, 149, 91, 67, 201, 134, 237, 92, 126, 189, 64, 248, 194, 76, 87, 94, 163, 249, 60, 155, 113,
-  131, 205,
+  1, 132, 83, 94, 5, 246, 158, 204, 119, 118, 162, 213, 170, 35, 101, 88, 58, 205, 46, 151, 57, 17,
+  149, 88, 167, 7, 252, 154, 44, 247, 241, 78, 250, 39, 40, 12, 98, 233, 18, 227, 204, 103, 31, 177,
 ];
 
 /** The tags of the kinds the hand-built messages use. */
@@ -306,6 +315,30 @@ describe('Schema any', () => {
     const back = trip(p.any(), { v: [value] }) as { v: [typeof value] };
     expect(back.v[0]).toBeInstanceOf(value.constructor);
     expect(back.v[0]).toEqual(value);
+  });
+
+  const Float16 = (globalThis as { Float16Array?: TypedArrayClass<Float16ArrayLike> }).Float16Array;
+
+  (Float16 === undefined ? it.skip : it)('round-trips a Float16Array as the same class', () => {
+    const value = new (Float16 as TypedArrayClass<Float16ArrayLike>)(
+      Uint16Array.of(0x3c00, 0x8000, 0x7e01).buffer
+    );
+    const back = trip(p.any(), { v: [value] }) as { v: [Float16ArrayLike] };
+    expect(back.v[0]).toBeInstanceOf(Float16);
+    expect(new Uint16Array(back.v[0].buffer)).toEqual(Uint16Array.of(0x3c00, 0x8000, 0x7e01));
+  });
+
+  it('keeps a tag for a typed-array class the environment lacks', () => {
+    expect(typedNode(Uint16Array, 'Uint16Array')).toBeInstanceOf(PBinary);
+    const missing = typedNode(undefined, 'Float16Array') as AnyMissing;
+    expect(missing).toBeInstanceOf(AnyMissing);
+    expect(missing._kinds).toEqual(['Float16Array']);
+    expect(() => missing._write()).toThrow(
+      new TypeError('p.any cannot encode Float16Array values here: the class is missing')
+    );
+    expect(() => missing._read()).toThrow(
+      new TypeError('p.any read a Float16Array, which this environment lacks')
+    );
   });
 
   it('reads a subclass or a view into a larger buffer as its built-in class', () => {
