@@ -26,7 +26,7 @@ Under the hood, the whole message is one number written out digit by digit, and 
 
 ## Size in practice
 
-Seven payload shapes encoded as JSON, MessagePack, Protobuf, Avro and Polynar, 250 seeded random samples each; lorem is one fixed text. Every number comes from [`examples/size-comparison.ts`](examples/size-comparison.ts) — run it to reproduce.
+Seven payload shapes encoded as JSON, MessagePack, Protobuf, Avro and Polynar, 250 seeded random samples each; lorem is one fixed text. Every number comes from [`examples/size-comparison.ts`](https://github.com/Phaen/Polynar/blob/master/examples/size-comparison.ts) — run it to reproduce.
 
 A cell is the mean size in bytes, and the smallest number in each row is bold. For the other formats the number in parentheses is the same payload after brotli; Polynar's output is already entropy coded, so brotli gains nothing on it; its number in parentheses is `p.any().adaptive()` in the first table, and in the second the same schema with the priors and methods its data calls for. The url-safe and ascii-safe columns are text output in `CharSets.urlSafe` and `CharSets.asciiSafe`, text that drops straight into a URL, cookie, header or log line; binary is the default output.
 
@@ -74,7 +74,7 @@ Or straight from a CDN in the browser:
 
 ```typescript
 import assert from 'node:assert';
-import { p, CharSets, type Infer, type PNode } from 'polynar';
+import { p, CharSets, type Infer } from 'polynar';
 
 const User = p.object({
   name: p.string().max(40),
@@ -97,7 +97,7 @@ assert.deepStrictEqual(User.decode(bytes), user);
 
 ## API
 
-Each `p.*` factory creates a node for one type, and the node's methods narrow which values it allows. Every method changes the encoding, usually making it denser, rather than only checking values. Methods return a new node; they never change the one they're called on. A schema that contradicts itself, such as `.min(5).max(2)`, throws as soon as it's defined, and so does setting `.min` or `.max` a second time. A value outside a declared bound, step, length or list throws when it's encoded, and is never rounded to fit. Values the TypeScript types rule out, like a string where a number belongs, aren't checked at runtime. The exceptions are mistakes that would otherwise encode wrong without an error, such as a missing required field or a class instance given to `p.any()`. Object keys outside the shape are dropped.
+Each `p.*` factory creates a node for one type, and the node's methods narrow which values it allows. Every method changes the encoding, usually making it denser, rather than only checking values. Methods return a new node; they never change the one they're called on. A schema that contradicts itself, such as `.min(5).max(2)`, throws as soon as it's defined where that can be seen up front, and so does setting `.min` or `.max` a second time. A value outside a declared bound, step, length or list throws when it's encoded, and is never rounded to fit. Values the TypeScript types rule out, like a string where a number belongs, aren't checked at runtime. The exceptions are mistakes that would otherwise encode wrong without an error, such as a missing required field or a class instance given to `p.any()`. Object keys outside the shape are dropped.
 
 - [`p.int`](#pint)
 - [`p.decimal`](#pdecimalstep-number)
@@ -180,7 +180,7 @@ Any text, stored with its length; about 7 bits per ASCII character. Infers `stri
 | `.charset(c: Charset)`                 | Limits the alphabet, so each character costs fewer bits: a string of unique characters or a `[min, max]` range of character codes, down to a single character or a one-code range. Other characters throw. Can't be combined with `.prose()`, since both set the alphabet. |
 | `.prose(model?: ProseModel)`           | Weighted for natural language, about 4 bits per character; English by default, or a model of your own. Every string still encodes.                                                                                                                                         |
 
-`.prose()` prices each character by the one before it: common characters drop to 2–5 bits, and `u` after `q` to under one. Characters outside the model, such as other scripts or emoji, cost a little extra.
+`.prose()` prices each character by the one before it: common characters drop to 2–5 bits, and `u` after `q` to under one. Text the model doesn't fit costs more than it would without `.prose()`: Chinese about 15% more, and a long run of one character about half as much again.
 
 The model only sees lowercase words joined by spaces. Each string first names its shape: lowercase, Capitalised or CAPS words joined by spaces, `_` or `-`, Title Case, camelCase or PascalCase. So `USER_NOT_FOUND`, `user-not-found` and `userNotFound` cost about what `user not found` does. A string that fits none of them, like `McDonald's`, is coded as it is, each capital a shift before its letter: cheap at the start of a word, dear inside one.
 
@@ -223,17 +223,17 @@ One value out of a fixed list: `p.enum(['red', 'green', 'blue'])` costs log2(3) 
 
 A `Date`, lossless to the millisecond by default. Infers `Date`. An invalid date throws.
 
-| Method                                                         | Description                                                                                                                                                                                    |
-| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.min(d: Date \| number)`                                      | Lower bound, as a `Date` or an integer timestamp a `Date` can hold; earlier dates throw.                                                                                                       |
-| `.max(d: Date \| number)`                                      | Upper bound; later dates throw. With both bounds the date takes a fixed number of bits. The range can't span more than 2^53 buckets, and a min above the max throws.                           |
-| `.precision(unit: DateUnit, step = 1)`                         | Rounds each date down to the start of its UTC bucket: smaller, but lossy. Weeks start on Monday, months and years follow the calendar, and `step` groups units, so `('month', 3)` is quarters. |
-| `.cdf(fn: (b: number) => number)`                              | Prior over the buckets, called with the bucket number, counting from the bucket that holds 1970-01-01 as 0; needs both bounds.                                                                 |
-| `.weights(w: number[])`                                        | Prior: one weight per bucket from `min` to `max`, earliest first; needs both bounds.                                                                                                           |
-| `.learn()`                                                     | Prior that learns from the message; see [Priors that learn](#priors-that-learn-learn-and-adaptive).                                                                                            |
-| `.adaptive(options?: { window?: number; separate?: boolean })` | `.learn()`, and `.delta()` and `.recall()` open to a choice per value unless declared; see [Priors that learn](#priors-that-learn-learn-and-adaptive).                                         |
-| `.delta()`                                                     | Writes each value after the node's first as its difference from the previous one; see [Methods](#methods).                                                                                     |
-| `.recall()`                                                    | Writes a value the node already wrote in the message as its place among those; see [Methods](#methods).                                                                                        |
+| Method                                                         | Description                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `.min(d: Date \| number)`                                      | Lower bound, as a `Date` or an integer timestamp a `Date` can hold; earlier dates throw.                                                                                                                                                                                                                                                         |
+| `.max(d: Date \| number)`                                      | Upper bound; later dates throw. With both bounds the date takes a fixed number of bits. The range can't span more than 2^53 buckets, and a min above the max throws.                                                                                                                                                                             |
+| `.precision(unit: DateUnit, step = 1)`                         | Rounds each date down to the start of its UTC bucket: smaller, but lossy. Weeks start on Monday, months and years follow the calendar, and `step` groups units, so `('month', 3)` is quarters. Steps of months and years count from year 0, smaller units from 1970-01-01, so `('day', 7)` starts on a Thursday where `'week'` starts on Monday. |
+| `.cdf(fn: (b: number) => number)`                              | Prior over the buckets, called with the bucket number, counting from the bucket that holds 1970-01-01 as 0; needs both bounds.                                                                                                                                                                                                                   |
+| `.weights(w: number[])`                                        | Prior: one weight per bucket from `min` to `max`, earliest first; needs both bounds.                                                                                                                                                                                                                                                             |
+| `.learn()`                                                     | Prior that learns from the message; see [Priors that learn](#priors-that-learn-learn-and-adaptive).                                                                                                                                                                                                                                              |
+| `.adaptive(options?: { window?: number; separate?: boolean })` | `.learn()`, and `.delta()` and `.recall()` open to a choice per value unless declared; see [Priors that learn](#priors-that-learn-learn-and-adaptive).                                                                                                                                                                                           |
+| `.delta()`                                                     | Writes each value after the node's first as its difference from the previous one; see [Methods](#methods).                                                                                                                                                                                                                                       |
+| `.recall()`                                                    | Writes a value the node already wrote in the message as its place among those; see [Methods](#methods).                                                                                                                                                                                                                                          |
 
 `DateUnit` is `'millisecond' | 'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'`. Bounds compare buckets, so a `min` in the middle of a bucket allows that whole bucket, and a date can decode to a time before `min`.
 
@@ -364,7 +364,7 @@ Data written by any listed version decodes and is migrated step by step to the n
 
 ### `p.any(hints?: PNode[])`
 
-Self-describing escape hatch: numbers, bigints, strings, booleans, dates, regular expressions, null, undefined, ArrayBuffers, DataViews, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values; an object typed with an interface needs an index signature to count as one. Numbers round-trip as they do through `p.float`, everything else bit-exact, and a typed array decodes as the same class. A regular expression keeps its source and flags but not its `lastIndex`, and a DataView decodes over a new buffer of just its bytes. Shared references and holes in sparse arrays aren't kept: an object that appears twice comes back as two separate copies, and a hole comes back as `undefined`. A subclass of any of these, such as a `Buffer` or a class extending `RegExp` or `Map`, decodes as the built-in class. Any other class instance throws a `TypeError`, and so do errors and boxed primitives like `new Number(1)`. Nesting containers more than 512 levels deep, which includes a value that contains itself, throws a `RangeError` without the path in front. Costs more than a precise node.
+Self-describing escape hatch: numbers, bigints, strings, booleans, dates, regular expressions, null, undefined, ArrayBuffers, DataViews, typed arrays, arrays, plain objects, Maps and Sets, with a type tag per value. Infers `AnyValue`, the type of exactly those values; an object typed with an interface needs an index signature to count as one. Numbers round-trip as they do through `p.float`, though written their own way, so sizes differ: `255` takes 2 bytes against 4, `2 ** 52` 8 against 2. Everything else round-trips bit-exact, and a typed array decodes as the same class. A regular expression keeps its source and flags but not its `lastIndex`, and a DataView decodes over a new buffer of just its bytes. Shared references and holes in sparse arrays aren't kept: an object that appears twice comes back as two separate copies, and a hole comes back as `undefined`. A subclass of any of these, such as a `Buffer` or a class extending `RegExp` or `Map`, decodes as the built-in class. Any other class instance throws a `TypeError`, and so do errors and boxed primitives like `new Number(1)`. Nesting containers more than 512 levels deep, which includes a value that contains itself, throws a `RangeError` without the path in front. Costs more than a precise node.
 
 Hints are nodes some values are expected to fit: `p.any([p.string().charset(CharSets.hex).length(32)])`. Each value, at any depth, tries the hints that take its kind in order, and the first that writes it codes it behind a tag of its own. A hint only takes values it gives back unchanged. A hint needs declared kinds, so `p.lazy` and custom nodes without `_kinds` throw.
 
@@ -396,7 +396,7 @@ What `i` is depends on the node: the value itself on `p.int`, the step count (`v
 
 - `fn` returns safe integers and never goes down. A value whose weight is zero can't be encoded, and neither can one that a dip in `fn` would make decode as another value: encode only ever produces bytes that decode back.
 - Only the differences between results matter, so adding a constant changes nothing.
-- Encoder and decoder must get identical numbers from it, so stick to BigInt or plain `+ - * /`; `Math.exp` and friends round differently per engine.
+- Encoder and decoder must get identical numbers from it, so stick to `+ - * /` and `Math.floor`; `Math.exp` and friends round differently per engine.
 
 ### Methods
 
@@ -479,7 +479,9 @@ const link = User.encode(user, { type: 'text', charset: CharSets.urlSafe }); // 
 User.decode(link, { charset: CharSets.urlSafe });
 ```
 
-`decode` can tell bytes from text by the input itself, so `type` is optional there and only checked by TypeScript.
+`decode` can tell bytes from text by the input itself, so `type` is optional there and only checked by TypeScript. Text output is written directly in the charset's symbols, not as the binary output run through Base64, so `atob` doesn't turn it into the bytes.
+
+A message has no end marker: `decode` expects its input to end where the message does, so two messages back to back throw `Unread or corrupted data at end of input`. To keep several messages in one stream, put each one's length in front of it, or encode them together as one `p.array`.
 
 Decoding gives back the value that was encoded. Encoding a decoded message again usually gives the same bytes, but not always, so checking integrity is the job of `checksum`. A value's bytes can depend on what the same node wrote earlier in the message.
 
@@ -539,7 +541,7 @@ The node classes are exported too (`PNode`, `PInt`, `PString`, `PObject`, …), 
 
 ## Custom nodes
 
-Subclass `PNode` and implement two methods: `_write` writes one value's digits, and `_read` reads them back in the same order. `_read` reads exactly what `_write` wrote: reading too little throws on decode, but one read too many at the very end can go unnoticed. The node then works inside `p.object`, `p.array` and `p.optional` like any built-in. To use it in `p.union`, also set `_kinds` to the kinds its values have, like `readonly _kinds = ['object'] as const`. A node that can return `undefined` needs nothing extra for an object field using it to be left out, but one that declares `_kinds` lists `'undefined'` among them. See [`examples/custom-node.ts`](examples/custom-node.ts) for a runnable version.
+Subclass `PNode` and implement two methods: `_write` writes one value's digits, and `_read` reads them back in the same order. `_read` reads exactly what `_write` wrote: reading too little throws on decode, but one read too many at the very end can go unnoticed. The node then works inside `p.object`, `p.array` and `p.optional` like any built-in. To use it in `p.union`, also set `_kinds` to the kinds its values have, like `readonly _kinds = ['object'] as const`. A node that can return `undefined` needs nothing extra for an object field using it to be left out, but one that declares `_kinds` lists `'undefined'` among them. See [`examples/custom-node.ts`](https://github.com/Phaen/Polynar/blob/master/examples/custom-node.ts) for a runnable version.
 
 ```typescript
 import { p, PNode, Encoder, Decoder } from 'polynar';
@@ -616,6 +618,8 @@ const Palette = p.array(new PColor().adaptive()).max(64);
 ### Shareable URL state
 
 ```typescript
+import { p, CharSets } from 'polynar';
+
 const View = p.object({
   page: p.int().min(1).max(10000),
   sort: p.enum(['date', 'name', 'size']),
@@ -659,13 +663,13 @@ p.object({
 ```typescript
 type Block = { type: 'paragraph'; text: string } | { type: 'list'; items: Block[] };
 
-const Block: PNode<Block> = p.tagged('type', {
+const Block = p.tagged('type', {
   paragraph: p.object({ text: p.string() }),
-  list: p.object({ items: p.array(p.lazy(() => Block)) }),
+  list: p.object({ items: p.array(p.lazy((): PNode<Block> => Block)) }),
 });
 ```
 
-TypeScript can't infer a type that refers to itself, hence the explicit `PNode<Block>`.
+TypeScript can't infer a type that refers to itself, hence the explicit `PNode<Block>` on the `p.lazy` callback. Annotating the callback rather than `Block` keeps `Block`'s own type, methods like `.weights()` included.
 
 ### Versioning
 
