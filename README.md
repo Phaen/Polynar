@@ -445,7 +445,7 @@ p.array(p.string().adaptive()); // the string values of a JSON file, each key it
 p.binary().adaptive(); // bytes, a closed alphabet of 256
 ```
 
-It is slow next to every other node: about 100 to 250 microseconds per character on each side, against well under one for a plain string, and it holds around 20 kB of memory per character the message has coded so far. Use it where size matters more than time, on messages of up to some tens of kilobytes.
+It is slow next to every other node: about 50 microseconds per character on each side, against well under one for a plain string, and it holds around 2 kB of memory per character the message has coded so far. Use it where size matters more than time, on messages of up to a few hundred kilobytes.
 
 The bounds still hold: a string never ends below the min, and ends at the max without the end symbol. A charset closes the alphabet to its characters. `.prose()` adds nothing under `.adaptive()`, and a prose model of your own, a length `.weights()` or `.cdf()` throw next to it.
 

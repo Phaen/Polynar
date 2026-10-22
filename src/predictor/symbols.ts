@@ -1032,11 +1032,17 @@ export class SymbolPredictor {
     this.top = top;
 
     const total = this.o.quantisation;
-    const hasEscape = (this.text && this.closed === null) || this.nc < this.memberCount();
+    let hasEscape = (this.text && this.closed === null) || this.nc < this.memberCount();
     let escMass = escC;
     let dropped: Uint8Array | null = null;
-    const over = this.nc + 1 - div(total, 2);
+    // A dropped candidate is coded through the escape, so a drop on a closed alphabet whose
+    // every member voted opens one.
+    let over = this.nc + (hasEscape ? 1 : 0) - div(total, 2);
     if (over > 0) {
+      if (!hasEscape) {
+        hasEscape = true;
+        over++;
+      }
       dropped = new Uint8Array(this.nc);
       escMass += this.dropSmallest(over, dropped, top);
     }

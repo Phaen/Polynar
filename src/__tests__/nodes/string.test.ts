@@ -490,6 +490,20 @@ describe('p.string().adaptive()', () => {
       const value = '一丐丅丅丅';
       expect(trip(node, value)).toBe(value);
     });
+
+    it('codes every member of a range wider than half the quantisation', () => {
+      // Under a fixed length the table has no end symbol, so once every member has voted the
+      // escape exists only for the members dropped to fit the total.
+      const count = 2060;
+      const chars = Array.from({ length: count }, (_, i) => String.fromCharCode(0x100 + i));
+      const value = chars.join('') + chars.reverse().join('');
+      const node = p
+        .string()
+        .charset([0x100, 0x100 + count - 1])
+        .length(value.length)
+        .adaptive({ quantisation: 4096 });
+      expect(trip(node, value)).toBe(value);
+    });
   });
 
   describe('runs', () => {
