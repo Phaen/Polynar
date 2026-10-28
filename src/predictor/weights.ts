@@ -34,6 +34,9 @@ export function newRunPrior(loaded: LoadedPrior): RunPrior {
     lev: loaded.lev.slice(),
     logn: loaded.logn.slice(),
     vstep: loaded.vstep.slice(),
+    numberHit: loaded.numberHit.slice(),
+    numberRange: loaded.numberRange.slice(),
+    numberConf: loaded.numberConf.slice(),
   };
 }
 
@@ -469,9 +472,14 @@ export function learn(
 }
 
 /** The confidence map's interpolated probability at cell `o` (row * APM_B + cell) and fraction fr (RB), PB bits. */
-export function apmShare(run: RunPrior, o: number, fr: number): number {
-  const p0 = run.apm[o];
-  return p0 + smul(run.apm[o + 1] - p0, fr, RB);
+export function apmShare(
+  run: RunPrior,
+  o: number,
+  fr: number,
+  map: Float64Array = run.apm
+): number {
+  const p0 = map[o];
+  return p0 + smul(map[o + 1] - p0, fr, RB);
 }
 
 /**
@@ -483,11 +491,11 @@ export function apmUpdate(
   o: number,
   fr: number,
   y: number,
-  rates: PriorConstants = run.loaded.constants
+  rates: PriorConstants = run.loaded.constants,
+  apm: Float64Array = run.apm
 ): void {
-  const e = y - apmShare(run, o, fr);
+  const e = y - apmShare(run, o, fr, apm);
   const r = rates.rates.apm;
-  const apm = run.apm;
   apm[o] = clampi(apm[o] + smul(r * (ONE - fr), e, PB + RB), APM_LO, APM_HI);
   apm[o + 1] = clampi(apm[o + 1] + smul(r * fr, e, PB + RB), APM_LO, APM_HI);
 }

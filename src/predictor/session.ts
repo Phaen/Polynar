@@ -15,18 +15,24 @@
  * step's table, which only the coder can arrange.
  */
 
+import type { Decoder, Encoder } from '../packer';
 import { CorruptInputError } from '../packer/errors';
 import { log2Fix } from './arith';
 import { Ids } from './alphabet';
+import { NumberCoder, NumberState } from './numbers';
+import type { NumberRange, PlainNumber, RecordEntry } from './numbers';
 import { SymbolPredictor, defaultFeatures, newPathState } from './symbols';
 import type { Features, MessageCore, PathState, Sink, Source } from './symbols';
+import type { Distribution } from './distribution';
 import { Population, frozen } from './tables';
 import type { Frozen } from './tables';
 import { END, ESCAPE } from './types';
 import type { AlphabetKind, Ends, LoadedPrior, PathKey, Resolved, RunPrior } from './types';
+import { MemberStep, VSTEP_N } from './values';
 import { newRunPrior } from './weights';
 
 export type { Features, Sink, Source, Table } from './symbols';
+export type { NumberRange, PlainNumber } from './numbers';
 
 export interface SessionOptions {
   /** Switches of the engine's parts, for measurement; every part is on by default. */
@@ -51,6 +57,57 @@ export interface Side {
 interface Pair {
   readonly msg: Population;
   readonly msgF: Population;
+}
+
+/** Codes one integer at a path (spec §4.5): `Session.number`. */
+export interface NumberAccess {
+  write(enc: Encoder, x: number): void;
+  read(dec: Decoder): number;
+}
+
+/** Codes one declared member at a path: `Session.step`. */
+export interface MemberAccess {
+  write(enc: Encoder, member: number): void;
+  read(dec: Decoder): number;
+}
+
+/** A path's number state and the coder bound to it. */
+interface NumberPath {
+  readonly state: NumberState;
+  readonly coder: NumberCoder;
+}
+
+/** A path's restricted value step and its deltas over the value-step cells. */
+interface MemberPath {
+  readonly step: MemberStep;
+  readonly delta: Float64Array;
+}
+
+/** Per-path state by `PathKey`: a node or key path directly, a node's derived paths under the node. */
+class PathMap<T> {
+  private readonly direct = new Map<unknown, T>();
+  private readonly derived = new Map<object, Map<number, T>>();
+
+  get(key: PathKey, make: () => T): T {
+    let map: Map<unknown, T> = this.direct;
+    let k: unknown = key;
+    if (Array.isArray(key)) {
+      const [node, sub] = key as unknown as readonly [object, number];
+      let m = this.derived.get(node);
+      if (m === undefined) {
+        m = new Map();
+        this.derived.set(node, m);
+      }
+      map = m;
+      k = sub;
+    }
+    let v = map.get(k);
+    if (v === undefined) {
+      v = make();
+      map.set(k, v);
+    }
+    return v;
+  }
 }
 
 /** Prices the calls a coder makes, in bits · 2^RB (`log2Fix` of total over frequency). */
@@ -79,8 +136,9 @@ export class Space implements MessageCore {
   readonly run: RunPrior;
   private readonly builtin: Frozen;
   private readonly pairs = new Map<string, Pair>();
-  private readonly paths = new Map<unknown, PathState>();
-  private readonly derived = new Map<object, Map<number, PathState>>();
+  private readonly paths = new PathMap<PathState>();
+  private readonly numbers = new PathMap<NumberPath>();
+  private readonly members = new PathMap<MemberPath>();
   private readonly preds = new Map<PathState, Map<AlphabetKind, SymbolPredictor>>();
 
   constructor(
@@ -94,24 +152,36 @@ export class Space implements MessageCore {
   }
 
   pathState(key: PathKey, o: Resolved): PathState {
-    let map: Map<unknown, PathState> = this.paths;
-    let k: unknown = key;
-    if (Array.isArray(key)) {
-      const [node, sub] = key as unknown as readonly [object, number];
-      let m = this.derived.get(node);
-      if (m === undefined) {
-        m = new Map();
-        this.derived.set(node, m);
-      }
-      map = m;
-      k = sub;
-    }
-    let ps = map.get(k);
-    if (ps === undefined) {
-      ps = newPathState(o, this.features);
-      map.set(k, ps);
-    }
-    return ps;
+    return this.paths.get(key, () => newPathState(o, this.features));
+  }
+
+  /** The number state of a path and its coder, made with the range and spelling of first use. */
+  number(key: PathKey, o: Resolved, range: NumberRange, plain: PlainNumber): NumberPath {
+    return this.numbers.get(key, () => {
+      const state = new NumberState(o);
+      return { state, coder: new NumberCoder(state, this.run, o, range, plain) };
+    });
+  }
+
+  /** The restricted value step of a path, made with the count and weights of first use. */
+  member(
+    key: PathKey,
+    o: Resolved,
+    count: number,
+    weights: readonly number[] | undefined
+  ): MemberPath {
+    return this.members.get(key, () => ({
+      step: new MemberStep(count, weights, o.history, o.quantisation),
+      delta: new Float64Array(VSTEP_N),
+    }));
+  }
+
+  /**
+   * The population a member step's positions count in: the text alphabet's message population,
+   * or under `separate` the path's own.
+   */
+  positions(key: PathKey, o: Resolved): Population {
+    return o.separate ? this.pathState(key, o).pop : this.pair('text', o).msg;
   }
 
   private pair(alphabet: AlphabetKind, o: Resolved): Pair {
@@ -171,6 +241,8 @@ export class Session {
   /** The current item's index in the innermost list, −1 outside a list. */
   listIndex = -1;
   private readonly lists: number[] = [];
+  /** The open records, innermost last: the numbers coded in each so far. */
+  private readonly records: RecordEntry[][] = [];
   private readonly spaces = new Map<LoadedPrior, Space>();
   private first: Space | null = null;
 
@@ -255,6 +327,89 @@ export class Session {
     if (this.journal?.active === true) {
       throw new Error('the predictor cannot code inside a spelling the encoder tries');
     }
+  }
+
+  /**
+   * Opens a record (an object): the numbers coded in it are the sibling references of the numbers
+   * after them in it.
+   */
+  enterRecord(): void {
+    this.records.push([]);
+  }
+
+  /** Closes the innermost record; its numbers join the enclosing record's. */
+  leaveRecord(): void {
+    const frame = this.records.pop();
+    const outer = this.records[this.records.length - 1];
+    if (frame !== undefined && outer !== undefined) {
+      for (const e of frame) outer.push(e);
+    }
+  }
+
+  /**
+   * An integer at a path through the number predictor: `range` the node's declared bounds and
+   * prior, `plain` its own spelling, which NOVELTY falls back on (spec §6.3).
+   */
+  number(path: PathKey, o: Resolved, range: NumberRange, plain: PlainNumber): NumberAccess {
+    const np = this.space(o.prior).number(path, o, range, plain);
+    return {
+      write: (enc, x) => {
+        this.checkCommitted();
+        np.coder.write(enc, x, this.frame());
+        this.enter(np.state, x);
+      },
+      read: (dec) => {
+        const x = np.coder.read(dec, this.frame());
+        this.enter(np.state, x);
+        return x;
+      },
+    };
+  }
+
+  private frame(): readonly RecordEntry[] {
+    const frame = this.records[this.records.length - 1];
+    return frame === undefined ? NO_RECORD : frame;
+  }
+
+  /** The innermost record takes a coded number unless it lies past the safe integers. */
+  private enter(state: NumberState, value: number): void {
+    const frame = this.records[this.records.length - 1];
+    if (frame !== undefined && Number.isSafeInteger(value)) frame.push({ state, value });
+  }
+
+  /**
+   * A declared member 0..count − 1 at a path through the restricted value step, `weights` its
+   * prior counts (spec §6.3); a member of weight 0 is refused.
+   */
+  step(path: PathKey, o: Resolved, count: number, weights?: readonly number[]): MemberAccess {
+    const space = this.space(o.prior);
+    const mp = space.member(path, o, count, weights);
+    const run = space.run;
+    const code = (member: (d: Distribution) => number): number => {
+      const pop = space.positions(path, o);
+      const t0 = pop.t;
+      const delta = this.features.deltas ? mp.delta : null;
+      const ms = mp.step;
+      const d = ms.distribution(pop.seq, t0, this.listIndex, run.vstep, delta);
+      const v = member(d);
+      ms.learn(v, ms.n, run.vstep, delta, run.loaded.constants);
+      ms.record(v, t0, this.listIndex);
+      return v;
+    };
+    return {
+      write: (enc, v) => {
+        this.checkCommitted();
+        if (!mp.step.has(v)) {
+          throw new RangeError(`Member ${v} has zero weight`);
+        }
+        code((d) => {
+          const i = d.indexOf(v);
+          enc.composeWeighted(d.cum(i), d.freq(i), d.total);
+          return v;
+        });
+      },
+      read: (dec) => code((d) => d.idAt(dec.parseMember(d.total, d))),
+    };
   }
 
   enterList(): void {
@@ -490,6 +645,8 @@ class StringCoder implements TextCoder {
     return out;
   }
 }
+
+const NO_RECORD: readonly RecordEntry[] = [];
 
 const SESSION = {};
 

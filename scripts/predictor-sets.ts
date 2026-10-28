@@ -17,7 +17,7 @@ import { Decoder, Encoder } from '../src/packer';
 import { resolve } from '../src/predictor/options';
 import { Priors } from '../src/predictor/prior';
 import { session } from '../src/predictor/session';
-import type { SessionOptions, Sink, Source } from '../src/predictor/session';
+import type { PlainNumber, SessionOptions, Sink, Source } from '../src/predictor/session';
 import type { Ends } from '../src/predictor/types';
 
 export const SET_NAMES = ['alice', 'prose', 'chat', 'names'] as const;
@@ -168,6 +168,176 @@ export function readMessage(
     const got = s.string(PATH, o, 'text').read(source, ENDS);
     if (got.length !== str.length || got.some((cp, j) => cp !== str[j])) {
       throw new Error(`round trip failed at string ${i}`);
+    }
+  });
+  if (m.list) s.leaveList();
+}
+
+/** The number sets of the phase-3 gate, coded through `Session.number`. */
+export const NUMBER_SETS = ['ints', 'ints-records', 'dates'] as const;
+export type NumberSetName = (typeof NUMBER_SETS)[number];
+
+/** One step of a number message: a number at a key path, or a record opening or closing. */
+export type NumberOp = { readonly path: string; readonly value: number } | 'enter' | 'leave';
+
+/** One message of numbers; `list` when they are the items of one list (a single path). */
+export interface NumberMessage {
+  readonly name: string;
+  readonly ops: readonly NumberOp[];
+  readonly list: boolean;
+  /** Dates only: the values count seconds, not milliseconds. */
+  readonly seconds?: boolean;
+}
+
+/** The ISO date fields of the corpus a declared schema makes `p.date()` (prototype round 29). */
+export const DATE_FIELDS: readonly (readonly [file: string, path: string])[] = [
+  ['events.json', '/*/timestamp'],
+  ['events.json', '/*/sentAt'],
+  ['events.json', '/*/traits/createdAt'],
+  ['gh-commit.json', '/commit/author/date'],
+  ['gh-commit.json', '/commit/committer/date'],
+  ['gh-commit.json', '/commit/verification/verified_at'],
+  ['gh-issues.json', '/*/created_at'],
+  ['gh-issues.json', '/*/updated_at'],
+  ['gh-repos.json', '/*/created_at'],
+  ['gh-repos.json', '/*/updated_at'],
+  ['gh-repos.json', '/*/pushed_at'],
+  ['sc-mix.json', '/chats/*/sentAt'],
+];
+
+/**
+ * A JSON value's leaves with their key paths (`/key` per object key, `/*` per array item) in
+ * document order, with a record opening and closing around every object.
+ */
+function walkJson(
+  v: unknown,
+  path: string,
+  leaf: (path: string, v: unknown) => void,
+  record: (open: boolean) => void
+): void {
+  if (Array.isArray(v)) {
+    for (const x of v) walkJson(x, `${path}/*`, leaf, record);
+  } else if (v !== null && typeof v === 'object') {
+    record(true);
+    for (const [k, x] of Object.entries(v)) walkJson(x, `${path}/${k}`, leaf, record);
+    record(false);
+  } else {
+    leaf(path, v);
+  }
+}
+
+function corpusFiles(corpus: string): string[] {
+  return readdirSync(corpus)
+    .filter((f) => f.endsWith('.json'))
+    .sort();
+}
+
+/**
+ * The messages of a number set.
+ * - ints: per corpus file and key path of JSON integers (paths in order of first appearance), the
+ *   sequence as one message.
+ * - ints-records: per corpus file, its integers in document order with every object a record.
+ * - dates: per field of `DATE_FIELDS`, the dates in ms, or in seconds when every one is whole.
+ */
+export function numberMessages(set: NumberSetName, corpus: string): NumberMessage[] {
+  const out: NumberMessage[] = [];
+  for (const f of corpusFiles(corpus)) {
+    const json: unknown = JSON.parse(readFileSync(join(corpus, f), 'utf8'));
+    if (set === 'ints-records') {
+      const ops: NumberOp[] = [];
+      walkJson(
+        json,
+        '',
+        (path, v) => {
+          if (typeof v === 'number' && Number.isInteger(v)) ops.push({ path, value: v });
+        },
+        (open) => ops.push(open ? 'enter' : 'leave')
+      );
+      out.push({ name: f, ops, list: false });
+    } else if (set === 'ints') {
+      const seqs = new Map<string, NumberOp[]>();
+      walkJson(
+        json,
+        '',
+        (path, v) => {
+          if (typeof v !== 'number' || !Number.isInteger(v)) return;
+          let seq = seqs.get(path);
+          if (seq === undefined) seqs.set(path, (seq = []));
+          seq.push({ path, value: v });
+        },
+        () => undefined
+      );
+      for (const [path, ops] of seqs) out.push({ name: `${f} ${path}`, ops, list: true });
+    } else {
+      for (const [file, field] of DATE_FIELDS) {
+        if (file !== f) continue;
+        const ms: number[] = [];
+        walkJson(
+          json,
+          '',
+          (path, v) => {
+            if (path === field && typeof v === 'string') ms.push(new Date(v).getTime());
+          },
+          () => undefined
+        );
+        const seconds = ms.every((t) => t % 1000 === 0);
+        const ops = ms.map((t) => ({ path: field, value: seconds ? t / 1000 : t }));
+        out.push({ name: `${f} ${field}`, ops, list: true, seconds });
+      }
+    }
+  }
+  return out;
+}
+
+const NUMBER_PATHS = new Map<string, object>();
+
+/** The session path of a key path: one object per key path, shared by every message. */
+function numberPath(path: string): object {
+  let key = NUMBER_PATHS.get(path);
+  if (key === undefined) NUMBER_PATHS.set(path, (key = {}));
+  return key;
+}
+
+const PLAIN: PlainNumber = {
+  write: (enc, x) => {
+    enc.compose(x < 0 ? 1 : 0, 2);
+    enc.composeTerm(Math.abs(x));
+  },
+  read: (dec) => {
+    const neg = dec.parse(2) === 1;
+    const m = dec.parseTerm();
+    return neg ? 0 - m : m;
+  },
+};
+
+/** Codes a number message through the session of `enc`, with the text prior's tables. */
+export function writeNumbers(enc: Encoder, m: NumberMessage, options: SessionOptions = {}): void {
+  const s = session(enc, options);
+  const o = resolve({}, Priors.text, 'predictor-sets');
+  if (m.list) s.enterList();
+  for (const op of m.ops) {
+    if (op === 'enter') s.enterRecord();
+    else if (op === 'leave') s.leaveRecord();
+    else {
+      if (m.list) s.nextItem();
+      s.number(numberPath(op.path), o, {}, PLAIN).write(enc, op.value);
+    }
+  }
+  if (m.list) s.leaveList();
+}
+
+/** Reads a number message back and throws unless every number equals the one written. */
+export function readNumbers(dec: Decoder, m: NumberMessage, options: SessionOptions = {}): void {
+  const s = session(dec, options);
+  const o = resolve({}, Priors.text, 'predictor-sets');
+  if (m.list) s.enterList();
+  m.ops.forEach((op, i) => {
+    if (op === 'enter') s.enterRecord();
+    else if (op === 'leave') s.leaveRecord();
+    else {
+      if (m.list) s.nextItem();
+      const got = s.number(numberPath(op.path), o, {}, PLAIN).read(dec);
+      if (got !== op.value) throw new Error(`round trip failed at ${m.name} op ${i}`);
     }
   });
   if (m.list) s.leaveList();

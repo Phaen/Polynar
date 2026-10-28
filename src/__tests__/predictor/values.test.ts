@@ -13,6 +13,7 @@ import {
   VS_REP,
   VS_SH,
   VS_SQ,
+  MemberStep,
   ValueStep,
   vsA,
   vsDist,
@@ -427,5 +428,52 @@ describe('ValueStep', () => {
     expect(sum).toBe(2 ** 24);
     vs.learn(ESCAPE, 0, vstep, null, constants());
     expect(vstep[VS_NEW + 5]).toBeGreaterThan(initialVstep()[VS_NEW + 5]);
+  });
+});
+
+describe('MemberStep', () => {
+  const seq = new Int32Array(4);
+  const freqs = (d: { n: number; idAt(i: number): number; freq(i: number): number }) => {
+    const out = new Map<number, number>();
+    for (let i = 0; i < d.n; i++) out.set(d.idAt(i), d.freq(i));
+    return out;
+  };
+
+  it('takes the declared weights as prior counts', () => {
+    const ms = new MemberStep(3, [1, 6, 1], 64, 65536);
+    const f = freqs(ms.distribution(seq, 1, -1, initialVstep(), null));
+    expect(f.get(1)).toBeGreaterThan(f.get(0)!);
+    // Unseen members share NEW's mass evenly, the remainder to the lowest.
+    expect(f.get(0)! - f.get(2)!).toBeGreaterThanOrEqual(0);
+    expect(f.get(0)! - f.get(2)!).toBeLessThanOrEqual(1);
+  });
+
+  it('gives a member of weight 0 no entry', () => {
+    const ms = new MemberStep(3, [1, 0, 1], 64, 65536);
+    expect(ms.has(1)).toBe(false);
+    expect(ms.has(2)).toBe(true);
+    const d = ms.distribution(seq, 1, -1, initialVstep(), null);
+    expect(d.n).toBe(2);
+    expect(d.indexOf(1)).toBe(-1);
+  });
+
+  it('learns toward the coded member, then once every member is seen keeps NEW out', () => {
+    const ms = new MemberStep(2, undefined, 64, 65536);
+    const vstep = initialVstep();
+    let t = 1;
+    const step = (v: number): Map<number, number> => {
+      const f = freqs(ms.distribution(seq, t, -1, vstep, null));
+      ms.learn(v, ms.n, vstep, null, constants());
+      ms.record(v, t++, -1);
+      return f;
+    };
+    step(0);
+    for (let i = 0; i < 10; i++) step(0);
+    const f = step(1);
+    expect(f.get(0)).toBeGreaterThan(f.get(1)!);
+    // Both seen: the table is the members' occurrences alone.
+    const g = step(1);
+    expect(g.get(0)! + g.get(1)!).toBe(65536);
+    expect(ms.distinct).toBe(2);
   });
 });

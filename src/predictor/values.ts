@@ -104,8 +104,12 @@ function grown(a: Float64Array, cap: number): Float64Array {
   return b;
 }
 
-/** One path's value step. Value ids are first-occurrence indices 0, 1, 2 ...; NEW is ESCAPE. */
-export class ValueStep {
+/**
+ * The occurrences of a path's values and the cells they vote through: the part the value step
+ * and the restricted member step share. Ids are small integers; `votes` gives each id its mass at
+ * one block scale, NEW its own, and `learnCells` moves the cells by the chosen entry's share.
+ */
+abstract class Occurrences {
   /** The step's coded distribution, reused every step. */
   readonly dist = new Distribution();
   /** Occurrences recorded so far, values first seen, repeats, and the largest count. */
@@ -113,32 +117,31 @@ export class ValueStep {
   nNew = 0;
   reps = 0;
   top = 0;
+  /** Distinct ids recorded so far. */
   distinct = 0;
 
-  private readonly keys = new Map<string, number>();
-  private count: Float64Array = new Float64Array(16);
-  /** Occurrences per value that left the history window. */
-  private older: Float64Array = new Float64Array(16);
+  protected count: Float64Array;
+  /** Occurrences per id that left the history window (and, for members, the declared weights). */
+  protected older: Float64Array;
   /** Ring of the last history + 8 occurrences: value id, message position, list index. */
   private readonly cap: number;
   private readonly occV: Int32Array;
   private readonly occPos: Float64Array;
   private readonly occList: Int32Array;
 
-  /** The pending step: per full occurrence its mass and cells, per value its total and older mass. */
-  private pending = false;
+  /** The pending step: per full occurrence its mass and cells, per id its total and older mass. */
+  protected pending = false;
   private k = 0;
   private readonly wOcc: Float64Array;
   private readonly cL: Int32Array;
   private readonly cR: Int32Array;
   private readonly cS: Int32Array;
   private readonly cN: Int32Array;
-  private V: Float64Array = new Float64Array(16);
-  /** Values left out of the pending step's table; their mass is NEW's. */
-  private dropped: Uint8Array = new Uint8Array(16);
-  private wOld: Float64Array = new Float64Array(16);
-  private wNew = 0;
-  private Z = 0;
+  protected V: Float64Array;
+  private wOld: Float64Array;
+  /** NEW's mass and the step's total (NEW included) at the step's block scale. */
+  protected wNew = 0;
+  protected Z = 0;
   private cRep = 0;
   private cNew = 0;
   private cOT = 0;
@@ -151,8 +154,13 @@ export class ValueStep {
   constructor(
     readonly history: number,
     readonly quantisation: number,
-    readonly sequence = false
+    readonly sequence: boolean,
+    size: number
   ) {
+    this.count = new Float64Array(size);
+    this.older = new Float64Array(size);
+    this.V = new Float64Array(size);
+    this.wOld = new Float64Array(size);
     this.cap = history + 8;
     this.occV = new Int32Array(this.cap);
     this.occPos = new Float64Array(this.cap);
@@ -164,31 +172,27 @@ export class ValueStep {
     this.cN = new Int32Array(history);
   }
 
-  /** The id of a past value, or ESCAPE when the path has not had it. */
-  idOf(key: string): number {
-    const id = this.keys.get(key);
-    return id === undefined ? ESCAPE : id;
+  /** Room for ids below `size`. */
+  protected grow(size: number): void {
+    this.count = grown(this.count, size);
+    this.older = grown(this.older, size);
+    this.V = new Float64Array(size);
+    this.wOld = new Float64Array(size);
   }
 
   /**
-   * The distribution over the path's past values and NEW for the value that starts at message
-   * position `t` (`seq` the message population's symbols), or null before the path's first value.
-   * When the values and NEW exceed half the quantisation, the values of lowest mass (ties: highest
-   * id) are left out and their mass joins NEW, so such a value is coded as NEW; `learn` still takes
-   * its id.
+   * The masses of ids 0..d − 1 in `V` and NEW's in `wNew` for the value at message position `t`
+   * (`seq` the message population's symbols), at one block scale; `Z` is their sum.
    */
-  distribution(
+  protected votes(
     seq: Int32Array,
     t: number,
     listIndex: number,
     vstep: Float64Array,
-    delta: Float64Array | null
-  ): Distribution | null {
-    this.pending = false;
+    delta: Float64Array | null,
+    d: number
+  ): void {
     const n = this.n;
-    if (n === 0) {
-      return null;
-    }
     const th = (i: number): number => (delta ? vstep[i] + delta[i] : vstep[i]);
     const st = vsTop(this.top, n);
     const sd = vsDist(this.distinct);
@@ -198,7 +202,8 @@ export class ValueStep {
     this.cOD = VS_SH + 4 + sd;
     this.cNT = VS_SH + 8 + st;
     this.cND = VS_SH + 12 + sd;
-    const base = th(this.cRep) + th(this.cOT) + th(this.cOD) - log2Fix(n);
+    // A member step's first value has no occurrences; its count is taken as 1.
+    const base = th(this.cRep) + th(this.cOT) + th(this.cOD) - log2Fix(n > 0 ? n : 1);
     const eNew = th(this.cNew) + th(this.cNT) + th(this.cND);
     const cA = VS_A + vsA(0);
     const j0 = n > this.history ? n - this.history : 0;
@@ -240,7 +245,6 @@ export class ValueStep {
       }
     }
     const eOld = th(VS_L) + th(VS_REC + REC_MORE) + th(cA) + base;
-    const d = this.distinct;
     const wOld = this.wOld;
     let entries = k + 1;
     for (let v = 0; v < d; v++) {
@@ -280,49 +284,24 @@ export class ValueStep {
     this.Z = Z + this.wNew;
     this.k = k;
     this.pending = true;
-    const dropped = this.dropped;
-    dropped.fill(0, 0, d);
-    let esc = this.wNew;
-    const room = div(this.quantisation, 2) - 1;
-    if (d > room) {
-      const order: number[] = [];
-      for (let v = 0; v < d; v++) {
-        order.push(v);
-      }
-      order.sort((x, y) => (V[x] !== V[y] ? (V[x] < V[y] ? -1 : 1) : y - x));
-      for (let i = 0; i < d - room; i++) {
-        dropped[order[i]] = 1;
-        esc += V[order[i]];
-      }
-    }
-    const dist = this.dist;
-    dist.begin(this.quantisation, true);
-    for (let v = 0; v < d; v++) {
-      if (dropped[v] === 0) {
-        dist.add(v, V[v]);
-      }
-    }
-    dist.finish(esc);
-    return dist;
   }
 
   /**
-   * Learns from the pending step's outcome, `choice` a value id or ESCAPE for NEW. Each cell sums
-   * the masses that used it, T over all and A over the chosen entry's; g = A / (the chosen entry's
+   * Learns from the pending step's outcome, `choice` an id or ESCAPE. Each cell sums the masses
+   * that used it, T over all and A over the chosen entry's; NEW's cells take `newT` of NEW's mass
+   * into T and `newA` of it into A (the part the chosen entry owns). g = A / (the chosen entry's
    * mass) - T / Z in PB, the shared cell moves at rate eta and the path's delta at rho(pathN) * eta.
    */
-  learn(
+  protected learnCells(
     choice: number,
+    newT: number,
+    newA: number,
     pathN: number,
     vstep: Float64Array,
     delta: Float64Array | null,
     rates: PriorConstants
   ): void {
-    if (!this.pending) {
-      return;
-    }
     this.pending = false;
-    const hit = choice !== ESCAPE;
     const s = Math.max(0, bitlen(this.Z) - HB);
     const A = this.cellA;
     const T = this.cellT;
@@ -335,14 +314,13 @@ export class ValueStep {
         A[cell] += w;
       }
     };
-    let chosen = 0;
-    const wn = shr(this.wNew, s);
-    add(this.cNew, wn, !hit);
-    add(this.cNT, wn, !hit);
-    add(this.cND, wn, !hit);
-    if (!hit) {
-      chosen = wn;
+    const wt = shr(newT, s);
+    const wa = shr(newA, s);
+    for (const cell of [this.cNew, this.cNT, this.cND]) {
+      T[cell] += wt;
+      A[cell] += wa;
     }
+    let chosen = wa;
     const j0 = this.n - this.k;
     for (let i = 0; i < this.k; i++) {
       const w = shr(this.wOcc[i], s);
@@ -363,7 +341,7 @@ export class ValueStep {
         chosen += w;
       }
     }
-    for (let v = 0; v < this.distinct; v++) {
+    for (let v = 0; v < this.count.length; v++) {
       if (this.wOld[v] > 0) {
         const w = shr(this.wOld[v], s);
         const mine = v === choice;
@@ -397,21 +375,10 @@ export class ValueStep {
     }
   }
 
-  /** Records the value that was coded (at message position `msgPos`, list index or -1) and returns its id. */
-  record(key: string, msgPos: number, listIndex: number): number {
+  /** Records an occurrence of `id` (new to the path when `isNew`) at message position `msgPos`. */
+  protected recordId(id: number, isNew: boolean, msgPos: number, listIndex: number): void {
     this.pending = false;
-    let id = this.keys.get(key);
-    if (id === undefined) {
-      id = this.distinct++;
-      this.keys.set(key, id);
-      if (id >= this.count.length) {
-        const c = 2 * this.count.length;
-        this.count = grown(this.count, c);
-        this.older = grown(this.older, c);
-        this.V = new Float64Array(c);
-        this.dropped = new Uint8Array(c);
-        this.wOld = new Float64Array(c);
-      }
+    if (isNew) {
       this.nNew++;
     } else {
       this.reps++;
@@ -429,6 +396,216 @@ export class ValueStep {
     if (out >= 0) {
       this.older[this.occV[out % this.cap]]++;
     }
+  }
+}
+
+/** One path's value step. Value ids are first-occurrence indices 0, 1, 2 ...; NEW is ESCAPE. */
+export class ValueStep extends Occurrences {
+  private readonly keys = new Map<string, number>();
+  /** Values left out of the pending step's table; their mass is NEW's. */
+  private dropped: Uint8Array = new Uint8Array(16);
+
+  constructor(history: number, quantisation: number, sequence = false) {
+    super(history, quantisation, sequence, 16);
+  }
+
+  /** The id of a past value, or ESCAPE when the path has not had it. */
+  idOf(key: string): number {
+    const id = this.keys.get(key);
+    return id === undefined ? ESCAPE : id;
+  }
+
+  /**
+   * The distribution over the path's past values and NEW for the value that starts at message
+   * position `t` (`seq` the message population's symbols), or null before the path's first value.
+   * When the values and NEW exceed half the quantisation, the values of lowest mass (ties: highest
+   * id) are left out and their mass joins NEW, so such a value is coded as NEW; `learn` still takes
+   * its id.
+   */
+  distribution(
+    seq: Int32Array,
+    t: number,
+    listIndex: number,
+    vstep: Float64Array,
+    delta: Float64Array | null
+  ): Distribution | null {
+    this.pending = false;
+    if (this.n === 0) {
+      return null;
+    }
+    const d = this.distinct;
+    this.votes(seq, t, listIndex, vstep, delta, d);
+    const V = this.V;
+    const dropped = this.dropped;
+    dropped.fill(0, 0, d);
+    let esc = this.wNew;
+    const room = div(this.quantisation, 2) - 1;
+    if (d > room) {
+      const order: number[] = [];
+      for (let v = 0; v < d; v++) {
+        order.push(v);
+      }
+      order.sort((x, y) => (V[x] !== V[y] ? (V[x] < V[y] ? -1 : 1) : y - x));
+      for (let i = 0; i < d - room; i++) {
+        dropped[order[i]] = 1;
+        esc += V[order[i]];
+      }
+    }
+    const dist = this.dist;
+    dist.begin(this.quantisation, true);
+    for (let v = 0; v < d; v++) {
+      if (dropped[v] === 0) {
+        dist.add(v, V[v]);
+      }
+    }
+    dist.finish(esc);
+    return dist;
+  }
+
+  /** Learns from the pending step's outcome, `choice` a value id or ESCAPE for NEW. */
+  learn(
+    choice: number,
+    pathN: number,
+    vstep: Float64Array,
+    delta: Float64Array | null,
+    rates: PriorConstants
+  ): void {
+    if (!this.pending) {
+      return;
+    }
+    this.learnCells(
+      choice,
+      this.wNew,
+      choice === ESCAPE ? this.wNew : 0,
+      pathN,
+      vstep,
+      delta,
+      rates
+    );
+  }
+
+  /** Records the value that was coded (at message position `msgPos`, list index or -1) and returns its id. */
+  record(key: string, msgPos: number, listIndex: number): number {
+    let id = this.keys.get(key);
+    const isNew = id === undefined;
+    if (id === undefined) {
+      id = this.distinct++;
+      this.keys.set(key, id);
+      if (id >= this.count.length) {
+        const c = 2 * this.count.length;
+        this.grow(c);
+        this.dropped = new Uint8Array(c);
+      }
+    }
+    this.recordId(id, isNew, msgPos, listIndex);
     return id;
+  }
+}
+
+/**
+ * The value step restricted to a declared member set (spec §6.3): ids 0..count − 1, no NEW entry.
+ * The declared weights are prior counts, held as occurrences older than the history window; the
+ * members not yet coded share NEW's mass evenly (the remainder to the lowest of them). A member of
+ * weight 0 owns no entry.
+ */
+export class MemberStep extends Occurrences {
+  private readonly weights: Float64Array;
+  /** The pending step's NEW share per unseen member, the remainder's owner, and how many share. */
+  private share = 0;
+  private rem = 0;
+  private first = -1;
+  private unseen = 0;
+
+  constructor(
+    readonly members: number,
+    weights: readonly number[] | undefined,
+    history: number,
+    quantisation: number
+  ) {
+    super(history, quantisation, false, members);
+    this.weights = Float64Array.from({ length: members }, (_, v) =>
+      weights === undefined ? 1 : weights[v]
+    );
+    this.older.set(this.weights);
+  }
+
+  /** Whether member `v` owns an entry. */
+  has(v: number): boolean {
+    return this.weights[v] > 0;
+  }
+
+  /** The distribution over the members with weight for the value at message position `t`. */
+  distribution(
+    seq: Int32Array,
+    t: number,
+    listIndex: number,
+    vstep: Float64Array,
+    delta: Float64Array | null
+  ): Distribution {
+    const m = this.members;
+    this.votes(seq, t, listIndex, vstep, delta, m);
+    let unseen = 0;
+    let first = -1;
+    for (let v = 0; v < m; v++) {
+      if (this.weights[v] > 0 && this.count[v] === 0) {
+        if (first < 0) {
+          first = v;
+        }
+        unseen++;
+      }
+    }
+    this.unseen = unseen;
+    this.first = first;
+    if (unseen > 0) {
+      this.share = div(this.wNew, unseen);
+      this.rem = this.wNew - this.share * unseen;
+    } else {
+      this.Z -= this.wNew;
+    }
+    const dist = this.dist;
+    dist.begin(this.quantisation, false);
+    for (let v = 0; v < m; v++) {
+      if (this.weights[v] > 0) {
+        dist.add(v, this.V[v] + this.newOf(v));
+      }
+    }
+    dist.finish(0);
+    return dist;
+  }
+
+  /** The part of NEW's mass member `v` owns in the pending step. */
+  private newOf(v: number): number {
+    if (this.unseen === 0 || this.count[v] > 0) {
+      return 0;
+    }
+    return v === this.first ? this.share + this.rem : this.share;
+  }
+
+  /** Learns from the pending step's outcome, member `choice`. */
+  learn(
+    choice: number,
+    pathN: number,
+    vstep: Float64Array,
+    delta: Float64Array | null,
+    rates: PriorConstants
+  ): void {
+    this.learnCells(
+      choice,
+      this.unseen > 0 ? this.wNew : 0,
+      this.newOf(choice),
+      pathN,
+      vstep,
+      delta,
+      rates
+    );
+  }
+
+  /** Records member `v`, coded at message position `msgPos` (list index or −1). */
+  record(v: number, msgPos: number, listIndex: number): void {
+    const isNew = this.count[v] === 0;
+    if (isNew) {
+      this.distinct++;
+    }
+    this.recordId(v, isNew, msgPos, listIndex);
   }
 }

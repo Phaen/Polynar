@@ -1,9 +1,10 @@
 /**
- * The cross-engine check of the predictor's integer arithmetic (spec §5.9): encodes the four sets
- * of scripts/predictor-sets.ts and prints, per set, the FNV-1a 32 digest of every coded triple in
- * order (a weighted symbol as (cum, freq, total), a plain digit as (value, 0, radix), each word as
- * its 4 little-endian bytes). With --check the digests are compared with scripts/lockstep.digest
- * (exit code 1 on a difference); with --write that file is written.
+ * The cross-engine check of the predictor's integer arithmetic (spec §5.9): encodes the string and
+ * number sets of scripts/predictor-sets.ts and prints, per set, the FNV-1a 32 digest of every
+ * coded call in order (a weighted symbol as (cum, freq, total), a plain digit as (value, 0, radix),
+ * a mixture as its weights before its spellings, each word as its 4 little-endian bytes). With
+ * --check the digests are compared with scripts/lockstep.digest (exit code 1 on a difference); with
+ * --write that file is written.
  *
  *   npx tsx scripts/lockstep.ts <alice.txt> <corpus dir> [--check | --write]
  */
@@ -12,14 +13,24 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { Encoder } from '../src/packer';
 import type { Sink } from '../src/predictor/session';
-import { SET_NAMES, messages, writeMessage } from './predictor-sets';
+import {
+  NUMBER_SETS,
+  SET_NAMES,
+  messages,
+  numberMessages,
+  writeMessage,
+  writeNumbers,
+} from './predictor-sets';
+import type { NumberSetName, SetName } from './predictor-sets';
 
 const DIGEST_FILE = join(__dirname, 'lockstep.digest');
 
-/** Hashes every call into one digest and forwards it to the current message's encoder. */
-class DigestSink implements Sink {
+/**
+ * An encoder that hashes every call into one digest before coding it: weighted symbols, digits,
+ * and a mixture's weights (its spellings then hash as they are written).
+ */
+class DigestEncoder extends Encoder implements Sink {
   h = 0x811c9dc5;
-  enc = new Encoder();
 
   private word(x: number): void {
     for (let byte = 0; byte < 4; byte++) {
@@ -31,19 +42,42 @@ class DigestSink implements Sink {
     this.word(cum);
     this.word(freq);
     this.word(total);
-    this.enc.composeWeighted(cum, freq, total);
+    super.composeWeighted(cum, freq, total);
   }
 
   compose(integer: number, radix: number): void {
     this.word(integer);
     this.word(0);
     this.word(radix);
-    this.enc.compose(integer, radix);
+    super.compose(integer, radix);
   }
 
-  hex(): string {
-    return (this.h >>> 0).toString(16).padStart(8, '0');
+  composeMixture(weights: readonly number[], write: (choice: number) => void): void {
+    for (const w of weights) {
+      this.word(w % 0x100000000);
+      this.word(Math.floor(w / 0x100000000));
+    }
+    super.composeMixture(weights, write);
   }
+}
+
+/** The digest of a set: the calls of every message in order, each message its own encoder. */
+function digest(set: SetName | NumberSetName, alice: string, corpus: string): string {
+  let h = 0x811c9dc5;
+  const run = (write: (enc: DigestEncoder) => void): void => {
+    const enc = new DigestEncoder();
+    enc.h = h;
+    write(enc);
+    h = enc.h;
+  };
+  if ((NUMBER_SETS as readonly string[]).includes(set)) {
+    for (const m of numberMessages(set as NumberSetName, corpus))
+      run((enc) => writeNumbers(enc, m));
+  } else {
+    for (const m of messages(set as SetName, alice, corpus))
+      run((enc) => writeMessage(enc, enc, m, {}));
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
 }
 
 function main(): number {
@@ -54,13 +88,8 @@ function main(): number {
     return 2;
   }
   const lines: string[] = [];
-  for (const set of SET_NAMES) {
-    const sink = new DigestSink();
-    for (const m of messages(set, positional[0], positional[1])) {
-      sink.enc = new Encoder();
-      writeMessage(sink.enc, sink, m, {});
-    }
-    lines.push(`${set} ${sink.hex()}`);
+  for (const set of [...SET_NAMES, ...NUMBER_SETS]) {
+    lines.push(`${set} ${digest(set, positional[0], positional[1])}`);
   }
   const text = `${lines.join('\n')}\n`;
   process.stdout.write(text);

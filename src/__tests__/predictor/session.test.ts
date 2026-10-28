@@ -353,3 +353,47 @@ describe('cost', () => {
     expect(Number.isInteger(bits)).toBe(true);
   });
 });
+
+describe('Session.step', () => {
+  it('round-trips declared members with weights and learns their frequencies', () => {
+    const o = opts();
+    const node = {};
+    const values = [0, 2, 2, 2, 1, 2, 2, 0, 2, 2, 2, 2];
+    const enc = new Encoder();
+    const se = session(enc);
+    for (const v of values) se.step(node, o, 3, [1, 1, 4]).write(enc, v);
+    const bytes = enc.output();
+    const dec = new Decoder(bytes);
+    const sd = session(dec);
+    expect(values.map(() => sd.step(node, o, 3, [1, 1, 4]).read(dec))).toEqual(values);
+    dec.finalize();
+  });
+
+  it('counts positions in the path’s own population under separate, inside a list', () => {
+    const o = opts({ separate: true });
+    const values = [3, 1, 3, 3, 0];
+    const enc = new Encoder();
+    const se = session(enc, { features: { deltas: false } });
+    se.enterList();
+    for (const v of values) {
+      se.nextItem();
+      se.step([{}, 1], o, 4).write(enc, v);
+    }
+    se.leaveList();
+    expect(enc.output().length).toBeGreaterThan(0);
+  });
+
+  it('refuses a member of weight 0', () => {
+    const enc = new Encoder();
+    expect(() => session(enc).step({}, opts(), 3, [1, 0, 1]).write(enc, 1)).toThrow(RangeError);
+  });
+
+  it('refuses to code inside a spelling the encoder tries', () => {
+    const s = new Session({}, { active: true });
+    const enc = new Encoder();
+    expect(() => s.step({}, opts(), 2).write(enc, 0)).toThrow(/cannot code inside/);
+    expect(() =>
+      s.number({}, opts(), {}, { write: () => {}, read: () => 0 }).write(enc, 0)
+    ).toThrow(/cannot code inside/);
+  });
+});

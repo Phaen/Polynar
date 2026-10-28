@@ -147,6 +147,18 @@ export interface RunPrior {
   readonly lev: Float64Array;
   readonly logn: Float64Array;
   readonly vstep: Float64Array;
+  /** The number predictor's hit-rate cells (12), range-prior logits (2) and confidence map (5 × 24, PB). */
+  readonly numberHit: Float64Array;
+  readonly numberRange: Float64Array;
+  readonly numberConf: Float64Array;
+}
+
+/**
+ * A declared prior over a bounded range, as the number predictor's NOVELTY component reads it:
+ * the bucket `[cum, cum + freq)` of `total` that value `v` owns.
+ */
+export interface RangeBuckets {
+  bucketOf(v: number): readonly [cum: number, freq: number, total: number];
 }
 
 /** Vote sources: the block axis of the hybrid weights (spec §4.4; prototype SRC). */
