@@ -4,7 +4,10 @@ import { describe } from './path';
 import { INDEX_METHODS, IndexMethods, IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 import type { LearningOptions } from './adaptive';
-import { learningOf, MethodNode, type MethodSet } from './methods';
+import { learningOf, learns, MethodNode, type MethodSet } from './methods';
+import { checkAdaptive, resolve } from '../predictor/options';
+import { Priors } from '../predictor/prior';
+import type { AdaptiveOptions } from '../predictor/types';
 
 export type DateUnit =
   | 'millisecond'
@@ -143,6 +146,8 @@ export class PDate extends MethodNode<Date> {
   readonly _methodNames = INDEX_METHODS;
   private readonly _coding: IndexMethods;
   declare readonly _radix?: number;
+  /** The options `.adaptive()` set, which hand the bucket indices to the predictor. */
+  readonly _adaptive?: AdaptiveOptions;
 
   constructor(
     min?: number | Date,
@@ -150,9 +155,11 @@ export class PDate extends MethodNode<Date> {
     unit: DateUnit = 'millisecond',
     step = 1,
     prior?: Prior,
-    methods: MethodSet = {}
+    methods: MethodSet = {},
+    adaptive?: AdaptiveOptions
   ) {
     super();
+    this._adaptive = adaptive;
     this._min = isDate(min) ? min.getTime() : min;
     this._max = isDate(max) ? max.getTime() : max;
 
@@ -179,8 +186,16 @@ export class PDate extends MethodNode<Date> {
         `p.date range is empty: min ${iso(this._min as number)} exceeds max ${iso(this._max as number)}`
       );
     }
-    this._range = new IndexRange('p.date', lo, hi, prior, learningOf(methods), (b) =>
-      iso(this._calendar.start(b))
+    this._range = new IndexRange(
+      'p.date',
+      lo,
+      hi,
+      prior,
+      learningOf(methods),
+      (b) => iso(this._calendar.start(b)),
+      adaptive === undefined
+        ? undefined
+        : { path: this, options: resolve(adaptive, Priors.text, 'p.date') }
     );
     this._methods = methods;
     this._coding = new IndexMethods(this._range, methods, 'p.date');
@@ -245,54 +260,35 @@ export class PDate extends MethodNode<Date> {
    * paid off. Takes weights, not a cdf; part of the wire format, like the
    * weights. A range unbounded or wider than 65536 buckets learns on the
    * magnitude scale instead: buckets from the min's, else the max's, else the
-   * epoch's, by bit-length class.
+   * epoch's, by bit-length class. `window` is how many observations a
+   * table's counts hold before they halve (1024 when left out), and
+   * `separate` keeps its tables from starting where other nodes of its kind
+   * and window got to. Not with `.adaptive()`.
    */
-  learn(): PDate {
-    return this._declare('learn', 'p.date');
+  learn(options?: LearningOptions): PDate {
+    if (this._adaptive !== undefined) {
+      throw new TypeError('p.date learn and adaptive cannot both be set');
+    }
+    const node = this._declare('learn', 'p.date');
+    return options === undefined ? node : node._learning(options, 'p.date');
   }
 
   /**
-   * What the node's learning goes by, for `.learn()` and the methods that
-   * learn: `window` is how many observations a table's counts hold before
-   * they halve, so the newest weigh most (1024 when left out, and raised to
-   * the number of values counted when smaller), and `separate` keeps its
-   * tables from starting where other nodes of its kind and window got to.
-   * Set once.
+   * Code the dates through the similarity predictor as bucket indices at the
+   * node's precision: each is predicted from the node's past dates plus a
+   * learned step, the same dates exactly, the numbers coded earlier in the
+   * same object, and a prior over magnitudes. The bounds still hold, and a
+   * declared prior prices the buckets the node has not seen. Not with
+   * `.learn()`. Set once.
    */
-  learning(options: LearningOptions): PDate {
-    return this._learning(options, 'p.date');
-  }
-
-  /**
-   * Learn with every method the node has: `.learn()`, and `.delta()` and
-   * `.recall()` open to a learned choice per value unless declared, under
-   * `options` as `.learning()` takes them.
-   */
-  adaptive(options?: LearningOptions): PDate {
-    return this._adapt(options, 'p.date');
-  }
-
-  /**
-   * Spell every date after the node's first in the message as its
-   * difference in buckets from the previous one: its side, unless the
-   * bounds rule one out, the bit-length class of its size among the classes
-   * the bounds reach, learned from the message, then the low bits. Timestamps a few seconds apart cost a few bits plus the
-   * gap's own, bounded or not. The node's first date costs its plain
-   * spelling. Takes no weights or cdf.
-   */
-  delta(): PDate {
-    return this._declare('delta', 'p.date');
-  }
-
-  /**
-   * Spell a date this node already wrote in the message by its place among
-   * the distinct buckets it wrote, and a new one as an escape and then as
-   * the node otherwise spells it: with n buckets seen, a repeat costs
-   * log2(n + 1) bits, less the more often it recurs. The message's first date costs nothing extra; a repeat decodes
-   * as a new Date.
-   */
-  recall(): PDate {
-    return this._declare('recall', 'p.date');
+  adaptive(options?: AdaptiveOptions): PDate {
+    if (this._adaptive !== undefined) {
+      throw new TypeError('p.date adaptive is already set');
+    }
+    if (learns(this._methods)) {
+      throw new TypeError('p.date learn and adaptive cannot both be set');
+    }
+    return this._with({ adaptive: checkAdaptive(options, 'p.date') });
   }
 
   /** This node with `methods` in place of its own. */
@@ -344,6 +340,7 @@ export class PDate extends MethodNode<Date> {
     step?: number;
     prior?: Prior;
     methods?: MethodSet;
+    adaptive?: AdaptiveOptions;
   }): PDate {
     return new PDate(
       change.min ?? this._min,
@@ -351,7 +348,8 @@ export class PDate extends MethodNode<Date> {
       change.unit ?? this._unit,
       change.step ?? this._step,
       change.prior ?? this._range.declared,
-      change.methods ?? this._methods
+      change.methods ?? this._methods,
+      change.adaptive ?? this._adaptive
     );
   }
 }

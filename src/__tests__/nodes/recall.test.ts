@@ -7,6 +7,7 @@ import { p, Encoder, Decoder, type PNode } from '../../index';
 import { PRecall, Recall, copy, identity } from '../../nodes/recall';
 import type { MethodName, MethodNode } from '../../nodes/methods';
 import { mulberry32 } from '../support';
+import { declare } from './declare';
 
 /** The methods a test leaves closed on a node it adapts: its own recall. */
 const RECALLED: readonly MethodName[] = ['recall'];
@@ -602,20 +603,22 @@ describe('.adaptive() recall', () => {
 
   it('recalls by default under .adaptive(), at learned odds, unless declared', () => {
     const ints = [1e9, 7, 1e9, 1e9, 7];
-    expect(inOne(p.int().adaptive(), ints).bytes.length).toBeLessThan(
+    expect(inOne(p.int()._open(), ints).bytes.length).toBeLessThan(
       inOne(int(p.int()), ints).bytes.length
     );
     // A declared recall is pinned: a value seen is always recalled.
     const cycle = Array.from({ length: 1000 }, (_, i) => i % 200);
-    const bytes = p.array(item.adaptive()).encode(cycle).length;
+    const bytes = p.array(item._open()).encode(cycle).length;
     expect(bytes).toBeLessThanOrEqual(p.array(int(item)).encode(cycle).length + 1);
-    expect(p.array(item.recall().adaptive()).encode(cycle).length).toBeGreaterThan(bytes * 10);
+    expect(p.array(declare(item, 'recall')._open()).encode(cycle).length).toBeGreaterThan(
+      bytes * 10
+    );
   });
 
   it('costs next to nothing where values never recur', () => {
     const ids = Array.from({ length: 1000 }, (_, i) => 1000 + i * 3);
     const cases: [PNode<any>, PNode<any>, unknown[]][] = [
-      [p.array(p.int().min(0).adaptive()), p.array(int(p.int().min(0))), ids],
+      [p.array(p.int().min(0)._open()), p.array(int(p.int().min(0))), ids],
       [
         p.array(p.object({ id: int(p.int().min(0)) }).adaptive()),
         p.array(p.object({ id: int(p.int().min(0)) })),
@@ -633,7 +636,7 @@ describe('.adaptive() recall', () => {
     const after = int(p.int()).min(0).max(99);
 
     expect(inOne(after, values).bytes).toEqual(inOne(before, values).bytes);
-    const open = p.int().min(0).max(99).adaptive();
+    const open = p.int().min(0).max(99)._open();
     expect(inOne(open, values).bytes).not.toEqual(inOne(before, values).bytes);
   });
 

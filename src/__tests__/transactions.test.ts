@@ -11,7 +11,7 @@
 import * as lib from '../index';
 import type { PNode } from '../index';
 import { mulberry32 } from './support';
-import { rand, randInt, randomCase, useRng } from './random-schemas';
+import { rand, randInt, randomCase, useAdaptiveNumbers, useRng } from './random-schemas';
 
 const SCALE = Math.max(0, Number(process.env.FUZZ ?? 1));
 const runs = (n: number): number => Math.max(1, Math.round(n * SCALE));
@@ -79,24 +79,23 @@ interface Heavy {
 /**
  * Schemas whose values run long enough to reach the rarer changes: halving
  * contexts, escape cells, learned counts and blends, the live tables built
- * from pending values, deltas, the mode's trials and recall.
+ * from pending values, the mode's trials and recall.
  */
 const HEAVY: readonly (() => Heavy)[] = [
   () => ({
-    node: lib.p.array(lib.p.int().min(0).max(99).recall()) as Node,
-    gen: () => Array.from({ length: randInt(1, 40) }, () => randInt(0, 3) * randInt(0, 33)),
+    node: lib.p.array(lib.p.array(lib.p.int().min(0).max(9)).max(2).recall()) as Node,
+    gen: () =>
+      Array.from({ length: randInt(1, 40) }, () =>
+        Array.from({ length: randInt(0, 2) }, () => randInt(0, 1) * randInt(0, 9))
+      ),
   }),
   () => ({
-    node: lib.p.array(lib.p.int().min(0).max(9).adaptive({ window: 4 })) as Node,
+    node: lib.p.array(lib.p.int().min(0).max(9).learn({ window: 4 })) as Node,
     gen: () => Array.from({ length: randInt(1, 80) }, () => randInt(0, 3) * randInt(0, 3)),
   }),
   () => ({
-    node: lib.p.array(lib.p.int().adaptive()) as Node,
+    node: lib.p.array(lib.p.int().learn()) as Node,
     gen: () => Array.from({ length: randInt(1, 60) }, () => randInt(-3, 3) * 1000 + randInt(0, 5)),
-  }),
-  () => ({
-    node: lib.p.array(lib.p.int().delta()) as Node,
-    gen: () => Array.from({ length: randInt(1, 80) }, () => randInt(0, 3) * randInt(0, 3)),
   }),
 ];
 
@@ -119,6 +118,8 @@ function onPredictor(node: Node, gen: () => unknown): boolean {
 describe('Transactions', () => {
   it('leave a message byte-identical to the plain write, whatever is tried and rolled back', () => {
     useRng(mulberry32(0x7a11));
+    // Adaptive numbers code inside no try.
+    useAdaptiveNumbers(false);
     for (let i = 0; i < runs(400); i++) {
       const c = randomCase(2);
       const node = c.build(lib) as Node;

@@ -8,13 +8,7 @@ import {
 import { describe } from './path';
 import type { Kind } from './guards';
 import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
-import {
-  AdaptivePrior,
-  checkAdaptation,
-  lineageOf,
-  type LearningOptions,
-  type Learning,
-} from './adaptive';
+import { AdaptivePrior, checkAdaptation, lineageOf, type Learning } from './adaptive';
 import { decimalPlaces } from './decimal';
 import { Delta, IndexRange } from './lattice';
 import { LearnedMagnitude } from './magnitude';
@@ -30,6 +24,11 @@ import {
   type MethodSet,
   type ValueProvider,
 } from './methods';
+import { checkAdaptive, resolve } from '../predictor/options';
+import { Priors } from '../predictor/prior';
+import { session } from '../predictor/session';
+import type { PlainNumber } from '../predictor/session';
+import type { AdaptiveOptions, Resolved } from '../predictor/types';
 
 // Scratch views for splitting a double into its IEEE-754 fields and back.
 // Both views share one buffer, so platform endianness cancels out; the wire
@@ -621,6 +620,110 @@ class LearnedDecimal {
   }
 }
 
+/** The kinds of number `.adaptive()` names first, in member order. */
+const KIND_ZERO = 0;
+const KIND_INTEGER = 1;
+const KIND_DECIMAL = 2;
+const KIND_FRACTION = 3;
+const KIND_OTHER = 4;
+const KINDS = 5;
+/** The kind weights in member order. */
+const kindWeights = (w: FloatWeights): number[] => [
+  w.zero,
+  w.integer,
+  w.decimal,
+  w.fraction,
+  w.other,
+];
+/** The places of a decimal, 1 to 15; 0 belongs to the integer kind and owns no entry. */
+const PLACE_WEIGHTS = [0, ...new Array<number>(MAX_PLACES).fill(1)];
+
+/** An unbounded integer's plain spelling, where the predictor falls back on it for the digits. */
+const PLAIN_INTEGER: PlainNumber = new IndexRange('p.float').plain;
+
+/**
+ * The kind of a number: zero for ±0, integer or decimal by its fewest
+ * decimal places, else fraction when the double's own spelling takes the
+ * fraction form, else other (NaN, the infinities and subnormals included).
+ */
+function kindOf(value: number, forms: readonly number[]): number {
+  if (value === 0) {
+    return KIND_ZERO;
+  }
+  const places = placesOf(value);
+  if (places === 0) {
+    return KIND_INTEGER;
+  }
+  if (places !== AS_DOUBLE) {
+    return KIND_DECIMAL;
+  }
+  if (!Number.isFinite(value) || Math.abs(value) < MIN_NORMAL) {
+    return KIND_OTHER;
+  }
+  return canonicalSignificand(value, forms).sel === SIG_FRACTION ? KIND_FRACTION : KIND_OTHER;
+}
+
+/**
+ * The spelling `.adaptive()` gives a float, through the predictor: the kind
+ * through the value step restricted to the five kinds, the node's weights
+ * its prior counts; for an integer or a decimal its places through the
+ * value step (a decimal only) and its digits through the number predictor
+ * at the node's path for those places; a zero its sign; a fraction or other
+ * the double.
+ */
+class AdaptiveFloat {
+  private readonly kinds: readonly number[];
+
+  constructor(
+    private readonly node: object,
+    private readonly o: Resolved,
+    weights: FloatWeights,
+    private readonly forms: readonly number[]
+  ) {
+    this.kinds = kindWeights(weights);
+  }
+
+  write(enc: Encoder, value: number, double: () => void): void {
+    // Data typed `any` can still carry something other than a number.
+    if (typeof value !== 'number') {
+      throw new TypeError(`p.float expected a number, got ${describe(value)}`);
+    }
+    const { node, o } = this;
+    const s = session(enc);
+    const kind = kindOf(value, this.forms);
+    s.step([node, 0], o, KINDS, this.kinds).write(enc, kind);
+    if (kind === KIND_ZERO) {
+      enc.compose(Object.is(value, -0) ? 1 : 0, 2);
+    } else if (kind === KIND_INTEGER || kind === KIND_DECIMAL) {
+      const places = placesOf(value);
+      if (kind === KIND_DECIMAL) {
+        s.step([node, 1], o, MAX_PLACES + 1, PLACE_WEIGHTS).write(enc, places);
+      }
+      s.number([node, 2 + places], o, {}, PLAIN_INTEGER).write(
+        enc,
+        digitsAt(value, places) as number
+      );
+    } else {
+      double();
+    }
+  }
+
+  read(dec: Decoder, double: () => number): number {
+    const { node, o } = this;
+    const s = session(dec);
+    const kind = s.step([node, 0], o, KINDS, this.kinds).read(dec);
+    if (kind === KIND_ZERO) {
+      return dec.parse(2) === 1 ? -0 : 0;
+    }
+    if (kind === KIND_INTEGER || kind === KIND_DECIMAL) {
+      const places =
+        kind === KIND_DECIMAL ? s.step([node, 1], o, MAX_PLACES + 1, PLACE_WEIGHTS).read(dec) : 0;
+      return s.number([node, 2 + places], o, {}, PLAIN_INTEGER).read(dec) / POWERS[places];
+    }
+    return double();
+  }
+}
+
 /**
  * The methods of a float, which `.adaptive()` opens: learning, which spells
  * decimals, and the difference from the previous decimal, which only
@@ -651,14 +754,20 @@ export class PFloat extends MethodNode<number> {
   readonly _methodNames = FLOAT_METHODS;
   /** Set where the node learns: the decimal spelling, which falls back on the double's. */
   private readonly _learned?: LearnedDecimal;
+  /** The options `.adaptive()` set, which hand the values to the predictor. */
+  readonly _adaptive?: AdaptiveOptions;
+  /** Set under `.adaptive()`: the predictor's spelling, which falls back on the double's. */
+  private readonly _predicted?: AdaptiveFloat;
 
   constructor(
     weights?: Partial<FloatWeights>,
     base: Readonly<FloatWeights> = DEFAULT_FLOAT_WEIGHTS,
-    methods: MethodSet = {}
+    methods: MethodSet = {},
+    adaptive?: AdaptiveOptions
   ) {
     super();
     this._methods = methods;
+    this._adaptive = adaptive;
     if (learns(methods)) {
       this._learned = new LearnedDecimal(
         optionsOf(methods),
@@ -681,6 +790,14 @@ export class PFloat extends MethodNode<number> {
       SIG_FORMS + 1,
       'p.float'
     );
+    if (adaptive !== undefined) {
+      this._predicted = new AdaptiveFloat(
+        this,
+        resolve(adaptive, Priors.text, 'p.float'),
+        resolved,
+        this._formWeights
+      );
+    }
   }
 
   /**
@@ -690,45 +807,29 @@ export class PFloat extends MethodNode<number> {
    * constraint, and part of the wire format.
    */
   weights(w: Partial<FloatWeights>): PFloat {
-    return new PFloat(w, this._declared, this._methods);
+    return new PFloat(w, this._declared, this._methods, this._adaptive);
   }
 
   /**
-   * Let the node learn the message's numbers: each value names its decimal
-   * places, learned, then its digits as an integer on a learned magnitude
-   * scale. A value with no exact decimal form within 15 places, -0, NaN and
-   * the infinities name the double instead and are spelled as without. Part
-   * of the wire format.
+   * Code the numbers through the similarity predictor: each names its kind
+   * (zero, integer, decimal, fraction or other), learned from the message
+   * with the node's weights as the prior; an integer or a decimal then names
+   * its decimal places, learned, and its digits as an integer, predicted
+   * from the node's past values at those places plus a learned step, the
+   * same values exactly, the numbers coded earlier in the same object, and a
+   * prior over magnitudes. A zero names its sign; a fraction or other number
+   * is spelled as without. Set once.
    */
-  learn(): PFloat {
-    return this._declare('learn', 'p.float');
-  }
-
-  /**
-   * What the node's learning goes by, for `.learn()` and the methods that
-   * learn: `window` is how many observations a table's counts hold before
-   * they halve, so the newest weigh most (1024 when left out, and raised to
-   * the number of values counted when smaller), and `separate` keeps its
-   * tables from starting where other nodes of its kind and window got to.
-   * Set once.
-   */
-  learning(options: LearningOptions): PFloat {
-    return this._learning(options, 'p.float');
-  }
-
-  /**
-   * Learn with every method the node has: `.learn()`, and per value the
-   * plain digits or their difference from the previous decimal at the same
-   * places, whichever the encoder prices cheaper, under `options` as
-   * `.learning()` takes them.
-   */
-  adaptive(options?: LearningOptions): PFloat {
-    return this._adapt(options, 'p.float');
+  adaptive(options?: AdaptiveOptions): PFloat {
+    if (this._adaptive !== undefined) {
+      throw new TypeError('p.float adaptive is already set');
+    }
+    return new PFloat(undefined, this._declared, this._methods, checkAdaptive(options, 'p.float'));
   }
 
   /** This node with `methods` in place of its own. */
   _withMethods(methods: MethodSet): PFloat {
-    return new PFloat(undefined, this._declared, methods);
+    return new PFloat(undefined, this._declared, methods, this._adaptive);
   }
 
   get _exact(): boolean {
@@ -736,14 +837,19 @@ export class PFloat extends MethodNode<number> {
   }
 
   _write(enc: Encoder, value: number): void {
-    if (this._learned === undefined) {
-      this._double(enc, value);
-    } else {
+    if (this._predicted !== undefined) {
+      this._predicted.write(enc, value, () => this._double(enc, value));
+    } else if (this._learned !== undefined) {
       this._learned.write(enc, value, () => this._double(enc, value));
+    } else {
+      this._double(enc, value);
     }
   }
 
   _read(dec: Decoder): number {
+    if (this._predicted !== undefined) {
+      return this._predicted.read(dec, () => this._readDouble(dec));
+    }
     return this._learned === undefined
       ? this._readDouble(dec)
       : this._learned.read(dec, () => this._readDouble(dec));

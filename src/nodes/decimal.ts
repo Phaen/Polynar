@@ -4,7 +4,10 @@ import type { Kind } from './guards';
 import { INDEX_METHODS, IndexMethods, IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 import type { LearningOptions } from './adaptive';
-import { learningOf, MethodNode, type MethodSet } from './methods';
+import { learningOf, learns, MethodNode, type MethodSet } from './methods';
+import { checkAdaptive, resolve } from '../predictor/options';
+import { Priors } from '../predictor/prior';
+import type { AdaptiveOptions } from '../predictor/types';
 
 const valueSubject = (value: number): string => `Value ${value}`;
 
@@ -59,8 +62,19 @@ export class PDecimal extends MethodNode<number> {
   private readonly _coding: IndexMethods;
   declare readonly _radix?: number;
 
-  constructor(step: number, min?: number, max?: number, prior?: Prior, methods: MethodSet = {}) {
+  /** The options `.adaptive()` set, which hand the step multiples to the predictor. */
+  readonly _adaptive?: AdaptiveOptions;
+
+  constructor(
+    step: number,
+    min?: number,
+    max?: number,
+    prior?: Prior,
+    methods: MethodSet = {},
+    adaptive?: AdaptiveOptions
+  ) {
     super();
+    this._adaptive = adaptive;
     if (!(step > 0) || step === Infinity) {
       throw new TypeError(`p.decimal step must be a positive finite number, got ${step}`);
     }
@@ -82,8 +96,16 @@ export class PDecimal extends MethodNode<number> {
     // Bounds sit on the step exactly, like the values they admit.
     const kMin = min === undefined ? undefined : this._bound(min, 'min');
     const kMax = max === undefined ? undefined : this._bound(max, 'max');
-    this._range = new IndexRange('p.decimal', kMin, kMax, prior, learningOf(methods), (k) =>
-      String(this._valueAt(k))
+    this._range = new IndexRange(
+      'p.decimal',
+      kMin,
+      kMax,
+      prior,
+      learningOf(methods),
+      (k) => String(this._valueAt(k)),
+      adaptive === undefined
+        ? undefined
+        : { path: this, options: resolve(adaptive, Priors.text, 'p.decimal') }
     );
     this._methods = methods;
     this._coding = new IndexMethods(this._range, methods, 'p.decimal');
@@ -140,54 +162,34 @@ export class PDecimal extends MethodNode<number> {
    * that paid off. Takes weights, not a cdf; part of the wire format, like the
    * weights. A grid unbounded or wider than 65536 points learns on the
    * magnitude scale instead: step multiples from the min, else the max, else
-   * 0, by bit-length class.
+   * 0, by bit-length class. `window` is how many observations a table's
+   * counts hold before they halve (1024 when left out), and `separate` keeps
+   * its tables from starting where other nodes of its kind and window got to.
+   * Not with `.adaptive()`.
    */
-  learn(): PDecimal {
-    return this._declare('learn', 'p.decimal');
+  learn(options?: LearningOptions): PDecimal {
+    if (this._adaptive !== undefined) {
+      throw new TypeError('p.decimal learn and adaptive cannot both be set');
+    }
+    const node = this._declare('learn', 'p.decimal');
+    return options === undefined ? node : node._learning(options, 'p.decimal');
   }
 
   /**
-   * What the node's learning goes by, for `.learn()` and the methods that
-   * learn: `window` is how many observations a table's counts hold before
-   * they halve, so the newest weigh most (1024 when left out, and raised to
-   * the number of values counted when smaller), and `separate` keeps its
-   * tables from starting where other nodes of its kind and window got to.
-   * Set once.
+   * Code the values through the similarity predictor as step multiples:
+   * each is predicted from the node's past values plus a learned step, the
+   * same values exactly, the numbers coded earlier in the same object, and a
+   * prior over magnitudes. The bounds still hold, and a declared prior
+   * prices the values the node has not seen. Not with `.learn()`. Set once.
    */
-  learning(options: LearningOptions): PDecimal {
-    return this._learning(options, 'p.decimal');
-  }
-
-  /**
-   * Learn with every method the node has: `.learn()`, and `.delta()` and
-   * `.recall()` open to a learned choice per value unless declared, under
-   * `options` as `.learning()` takes them.
-   */
-  adaptive(options?: LearningOptions): PDecimal {
-    return this._adapt(options, 'p.decimal');
-  }
-
-  /**
-   * Spell every value after the node's first in the message as its
-   * difference from the previous one, in steps: its side, unless the bounds
-   * rule one out, the bit-length class of its size among the classes the
-   * bounds reach, learned from the message, then the low bits. Prices and readings that drift cost a few bits each, bounded
-   * or not. The node's first value costs its plain spelling. Takes no
-   * weights or cdf; values must lie within 2^53 - 1 steps of the min, else
-   * the max, else 0.
-   */
-  delta(): PDecimal {
-    return this._declare('delta', 'p.decimal');
-  }
-
-  /**
-   * Spell a value this node already wrote in the message by its place
-   * among the distinct values it wrote, and a new one as an escape and then
-   * as the node otherwise spells it: with n values seen, a repeat costs
-   * log2(n + 1) bits, less the more often it recurs. The message's first value costs nothing extra.
-   */
-  recall(): PDecimal {
-    return this._declare('recall', 'p.decimal');
+  adaptive(options?: AdaptiveOptions): PDecimal {
+    if (this._adaptive !== undefined) {
+      throw new TypeError('p.decimal adaptive is already set');
+    }
+    if (learns(this._methods)) {
+      throw new TypeError('p.decimal learn and adaptive cannot both be set');
+    }
+    return this._with({ adaptive: checkAdaptive(options, 'p.decimal') });
   }
 
   /** This node with `methods` in place of its own. */
@@ -200,13 +202,15 @@ export class PDecimal extends MethodNode<number> {
     max?: number;
     prior?: Prior;
     methods?: MethodSet;
+    adaptive?: AdaptiveOptions;
   }): PDecimal {
     return new PDecimal(
       this._step,
       change.min ?? this._minRaw,
       change.max ?? this._maxRaw,
       change.prior ?? this._range.declared,
-      change.methods ?? this._methods
+      change.methods ?? this._methods,
+      change.adaptive ?? this._adaptive
     );
   }
 

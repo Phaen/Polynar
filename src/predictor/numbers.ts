@@ -444,7 +444,13 @@ export class NumberCoder {
     this.rowFull = full;
 
     const h = st.n < this.o.history ? st.n : this.o.history;
-    const sibs = siblings.filter((e) => e.state !== st);
+    // The record's latest `history` numbers at other paths, oldest first: a record that took in
+    // the numbers of many inner records keeps the component table and its sums bounded.
+    const sibs: RecordEntry[] = [];
+    for (let i = siblings.length - 1; i >= 0 && sibs.length < this.o.history; i--) {
+      if (siblings[i].state !== st) sibs.push(siblings[i]);
+    }
+    sibs.reverse();
     this.useR = this.mode === BY_NONE && st.n >= 2;
     const n = 2 * h + sibs.length + (this.useR ? 2 : 1);
     if (this.kind.length < n) {
@@ -516,7 +522,7 @@ export class NumberCoder {
 
     let M = K[0];
     for (let i = 1; i < n; i++) if (K[i] > M) M = K[i];
-    // Every mass is at most 2^SB and there are at most 2 · 4096 + siblings + 1 of them.
+    // Every mass is at most 2^SB and there are at most 3 · 4096 + 2 of them.
     this.off = SB * ONE - M;
     let Z = 0;
     for (let i = 0; i < n; i++) {
@@ -696,7 +702,7 @@ export class NumberCoder {
         if (L[i] > M) M = L[i];
       }
     }
-    // The posterior's own scale; at most 2 · 4096 + siblings + 3 masses of at most 2^SB.
+    // The posterior's own scale; at most 3 · 4096 + 2 masses of at most 2^SB.
     const off = SB * ONE - M;
     const w: number[] = new Array<number>(n).fill(0);
     let num = 0;

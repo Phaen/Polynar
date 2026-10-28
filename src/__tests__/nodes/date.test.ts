@@ -5,6 +5,7 @@
 import { p, type DateUnit } from '../../index';
 import { mulberry32, trip } from '../support';
 import { calendar, checkInRange, iso, utcMonthStart } from '../../nodes/date';
+import { declare, learning } from './declare';
 
 describe('Schema date', () => {
   it.each([
@@ -243,7 +244,167 @@ describe('Digit reads', () => {
   });
 });
 
-describe('p.date adaptive', () => {
+describe('p.date().adaptive()', () => {
+  const start = Date.UTC(2024, 0, 1);
+  const random = (length: number, seed: number, lo: number, hi: number) => {
+    const rnd = mulberry32(seed);
+    return Array.from({ length }, () => new Date((lo + Math.floor(rnd() * (hi - lo + 1))) * 1000));
+  };
+  const constant = Array.from({ length: 200 }, () => new Date(start));
+  const counter = Array.from({ length: 200 }, (_, i) => new Date(start + i * 1000));
+  const seconds = p.date().precision('second');
+
+  it.each([
+    ['unbounded', p.date().adaptive(), random(200, 1, -1e12, 1e12)],
+    ['to the second', seconds.adaptive(), random(200, 2, -1e9, 1e9)],
+    [
+      'bounded',
+      seconds
+        .min(new Date(start - 1e9))
+        .max(new Date(start + 1e9))
+        .adaptive(),
+      random(200, 3, start / 1000 - 1e6, start / 1000 + 1e6),
+    ],
+    [
+      'min-only',
+      seconds.min(new Date(start - 1e9)).adaptive(),
+      random(200, 4, start / 1000 - 1e6, 1e10),
+    ],
+    [
+      'max-only',
+      seconds.max(new Date(start + 1e9)).adaptive(),
+      random(200, 5, -1e10, start / 1000 + 1e6),
+    ],
+    [
+      'weighted',
+      seconds
+        .min(new Date(start - 1e6))
+        .max(new Date(start + 1e6))
+        .weights(Array.from({ length: 2001 }, (_, i) => 1 + (i % 7)))
+        .adaptive(),
+      random(200, 6, start / 1000 - 1000, start / 1000 + 1000),
+    ],
+    [
+      'under a cdf',
+      seconds
+        .min(new Date(start - 1e6))
+        .max(new Date(start + 1e6))
+        .cdf((b) => (b - start / 1000 + 1000) * 2)
+        .adaptive(),
+      random(200, 7, start / 1000 - 1000, start / 1000 + 1000),
+    ],
+  ])('round-trips a constant, a counter and random dates, %s', (_name, node, values) => {
+    for (const run of [constant, counter, values]) {
+      expect(trip(p.array(node), run)).toEqual(run);
+    }
+    expect(trip(node, values[0])).toEqual(values[0]);
+  });
+
+  it('floors a date to its precision', () => {
+    expect(trip(seconds.adaptive(), new Date(start + 1999))).toEqual(new Date(start + 1000));
+  });
+
+  it('learns what repeats', () => {
+    const size = (values: Date[]) => p.array(seconds.adaptive()).encode(values).length;
+    expect(size(constant)).toBeLessThan(40);
+    expect(size(counter)).toBeLessThan(size(random(200, 8, start / 1000, start / 1000 + 199)));
+  });
+
+  it('round-trips inside an object', () => {
+    const node = p.array(p.object({ at: seconds.adaptive(), sent: seconds.adaptive() }));
+    const values = counter.map((at, i) => ({ at, sent: new Date(at.getTime() + (i % 3) * 1000) }));
+    expect(trip(node, values)).toEqual(values);
+  });
+
+  it('round-trips one node reused in two fields', () => {
+    const node = seconds.adaptive();
+    const values = [
+      { a: new Date(start), b: new Date(start) },
+      { a: new Date(start + 5000), b: new Date(0) },
+    ];
+    expect(trip(p.array(p.object({ a: node, b: node })), values)).toEqual(values);
+  });
+
+  it('keeps its options through a rebuild', () => {
+    const declared = p.array(seconds.min(new Date(start)).adaptive({ history: 2 }));
+    expect(
+      p
+        .array(p.date().adaptive({ history: 2 }).min(new Date(start)).precision('second'))
+        .encode(counter)
+    ).toEqual(declared.encode(counter));
+  });
+
+  it('maps no digit with both bounds', () => {
+    const node = p
+      .date()
+      .min(new Date(start))
+      .max(new Date(start + 2 * 86_400_000))
+      .precision('day')
+      .adaptive();
+    expect(node._radix).toBeUndefined();
+    expect(node._fromDigit).toBeUndefined();
+    expect(node._toDigit).toBeUndefined();
+  });
+
+  it('refuses options out of range, not an object, set twice or beside learn', () => {
+    expect(() => p.date().adaptive({ history: 0 })).toThrow(
+      new RangeError('p.date: adaptive history must be in 1..4096, got 0')
+    );
+    expect(() => p.date().adaptive(null as never)).toThrow(
+      new TypeError('p.date: adaptive options must be an object')
+    );
+    expect(() => p.date().adaptive().adaptive()).toThrow(
+      new TypeError('p.date adaptive is already set')
+    );
+    const both = new TypeError('p.date learn and adaptive cannot both be set');
+    expect(() => p.date().learn().adaptive()).toThrow(both);
+    expect(() => p.date().adaptive().learn()).toThrow(both);
+  });
+
+  it('refuses a date the plain node refuses, before learning from it', () => {
+    const bounded = p.date().min(new Date(0)).max(new Date(1000)).adaptive();
+    expect(() => bounded.encode(new Date(1001))).toThrow(
+      new RangeError('Date 1970-01-01T00:00:01.001Z is above the maximum 1970-01-01T00:00:01.000Z')
+    );
+    expect(() => p.date().adaptive().encode(new Date(NaN))).toThrow(
+      new TypeError('p.date expected a valid Date, got Invalid Date')
+    );
+    const day = p
+      .date()
+      .min(new Date('2020-01-01Z'))
+      .max(new Date('2020-01-03Z'))
+      .precision('day')
+      .cdf((d) => (d - 18262 <= 1 ? 0 : 10))
+      .adaptive();
+    expect(() => day.encode(new Date('2020-01-01T12:00:00Z'))).toThrow(
+      new RangeError('Date 2020-01-01T12:00:00.000Z has zero weight under the declared cdf')
+    );
+    expect(() =>
+      p
+        .date()
+        .min(new Date(-8.6e15))
+        .adaptive()
+        .encode(new Date(8.6e15 + 1))
+    ).toThrow(
+      new RangeError(
+        'Value +274493-02-24T00:53:20.001Z is too far from its bound -270554-11-06T23:06:40.000Z to encode exactly'
+      )
+    );
+    expect(() =>
+      p
+        .date()
+        .max(new Date(8.6e15))
+        .adaptive()
+        .encode(new Date(-8.6e15 - 1))
+    ).toThrow(
+      new RangeError(
+        'Value -270554-11-06T23:06:39.999Z is too far from its bound +274493-02-24T00:53:20.000Z to encode exactly'
+      )
+    );
+  });
+});
+
+describe('p.date learned methods', () => {
   const DAY = 86_400_000;
   const plain = p
     .date()
@@ -258,7 +419,7 @@ describe('p.date adaptive', () => {
 
   it('round-trips a run of values, inside an array too', () => {
     const values = run(300, 1);
-    for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 16 })]) {
+    for (const node of [plain._open(), plain.weights(weights)._open({ window: 16 })]) {
       expect(node._radix).toBeUndefined();
       expect(trip(p.array(node), values)).toEqual(values);
       expect(trip(node, values[0])).toEqual(values[0]);
@@ -267,47 +428,47 @@ describe('p.date adaptive', () => {
 
   it('takes its weights before or after', () => {
     const values = run(200, 2);
-    expect(p.array(plain.weights(weights).adaptive({ window: 64 })).encode(values)).toEqual(
-      p.array(plain.adaptive({ window: 64 }).weights(weights)).encode(values)
+    expect(p.array(plain.weights(weights)._open({ window: 64 })).encode(values)).toEqual(
+      p.array(plain._open({ window: 64 }).weights(weights)).encode(values)
     );
   });
 
   it('learns a skew, its mode symbols at most a twentieth over the static prior of it', () => {
     const values = run(2000, 3);
     const size = (node: typeof plain) => p.array(node).encode(values).length;
-    expect(size(plain.adaptive())).toBeLessThan(size(plain));
-    expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
+    expect(size(plain._open())).toBeLessThan(size(plain));
+    expect(size(plain.weights(weights)._open())).toBeLessThanOrEqual(
       Math.ceil(size(plain.weights(weights)) * 1.05)
     );
   });
 
   it('written once, spends the bytes of its static form', () => {
     for (const value of run(20, 4)) {
-      // Unweighted, the static form is a uniform slot and the adaptive one an
+      // Unweighted, the static form is a uniform slot and the learned one an
       // equal-weight bucket, which ends the message in bit-reversed order:
       // the same states, in another order.
-      expect(plain.adaptive().encode(value)).toHaveLength(plain.encode(value).length);
-      expect(plain.weights(weights).adaptive().encode(value)).toEqual(
+      expect(plain._open().encode(value)).toHaveLength(plain.encode(value).length);
+      expect(plain.weights(weights)._open().encode(value)).toEqual(
         plain.weights(weights).encode(value)
       );
     }
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.adaptive({ window: 0 })).toThrow(
+    expect(() => plain.learn({ window: 0 })).toThrow(
       new RangeError('p.date learning window must be a positive integer, got 0')
     );
-    expect(() => plain.adaptive({ window: 1.5 })).toThrow(
+    expect(() => plain.learn({ window: 1.5 })).toThrow(
       new TypeError('p.date learning window must be a positive integer, got 1.5')
     );
-    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)]).adaptive()).toThrow(
+    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)])._open()).toThrow(
       new RangeError(
         'p.date adaptive prior 32 and window 1024 overflow with weights totalling 35184372088847'
       )
     );
     const cdf = new TypeError('p.date learn takes weights, not a cdf');
-    expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
-    expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
+    expect(() => plain.cdf((v) => v)._open()).toThrow(cdf);
+    expect(() => plain._open().cdf((v) => v)).toThrow(cdf);
   });
 });
 
@@ -321,7 +482,7 @@ describe('p.date methods', () => {
   );
 
   it('spells each date after the first as its difference in buckets', () => {
-    const node = p.date().min(start).precision('second').delta();
+    const node = declare(p.date().min(start).precision('second'), 'delta');
     const bytes = p.array(node).encode(times);
     const plain = p.array(p.date().min(start).precision('second')).encode(times);
     expect(bytes.length).toBeLessThan(plain.length / 2);
@@ -330,26 +491,29 @@ describe('p.date methods', () => {
     expect(p.array(node).length(3).decode(p.array(node).length(3).encode(three))).toEqual(three);
   });
 
-  it('round-trips with delta, recall and adaptive, bounded or not', () => {
+  it('round-trips with delta, recall and open methods, bounded or not', () => {
     const repeats = times.map((t, i) => (i % 3 === 0 ? times[0] : t));
     for (const node of [
-      p.date().delta(),
-      p.date().precision('second').delta().adaptive(),
-      p.date().precision('second').adaptive(),
-      p.date().min(start).recall(),
-      p
-        .date()
-        .max(new Date(start + 1e7))
-        .precision('second')
-        .recall()
-        .adaptive(),
-      p
-        .date()
-        .min(start)
-        .max(new Date(start + 1e7))
-        .precision('second')
-        .delta()
-        .recall(),
+      declare(p.date(), 'delta'),
+      declare(p.date().precision('second'), 'delta')._open(),
+      p.date().precision('second')._open(),
+      declare(p.date().min(start), 'recall'),
+      declare(
+        p
+          .date()
+          .max(new Date(start + 1e7))
+          .precision('second'),
+        'recall'
+      )._open(),
+      declare(
+        p
+          .date()
+          .min(start)
+          .max(new Date(start + 1e7))
+          .precision('second'),
+        'delta',
+        'recall'
+      ),
     ]) {
       expect(trip(p.array(node), repeats)).toEqual(
         repeats.map((t) => new Date(Math.floor(t.getTime() / 1000) * 1000))
@@ -358,16 +522,16 @@ describe('p.date methods', () => {
   });
 
   it('decodes a recalled date as a new Date', () => {
-    const [one, two] = trip(p.array(p.date().recall()), [times[0], times[0]]);
+    const [one, two] = trip(p.array(declare(p.date(), 'recall')), [times[0], times[0]]);
     expect(two).toEqual(one);
     expect(two).not.toBe(one);
   });
 
   it('carries its methods through every rebuild, set once, without weights', () => {
-    const declared = p.array(p.date().min(start).precision('second').delta().recall());
+    const declared = p.array(declare(p.date().min(start).precision('second'), 'delta', 'recall'));
     for (const node of [
-      p.date().delta().recall().precision('second').min(start),
-      p.date().recall().min(start).delta().precision('second'),
+      declare(p.date(), 'delta', 'recall').precision('second').min(start),
+      declare(declare(p.date(), 'recall').min(start), 'delta').precision('second'),
     ]) {
       expect(p.array(node).encode(times)).toEqual(declared.encode(times));
     }
@@ -376,13 +540,17 @@ describe('p.date methods', () => {
       .min(start)
       .max(new Date(start + 2 * 86_400_000))
       .precision('day');
-    expect(day.delta()._radix).toBeUndefined();
-    expect(day.recall()._fromDigit).toBeUndefined();
-    expect(() => p.date().delta().delta()).toThrow(new TypeError('p.date delta is already set'));
-    expect(() => day.weights([1, 1, 1]).delta()).toThrow(
+    expect(declare(day, 'delta')._radix).toBeUndefined();
+    expect(declare(day, 'recall')._fromDigit).toBeUndefined();
+    expect(() => declare(p.date(), 'delta', 'delta')).toThrow(
+      new TypeError('p.date delta is already set')
+    );
+    expect(() => declare(day.weights([1, 1, 1]), 'delta')).toThrow(
       new TypeError('p.date delta takes no weights')
     );
-    expect(() => day.delta().cdf((t) => t)).toThrow(new TypeError('p.date delta takes no cdf'));
+    expect(() => declare(day, 'delta').cdf((t) => t)).toThrow(
+      new TypeError('p.date delta takes no cdf')
+    );
   });
 });
 
@@ -407,16 +575,17 @@ describe('p.date learn', () => {
 
   it('round-trips with its methods declared beside it', () => {
     const values = run(300, 6);
-    expect(trip(p.array(plain.learn().delta().recall()), values)).toEqual(values);
+    expect(trip(p.array(declare(plain.learn(), 'delta', 'recall')), values)).toEqual(values);
   });
 
-  it('takes its learning options once, before `.adaptive()`', () => {
+  it('takes its learning options with it, once', () => {
     const values = run(200, 7);
-    expect(p.array(plain.learning({ window: 8 }).adaptive()).encode(values)).toEqual(
-      p.array(plain.adaptive({ window: 8 })).encode(values)
+    expect(p.array(plain.learn({ window: 8 })).encode(values)).toEqual(
+      p.array(learning(plain.learn(), { window: 8 })).encode(values)
     );
-    expect(() => plain.learning({ window: 8 }).learning({ window: 8 })).toThrow(
-      new TypeError('p.date learning is already set')
+    expect(p.array(learning(plain, { window: 8 })._open()).encode(values)).toEqual(
+      p.array(plain._open({ window: 8 })).encode(values)
     );
+    expect(() => plain.learn().learn()).toThrow(new TypeError('p.date learn is already set'));
   });
 });

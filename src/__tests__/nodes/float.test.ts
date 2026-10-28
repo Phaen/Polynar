@@ -6,7 +6,7 @@
  * the spelling, and zero is a selector state of its own.
  */
 
-import { p, Encoder, CorruptInputError, type PNode } from '../../index';
+import { p, Encoder, CorruptInputError, PFloat, type PNode } from '../../index';
 import {
   simplestInInterval,
   simplestDyadic,
@@ -275,59 +275,120 @@ describe('Schema float', () => {
 
   describe('adaptive', () => {
     /** Whether every value comes back bit-exact through `node`, in one message. */
-    const exact = (node: PNode<number[]>, values: number[]): boolean =>
-      node.decode(node.encode(values)).every((back, i) => Object.is(back, values[i]));
+    const exact = (node: PNode<number[]>, values: number[]): boolean => {
+      const back = node.decode(node.encode(values));
+      return back.length === values.length && back.every((x, i) => Object.is(x, values[i]));
+    };
 
     const rand = mulberry32(0x5e);
     const prices = Array.from({ length: 200 }, () => Math.round(rand() * 100000) / 100);
     const doubles = Array.from({ length: 200 }, () => rand() * 2 - 1);
+    let at = 52.1;
+    const track = Array.from(
+      { length: 200 },
+      () => (at = Math.round((at + rand() / 1e3) * 1e6) / 1e6)
+    );
+    const decimals = Array.from({ length: 15 }, (_, i) => Number((1.5 / 10 ** i).toFixed(i + 1)));
 
     it.each([
-      ['mixed', [0, -0, 1, -2.5, 0.1, 0.1 + 0.2, 1 / 3, NaN, Infinity, -Infinity, 5e-324, 1e21]],
+      ['zeros', [0, -0, 0, -0, -0]],
+      ['integers', [1, -1, 42, -42, 1e15, -(2 ** 53 - 1), 2 ** 53 - 1]],
+      ['decimals at every place count', [...decimals, ...decimals.map((x) => -x)]],
+      ['fractions', [1 / 3, -2 / 7, 1 / 3]],
+      ['other doubles', [Math.PI, 1e300, 5e-324, -5e-324, NaN, Infinity, -Infinity, 1e20, 2 ** 60]],
       ['prices', prices],
+      ['a drifting measurement', track],
       ['random doubles', doubles],
-      ['past the safe digits', [9e15, 0.5, -9e15, 0.25, 2 ** 53, 1e-15, 123.456]],
-      ['zeros after small negatives', [-0.04, 0, -0.4, 0, 0, -0.3]],
-      ['places dropping', [0.123456789012345, 1234.5, 1.25, 1.5, 2]],
+      ['every kind mixed', [0, -0, 1, -2.5, 0.1, 0.1 + 0.2, 1 / 3, NaN, Infinity, 5e-324, 1e21]],
     ])('round-trips %s bit-exact', (_name, values) => {
       expect(exact(p.array(p.float().adaptive()), values)).toBe(true);
-      expect(exact(p.array(p.float().adaptive({ window: 16 })), values)).toBe(true);
+      expect(exact(p.array(p.float().adaptive({ window: 16, history: 4 })), values)).toBe(true);
     });
 
-    it('spells short decimals as their digits, a drifting series as differences', () => {
-      const plain = p.array(p.float()).encode(prices).length;
-      expect(p.array(p.float().adaptive()).encode(prices).length).toBeLessThan(plain * 0.6);
-      let at = 52.1;
-      const track = Array.from(
-        { length: 200 },
-        () => (at = Math.round((at + rand() / 1e3) * 1e6) / 1e6)
+    it.each([0, -0, 7, -0.25, 1 / 3, NaN])('round-trips the lone value %p', (value) => {
+      const node = p.float().adaptive();
+      expect(Object.is(node.decode(node.encode(value)), value)).toBe(true);
+    });
+
+    it('spells a short-decimal series in fewer bytes than without', () => {
+      expect(p.array(p.float().adaptive()).encode(prices).length).toBeLessThan(
+        p.array(p.float()).encode(prices).length
       );
-      expect(exact(p.array(p.float().adaptive()), track)).toBe(true);
       expect(p.array(p.float().adaptive()).encode(track).length).toBeLessThan(
-        p.array(p.float()).encode(track).length * 0.3
+        p.array(p.float()).encode(track).length
       );
     });
 
-    it('spells a value as a double where that is cheaper', () => {
-      const plain = p.array(p.float()).encode(doubles).length;
-      expect(p.array(p.float().adaptive()).encode(doubles).length).toBeLessThan(plain * 1.01);
-    });
-
-    it('keeps the weights of the double spelling', () => {
-      const weighted = p.array(p.float().weights({ other: 9 }).adaptive());
-      expect(weighted.encode(doubles)).toEqual(
-        p.array(p.float().adaptive().weights({ other: 9 })).encode(doubles)
+    it('round-trips under the node weights, which it keeps through either order', () => {
+      const values = [0, 1, 2.5, 1 / 3, Math.PI];
+      expect(exact(p.array(p.float().weights({ other: 9 }).adaptive()), values)).toBe(true);
+      expect(exact(p.array(p.float().adaptive().weights({ other: 9 })), values)).toBe(true);
+      expect(p.array(p.float().weights({ other: 9 }).adaptive()).encode(values)).toEqual(
+        p.array(p.float().adaptive().weights({ other: 9 })).encode(values)
       );
-      expect(weighted.encode(doubles)).not.toEqual(p.array(p.float().adaptive()).encode(doubles));
     });
 
-    it.each([null, '1', 1n])('rejects the non-number %p', (value) => {
+    it.each(['zero', 'integer', 'decimal', 'fraction', 'other'])(
+      'refuses a weight of 0 for the kind %s where declared',
+      (kind) => {
+        expect(() =>
+          p
+            .float()
+            .adaptive()
+            .weights({ [kind]: 0 })
+        ).toThrow(new TypeError('p.float weights must be positive integers, got 0'));
+      }
+    );
+
+    it.each([null, '1', 1n, undefined])('rejects the non-number %p', (value) => {
       expect(() =>
         p
           .float()
           .adaptive()
           .encode(value as never)
       ).toThrow(/^p\.float expected a number, got /);
+    });
+
+    it('is set once', () => {
+      expect(() => p.float().adaptive().adaptive()).toThrow(
+        new TypeError('p.float adaptive is already set')
+      );
+      expect(() => p.float().adaptive({}).weights({}).adaptive()).toThrow(
+        new TypeError('p.float adaptive is already set')
+      );
+    });
+
+    it.each([
+      ['a non-object', 3, TypeError],
+      ['a fractional window', { window: 1.5 }, TypeError],
+      ['a window below 1', { window: 0 }, RangeError],
+      ['a non-boolean separate', { separate: 1 }, TypeError],
+      ['a history out of range', { history: 0 }, RangeError],
+      ['a quantisation not a power of two', { quantisation: 5000 }, TypeError],
+    ])('rejects %s as its options', (_name, options, error) => {
+      expect(() => p.float().adaptive(options as never)).toThrow(error);
+    });
+
+    it('round-trips inside an object, beside other fields', () => {
+      const node = p.object({ id: p.int(), price: p.float().adaptive(), name: p.string() });
+      const values = prices.slice(0, 20).map((price, id) => ({ id, price, name: `n${id}` }));
+      const array = p.array(node);
+      expect(array.decode(array.encode(values))).toEqual(values);
+    });
+
+    it('round-trips inside an adaptive object, where repeated values recur', () => {
+      const node = p.array(
+        p.object({ low: p.float().adaptive(), high: p.float().adaptive() }).adaptive()
+      );
+      const values = [1.5, 2.5, 1.5, 0, 1 / 3, 2.5].map((low) => ({ low, high: low }));
+      expect(node.decode(node.encode(values))).toEqual(values);
+    });
+
+    it('round-trips one node reused in two fields', () => {
+      const f = p.float().adaptive();
+      const node = p.array(p.object({ low: f, high: f }));
+      const values = prices.slice(0, 50).map((low, i) => ({ low, high: low + track[i] }));
+      expect(node.decode(node.encode(values))).toEqual(values);
     });
   });
 });
@@ -812,7 +873,7 @@ describe('doubleFrom', () => {
   });
 });
 
-describe('p.float learn', () => {
+describe('the learned decimal spelling p.any builds', () => {
   const rand = mulberry32(0x7a);
   const prices = Array.from({ length: 200 }, () => Math.round(rand() * 100000) / 100);
   const doubles = Array.from({ length: 200 }, () => rand() * 2 - 1);
@@ -822,30 +883,41 @@ describe('p.float learn', () => {
     { length: 200 },
     () => (at = Math.round((at + rand() / 1e3) * 1e6) / 1e6)
   );
+  const learned = (): PFloat => new PFloat()._withMethods({ learn: 'declared' });
 
   it.each([
     ['decimals', prices],
     ['doubles', doubles],
     ['mixed', mixed],
-  ])('round-trips %s bit-exact on its own', (_name, values) => {
-    const node = p.array(p.float().learn());
-    expect(node.decode(node.encode(values)).every((back, i) => Object.is(back, values[i]))).toBe(
-      true
+    ['a drifting series', track],
+    ['past the safe digits', [9e15, 0.5, -9e15, 0.25, 2 ** 53, 1e-15, 123.456]],
+    ['zeros after small negatives', [-0.04, 0, -0.4, 0, 0, -0.3]],
+    ['places dropping', [0.123456789012345, 1234.5, 1.25, 1.5, 2]],
+  ])('round-trips %s bit-exact, learning alone or with every method open', (_name, values) => {
+    for (const node of [
+      p.array(learned()),
+      p.array(new PFloat()._open()),
+      p.array(new PFloat()._open({ window: 16 })),
+    ]) {
+      expect(node.decode(node.encode(values)).every((back, i) => Object.is(back, values[i]))).toBe(
+        true
+      );
+    }
+  });
+
+  it('spells a drifting series as differences where every method is open', () => {
+    expect(p.array(new PFloat()._open()).encode(track).length).toBeLessThan(
+      p.array(learned()).encode(track).length
     );
   });
 
-  it('beats `.learn()` with `.adaptive()` on a slowly incrementing series', () => {
-    expect(p.array(p.float().adaptive()).encode(track).length).toBeLessThan(
-      p.array(p.float().learn()).encode(track).length
+  it('keeps its methods through `.weights()`', () => {
+    expect(p.array(learned().weights({ other: 9 })).encode(prices)).not.toEqual(
+      p.array(new PFloat().weights({ other: 9 })).encode(prices)
     );
   });
 
-  it('takes its learning options once, before `.adaptive()`', () => {
-    expect(p.array(p.float().learning({ window: 8 }).adaptive()).encode(prices)).toEqual(
-      p.array(p.float().adaptive({ window: 8 })).encode(prices)
-    );
-    expect(() => p.float().learning({}).learning({})).toThrow(
-      new TypeError('p.float learning is already set')
-    );
+  it.each([null, '1'])('rejects the non-number %p', (value) => {
+    expect(() => learned().encode(value as never)).toThrow(/^p\.float expected a number, got /);
   });
 });

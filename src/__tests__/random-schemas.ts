@@ -30,6 +30,16 @@ export const rand = (): number => next();
 export const randInt = (lo: number, hi: number): number => lo + Math.floor(rand() * (hi - lo + 1));
 export const pick = <T>(xs: readonly T[]): T => xs[randInt(0, xs.length - 1)];
 
+let adaptiveNumbers = true;
+
+/**
+ * Whether number cases may code through the predictor, which codes inside
+ * no spelling the encoder tries; on until a caller turns it off.
+ */
+export const useAdaptiveNumbers = (on: boolean): void => {
+  adaptiveNumbers = on;
+};
+
 /** A schema built the same way on any copy, a value generator and its source form. */
 export interface Case {
   build: (m: Lib) => Node;
@@ -137,19 +147,38 @@ const randAdaptive = (members: number): Step => {
 };
 
 /**
+ * A number's `.adaptive()` through the predictor, set now and then where
+ * number cases may take it: the default options, apart from its kin, a
+ * window, a short history or a coarse quantisation.
+ */
+const randNumberAdaptive = (): Step | undefined => {
+  if (!adaptiveNumbers || rand() >= 0.25) {
+    return undefined;
+  }
+  const options = pick([
+    {},
+    { separate: true },
+    { window: randInt(1, 256) },
+    { history: randInt(1, 128) },
+    { quantisation: 2 ** randInt(12, 24) },
+  ]);
+  return { apply: (n) => n.adaptive(options), src: `.adaptive(${json(options)})` };
+};
+
+/**
  * `build`'s node made adaptive over its `count` values, under random weights
  * half the time; its window covers `floor` values, for a node whose other
- * priors count more.
+ * priors count more. A number's options come from `randNumberAdaptive`.
  */
 const adaptiveCase = (
   build: (m: Lib) => Node,
   src: string,
   gen: () => unknown,
   count: number,
-  floor = count
+  floor = count,
+  a: Step = randAdaptive(Math.max(count, floor))
 ): Case => {
   const w = rand() < 0.5 ? randWeights(count, 1000) : undefined;
-  const a = randAdaptive(Math.max(count, floor));
   return {
     build: (m) => a.apply(w ? build(m).weights(w) : build(m)),
     gen,
@@ -163,8 +192,8 @@ const hotGen = <T>(draw: () => T): (() => T) => {
   return () => (rand() < 0.8 ? pick(hot) : draw());
 };
 
-/** A method a node may declare, as its type has them: the learning of its priors, the difference from the previous value, recall. */
-type Method = 'learn' | 'delta' | 'recall';
+/** A method a node may declare, as its type has them: the learning of its priors, or recall. */
+type Method = 'learn' | 'recall';
 
 /**
  * `c` with each of `methods` declared a third of the time, in the order
@@ -184,8 +213,14 @@ const withMethods = (c: Case, methods: readonly Method[]): Case => {
   };
 };
 
-/** The methods of a number: its learning, the difference from the previous value, and recall. */
-const NUMBER_METHODS: readonly Method[] = ['learn', 'delta', 'recall'];
+/** The methods of a number: its learning, which `.adaptive()` excludes. */
+const NUMBER_METHODS: readonly Method[] = ['learn'];
+
+/** A number case adaptive through `a` where set, else with `methods`. */
+const numberCase = (c: Case, a: Step | undefined, methods = NUMBER_METHODS): Case =>
+  a === undefined
+    ? withMethods(c, methods)
+    : { build: (m) => a.apply(c.build(m)), gen: c.gen, src: `${c.src}${a.src}` };
 
 /** A string with digit runs, some with leading zeros and some past a field's 15 digits, or of one length, mostly. */
 const fieldString = (): string => {
@@ -212,12 +247,19 @@ const intCase = (): Case => {
         { build: (m) => m.p.int().min(lo).max(hi), gen: any, src: base },
         NUMBER_METHODS
       );
-    case 5:
-      // Declared weights take no delta.
-      return withMethods(
-        adaptiveCase((m) => m.p.int().min(lo).max(hi), base, hotGen(any), hi - lo + 1),
-        ['recall']
-      );
+    case 5: {
+      const a = randNumberAdaptive();
+      return a === undefined
+        ? { build: (m) => m.p.int().min(lo).max(hi), gen: hotGen(any), src: base }
+        : adaptiveCase(
+            (m) => m.p.int().min(lo).max(hi),
+            base,
+            hotGen(any),
+            hi - lo + 1,
+            hi - lo + 1,
+            a
+          );
+    }
     case 1: {
       const w = randWeights(hi - lo + 1, 1000);
       return {
@@ -265,12 +307,11 @@ const intCase = (): Case => {
   }
 };
 
-// Adaptive now and then, on the learned magnitude scale.
-const unboundedIntCase = (): Case => {
-  const a = rand() < 0.25 ? randAdaptive(2) : undefined;
-  return withMethods(
+// Adaptive now and then, through the predictor.
+const unboundedIntCase = (): Case =>
+  numberCase(
     {
-      build: (m) => (a ? a.apply(m.p.int()) : m.p.int()),
+      build: (m) => m.p.int(),
       gen: () => {
         const r = rand();
         return r < 0.2
@@ -279,11 +320,10 @@ const unboundedIntCase = (): Case => {
             ? randInt(-(2 ** 40), 2 ** 40)
             : randInt(-1e6, 1e6);
       },
-      src: `p.int()${a ? a.src : ''}`,
+      src: 'p.int()',
     },
-    NUMBER_METHODS
+    randNumberAdaptive()
   );
-};
 
 // One bound only: the offset rides the term encoding, counting away from the
 // bound. Large offsets cross into the escaped term form.
@@ -321,17 +361,15 @@ const decimalCase = (): Case => {
   const kLo = randInt(-100000, 0);
   const kHi = kLo + randInt(0, rand() < 0.5 ? 2000 : 200000);
   switch (randInt(0, 3)) {
-    case 0: {
-      const a = rand() < 0.25 ? randAdaptive(2) : undefined;
-      return withMethods(
+    case 0:
+      return numberCase(
         {
-          build: (m) => (a ? a.apply(m.p.decimal(step)) : m.p.decimal(step)),
+          build: (m) => m.p.decimal(step),
           gen: () => grid(randInt(-100000, 100000)),
-          src: `p.decimal(${step})${a ? a.src : ''}`,
+          src: `p.decimal(${step})`,
         },
-        NUMBER_METHODS
+        randNumberAdaptive()
       );
-    }
     case 1:
       return withMethods(
         {
@@ -361,14 +399,24 @@ const decimalCase = (): Case => {
         );
       }
       if (r < 2 / 3) {
-        // An adaptive prior takes at most 65536 grid points.
+        // Weights take at most 65536 grid points.
         const kTop = kLo + randInt(0, 2000);
-        return adaptiveCase(
-          (m) => m.p.decimal(step).min(grid(kLo)).max(grid(kTop)),
-          `p.decimal(${step}).min(${grid(kLo)}).max(${grid(kTop)})`,
-          hotGen(() => grid(randInt(kLo, kTop))),
-          kTop - kLo + 1
-        );
+        const a = randNumberAdaptive();
+        const topSrc = `p.decimal(${step}).min(${grid(kLo)}).max(${grid(kTop)})`;
+        return a === undefined
+          ? {
+              build: (m) => m.p.decimal(step).min(grid(kLo)).max(grid(kTop)),
+              gen: hotGen(() => grid(randInt(kLo, kTop))),
+              src: topSrc,
+            }
+          : adaptiveCase(
+              (m) => m.p.decimal(step).min(grid(kLo)).max(grid(kTop)),
+              topSrc,
+              hotGen(() => grid(randInt(kLo, kTop))),
+              kTop - kLo + 1,
+              kTop - kLo + 1,
+              a
+            );
       }
       const cdf = randCdf(kLo);
       return {
@@ -467,21 +515,29 @@ const stringCase = (): Case => {
   }
 };
 
-// A prior over the kinds of number, any subset of the keys; the values are
-// the same mix either way.
+// A prior over the kinds of number, any subset of the keys, and adaptive now
+// and then; the values are the same mix either way.
 const floatCase = (): Case => {
   if (rand() < 0.5) {
-    return { build: (m) => m.p.float(), gen: randFloat, src: 'p.float()' };
+    return numberCase(
+      { build: (m) => m.p.float(), gen: randFloat, src: 'p.float()' },
+      randNumberAdaptive(),
+      []
+    );
   }
   const w: Partial<Record<'zero' | 'integer' | 'decimal' | 'fraction' | 'other', number>> = {};
   for (const key of ['zero', 'integer', 'decimal', 'fraction', 'other'] as const) {
     if (rand() < 0.7) w[key] = randInt(1, 100);
   }
-  return {
-    build: (m) => m.p.float().weights(w),
-    gen: randFloat,
-    src: `p.float().weights(${json(w)})`,
-  };
+  return numberCase(
+    {
+      build: (m) => m.p.float().weights(w),
+      gen: randFloat,
+      src: `p.float().weights(${json(w)})`,
+    },
+    randNumberAdaptive(),
+    []
+  );
 };
 
 // The prior changes the wire, never the values.
@@ -659,7 +715,7 @@ const dateCase = (): Case => {
   const step = unit === 'minute' && rand() < 0.2 ? 15 : randInt(1, 4);
   const ms = step * DATE_MS[unit];
   const base = `p.date().precision('${unit}', ${step})`;
-  // Without a cdf, any of the methods of a number.
+  // Adaptive now and then; without a cdf, else the methods of a number.
   const withNode = (
     build: (m: Lib) => Node,
     src: string,
@@ -667,7 +723,7 @@ const dateCase = (): Case => {
     methods = NUMBER_METHODS
   ): Case => {
     let local: Node;
-    return withMethods(
+    return numberCase(
       {
         build,
         src,
@@ -676,6 +732,7 @@ const dateCase = (): Case => {
           return local.decode(local.encode(new Date(ts())));
         },
       },
+      methods.length === 0 ? undefined : randNumberAdaptive(),
       methods
     );
   };
@@ -715,13 +772,10 @@ const dateCase = (): Case => {
       const src = `${base}.min(${min}).max(${max})`;
       const r = rand();
       if (r < 1 / 3) {
-        // Without weights: the bucket count of a calendar unit is the node's to work out.
-        // At least the bucket count: a month or year bucket can be shorter
-        // than `ms`, by at most 28 days in 31.
-        const a = randAdaptive(Math.ceil(((max - min) / ms) * (31 / 28)) + 2);
+        // Values that recur.
         return withNode(
-          (m) => a.apply(m.p.date().precision(unit, step).min(min).max(max)),
-          `${src}${a.src}`,
+          (m) => m.p.date().precision(unit, step).min(min).max(max),
+          src,
           hotGen(() => randInt(min, max))
         );
       }
@@ -739,7 +793,7 @@ const dateCase = (): Case => {
         (m) => m.p.date().precision(unit, step).min(min).max(max).cdf(cdf.fn),
         `${src}.cdf(${cdf.src})`,
         () => randInt(min, max),
-        ['recall']
+        []
       );
     }
   }

@@ -299,6 +299,24 @@ export class RangePrior {
     return dec.parseWeighted(this.total, this.locate);
   }
 
+  /** Refuses `v` as `write` would, without coding it. */
+  check(v: number, subject: () => string): void {
+    checkIndex(v, this.lo, this.hi, subject, this.show);
+    this.bucket(v, subject);
+  }
+
+  /** Writes `v`, already refused or let through by `check`. */
+  writeChecked(enc: Encoder, v: number): void {
+    const [cum, freq, total] = this.bucketOf(v);
+    enc.composeWeighted(cum, freq, total);
+  }
+
+  /** The bucket of `v`, an integer in `[lo, hi]`, as the prior gives it: cum, freq and total. */
+  bucketOf(v: number): readonly [number, number, number] {
+    const cum = this.cdf(v);
+    return [cum, this.cdf(v + 1) - cum, this.total];
+  }
+
   /**
    * The bucket of `v`, an integer in `[lo, hi]`, validated for the encode
    * side: a user CDF is checked where it is read.

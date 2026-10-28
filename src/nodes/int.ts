@@ -4,7 +4,10 @@ import type { Kind } from './guards';
 import { INDEX_METHODS, IndexMethods, IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 import type { LearningOptions } from './adaptive';
-import { learningOf, MethodNode, type MethodSet } from './methods';
+import { learningOf, learns, MethodNode, type MethodSet } from './methods';
+import { checkAdaptive, resolve } from '../predictor/options';
+import { Priors } from '../predictor/prior';
+import type { AdaptiveOptions } from '../predictor/types';
 
 /**
  * `value`, refused unless it is an integer. Strict, like every other node: a
@@ -29,10 +32,29 @@ export class PInt extends MethodNode<number> {
   readonly _methodNames = INDEX_METHODS;
   private readonly _coding: IndexMethods;
   declare readonly _radix?: number;
+  /** The options `.adaptive()` set, which hand the values to the predictor. */
+  readonly _adaptive?: AdaptiveOptions;
 
-  constructor(min?: number, max?: number, prior?: Prior, methods: MethodSet = {}) {
+  constructor(
+    min?: number,
+    max?: number,
+    prior?: Prior,
+    methods: MethodSet = {},
+    adaptive?: AdaptiveOptions
+  ) {
     super();
-    this._range = new IndexRange('p.int', min, max, prior, learningOf(methods));
+    this._adaptive = adaptive;
+    this._range = new IndexRange(
+      'p.int',
+      min,
+      max,
+      prior,
+      learningOf(methods),
+      String,
+      adaptive === undefined
+        ? undefined
+        : { path: this, options: resolve(adaptive, Priors.text, 'p.int') }
+    );
     this._methods = methods;
     this._coding = new IndexMethods(this._range, methods, 'p.int');
     if (this._coding.plain) {
@@ -48,23 +70,24 @@ export class PInt extends MethodNode<number> {
   min(n: number): PInt {
     checkUnset(this._range.lo, 'p.int', 'min');
     const { hi, declared } = this._range;
-    return new PInt(n, hi, declared, this._methods);
+    return this._with(n, hi, declared);
   }
 
   max(n: number): PInt {
     checkUnset(this._range.hi, 'p.int', 'max');
     const { lo, declared } = this._range;
-    return new PInt(lo, n, declared, this._methods);
+    return this._with(lo, n, declared);
   }
 
   /**
    * Declare a prior over the bounded range as an integer CDF. A value's cost
    * is log2(total / weight) bits — fractional, exact. A zero-weight value
-   * cannot encode; everything else just gets cheaper or dearer.
+   * cannot encode; everything else just gets cheaper or dearer. Under
+   * `.adaptive()` it is the prior of values the node has not seen.
    */
   cdf(fn: Cdf): PInt {
     checkUnset(this._range.declared, 'p.int', 'prior');
-    return new PInt(this._range.lo, this._range.hi, fn, this._methods);
+    return this._with(this._range.lo, this._range.hi, fn);
   }
 
   /**
@@ -73,7 +96,7 @@ export class PInt extends MethodNode<number> {
    */
   weights(w: readonly number[]): PInt {
     checkUnset(this._range.declared, 'p.int', 'prior');
-    return new PInt(this._range.lo, this._range.hi, w, this._methods);
+    return this._with(this._range.lo, this._range.hi, w);
   }
 
   /**
@@ -85,59 +108,46 @@ export class PInt extends MethodNode<number> {
    * paid off. Takes weights, not a cdf; part of the wire format, like the
    * weights. A range unbounded or wider than 65536 values learns on the
    * magnitude scale instead: distances from the min, else the max, else 0, by
-   * bit-length class.
-   */
-  learn(): PInt {
-    return this._declare('learn', 'p.int');
-  }
-
-  /**
-   * What the node's learning goes by, for `.learn()` and the methods that
-   * learn: `window` is how many observations a table's counts hold before
-   * they halve, so the newest weigh most (1024 when left out, and raised to
-   * the number of values counted when smaller), and `separate` keeps its
+   * bit-length class. `window` is how many observations a table's counts
+   * hold before they halve (1024 when left out), and `separate` keeps its
    * tables from starting where other nodes of its kind and window got to.
-   * Set once.
+   * Not with `.adaptive()`.
    */
-  learning(options: LearningOptions): PInt {
-    return this._learning(options, 'p.int');
+  learn(options?: LearningOptions): PInt {
+    if (this._adaptive !== undefined) {
+      throw new TypeError('p.int learn and adaptive cannot both be set');
+    }
+    const node = this._declare('learn', 'p.int');
+    return options === undefined ? node : node._learning(options, 'p.int');
   }
 
   /**
-   * Learn with every method the node has: `.learn()`, and `.delta()` and
-   * `.recall()` open to a learned choice per value unless declared, under
-   * `options` as `.learning()` takes them.
+   * Code the values through the similarity predictor: each is predicted from
+   * the node's past values plus a learned step, the same values exactly,
+   * the numbers coded earlier in the same object, and a prior over
+   * magnitudes. The bounds still hold, and a declared prior prices the values
+   * the node has not seen. Not with `.learn()`. Set once.
    */
-  adaptive(options?: LearningOptions): PInt {
-    return this._adapt(options, 'p.int');
-  }
-
-  /**
-   * Spell every value after the node's first in the message as its
-   * difference from the previous one: its side, unless the bounds rule one
-   * out, the bit-length class of its size among the classes the bounds
-   * reach, learned from the message, then the low bits. Steady ids and counters cost a few bits each, bounded or not.
-   * The node's first value costs its plain spelling. Takes no weights or
-   * cdf; values must lie within 2^53 - 1 of the min, else the max, else 0.
-   */
-  delta(): PInt {
-    return this._declare('delta', 'p.int');
-  }
-
-  /**
-   * Spell a value this node already wrote in the message by its place
-   * among the distinct values it wrote, and a new one as an escape and then
-   * as the node otherwise spells it: with n values seen, a repeat costs
-   * log2(n + 1) bits, less the more often it recurs. The message's first value costs nothing extra.
-   */
-  recall(): PInt {
-    return this._declare('recall', 'p.int');
+  adaptive(options?: AdaptiveOptions): PInt {
+    if (this._adaptive !== undefined) {
+      throw new TypeError('p.int adaptive is already set');
+    }
+    if (learns(this._methods)) {
+      throw new TypeError('p.int learn and adaptive cannot both be set');
+    }
+    const { lo, hi, declared } = this._range;
+    return new PInt(lo, hi, declared, this._methods, checkAdaptive(options, 'p.int'));
   }
 
   /** This node with `methods` in place of its own. */
   _withMethods(methods: MethodSet): PInt {
     const { lo, hi, declared } = this._range;
-    return new PInt(lo, hi, declared, methods);
+    return new PInt(lo, hi, declared, methods, this._adaptive);
+  }
+
+  /** This node with these bounds and prior, keeping its methods and adaptive options. */
+  private _with(lo: number | undefined, hi: number | undefined, prior: Prior | undefined): PInt {
+    return new PInt(lo, hi, prior, this._methods, this._adaptive);
   }
 
   get _exact(): boolean {

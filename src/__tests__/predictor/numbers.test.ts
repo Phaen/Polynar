@@ -308,6 +308,13 @@ describe('number predictor records', () => {
     tripOps(['enter', { path: {}, x: 100 }, { path: {}, x: 50 }, { path: {}, x: 100 }, 'leave']);
   });
 
+  it('takes the record’s latest `history` numbers as siblings', () => {
+    const ops: Op[] = ['enter'];
+    for (let i = 0; i < 6; i++) ops.push({ path: {}, x: 10 * i });
+    ops.push('leave');
+    tripOps(ops, { history: 2 });
+  });
+
   it('keeps derived paths of one node apart', () => {
     const node = {};
     const ops: Op[] = [];

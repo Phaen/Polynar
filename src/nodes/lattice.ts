@@ -21,6 +21,9 @@ import {
   type ValueProvider,
 } from './methods';
 import { Recall } from './recall';
+import { session } from '../predictor/session';
+import type { PlainNumber } from '../predictor/session';
+import type { Resolved } from '../predictor/types';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 /**
@@ -106,6 +109,12 @@ class LearnedOffsets implements LearnedOdds {
  * learned magnitude scale from the range's origin. Coding learns nothing:
  * the range's owner teaches it each index through `learn`.
  */
+/** What an adaptive lattice node codes its indices through: the number predictor at `path`. */
+export interface AdaptiveIndex {
+  readonly path: object;
+  readonly options: Resolved;
+}
+
 export class IndexRange {
   readonly lo?: number;
   readonly hi?: number;
@@ -141,6 +150,10 @@ export class IndexRange {
   readonly high: number;
   /** Set with `learning`: the learned odds of an index's offset, which `write` and `read` code through and `learn` teaches. */
   readonly learned?: LearnedOdds;
+  /** Set under `.adaptive()`: the predictor `write` and `read` code through. */
+  readonly adaptive?: AdaptiveIndex;
+  /** The range's own spelling, which the predictor falls back on. */
+  readonly plain: PlainNumber;
   private readonly show: (index: number) => string;
 
   constructor(
@@ -149,7 +162,8 @@ export class IndexRange {
     hi?: number,
     prior?: Prior,
     learning?: Learning,
-    show: (index: number) => string = String
+    show: (index: number) => string = String,
+    adaptive?: AdaptiveIndex
   ) {
     checkRange(who, lo, hi, show);
     if (prior !== undefined && (lo === undefined || hi === undefined)) {
@@ -192,6 +206,7 @@ export class IndexRange {
       hi !== undefined &&
       prior === undefined &&
       learning === undefined &&
+      adaptive === undefined &&
       hi - lo < MAX_SAFE
     ) {
       this.radix = hi - lo + 1;
@@ -202,6 +217,15 @@ export class IndexRange {
       };
     }
     this.show = show;
+    this.adaptive = adaptive;
+    const ranged = this.prior;
+    this.plain =
+      ranged === undefined
+        ? { write: (enc, x) => this.writeIndex(enc, x), read: (dec) => this.readIndex(dec) }
+        : {
+            write: (enc, x) => ranged.writeChecked(enc, x),
+            read: (dec) => ranged.read(dec),
+          };
   }
 
   /** Whether `index` lies a safe integer's offset from the origin, which adds back to it exactly. */
@@ -240,6 +264,17 @@ export class IndexRange {
     index: number,
     subject: () => string = () => `Value ${this.show(index)}`
   ): void {
+    if (this.adaptive !== undefined) {
+      // Refused as the plain spelling would refuse it, before the predictor learns from it.
+      if (this.prior !== undefined) {
+        this.prior.check(index, subject);
+      } else {
+        checkIndex(index, this.lo, this.hi, subject, this.show);
+        this.checkReach(index);
+      }
+      this.predictor(enc).write(enc, index);
+      return;
+    }
     if (this.prior !== undefined) {
       this.prior.write(enc, index, subject);
       return;
@@ -253,6 +288,9 @@ export class IndexRange {
   }
 
   read(dec: Decoder): number {
+    if (this.adaptive !== undefined) {
+      return this.predictor(dec).read(dec);
+    }
     if (this.learned !== undefined) {
       return this.fromOffset(this.learned.read(dec));
     }
@@ -262,6 +300,36 @@ export class IndexRange {
   /** Learns `index`, just written or read, where the odds learn. */
   learn(side: Encoder | Decoder, index: number): void {
     this.learned?.learn(side, index - this.origin + 0);
+  }
+
+  /** The number predictor of the node, on the session of `side`. */
+  private predictor(side: Encoder | Decoder) {
+    const { path, options } = this.adaptive as AdaptiveIndex;
+    return session(side).number(
+      path,
+      options,
+      { lo: this.lo, hi: this.hi, prior: this.prior },
+      this.plain
+    );
+  }
+
+  /**
+   * Refuses an index a lone bound cannot reach exactly: float subtraction rounds once the offset
+   * passes 2^53, which would silently encode a neighbouring value; the check IS the decode
+   * expression.
+   */
+  private checkReach(index: number): void {
+    const { lo, hi } = this;
+    if (lo !== undefined && hi === undefined && lo + (index - lo) !== index) {
+      throw new RangeError(
+        `Value ${this.show(index)} is too far from its bound ${this.show(lo)} to encode exactly`
+      );
+    }
+    if (hi !== undefined && lo === undefined && hi - (hi - index) !== index) {
+      throw new RangeError(
+        `Value ${this.show(index)} is too far from its bound ${this.show(hi)} to encode exactly`
+      );
+    }
   }
 
   /** Packs `index`, an integer within the bounds as `write` checked. */
@@ -276,24 +344,11 @@ export class IndexRange {
         enc.compose(offset % SPLIT_LOW, SPLIT_LOW);
       }
     } else if (lo !== undefined) {
-      const offset = index - lo;
-      // Float subtraction rounds once the offset passes 2^53, which would
-      // silently encode a neighbouring value, so anything that cannot
-      // reconstruct exactly is refused; the check IS the decode expression.
-      if (lo + offset !== index) {
-        throw new RangeError(
-          `Value ${this.show(index)} is too far from its bound ${this.show(lo)} to encode exactly`
-        );
-      }
-      enc.composeTerm(offset);
+      this.checkReach(index);
+      enc.composeTerm(index - lo);
     } else if (hi !== undefined) {
-      const offset = hi - index;
-      if (hi - offset !== index) {
-        throw new RangeError(
-          `Value ${this.show(index)} is too far from its bound ${this.show(hi)} to encode exactly`
-        );
-      }
-      enc.composeTerm(offset);
+      this.checkReach(index);
+      enc.composeTerm(hi - index);
     } else {
       // -0 fails `index < 0` and packs as 0, as it does through the bounded
       // branches' subtractions, so callers pass it unnormalised.

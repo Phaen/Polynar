@@ -24,6 +24,7 @@ import {
   type ValueProvider,
 } from '../../nodes/methods';
 import { mulberry32 } from '../support';
+import { declare, learning } from './declare';
 
 /**
  * A method spelling a byte as one digit after a marker of 1 in `odds`
@@ -319,12 +320,13 @@ describe('ModeChoice', () => {
   });
 });
 
-describe('.adaptive()', () => {
-  /** A node `.adaptive()` opens, as each node type takes it. */
+describe('.adaptive() and _open()', () => {
+  /** A node `.adaptive()` or `_open()` opens, as each node type takes it. */
   interface Adaptive {
     readonly _methods: MethodSet;
     adaptive(options?: { window?: number }): Adaptive & PNode<any>;
     _open(options?: { window?: number }, except?: readonly MethodName[]): Adaptive & PNode<any>;
+    _withMethods(methods: MethodSet): Adaptive & PNode<any>;
     learn?(): Adaptive & PNode<any>;
     learning?(options: { window?: number }): Adaptive & PNode<any>;
   }
@@ -339,26 +341,39 @@ describe('.adaptive()', () => {
   const words = ['north', 'south', 'east', 'west', 'Order-1042', 'order-1043', 'v2.10.3', ''];
   const ints = many((i) => (i % 7 === 0 ? pick([5, 9, 1000]) : 1000 + i * 3 + pick([-1, 0, 2])));
 
+  // The number nodes open their methods through `_open()` alone: their
+  // `.adaptive()` hands the values to the predictor instead.
   const cases = [
-    ['p.int', p.int(), index, ints],
-    ['p.decimal', p.decimal(0.01), index, ints.map((v) => v / 100)],
-    ['p.date', p.date().precision('day'), index, ints.map((v) => new Date(v * 86400000))],
-    ['p.float', p.float(), ['learn', 'delta'], ints.map((v) => v / 8 + 0.1)],
-    ['p.array', p.array(p.int().min(0).max(9)), container, many((i) => [i % 3, 4, i % 5])],
-    ['p.set', p.set(p.int().min(0).max(9)), container, many((i) => new Set([i % 3, 9]))],
-    ['p.record', p.record(p.bool()), container, many((i) => ({ [pick(words)]: i % 2 === 0 }))],
+    ['p.int', p.int(), index, ints, false],
+    ['p.decimal', p.decimal(0.01), index, ints.map((v) => v / 100), false],
+    ['p.date', p.date().precision('day'), index, ints.map((v) => new Date(v * 86400000)), false],
+    ['p.float', p.float(), ['learn', 'delta'], ints.map((v) => v / 8 + 0.1), false],
+    ['p.array', p.array(p.int().min(0).max(9)), container, many((i) => [i % 3, 4, i % 5]), true],
+    ['p.set', p.set(p.int().min(0).max(9)), container, many((i) => new Set([i % 3, 9])), true],
+    [
+      'p.record',
+      p.record(p.bool()),
+      container,
+      many((i) => ({ [pick(words)]: i % 2 === 0 })),
+      true,
+    ],
     [
       'p.object',
       p.object({ id: p.int().min(0), name: p.optional(p.string().adaptive()) }),
       container,
       many((i) => ({ id: i % 4, name: i % 3 === 0 ? undefined : pick(words) })),
+      true,
     ],
-  ] as [string, Adaptive, MethodName[], unknown[]][];
+  ] as [string, Adaptive, MethodName[], unknown[], boolean][];
+
+  /** `node` with its methods open, under `options`: `.adaptive()` where it opens them. */
+  const adapt = (node: Adaptive, opens: boolean, options?: { window?: number }) =>
+    opens ? node.adaptive(options) : node._open(options);
 
   it.each(cases)(
     'opens every method of %s, and round-trips under them',
-    (_name, node, names, values) => {
-      const adapted = node.adaptive();
+    (_name, node, names, values, opens) => {
+      const adapted = adapt(node, opens);
       const open = Object.fromEntries(names.map((name) => [name, 'open']));
       expect({ ...adapted._methods, learning: undefined }).toEqual(open);
       const list = p.array(adapted);
@@ -367,7 +382,7 @@ describe('.adaptive()', () => {
   );
 
   it('keeps a declared method declared', () => {
-    expect(p.int().delta().adaptive()._methods).toEqual({
+    expect(declare(p.int(), 'delta')._open()._methods).toEqual({
       learn: 'open',
       delta: 'declared',
       recall: 'open',
@@ -376,7 +391,8 @@ describe('.adaptive()', () => {
 
   it('carries its options into the set it opens', () => {
     const options = { window: 64, separate: true };
-    expect(p.int().adaptive(options)._methods.learning).toEqual(options);
+    expect(p.int()._open(options)._methods.learning).toEqual(options);
+    expect(p.array(p.int()).adaptive(options)._methods.learning).toEqual(options);
   });
 
   const priors = [
@@ -400,30 +416,32 @@ describe('.adaptive()', () => {
     expect(p.array(opened).decode(bytes)).toEqual(values);
   });
 
-  it.each([...cases.map(([n, node, , values]) => [n, node, values] as const), ...priors])(
-    'learns the same under .learn().adaptive() and .learning().adaptive() as under .adaptive() on %s',
-    (_name, node, values) => {
+  it.each([
+    ...cases.map(([n, node, , values, opens]) => [n, node, values, opens] as const),
+    ...priors.map(([n, node, values]) => [n, node, values, true] as const),
+  ])(
+    'learns the same declaring learn and its options first as opening them on %s',
+    (_name, node, values, opens) => {
       const encode = (n: PNode<any>) => p.array(n).encode(values);
-      // p.object and p.any take their learning from `.adaptive()` alone.
+      // p.object, p.float and p.any take their learning from opening alone.
       if (node.learn === undefined) {
         return;
       }
-      const adaptive = encode(node.adaptive());
-      expect(encode(node.learn!().adaptive())).toEqual(adaptive);
-      expect(encode(node.learning!({ window: 8 }).adaptive())).toEqual(
-        encode(node.adaptive({ window: 8 }))
-      );
+      const adaptive = encode(adapt(node, opens));
+      expect(encode(adapt(node.learn!(), opens))).toEqual(adaptive);
+      const learned = opens ? node.learning!({ window: 8 }) : learning(node, { window: 8 });
+      expect(encode(adapt(learned, opens))).toEqual(encode(adapt(node, opens, { window: 8 })));
     }
   );
 
   it('learns a declared delta or recall without .adaptive()', () => {
     const long = Array.from({ length: 200 }, (_, i) => 1000 + i * 3);
     const delta = (n: PNode<number>) => p.array(n).encode(long).length;
-    expect(delta(p.int().delta())).toBeLessThan(delta(p.int()));
+    expect(delta(declare(p.int(), 'delta'))).toBeLessThan(delta(p.int()));
     const ids = Array.from({ length: 200 }, (_, i) => [1000, 52000, 777000][i % 3]);
     const recall = (n: PNode<number>) => p.array(n).encode(ids).length;
-    expect(recall(p.int().recall())).toBeLessThan(recall(p.int()));
-    const list = p.array(p.int().delta());
+    expect(recall(declare(p.int(), 'recall'))).toBeLessThan(recall(p.int()));
+    const list = p.array(declare(p.int(), 'delta'));
     expect(list.decode(list.encode(long))).toEqual(long);
   });
 

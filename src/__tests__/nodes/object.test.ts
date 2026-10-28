@@ -81,11 +81,11 @@ const schema = (adaptive: boolean, shape = (o: PObject<any>) => o): PNode<Event[
   const meta = p.object({ session: p.string().adaptive(), ip: p.string().adaptive() });
   const event = shape(
     p.object({
-      id: p.int().min(0).adaptive(),
+      id: p.int().min(0)._open(),
       user: p.string().adaptive(),
       meta: adaptive ? meta.adaptive() : meta,
-      stars: p.int().min(0).adaptive(),
-      watchers: p.int().min(0).adaptive(),
+      stars: p.int().min(0)._open(),
+      watchers: p.int().min(0)._open(),
     })
   );
   return p.array(adaptive ? event.adaptive() : event).adaptive() as unknown as PNode<Event[]>;
@@ -106,7 +106,7 @@ const numbered = (rows: Event[]) =>
   }));
 
 const numberedSchema = (shape: (o: PObject<any>) => PObject<any>): PNode<any> => {
-  const number = () => p.int().min(0).adaptive();
+  const number = () => p.int().min(0)._open();
   const event = shape(
     p.object({
       id: number(),
@@ -136,9 +136,7 @@ describe('companions of an adaptive object', () => {
   });
 
   it('checks a value taken from another field against its own field', () => {
-    const Row = p.array(
-      p.object({ a: p.int().adaptive(), b: p.int().max(1000).adaptive() }).adaptive()
-    );
+    const Row = p.array(p.object({ a: p.int()._open(), b: p.int().max(1000)._open() }).adaptive());
     const rows = Array.from({ length: 60 }, (_, i) => ({ a: i * 13, b: i * 13 }));
     expect(trip(Row, rows)).toEqual(rows);
     expect(() => Row.encode([...rows, { a: 5000, b: 5000 }])).toThrow(/^\[60\]\.b: /);
@@ -146,7 +144,7 @@ describe('companions of an adaptive object', () => {
 
   it('decodes -0 as its field does', () => {
     const Row = p.array(
-      p.object({ a: p.int().adaptive(), b: p.float().adaptive(), c: p.int().adaptive() }).adaptive()
+      p.object({ a: p.int()._open(), b: p.float()._open(), c: p.int()._open() }).adaptive()
     );
     const rows = Array.from({ length: 80 }, (_, i) => ({ a: i % 2 ? 0 : -0, b: -0, c: 0 }));
     const back = trip(Row, rows);
@@ -164,15 +162,15 @@ describe('companions of an adaptive object', () => {
     });
     const Page = p.object({
       path: p.string().adaptive(),
-      hits: p.int().adaptive(),
+      hits: p.int()._open(),
       at: p.optional(p.date()),
     });
     const Row = p.array(
       p
-        .object({ page: Page.adaptive(), url: p.string().adaptive(), n: p.float().adaptive() })
+        .object({ page: Page.adaptive(), url: p.string().adaptive(), n: p.float()._open() })
         .adaptive()
     );
-    const Bare = p.array(p.object({ page: Page.adaptive(), n: p.float().adaptive() }).adaptive());
+    const Bare = p.array(p.object({ page: Page.adaptive(), n: p.float()._open() }).adaptive());
     expect(
       size(Row, rows) -
         size(
@@ -354,8 +352,8 @@ describe('optional fields of an adaptive object', () => {
   type Thread = { id: number; count?: number; latest?: string; locked?: boolean; note?: string };
   const thread = (optional: <T>(node: PNode<T>) => PNode<T | undefined>) =>
     p.object({
-      id: p.int().min(0).adaptive(),
-      count: optional(p.int().min(0).adaptive()),
+      id: p.int().min(0)._open(),
+      count: optional(p.int().min(0)._open()),
       latest: optional(p.string().adaptive()),
       locked: optional(p.bool().adaptive()),
       note: optional(p.string()),

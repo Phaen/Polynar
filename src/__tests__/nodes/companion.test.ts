@@ -15,6 +15,7 @@ import {
   template,
 } from '../../nodes/companion';
 import { mulberry32, trip } from '../support';
+import { declare } from './declare';
 
 const uuid = (random: () => number): string =>
   Array.from({ length: 32 }, () => Math.floor(random() * 16).toString(16)).join('');
@@ -143,8 +144,8 @@ describe('companion recall', () => {
 
   it('spells a declared date as its difference from an earlier one', () => {
     const rows = sent(13, 200).map(({ t, at }) => ({ t: new Date(t), at: new Date(at) }));
-    const node = p.array(p.object({ t: p.date().adaptive(), at: p.date().adaptive() }).adaptive());
-    const bare = p.array(p.object({ t: p.date().adaptive() }).adaptive());
+    const node = p.array(p.object({ t: p.date()._open(), at: p.date()._open() }).adaptive());
+    const bare = p.array(p.object({ t: p.date()._open() }).adaptive());
     expect(trip(node, rows)).toEqual(rows);
     expect(node.encode(rows).length - bare.encode(rows).length).toBeLessThan(300);
   });
@@ -301,7 +302,7 @@ describe('_exact', () => {
     ['p.string().prose()', p.string().prose(), strings],
     ['p.int()', p.int(), ints],
     ['p.int().adaptive()', p.int().adaptive(), ints],
-    ['p.int().delta()', p.int().delta(), ints],
+    ['p.int() with delta', declare(p.int(), 'delta'), ints],
     ['p.decimal(0.25)', p.decimal(0.25), () => ints().map((n) => (n % 2 ** 44) * 0.25)],
     [
       'p.decimal(0.01).adaptive()',
@@ -342,7 +343,7 @@ describe('_exact', () => {
 });
 
 describe('predictions of a field whose node changes values', () => {
-  const seconds = () => p.date().precision('second').adaptive();
+  const seconds = () => p.date().precision('second')._open();
   /** `n` times each sent the same millisecond or up to a second later, at random. */
   const times = (seed: number, n: number) => {
     const random = mulberry32(seed);

@@ -4,6 +4,7 @@
 
 import { p, CorruptInputError } from '../../index';
 import { mulberry32, trip } from '../support';
+import { declare, learning } from './declare';
 
 describe('Schema int', () => {
   it.each([
@@ -32,6 +33,8 @@ describe('Schema int', () => {
     ['max of -0', p.int().max(-0)],
     ['bounded', p.int().min(-5).max(5)],
     ['weighted', p.int().min(-1).max(1).weights([1, 2, 3])],
+    ['adaptive', p.int().adaptive()],
+    ['adaptive and min-only', p.int().min(-5).adaptive()],
   ])('encodes -0 as plain zero, %s', (_name, node) => {
     expect(node.encode(-0)).toEqual(node.encode(0));
     expect(Object.is(node.decode(node.encode(-0)), 0)).toBe(true);
@@ -65,7 +68,135 @@ describe('Schema int', () => {
   });
 });
 
-describe('p.int adaptive', () => {
+describe('p.int().adaptive()', () => {
+  const random = (length: number, seed: number, lo: number, hi: number) => {
+    const rnd = mulberry32(seed);
+    return Array.from({ length }, () => lo + Math.floor(rnd() * (hi - lo + 1)));
+  };
+  const constant = Array<number>(200).fill(7);
+  const counter = Array.from({ length: 200 }, (_, i) => 1000 + i);
+
+  it.each([
+    ['unbounded', p.int().adaptive(), random(200, 1, -1e9, 1e9)],
+    ['bounded', p.int().min(-1000).max(5000).adaptive(), random(200, 2, -1000, 5000)],
+    ['min-only', p.int().min(-50).adaptive(), random(200, 3, -50, 1e7)],
+    ['max-only', p.int().max(5000).adaptive(), random(200, 4, -1e7, 5000)],
+    [
+      'weighted',
+      p
+        .int()
+        .min(-3)
+        .max(1500)
+        .weights(Array.from({ length: 1504 }, (_, i) => 1 + (i % 7)))
+        .adaptive(),
+      random(200, 5, -3, 1500),
+    ],
+    [
+      'under a cdf',
+      p
+        .int()
+        .min(-3)
+        .max(1500)
+        .cdf((v) => (v + 3) * 2)
+        .adaptive(),
+      random(200, 6, -3, 1500),
+    ],
+  ])('round-trips a constant, a counter and random values, %s', (_name, node, values) => {
+    for (const run of [constant, counter, values]) {
+      expect(trip(p.array(node), run)).toEqual(run);
+    }
+    expect(trip(node, values[0])).toBe(values[0]);
+  });
+
+  it('round-trips a weighted value written alone', () => {
+    const node = p.int().min(0).max(2).weights([1, 5, 1]).adaptive();
+    for (const value of [0, 1, 2]) {
+      expect(trip(node, value)).toBe(value);
+    }
+  });
+
+  it('round-trips values past 2^53 on its own spelling', () => {
+    const values = [2 ** 60, 2 ** 60 + 2 ** 10, -(2 ** 70), 2 ** 60];
+    expect(trip(p.array(p.int().adaptive()), values)).toEqual(values);
+  });
+
+  it('learns what repeats', () => {
+    const size = (values: number[]) => p.array(p.int().adaptive()).encode(values).length;
+    expect(size(Array<number>(200).fill(123456))).toBeLessThan(40);
+    expect(size(counter)).toBeLessThan(size(random(200, 7, 1000, 1199)));
+  });
+
+  it('round-trips inside an object', () => {
+    const node = p.array(p.object({ id: p.int().min(0).adaptive(), delta: p.int().adaptive() }));
+    const values = counter.map((id, i) => ({ id, delta: i % 2 === 0 ? -i - 1 : i * 3 }));
+    expect(trip(node, values)).toEqual(values);
+  });
+
+  it('round-trips one node reused in two fields', () => {
+    const node = p.int().adaptive();
+    const values = [
+      { a: 5, b: 5 },
+      { a: -7, b: 900 },
+    ];
+    expect(trip(p.array(p.object({ a: node, b: node })), values)).toEqual(values);
+  });
+
+  it('maps no digit with both bounds', () => {
+    const node = p.int().min(0).max(9).adaptive();
+    expect(node._radix).toBeUndefined();
+    expect(node._fromDigit).toBeUndefined();
+    expect(node._toDigit).toBeUndefined();
+  });
+
+  it('refuses options out of range, not an object, set twice or beside learn', () => {
+    expect(() => p.int().adaptive({ candidates: 65 })).toThrow(
+      new RangeError('p.int: adaptive candidates must be in 0..64, got 65')
+    );
+    expect(() => p.int().adaptive(5 as never)).toThrow(
+      new TypeError('p.int: adaptive options must be an object')
+    );
+    expect(() => p.int().adaptive().adaptive()).toThrow(
+      new TypeError('p.int adaptive is already set')
+    );
+    const both = new TypeError('p.int learn and adaptive cannot both be set');
+    expect(() => p.int().learn().adaptive()).toThrow(both);
+    expect(() => p.int().adaptive().learn()).toThrow(both);
+  });
+
+  it('refuses a value the plain node refuses, before learning from it', () => {
+    const bounded = p.int().min(0).max(9).adaptive();
+    expect(() => bounded.encode(10)).toThrow(new RangeError('Value 10 is above the maximum 9'));
+    expect(() => bounded.encode(-1)).toThrow(new RangeError('Value -1 is below the minimum 0'));
+    expect(() => p.int().adaptive().encode(1.5)).toThrow(
+      new TypeError('p.int expected an integer, got 1.5')
+    );
+    expect(() =>
+      p
+        .int()
+        .min(0)
+        .max(4)
+        .cdf((v) => Math.min(v, 2) + Math.max(v - 3, 0))
+        .adaptive()
+        .encode(2)
+    ).toThrow(new RangeError('Value 2 has zero weight under the declared cdf'));
+    expect(() =>
+      p
+        .int()
+        .min(-(2 ** 60))
+        .adaptive()
+        .encode(1)
+    ).toThrow(new RangeError(`Value 1 is too far from its bound ${-(2 ** 60)} to encode exactly`));
+    expect(() =>
+      p
+        .int()
+        .max(2 ** 60)
+        .adaptive()
+        .encode(-1)
+    ).toThrow(new RangeError(`Value -1 is too far from its bound ${2 ** 60} to encode exactly`));
+  });
+});
+
+describe('p.int learned methods', () => {
   const plain = p.int().min(0).max(15);
   const weights = Array.from({ length: 16 }, (_, i) => (i === 3 ? 61 : 1));
   const run = (length: number, seed: number) => {
@@ -75,7 +206,7 @@ describe('p.int adaptive', () => {
 
   it('round-trips a run of values, inside an array too', () => {
     const values = run(300, 1);
-    for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 16 })]) {
+    for (const node of [plain._open(), plain.weights(weights)._open({ window: 16 })]) {
       expect(node._radix).toBeUndefined();
       expect(trip(p.array(node), values)).toEqual(values);
       expect(trip(node, values[0])).toEqual(values[0]);
@@ -84,47 +215,47 @@ describe('p.int adaptive', () => {
 
   it('takes its weights before or after', () => {
     const values = run(200, 2);
-    expect(p.array(plain.weights(weights).adaptive({ window: 64 })).encode(values)).toEqual(
-      p.array(plain.adaptive({ window: 64 }).weights(weights)).encode(values)
+    expect(p.array(plain.weights(weights)._open({ window: 64 })).encode(values)).toEqual(
+      p.array(plain._open({ window: 64 }).weights(weights)).encode(values)
     );
   });
 
   it('learns a skew, its mode symbols at most a twentieth over the static prior of it', () => {
     const values = run(2000, 3);
     const size = (node: typeof plain) => p.array(node).encode(values).length;
-    expect(size(plain.adaptive())).toBeLessThan(size(plain));
-    expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
+    expect(size(plain._open())).toBeLessThan(size(plain));
+    expect(size(plain.weights(weights)._open())).toBeLessThanOrEqual(
       Math.ceil(size(plain.weights(weights)) * 1.05)
     );
   });
 
   it('written once, spends the bytes of its static form', () => {
     for (const value of run(20, 4)) {
-      // Unweighted, the static form is a uniform slot and the adaptive one an
+      // Unweighted, the static form is a uniform slot and the learned one an
       // equal-weight bucket, which ends the message in bit-reversed order:
       // the same states, in another order.
-      expect(plain.adaptive().encode(value)).toHaveLength(plain.encode(value).length);
-      expect(plain.weights(weights).adaptive().encode(value)).toEqual(
+      expect(plain._open().encode(value)).toHaveLength(plain.encode(value).length);
+      expect(plain.weights(weights)._open().encode(value)).toEqual(
         plain.weights(weights).encode(value)
       );
     }
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.adaptive({ window: 0 })).toThrow(
+    expect(() => plain.learn({ window: 0 })).toThrow(
       new RangeError('p.int learning window must be a positive integer, got 0')
     );
-    expect(() => plain.adaptive({ window: 1.5 })).toThrow(
+    expect(() => plain.learn({ window: 1.5 })).toThrow(
       new TypeError('p.int learning window must be a positive integer, got 1.5')
     );
-    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)]).adaptive()).toThrow(
+    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)])._open()).toThrow(
       new RangeError(
         'p.int adaptive prior 32 and window 1024 overflow with weights totalling 35184372088847'
       )
     );
     const cdf = new TypeError('p.int learn takes weights, not a cdf');
-    expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
-    expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
+    expect(() => plain.cdf((v) => v)._open()).toThrow(cdf);
+    expect(() => plain._open().cdf((v) => v)).toThrow(cdf);
   });
 });
 
@@ -132,7 +263,7 @@ describe('p.int delta', () => {
   const ids = Array.from({ length: 100 }, (_, i) => i + 1);
 
   it('spells each id after the first as its difference, learning the scale as it goes', () => {
-    const node = p.array(p.int().min(1).max(100).delta()).length(100);
+    const node = p.array(declare(p.int().min(1).max(100), 'delta')).length(100);
     const bytes = node.encode(ids);
     const plain = p.array(p.int().min(1).max(100)).length(100).encode(ids);
     expect(bytes.length).toBeLessThan(plain.length / 4);
@@ -140,21 +271,21 @@ describe('p.int delta', () => {
   });
 
   it('costs an unbounded id about log2(107) bits after the first', () => {
-    const bytes = p.array(p.int().delta()).length(100).encode(ids);
+    const bytes = p.array(declare(p.int(), 'delta')).length(100).encode(ids);
     const first = p.int().encode(1).length;
     expect(bytes.length).toBeLessThanOrEqual(first + Math.ceil((99 * Math.log2(107)) / 8) + 1);
   });
 
-  it('round-trips random sequences, bounded or not, adaptive or not', () => {
+  it('round-trips random sequences, bounded or not, learned or not', () => {
     const random = mulberry32(9);
     for (const node of [
-      p.int().delta(),
-      p.int().min(-10).delta(),
-      p.int().max(10).delta(),
-      p.int().min(-10).max(1000).delta(),
-      p.int().min(-10).max(1000).delta().adaptive(),
-      p.int().delta().adaptive({ window: 64 }),
-      p.int().adaptive(),
+      declare(p.int(), 'delta'),
+      declare(p.int().min(-10), 'delta'),
+      declare(p.int().max(10), 'delta'),
+      declare(p.int().min(-10).max(1000), 'delta'),
+      declare(p.int().min(-10).max(1000), 'delta')._open(),
+      declare(p.int(), 'delta')._open({ window: 64 }),
+      p.int()._open(),
     ]) {
       let at = 0;
       const values = Array.from({ length: 300 }, () => {
@@ -167,85 +298,79 @@ describe('p.int delta', () => {
 
   it('writes a value alone as its plain spelling', () => {
     for (const value of [-5, 0, 7, 99]) {
-      expect(p.int().min(-5).max(99).delta().encode(value)).toEqual(
+      expect(declare(p.int().min(-5).max(99), 'delta').encode(value)).toEqual(
         p.int().min(-5).max(99).encode(value)
       );
-      expect(p.int().delta().encode(value)).toEqual(p.int().encode(value));
+      expect(declare(p.int(), 'delta').encode(value)).toEqual(p.int().encode(value));
     }
   });
 
   it('is set once, survives every rebuild, and takes no weights or cdf', () => {
-    expect(() => p.int().delta().delta()).toThrow(new TypeError('p.int delta is already set'));
+    expect(() => declare(p.int(), 'delta', 'delta')).toThrow(
+      new TypeError('p.int delta is already set')
+    );
     const values = [3, 4, 6, 5];
-    const declared = p.array(p.int().min(0).max(9).delta());
+    const declared = p.array(declare(p.int().min(0).max(9), 'delta'));
     for (const node of [
-      p.int().delta().min(0).max(9),
-      p.int().max(9).delta().min(0),
-      p.int().min(0).delta().max(9),
+      declare(p.int(), 'delta').min(0).max(9),
+      declare(p.int().max(9), 'delta').min(0),
+      declare(p.int().min(0), 'delta').max(9),
     ]) {
       expect(p.array(node).encode(values)).toEqual(declared.encode(values));
     }
-    expect(p.int().delta().adaptive().min(0)._radix).toBeUndefined();
+    expect(declare(p.int(), 'delta')._open().min(0)._radix).toBeUndefined();
     const weights = new TypeError('p.int delta takes no weights');
-    expect(() => p.int().min(0).max(1).weights([1, 1]).delta()).toThrow(weights);
-    expect(() => p.int().min(0).max(1).delta().weights([1, 1])).toThrow(weights);
-    expect(() =>
-      p
-        .int()
-        .min(0)
-        .max(1)
-        .delta()
-        .cdf((v) => v)
-    ).toThrow(new TypeError('p.int delta takes no cdf'));
+    expect(() => declare(p.int().min(0).max(1).weights([1, 1]), 'delta')).toThrow(weights);
+    expect(() => declare(p.int().min(0).max(1), 'delta').weights([1, 1])).toThrow(weights);
+    expect(() => declare(p.int().min(0).max(1), 'delta').cdf((v) => v)).toThrow(
+      new TypeError('p.int delta takes no cdf')
+    );
   });
 
   it('refuses a value out of exact reach of its origin', () => {
-    expect(() =>
-      p
-        .int()
-        .delta()
-        .encode(2 ** 60)
-    ).toThrow(new RangeError(`Value ${2 ** 60} is too far from 0 to encode exactly`));
+    expect(() => declare(p.int(), 'delta').encode(2 ** 60)).toThrow(
+      new RangeError(`Value ${2 ** 60} is too far from 0 to encode exactly`)
+    );
   });
 
   it('reads a cut message as corrupt', () => {
-    const bytes = p.array(p.int().delta()).length(3).encode([5, 600000, 1]);
+    const bytes = p.array(declare(p.int(), 'delta')).length(3).encode([5, 600000, 1]);
     expect(() =>
       p
-        .array(p.int().delta())
+        .array(declare(p.int(), 'delta'))
         .length(3)
         .decode(bytes.subarray(0, bytes.length - 2))
     ).toThrow(CorruptInputError);
   });
 
   it('drops digit mapping', () => {
-    expect(p.int().min(0).max(9).delta()._radix).toBeUndefined();
-    expect(p.int().min(0).max(9).delta()._fromDigit).toBeUndefined();
-    expect(p.int().min(0).max(9).recall()._toDigit).toBeUndefined();
+    expect(declare(p.int().min(0).max(9), 'delta')._radix).toBeUndefined();
+    expect(declare(p.int().min(0).max(9), 'delta')._fromDigit).toBeUndefined();
+    expect(declare(p.int().min(0).max(9), 'recall')._toDigit).toBeUndefined();
   });
 });
 
-describe('p.int adaptive methods', () => {
+describe('p.int open methods', () => {
   it('learns ids as differences on any range', () => {
     const ids = Array.from({ length: 1000 }, (_, i) => i + 1);
     for (const node of [p.int(), p.int().min(1), p.int().min(1).max(65535), p.int().max(2000)]) {
-      const learned = p.array(node.adaptive()).encode(ids).length;
+      const learned = p.array(node._open()).encode(ids).length;
       expect(learned).toBeLessThan(p.array(node).encode(ids).length);
       expect(learned).toBeLessThan(40);
-      expect(trip(p.array(node.adaptive()), ids)).toEqual(ids);
+      expect(trip(p.array(node._open()), ids)).toEqual(ids);
     }
   });
 
   it('spells a narrow range as before up to the mode, which a value alone never spends', () => {
     const node = p.int().min(0).max(15);
     for (const value of [0, 9, 15]) {
-      expect(node.adaptive().encode(value)).toEqual(node.encode(value));
+      expect(node._open().encode(value)).toEqual(node.encode(value));
     }
   });
 
   it('spells unbounded values on the learned magnitude scale', () => {
     const values = [0, -3, 2 ** 40, -(2 ** 52), 17];
-    expect(trip(p.array(p.int().adaptive()), values)).toEqual(values);
+    expect(trip(p.array(p.int()._open()), values)).toEqual(values);
     expect(
       trip(
         p.array(
@@ -253,7 +378,7 @@ describe('p.int adaptive methods', () => {
             .int()
             .min(-(2 ** 60))
             .max(-(2 ** 60) + 2 ** 30)
-            .adaptive()
+            ._open()
         ),
         [-(2 ** 60)]
       )
@@ -261,7 +386,7 @@ describe('p.int adaptive methods', () => {
     expect(() =>
       p
         .int()
-        .adaptive()
+        ._open()
         .encode(2 ** 53)
     ).toThrow(new RangeError(`Value ${2 ** 53} is too far from 0 to encode exactly`));
   });
@@ -269,33 +394,35 @@ describe('p.int adaptive methods', () => {
 
 describe('p.int recall', () => {
   it('spells a repeat by its place among the values seen, learning how often one comes', () => {
-    const node = p.array(p.int().min(0).max(999).recall());
+    const node = p.array(declare(p.int().min(0).max(999), 'recall'));
     const values = Array.from({ length: 200 }, (_, i) => [500, 7, 123][i % 3]);
     const bytes = node.encode(values);
     expect(bytes.length).toBeLessThan(p.array(p.int().min(0).max(999)).encode(values).length / 4);
     expect(node.decode(bytes)).toEqual(values);
   });
 
-  it('round-trips with delta and adaptive, a value alone costing its plain spelling', () => {
+  it('round-trips with delta and open methods, a value alone costing its plain spelling', () => {
     const random = mulberry32(12);
     const values = Array.from(
       { length: 400 },
       () => [5, 900, 12345, -40][Math.floor(random() * 4)]
     );
     for (const node of [
-      p.int().recall(),
-      p.int().recall().delta(),
-      p.int().recall().adaptive(),
-      p.int().min(-50).max(20000).adaptive().recall().delta(),
+      declare(p.int(), 'recall'),
+      declare(p.int(), 'recall', 'delta'),
+      declare(p.int(), 'recall')._open(),
+      declare(p.int().min(-50).max(20000)._open(), 'recall', 'delta'),
     ]) {
       expect(trip(p.array(node), values)).toEqual(values);
       expect(trip(node, 12345)).toBe(12345);
     }
-    expect(p.int().recall().encode(12345)).toEqual(p.int().encode(12345));
-    expect(p.array(p.int().recall()).encode(values).length).toBeLessThan(
+    expect(declare(p.int(), 'recall').encode(12345)).toEqual(p.int().encode(12345));
+    expect(p.array(declare(p.int(), 'recall')).encode(values).length).toBeLessThan(
       p.array(p.int()).encode(values).length
     );
-    expect(() => p.int().recall().recall()).toThrow(new TypeError('p.int recall is already set'));
+    expect(() => declare(p.int(), 'recall', 'recall')).toThrow(
+      new TypeError('p.int recall is already set')
+    );
   });
 });
 
@@ -313,16 +440,20 @@ describe('p.int learn', () => {
 
   it('round-trips with its methods declared beside it', () => {
     const values = run(300, 6);
-    expect(trip(p.array(plain.learn().delta().recall()), values)).toEqual(values);
+    expect(trip(p.array(declare(plain.learn(), 'delta', 'recall')), values)).toEqual(values);
   });
 
-  it('takes its learning options once, before `.adaptive()`', () => {
+  it('takes its learning options with it, once', () => {
     const values = run(200, 7);
-    expect(p.array(plain.learning({ window: 8 }).adaptive()).encode(values)).toEqual(
-      p.array(plain.adaptive({ window: 8 })).encode(values)
+    expect(p.array(plain.learn({ window: 8 })).encode(values)).toEqual(
+      p.array(learning(plain.learn(), { window: 8 })).encode(values)
     );
-    expect(() => plain.learning({ window: 8 }).learning({ window: 8 })).toThrow(
-      new TypeError('p.int learning is already set')
+    expect(p.array(plain.learn({ window: 8 })).encode(values)).not.toEqual(
+      p.array(plain.learn()).encode(values)
     );
+    expect(p.array(learning(plain, { window: 8 })._open()).encode(values)).toEqual(
+      p.array(plain._open({ window: 8 })).encode(values)
+    );
+    expect(() => plain.learn().learn()).toThrow(new TypeError('p.int learn is already set'));
   });
 });
