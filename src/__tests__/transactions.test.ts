@@ -79,11 +79,11 @@ interface Heavy {
 /**
  * Schemas whose values run long enough to reach the rarer changes: halving
  * contexts, escape cells, learned counts and blends, the live tables built
- * from pending values, the mode's trials and recall.
+ * from pending values and the mode's trials.
  */
 const HEAVY: readonly (() => Heavy)[] = [
   () => ({
-    node: lib.p.array(lib.p.array(lib.p.int().min(0).max(9)).max(2).recall()) as Node,
+    node: lib.p.array(lib.p.array(lib.p.int().min(0).max(9)).max(2).learn()) as Node,
     gen: () =>
       Array.from({ length: randInt(1, 40) }, () =>
         Array.from({ length: randInt(0, 2) }, () => randInt(0, 1) * randInt(0, 9))

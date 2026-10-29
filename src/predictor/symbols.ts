@@ -293,6 +293,8 @@ export class SymbolPredictor {
 
   // The current step.
   private allowEnd = true;
+  /** The symbol `allowEnd` admits: END, or a structure step's container end. */
+  private endSym = END;
   private valuePop: Population | null = null;
   private deltas: PathDeltas | null = null;
   private G = 0;
@@ -717,8 +719,11 @@ export class SymbolPredictor {
 
   /** Whether `id` can be an entry of this alphabet's distribution at this step. */
   private member(id: number): boolean {
-    if (id === END) {
+    if (id === this.endSym) {
       return this.allowEnd;
+    }
+    if (id === END) {
+      return false;
     }
     if (this.inClosed !== null) {
       return id < this.inClosed.length && this.inClosed[id] === 1;
@@ -765,29 +770,38 @@ export class SymbolPredictor {
     return P;
   }
 
-  /** Members of a closed alphabet allowed at this step, in id order. */
+  /**
+   * Members of a closed alphabet allowed at this step, in id order. A structure step bounding a
+   * container end that may not come yet leaves that end out.
+   */
   private memberCount(): number {
     const size =
       this.closed !== null ? this.closed.length : this.alphabet === 'bytes' ? 256 : DIGIT - 1;
-    return size + (this.allowEnd ? 1 : 0);
+    const e = this.endSym === END ? (this.allowEnd ? 1 : 0) : this.allowEnd ? 0 : -1;
+    return size + e;
   }
 
   private memberAt(k: number): number {
-    const e = this.allowEnd ? 1 : 0;
+    const e = this.allowEnd && this.endSym === END ? 1 : 0;
     if (k < e) {
       return END;
     }
     if (this.closed !== null) {
       return this.closed[k - e];
     }
-    return this.alphabet === 'bytes' ? BYTE_BASE + k - e : k + 1 - e;
+    if (this.alphabet === 'bytes') {
+      return BYTE_BASE + k - e;
+    }
+    const id = k + 1 - e;
+    return !this.allowEnd && this.endSym !== END && id >= this.endSym ? id + 1 : id;
   }
 
   /**
-   * Builds the step's distribution (spec §4.4 steps 1–6). END is an entry only when `allowEnd`.
-   * The table depends on the shared past alone.
+   * Builds the step's distribution (spec §4.4 steps 1–6). `endSym` (END unless a structure step
+   * bounds a container's end) is an entry only when `allowEnd`; END is none when `endSym` is
+   * another symbol. The table depends on the shared past alone.
    */
-  distribution(allowEnd = true): Distribution {
+  distribution(allowEnd = true, endSym = END): Distribution {
     const core = this.core;
     const f = core.features;
     const ids = core.ids;
@@ -810,6 +824,7 @@ export class SymbolPredictor {
     if (B !== null) B.lookup(ctx.h, ctx.n);
     this.stepNo++;
     this.allowEnd = allowEnd;
+    this.endSym = endSym;
     this.valuePop = value;
     const log = this.log;
     log.reset();
@@ -1273,15 +1288,15 @@ export class SymbolPredictor {
   }
 
   /** One coded step: the table, the symbol and its learning. */
-  code(enc: Sink, a: number, allowEnd = true): void {
-    this.distribution(allowEnd);
+  code(enc: Sink, a: number, allowEnd = true, endSym = END): void {
+    this.distribution(allowEnd, endSym);
     this.write(enc, a);
     this.learn(a);
   }
 
   /** One read step. */
-  decode(dec: Source, allowEnd = true): number {
-    this.distribution(allowEnd);
+  decode(dec: Source, allowEnd = true, endSym = END): number {
+    this.distribution(allowEnd, endSym);
     const a = this.read(dec);
     this.learn(a);
     return a;

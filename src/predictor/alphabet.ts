@@ -1,6 +1,6 @@
 /**
- * The symbol ids of one message (spec §4.3). Ids 0..35 are the fixed END, structure and DIGIT
- * symbols, 36..291 the bytes, and code points take the next ids in order of first reference.
+ * The symbol ids of one message (spec §4.3). Ids 0..36 are the fixed END, structure and DIGIT
+ * symbols, 37..292 the bytes, and code points take the next ids in order of first reference.
  */
 
 import { shr } from './arith';

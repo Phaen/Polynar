@@ -6,7 +6,7 @@
  * the spelling, and zero is a selector state of its own.
  */
 
-import { p, Encoder, CorruptInputError, PFloat, type PNode } from '../../index';
+import { p, Encoder, CorruptInputError, type PNode } from '../../index';
 import {
   simplestInInterval,
   simplestDyadic,
@@ -24,6 +24,7 @@ import {
 } from '../../nodes/float';
 import { buildWeights, writeTable } from '../../nodes/weights';
 import { mulberry32 } from '../support';
+import { STRUCT } from '../../predictor/types';
 
 const SIG_FLAT = 0;
 const SIG_FRACTION = 1;
@@ -873,51 +874,18 @@ describe('doubleFrom', () => {
   });
 });
 
-describe('the learned decimal spelling p.any builds', () => {
-  const rand = mulberry32(0x7a);
-  const prices = Array.from({ length: 200 }, () => Math.round(rand() * 100000) / 100);
-  const doubles = Array.from({ length: 200 }, () => rand() * 2 - 1);
-  const mixed = [0, -0, 1, -2.5, 0.1, 0.1 + 0.2, 1 / 3, NaN, Infinity, -Infinity, 5e-324, 1e21];
-  let at = 52.1;
-  const track = Array.from(
-    { length: 200 },
-    () => (at = Math.round((at + rand() / 1e3) * 1e6) / 1e6)
-  );
-  const learned = (): PFloat => new PFloat()._withMethods({ learn: 'declared' });
-
-  it.each([
-    ['decimals', prices],
-    ['doubles', doubles],
-    ['mixed', mixed],
-    ['a drifting series', track],
-    ['past the safe digits', [9e15, 0.5, -9e15, 0.25, 2 ** 53, 1e-15, 123.456]],
-    ['zeros after small negatives', [-0.04, 0, -0.4, 0, 0, -0.3]],
-    ['places dropping', [0.123456789012345, 1234.5, 1.25, 1.5, 2]],
-  ])('round-trips %s bit-exact, learning alone or with every method open', (_name, values) => {
-    for (const node of [
-      p.array(learned()),
-      p.array(new PFloat()._open()),
-      p.array(new PFloat()._open({ window: 16 })),
-    ]) {
-      expect(node.decode(node.encode(values)).every((back, i) => Object.is(back, values[i]))).toBe(
-        true
-      );
-    }
+describe('p.float methods', () => {
+  it('adapts under a container sugar unless it adapts already', () => {
+    const adaptive = p.float().adaptive({ window: 8 });
+    expect(adaptive._adapted({ window: 16 })).toBe(adaptive);
+    const plain = p.float();
+    const adapted = plain._adapted({ window: 16 });
+    expect(adapted).not.toBe(plain);
+    expect(adapted._adaptive).toEqual({ window: 16 });
   });
 
-  it('spells a drifting series as differences where every method is open', () => {
-    expect(p.array(new PFloat()._open()).encode(track).length).toBeLessThan(
-      p.array(learned()).encode(track).length
-    );
-  });
-
-  it('keeps its methods through `.weights()`', () => {
-    expect(p.array(learned().weights({ other: 9 })).encode(prices)).not.toEqual(
-      p.array(new PFloat().weights({ other: 9 })).encode(prices)
-    );
-  });
-
-  it.each([null, '1'])('rejects the non-number %p', (value) => {
-    expect(() => learned().encode(value as never)).toThrow(/^p\.float expected a number, got /);
+  it('names the number marker, its only one', () => {
+    expect(p.float()._marker()).toBe(STRUCT.NUM);
+    expect(p.float()._markers()).toEqual(new Set([STRUCT.NUM]));
   });
 });

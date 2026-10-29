@@ -2,7 +2,7 @@
  * `.adaptive(options)`: validation at definition and the resolved sizes (spec §2.1).
  */
 import { priorOf } from './prior';
-import type { AdaptiveOptions, LoadedPrior, Resolved } from './types';
+import type { AdaptiveOptions, LoadedPrior, Prior, Resolved } from './types';
 
 /** The structural defaults. */
 export const DEFAULTS = {
@@ -93,4 +93,23 @@ export function resolve(
     history: o.history ?? DEFAULTS.history,
     quantisation: o.quantisation ?? DEFAULTS.quantisation,
   };
+}
+
+/** A node the container sugar reaches (spec Q4): `PNode` as this module sees it. */
+export interface Adaptable {
+  _adapted?(options: AdaptiveOptions, memo: Map<Adaptable, Adaptable>): Adaptable;
+}
+
+/**
+ * `node` with `.adaptive(options)` on every node below it that has neither its own nor
+ * `.learn()`, and on itself (spec Q4), all under one prior: `options.prior`, else `prior`, the
+ * root's default. A node reused in the tree maps to one adapted node.
+ */
+export function applyAdaptive<T extends Adaptable>(
+  node: T,
+  options: AdaptiveOptions,
+  prior: Prior
+): T {
+  const filled = Object.freeze({ ...options, prior: options.prior ?? prior });
+  return (node._adapted?.(filled, new Map()) ?? node) as T;
 }

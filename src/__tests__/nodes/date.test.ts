@@ -4,8 +4,8 @@
 
 import { p, type DateUnit } from '../../index';
 import { mulberry32, trip } from '../support';
+import { STRUCT } from '../../predictor/types';
 import { calendar, checkInRange, iso, utcMonthStart } from '../../nodes/date';
-import { declare, learning } from './declare';
 
 describe('Schema date', () => {
   it.each([
@@ -404,7 +404,7 @@ describe('p.date().adaptive()', () => {
   });
 });
 
-describe('p.date learned methods', () => {
+describe('p.date learn', () => {
   const DAY = 86_400_000;
   const plain = p
     .date()
@@ -419,7 +419,7 @@ describe('p.date learned methods', () => {
 
   it('round-trips a run of values, inside an array too', () => {
     const values = run(300, 1);
-    for (const node of [plain._open(), plain.weights(weights)._open({ window: 16 })]) {
+    for (const node of [plain.learn(), plain.weights(weights).learn({ window: 16 })]) {
       expect(node._radix).toBeUndefined();
       expect(trip(p.array(node), values)).toEqual(values);
       expect(trip(node, values[0])).toEqual(values[0]);
@@ -428,30 +428,26 @@ describe('p.date learned methods', () => {
 
   it('takes its weights before or after', () => {
     const values = run(200, 2);
-    expect(p.array(plain.weights(weights)._open({ window: 64 })).encode(values)).toEqual(
-      p.array(plain._open({ window: 64 }).weights(weights)).encode(values)
+    expect(p.array(plain.weights(weights).learn({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.learn({ window: 64 }).weights(weights)).encode(values)
     );
   });
 
-  it('learns a skew, its mode symbols at most a twentieth over the static prior of it', () => {
+  it('learns a skew, staying near the static prior of it', () => {
     const values = run(2000, 3);
     const size = (node: typeof plain) => p.array(node).encode(values).length;
-    expect(size(plain._open())).toBeLessThan(size(plain));
-    expect(size(plain.weights(weights)._open())).toBeLessThanOrEqual(
+    expect(size(plain.learn())).toBeLessThan(size(plain));
+    expect(size(plain.weights(weights).learn())).toBeLessThanOrEqual(
       Math.ceil(size(plain.weights(weights)) * 1.05)
     );
   });
 
-  it('written once, spends the bytes of its static form', () => {
-    for (const value of run(20, 4)) {
-      // Unweighted, the static form is a uniform slot and the learned one an
-      // equal-weight bucket, which ends the message in bit-reversed order:
-      // the same states, in another order.
-      expect(plain._open().encode(value)).toHaveLength(plain.encode(value).length);
-      expect(plain.weights(weights)._open().encode(value)).toEqual(
-        plain.weights(weights).encode(value)
-      );
-    }
+  it('takes its learning options, once', () => {
+    const values = run(200, 4);
+    expect(p.array(plain.learn({ window: 8 })).encode(values)).not.toEqual(
+      p.array(plain.learn()).encode(values)
+    );
+    expect(() => plain.learn().learn()).toThrow(new TypeError('p.date learn is already set'));
   });
 
   it('refuses bad options', () => {
@@ -461,131 +457,57 @@ describe('p.date learned methods', () => {
     expect(() => plain.learn({ window: 1.5 })).toThrow(
       new TypeError('p.date learning window must be a positive integer, got 1.5')
     );
-    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)])._open()).toThrow(
+    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)]).learn()).toThrow(
       new RangeError(
         'p.date adaptive prior 32 and window 1024 overflow with weights totalling 35184372088847'
       )
     );
     const cdf = new TypeError('p.date learn takes weights, not a cdf');
-    expect(() => plain.cdf((v) => v)._open()).toThrow(cdf);
-    expect(() => plain._open().cdf((v) => v)).toThrow(cdf);
+    expect(() => plain.cdf((v) => v).learn()).toThrow(cdf);
+    expect(() => plain.learn().cdf((v) => v)).toThrow(cdf);
+  });
+
+  it('learns on the magnitude scale over an unbounded or wide range', () => {
+    const values = [new Date(0), new Date(5 * DAY), new Date(-3 * DAY), new Date(5 * DAY)];
+    expect(trip(p.array(p.date().precision('day').learn()), values)).toEqual(values);
+    expect(trip(p.array(p.date().learn()), values)).toEqual(values);
+  });
+
+  it('refuses a date outside the bounds before learning from it', () => {
+    expect(() => plain.learn().encode(new Date(16 * DAY))).toThrow(RangeError);
   });
 });
 
 describe('p.date methods', () => {
-  const start = Date.UTC(2024, 0, 1);
-  const random = mulberry32(31);
-  let at = start;
-  const times = Array.from(
-    { length: 300 },
-    () => new Date((at += 1000 * (1 + Math.floor(random() * 9))))
-  );
-
-  it('spells each date after the first as its difference in buckets', () => {
-    const node = declare(p.date().min(start).precision('second'), 'delta');
-    const bytes = p.array(node).encode(times);
-    const plain = p.array(p.date().min(start).precision('second')).encode(times);
-    expect(bytes.length).toBeLessThan(plain.length / 2);
-    expect(p.array(node).decode(bytes)).toEqual(times);
-    const three = times.slice(0, 3);
-    expect(p.array(node).length(3).decode(p.array(node).length(3).encode(three))).toEqual(three);
+  it('refuses learn beside adaptive, either order', () => {
+    const both = new TypeError('p.date learn and adaptive cannot both be set');
+    expect(() => p.date().adaptive().learn()).toThrow(both);
+    expect(() => p.date().learn().adaptive()).toThrow(both);
   });
 
-  it('round-trips with delta, recall and open methods, bounded or not', () => {
-    const repeats = times.map((t, i) => (i % 3 === 0 ? times[0] : t));
-    for (const node of [
-      declare(p.date(), 'delta'),
-      declare(p.date().precision('second'), 'delta')._open(),
-      p.date().precision('second')._open(),
-      declare(p.date().min(start), 'recall'),
-      declare(
-        p
-          .date()
-          .max(new Date(start + 1e7))
-          .precision('second'),
-        'recall'
-      )._open(),
-      declare(
-        p
-          .date()
-          .min(start)
-          .max(new Date(start + 1e7))
-          .precision('second'),
-        'delta',
-        'recall'
-      ),
-    ]) {
-      expect(trip(p.array(node), repeats)).toEqual(
-        repeats.map((t) => new Date(Math.floor(t.getTime() / 1000) * 1000))
-      );
-    }
+  it('sets its precision once, the millisecond default not counting', () => {
+    expect(() => p.date().precision('day').precision('day')).toThrow(
+      new TypeError('p.date precision is already set')
+    );
+    expect(() => p.date().precision('day', 2).precision('second')).toThrow(
+      new TypeError('p.date precision is already set')
+    );
+    expect(p.date().precision('millisecond').precision('day')).toBeDefined();
   });
 
-  it('decodes a recalled date as a new Date', () => {
-    const [one, two] = trip(p.array(declare(p.date(), 'recall')), [times[0], times[0]]);
-    expect(two).toEqual(one);
-    expect(two).not.toBe(one);
+  it('keeps a learner or an adaptive node as it is under a container sugar', () => {
+    const learner = p.date().learn();
+    const adaptive = p.date().adaptive({ window: 8 });
+    expect(learner._adapted({})).toBe(learner);
+    expect(adaptive._adapted({ window: 16 })).toBe(adaptive);
+    const plain = p.date();
+    const adapted = plain._adapted({ window: 16 });
+    expect(adapted).not.toBe(plain);
+    expect(adapted._adaptive).toEqual({ window: 16 });
   });
 
-  it('carries its methods through every rebuild, set once, without weights', () => {
-    const declared = p.array(declare(p.date().min(start).precision('second'), 'delta', 'recall'));
-    for (const node of [
-      declare(p.date(), 'delta', 'recall').precision('second').min(start),
-      declare(declare(p.date(), 'recall').min(start), 'delta').precision('second'),
-    ]) {
-      expect(p.array(node).encode(times)).toEqual(declared.encode(times));
-    }
-    const day = p
-      .date()
-      .min(start)
-      .max(new Date(start + 2 * 86_400_000))
-      .precision('day');
-    expect(declare(day, 'delta')._radix).toBeUndefined();
-    expect(declare(day, 'recall')._fromDigit).toBeUndefined();
-    expect(() => declare(p.date(), 'delta', 'delta')).toThrow(
-      new TypeError('p.date delta is already set')
-    );
-    expect(() => declare(day.weights([1, 1, 1]), 'delta')).toThrow(
-      new TypeError('p.date delta takes no weights')
-    );
-    expect(() => declare(day, 'delta').cdf((t) => t)).toThrow(
-      new TypeError('p.date delta takes no cdf')
-    );
-  });
-});
-
-describe('p.date learn', () => {
-  const plain = p
-    .date()
-    .precision('day')
-    .min(new Date(0))
-    .max(new Date(15 * 86_400_000));
-  const run = (length: number, seed: number) => {
-    const rnd = mulberry32(seed);
-    return Array.from(
-      { length },
-      () => new Date((rnd() < 0.8 ? 3 : Math.floor(rnd() * 16)) * 86_400_000)
-    );
-  };
-
-  it('round-trips a seeded run on its own', () => {
-    const values = run(300, 5);
-    expect(trip(p.array(plain.learn()), values)).toEqual(values);
-  });
-
-  it('round-trips with its methods declared beside it', () => {
-    const values = run(300, 6);
-    expect(trip(p.array(declare(plain.learn(), 'delta', 'recall')), values)).toEqual(values);
-  });
-
-  it('takes its learning options with it, once', () => {
-    const values = run(200, 7);
-    expect(p.array(plain.learn({ window: 8 })).encode(values)).toEqual(
-      p.array(learning(plain.learn(), { window: 8 })).encode(values)
-    );
-    expect(p.array(learning(plain, { window: 8 })._open()).encode(values)).toEqual(
-      p.array(plain._open({ window: 8 })).encode(values)
-    );
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.date learn is already set'));
+  it('names the date marker, its only one', () => {
+    expect(p.date()._marker()).toBe(STRUCT.DATE);
+    expect(p.date()._markers()).toEqual(new Set([STRUCT.DATE]));
   });
 });

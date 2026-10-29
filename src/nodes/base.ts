@@ -16,10 +16,10 @@
  */
 import { Encoder, Decoder } from '../packer';
 import type { CodecOptions, DecodeOptions, OutputType } from '../packer';
+import type { MarkerPrior } from '../predictor/session';
 import type { AdaptiveOptions } from '../predictor/types';
 import type { Kind } from './guards';
-import type { Learning } from './adaptive';
-import type { MethodName } from './methods';
+import { kindMarker } from './markers';
 
 /** One run of values, written or read one after another, each against the ones before it. */
 export interface Run<T> {
@@ -100,21 +100,40 @@ export abstract class PNode<TOut> {
   }
 
   /**
-   * Whether every value the node writes reads back as the same value, -0
-   * as 0 aside, so a field's companions may take a value as the decoder
-   * will get it without reading it back. False unless a node says so, as
-   * one that rounds, floors or otherwise changes values must not.
+   * The node under a container's `.adaptive(options)`: itself where it has
+   * `.adaptive()` or `.learn()` already, else with `options` on itself and
+   * on the nodes below it. `memo` maps each node already adapted to its
+   * adapted form. Present on nodes the sugar reaches.
    */
-  get _exact(): boolean {
-    return false;
+  _adapted?(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PNode<TOut>;
+
+  /**
+   * Whether the node or one below it codes through the predictor, so the
+   * containers around it keep record and list scopes.
+   */
+  get _holdsAdaptive(): boolean {
+    return this._adaptive !== undefined;
   }
 
   /**
-   * The node as `.adaptive(options)` leaves it, any of its methods named in
-   * `except` left as they are: how `p.any` adapts the nodes it builds and
-   * its hints. Present on nodes that adapt.
+   * The first structure symbol of `value`'s spelling, which a parent on the
+   * predictor codes before the value: its kind's, as `p.any` tags it, unless
+   * the node spells values otherwise. Never throws; `_write` refuses a value
+   * the node does not take.
    */
-  _open?(options: Learning, except?: readonly MethodName[]): PNode<TOut>;
+  _marker(value: unknown): number {
+    return kindMarker(value);
+  }
+
+  /** Every structure symbol `_marker` can return; undefined when any can. */
+  _markers(): ReadonlySet<number> | undefined {
+    return undefined;
+  }
+
+  /** The declared weights as prior counts of the node's structure symbols, where it has them. */
+  _markerPrior(): MarkerPrior | undefined {
+    return undefined;
+  }
 
   /** Validate one value and write its digits. The whole codec for this type. */
   abstract _write(enc: Encoder, value: TOut): void;
@@ -144,4 +163,19 @@ export abstract class PNode<TOut> {
     dec.finalize();
     return value;
   }
+}
+
+/** `node` under a container's `.adaptive(options)`, adapted once per `memo`. */
+export function adapt<T>(
+  node: PNode<T>,
+  options: AdaptiveOptions,
+  memo: Map<PNode<any>, PNode<any>>
+): PNode<T> {
+  const done = memo.get(node);
+  if (done !== undefined) {
+    return done as PNode<T>;
+  }
+  const out = node._adapted?.(options, memo) ?? node;
+  memo.set(node, out);
+  return out;
 }

@@ -3,6 +3,7 @@
  */
 
 import { p } from '../../index';
+import { STRUCT } from '../../predictor/types';
 import { mulberry32, trip } from '../support';
 
 describe('Schema bool', () => {
@@ -11,6 +12,14 @@ describe('Schema bool', () => {
     const trues = Array<boolean>(64).fill(true);
     const falses = Array<boolean>(64).fill(false);
     expect(likelyTrue.encode(trues).length).toBeLessThan(likelyTrue.encode(falses).length);
+    expect(trip(likelyTrue, falses)).toEqual(falses);
+  });
+
+  it('spells true and false as their own structure symbols', () => {
+    const node = p.bool();
+    expect([node._marker(true), node._marker(false)]).toEqual([STRUCT.TRUE, STRUCT.FALSE]);
+    expect(node._markers()).toEqual(new Set([STRUCT.TRUE, STRUCT.FALSE]));
+    expect(node._markerPrior()).toBeUndefined();
   });
 });
 
@@ -22,84 +31,93 @@ describe('p.bool digits', () => {
   });
 });
 
+describe('p.bool learn', () => {
+  const plain = p.bool();
+  const values = (() => {
+    const rnd = mulberry32(5);
+    return Array.from({ length: 300 }, () => rnd() < 0.9);
+  })();
+
+  it('round-trips a run, learning the skew under its options', () => {
+    for (const node of [plain.learn(), plain.learn({ window: 8 }), plain.weights([9, 1]).learn()]) {
+      expect(trip(p.array(node), values)).toEqual(values);
+    }
+    expect(p.array(plain.learn()).encode(values)).not.toEqual(p.array(plain).encode(values));
+  });
+
+  it('sets each method once, and not both', () => {
+    expect(() => plain.learn().learn()).toThrow(new TypeError('p.bool learn is already set'));
+    expect(() => plain.learn().adaptive()).toThrow(
+      new TypeError('p.bool learn and adaptive cannot both be set')
+    );
+    expect(() => plain.adaptive().learn()).toThrow(
+      new TypeError('p.bool learn and adaptive cannot both be set')
+    );
+    expect(() => plain.adaptive().adaptive()).toThrow(
+      new TypeError('p.bool adaptive is already set')
+    );
+  });
+
+  it('refuses bad options', () => {
+    expect(() => plain.learn({ window: 0 })).toThrow(
+      new RangeError('p.bool learning window must be a positive integer, got 0')
+    );
+    expect(() => plain.weights([2 ** 45, 2 ** 45]).learn()).toThrow(RangeError);
+  });
+});
+
 describe('p.bool adaptive', () => {
   const plain = p.bool();
-  const weights: [number, number] = [9, 1];
   const run = (length: number, seed: number) => {
     const rnd = mulberry32(seed);
-    return Array.from({ length }, () => rnd() < 0.9);
+    return Array.from({ length }, () => rnd() < 0.8);
   };
 
-  it('round-trips a run of values, inside an array too', () => {
+  it('round-trips a run alone, in a plain array and in an adaptive object', () => {
     const values = run(300, 1);
-    for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 8 })]) {
+    for (const node of [plain.adaptive(), plain.weights([9, 1]).adaptive({ window: 8 })]) {
       expect(node._radix).toBeUndefined();
+      for (const value of values.slice(0, 20)) expect(trip(node, value)).toBe(value);
       expect(trip(p.array(node), values)).toEqual(values);
-      expect(trip(node, values[0])).toEqual(values[0]);
+    }
+    const Row = p.object({ a: plain, b: plain.weights([1, 3]) }).adaptive();
+    const rows = values.map((a, i) => ({ a, b: values[(i * 7) % values.length] }));
+    expect(trip(p.array(Row), rows)).toEqual(rows);
+    expect(trip(p.array(plain).adaptive(), values)).toEqual(values);
+  });
+
+  it('takes its weights as prior counts of its symbols, coded by itself or its parent', () => {
+    const trues = Array<boolean>(12).fill(true);
+    const falses = Array<boolean>(12).fill(false);
+    const node = plain.weights([30, 1]).adaptive();
+    expect(node._markerPrior()?.counts).toEqual([
+      [STRUCT.TRUE, 30],
+      [STRUCT.FALSE, 1],
+    ]);
+    for (const list of [
+      p.array(node).length(12),
+      p
+        .array(plain.weights([30, 1]))
+        .length(12)
+        .adaptive(),
+    ]) {
+      expect(list.encode(trues).length).toBeLessThan(list.encode(falses).length);
     }
   });
 
   it('takes its weights before or after', () => {
     const values = run(200, 2);
-    expect(p.array(plain.weights(weights).adaptive({ window: 64 })).encode(values)).toEqual(
-      p.array(plain.adaptive({ window: 64 }).weights(weights)).encode(values)
-    );
-  });
-
-  it('learns a skew, at most a byte over the static prior of it', () => {
-    const values = run(2000, 3);
-    const size = (node: typeof plain) => p.array(node).encode(values).length;
-    expect(size(plain.adaptive())).toBeLessThan(size(plain));
-    expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
-      size(plain.weights(weights)) + 1
-    );
-  });
-
-  it('written once, spends the bytes of its static form', () => {
-    for (const value of run(20, 4)) {
-      expect(plain.adaptive().encode(value)).toEqual(plain.encode(value));
-      expect(plain.weights(weights).adaptive().encode(value)).toEqual(
-        plain.weights(weights).encode(value)
-      );
-    }
-  });
-
-  it('learns by `.learn()`, spending what `.adaptive()` does', () => {
-    const values = run(300, 5);
-    const size = (node: typeof plain) => p.array(node).encode(values);
-    expect(size(plain.learn())).toEqual(size(plain.adaptive()));
-    expect(size(plain.weights(weights).learn())).toEqual(size(plain.weights(weights).adaptive()));
-    expect(size(plain.learn().weights(weights))).toEqual(size(plain.weights(weights).adaptive()));
-    expect(size(plain.learning({ window: 8 }).learn())).toEqual(
-      size(plain.adaptive({ window: 8 }))
-    );
-    expect(size(plain.learn())).not.toEqual(size(plain));
-  });
-
-  it('sets its learning once and each method once', () => {
-    expect(() => plain.learning({}).learning({})).toThrow(
-      new TypeError('p.bool learning is already set')
-    );
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.bool learn is already set'));
-    expect(() => plain.learning({ window: 8 }).adaptive({ window: 8 })).toThrow(
-      new TypeError('p.bool learning is already set')
-    );
-    expect(() => plain.adaptive({ window: 8 }).learning({ window: 8 })).toThrow(
-      new TypeError('p.bool learning is already set')
+    expect(p.array(plain.weights([9, 1]).adaptive({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.adaptive({ window: 64 }).weights([9, 1])).encode(values)
     );
   });
 
   it('refuses bad options', () => {
     expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.bool learning window must be a positive integer, got 0')
+      new RangeError('p.bool: adaptive window must be at least 1')
     );
     expect(() => plain.adaptive({ window: 1.5 })).toThrow(
-      new TypeError('p.bool learning window must be a positive integer, got 1.5')
-    );
-    expect(() => plain.weights([2 ** 45, 2 ** 45]).adaptive()).toThrow(
-      new RangeError(
-        'p.bool adaptive prior 4 and window 1024 overflow with weights totalling 70368744177664'
-      )
+      new TypeError('p.bool: adaptive window must be an integer, got 1.5')
     );
   });
 });

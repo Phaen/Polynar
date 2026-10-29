@@ -3,7 +3,10 @@
  * is optional: a missing key and an undefined value both decode as missing.
  */
 
-import { p, Encoder, type PNode, type PObject } from '../../index';
+import { inspect } from 'node:util';
+import { Priors } from '../../predictor/prior';
+import { p, Decoder, Encoder, PNode, UnknownVersionError, type PObject } from '../../index';
+import { STRUCT } from '../../predictor/types';
 import { mulberry32, trip } from '../support';
 
 describe('Schema object', () => {
@@ -56,352 +59,275 @@ describe('Schema object', () => {
   );
 });
 
-/** `n` events by twelve users, each with a session and an address of its own when `linked`. */
-const events = (seed: number, n: number, linked: boolean) => {
-  const random = mulberry32(seed);
-  const hex = () => Math.floor(random() * 2 ** 32).toString(16);
-  const people = Array.from({ length: 12 }, (_, i) => ({
-    user: `u${i}`,
-    session: hex(),
-    ip: `10.0.${Math.floor(random() * 256)}.${Math.floor(random() * 256)}`,
-  }));
-  const pick = () => people[Math.floor(random() * people.length)];
-  return Array.from({ length: n }, (_, i) => {
-    const who = pick();
-    const { session, ip } = linked ? who : pick();
-    const stars = Math.floor(random() * 5000);
-    return { id: i, user: who.user, meta: { session, ip }, stars, watchers: stars };
+/** The fields of an object's shape. */
+const shape = (node: PNode<any>): Record<string, PNode<any>> =>
+  (node as unknown as { _shape: Record<string, PNode<any>> })._shape;
+
+/** A node of no declared kinds that spells a number in 0..9 as one digit. */
+class Digit extends PNode<number> {
+  _write(enc: Encoder, value: number): void {
+    enc.compose(value, 10);
+  }
+  _read(dec: Decoder): number {
+    return dec.parse(10);
+  }
+}
+
+describe('p.object().adaptive()', () => {
+  const Item = p.object({
+    name: p.string(),
+    price: p.decimal(0.01).min(0),
+    tags: p.array(p.string()),
   });
-};
-
-type Event = ReturnType<typeof events>[number];
-
-/** The events' schema, adaptive where `adaptive`, and its event object as `shape` makes it. */
-const schema = (adaptive: boolean, shape = (o: PObject<any>) => o): PNode<Event[]> => {
-  const meta = p.object({ session: p.string().adaptive(), ip: p.string().adaptive() });
-  const event = shape(
-    p.object({
-      id: p.int().min(0)._open(),
-      user: p.string().adaptive(),
-      meta: adaptive ? meta.adaptive() : meta,
-      stars: p.int().min(0)._open(),
-      watchers: p.int().min(0)._open(),
-    })
-  );
-  return p.array(adaptive ? event.adaptive() : event).adaptive() as unknown as PNode<Event[]>;
-};
-
-/**
- * The events with numbers in place of strings, and their schema. The
- * predictor codes strings and refuses to inside a write the encoder takes
- * back, so the rollbacks run on numbers.
- */
-const numbered = (rows: Event[]) =>
-  rows.map(({ id, user, meta, stars, watchers }) => ({
-    id,
-    user: Number(user.slice(1)),
-    meta: { session: Number.parseInt(meta.session, 16), ip: Number(meta.ip.split('.')[3]) },
-    stars,
-    watchers,
-  }));
-
-const numberedSchema = (shape: (o: PObject<any>) => PObject<any>): PNode<any> => {
-  const number = () => p.int().min(0)._open();
-  const event = shape(
-    p.object({
-      id: number(),
-      user: number(),
-      meta: p.object({ session: number(), ip: number() }).adaptive(),
-      stars: number(),
-      watchers: number(),
-    })
-  );
-  return p.array(event.adaptive()).adaptive();
-};
-
-const size = <T>(node: PNode<T>, value: T): number => {
-  expect(trip(node, value)).toEqual(value);
-  return node.encode(value).length;
-};
-
-describe('companions of an adaptive object', () => {
-  it('predicts fields from earlier ones of the object and of an object around it', () => {
-    const linked = events(1, 400, true);
-    expect(size(schema(true), linked)).toBeLessThan(size(schema(false), linked) * 0.75);
+  const Order = p.object({
+    id: p.int().min(0),
+    paid: p.bool(),
+    status: p.enum(['new', 'sent', 'done'] as const),
+    at: p.date(),
+    ratio: p.float(),
+    blob: p.binary(),
+    note: p.optional(p.string()),
+    parent: p.nullable(p.int()),
+    either: p.union([p.int(), p.string(), p.null()]),
+    items: p.array(Item),
+    counts: p.map(p.string(), p.int()),
+    extras: p.record(p.bool()),
+    seen: p.set(p.int()),
+    shape: p.tagged('kind', {
+      dot: p.object({}),
+      line: p.object({ length: p.int().min(0) }),
+    }),
+    meta: p.object({ inner: p.object({ deep: p.optional(p.bool()) }) }),
+    nothing: p.null(),
+    anything: p.any(),
+    empty: p.object({}),
+  });
+  type Order = Parameters<typeof Order.encode>[0];
+  const order = (i: number): Order => ({
+    id: i,
+    paid: i % 2 === 0,
+    status: (['new', 'sent', 'done'] as const)[i % 3],
+    at: new Date(1_700_000_000_000 + i * 60_000),
+    ratio: i / 7,
+    blob: new Uint8Array([i, i + 1]),
+    note: i % 3 === 0 ? undefined : `note ${i}`,
+    parent: i % 4 === 0 ? null : i - 1,
+    either: i % 3 === 0 ? i : i % 3 === 1 ? `s${i}` : null,
+    items: Array.from({ length: i % 3 }, (_, k) => ({
+      name: `item ${k}`,
+      price: k + 0.25,
+      tags: k ? ['a', 'b'] : [],
+    })),
+    counts: new Map([[`k${i}`, i]]),
+    extras: { a: true, [`b${i}`]: false },
+    seen: new Set([i, i + 2]),
+    shape: i % 2 ? { kind: 'line', length: i } : { kind: 'dot' },
+    meta: { inner: i % 2 ? { deep: true } : {} },
+    nothing: null,
+    anything: { i, list: [i, 'x'] },
+    empty: {},
   });
 
-  it('costs next to nothing on fields that follow nothing', () => {
-    const control = events(2, 400, false).map((e, i) => ({ ...e, watchers: i * 7 }));
-    expect(size(schema(true), control) - size(schema(false), control)).toBeLessThan(4);
+  it('round-trips fields of every kind, nested objects and optional and nullable ones', () => {
+    const node = Order.adaptive();
+    for (let i = 0; i < 12; i++) {
+      expect(trip(node, order(i))).toEqual(order(i));
+    }
+    const orders = Array.from({ length: 40 }, (_, i) => order(i));
+    expect(trip(p.array(Order).adaptive(), orders)).toEqual(orders);
+    expect(trip(p.array(node), orders)).toEqual(orders);
   });
 
-  it('checks a value taken from another field against its own field', () => {
-    const Row = p.array(p.object({ a: p.int()._open(), b: p.int().max(1000)._open() }).adaptive());
-    const rows = Array.from({ length: 60 }, (_, i) => ({ a: i * 13, b: i * 13 }));
-    expect(trip(Row, rows)).toEqual(rows);
-    expect(() => Row.encode([...rows, { a: 5000, b: 5000 }])).toThrow(/^\[60\]\.b: /);
+  it('round-trips an empty object, alone and in an array', () => {
+    const Empty = p.object({}).adaptive();
+    expect(trip(Empty, {})).toEqual({});
+    expect(trip(p.array(Empty), [{}, {}, {}])).toEqual([{}, {}, {}]);
   });
 
-  it('decodes -0 as its field does', () => {
-    const Row = p.array(
-      p.object({ a: p.int()._open(), b: p.float()._open(), c: p.int()._open() }).adaptive()
-    );
-    const rows = Array.from({ length: 80 }, (_, i) => ({ a: i % 2 ? 0 : -0, b: -0, c: 0 }));
-    const back = trip(Row, rows);
-    expect(
-      back.every(({ a, b, c }) => Object.is(a, 0) && Object.is(b, -0) && Object.is(c, 0))
-    ).toBe(true);
-  });
-
-  it('predicts from the fields of a recalled object', () => {
-    const random = mulberry32(3);
-    const pages = ['/', '/docs', '/pricing', '/blog'].map((path) => ({ path, hits: path.length }));
-    const rows = Array.from({ length: 200 }, () => {
-      const page = pages[Math.floor(random() * pages.length)];
-      return { page, url: `https://acme.io${page.path}`, n: random() };
+  it("decodes a field named '__proto__' as an own property", () => {
+    const Schema = p.object({ ['__proto__']: p.int().min(0).max(9), b: p.string() }).adaptive();
+    const value = Object.defineProperty({ b: 'x' }, '__proto__', {
+      value: 5,
+      writable: true,
+      enumerable: true,
+      configurable: true,
     });
-    const Page = p.object({
-      path: p.string().adaptive(),
-      hits: p.int()._open(),
-      at: p.optional(p.date()),
-    });
-    const Row = p.array(
-      p
-        .object({ page: Page.adaptive(), url: p.string().adaptive(), n: p.float()._open() })
-        .adaptive()
-    );
-    const Bare = p.array(p.object({ page: Page.adaptive(), n: p.float()._open() }).adaptive());
-    expect(
-      size(Row, rows) -
-        size(
-          Bare,
-          rows.map(({ page, n }) => ({ page, n }))
-        )
-    ).toBeLessThan(90);
+    const decoded = Schema.decode(Schema.encode(value as never)) as object;
+    expect(Object.getOwnPropertyDescriptor(decoded, '__proto__')?.value).toBe(5);
+    expect(Object.getPrototypeOf(decoded)).toBe(Object.prototype);
   });
 
-  it('keeps fields of nested arrays of objects apart, item by item', () => {
-    const Leaf = p.object({ k: p.string().adaptive(), v: p.string().adaptive() }).adaptive();
-    const Grid = p.array(p.array(Leaf));
-    const random = mulberry32(4);
-    const grid = Array.from({ length: 20 }, () =>
-      Array.from({ length: 6 }, () => {
-        const k = `k${Math.floor(random() * 5)}`;
-        return { k, v: `${k}!` };
-      })
-    );
-    expect(trip(Grid, grid)).toEqual(grid);
-  });
-
-  it('gives no companion to a field that takes no string or number', () => {
-    const Row = p.array(
-      p.object({ when: p.date(), lazy: p.lazy(() => p.string()), name: p.string() }).adaptive()
-    );
-    const rows = Array.from({ length: 30 }, (_, i) => ({
-      when: new Date(i),
-      lazy: 'x',
-      name: 'x',
+  it('learns a repeated shape', () => {
+    const random = mulberry32(1);
+    const Row = p.object({ a: p.optional(p.int().min(0).max(9)), b: p.nullable(p.bool()) });
+    const rows = Array.from({ length: 300 }, () => ({
+      a: random() < 0.95 ? 3 : undefined,
+      b: random() < 0.95 ? null : true,
     }));
-    expect(trip(Row, rows)).toEqual(rows);
+    const size = (node: PNode<any>) => {
+      expect(trip(node, rows)).toEqual(rows);
+      return node.encode(rows).length;
+    };
+    expect(size(p.array(Row).adaptive())).toBeLessThan(size(p.array(Row)));
   });
 
-  it('takes back what a rolled-back write learned and left in scope', () => {
-    const node = numberedSchema((o) => o.recall());
-    const before = numbered(events(7, 20, true));
-    const tried = numbered(events(8, 100, true));
-    const after = [...numbered(events(9, 40, true)), ...before.slice(0, 5)];
-    const enc = new Encoder();
-    node._write(enc, before);
-    const mark = enc.mark();
-    node._write(enc, tried);
-    enc.rollback(mark);
-    node._write(enc, after);
-    const plain = new Encoder();
-    node._write(plain, before);
-    node._write(plain, after);
-    expect(enc.output()).toEqual(plain.output());
-  });
-});
-
-describe('p.object().follows()', () => {
-  const pinned = (o: PObject<any>) => o.follows({ watchers: 'stars', session: 'user' });
-  const starred = (o: PObject<any>) => o.follows({ watchers: 'stars' });
-
-  it('predicts a field from the earlier one it names', () => {
-    const Row = p.array(
-      pinned(
-        p.object({
-          user: p.string(),
-          session: p.string(),
-          stars: p.int().min(0),
-          watchers: p.int().min(0),
-        })
-      )
-    );
-    const Bare = p.array(
-      p.object({
-        user: p.string(),
-        session: p.string(),
-        stars: p.int().min(0),
-        watchers: p.int().min(0),
-      })
-    );
-    const rows = events(5, 200, true).map(({ user, meta, stars, watchers }) => ({
-      user,
-      session: meta.session,
-      stars,
-      watchers,
-    }));
-    expect(size(Row, rows)).toBeLessThan(size(Bare, rows) * 0.6);
-    // A miss costs the flag and then the value.
-    const missed = rows.map((row, i) => ({ ...row, watchers: i }));
-    expect(size(Row, missed) - size(Bare, missed)).toBeLessThan((2 * 200) / 8 + 2);
+  it('leaves a field with .learn() or its own .adaptive() as it is', () => {
+    const learned = p.bool().learn();
+    const own = p.string().adaptive({ window: 8 });
+    const inner = p.object({ x: p.int() }).adaptive({ window: 16 });
+    const below = p.bool();
+    const kept = p.array(below).learn();
+    const node = p.object({ learned, own, inner, kept, fresh: p.int() }).adaptive();
+    const fields = shape(node);
+    expect(fields.learned).toBe(learned);
+    expect(fields.own).toBe(own);
+    expect(fields.inner).toBe(inner);
+    expect(fields.kept).toBe(kept);
+    expect(fields.fresh._adaptive).toEqual({ prior: Priors.text.source });
+    expect(node._adaptive).toEqual({ prior: Priors.text.source });
+    const value = { learned: true, own: 'a', inner: { x: 1 }, kept: [true, false], fresh: 2 };
+    expect(trip(node, value)).toEqual(value);
   });
 
-  it('learns its odds under .adaptive(), and keeps the field it names', () => {
-    const linked = events(6, 400, true);
-    const control = events(6, 400, false).map((e, i) => ({ ...e, watchers: i * 7 }));
-    expect(size(schema(true, starred), linked)).toBeLessThan(size(schema(false), linked) * 0.75);
-    expect(size(schema(true, starred), control) - size(schema(true), control)).toBeLessThan(12);
+  it('leaves p.null, p.any and a custom node as they are', () => {
+    const nothing = p.null();
+    const anything = p.any();
+    const digit = new Digit();
+    const fields = shape(p.object({ nothing, anything, digit }).adaptive());
+    expect(fields.nothing).toBe(nothing);
+    expect(fields.anything).toBe(anything);
+    expect(fields.digit).toBe(digit);
   });
 
-  it('predicts a field as its previous value with the one it follows swapped in', () => {
-    const random = mulberry32(12);
-    const rows = Array.from({ length: 200 }, () => {
-      const name = Math.floor(random() * 2 ** 32).toString(36);
-      return { name, url: `https://x.io/repos/${name}/forks` };
+  it('maps a node reused in two fields to one adapted node', () => {
+    const point = p.object({ x: p.int(), y: p.int() });
+    const node = p.object({ from: point, to: point, label: p.string() }).adaptive({ window: 32 });
+    const fields = shape(node);
+    expect(fields.from).toBe(fields.to);
+    expect(fields.from).not.toBe(point);
+    expect(fields.from._adaptive).toEqual({ window: 32, prior: Priors.text.source });
+    const memo = new Map<PNode<any>, PNode<any>>();
+    const outer = p.object({ a: point, b: p.array(point) });
+    const adapted = outer._adapted({}, memo);
+    expect(memo.get(point)).toBe(shape(adapted).a);
+    const value = { from: { x: 1, y: 2 }, to: { x: 3, y: 4 }, label: 'l' };
+    expect(trip(node, value)).toEqual(value);
+  });
+
+  it('returns itself from _adapted when it adapts already', () => {
+    const node = p.object({ a: p.int() }).adaptive();
+    expect(node._adapted({ window: 4 }, new Map())).toBe(node);
+  });
+
+  it('ends at a p.lazy cycle and round-trips through it', () => {
+    type Tree = { v: number; kids: Tree[]; next?: Tree };
+    const Tree: PNode<Tree> = p.object({
+      v: p.int(),
+      kids: p.array(p.lazy(() => Tree)),
+      next: p.optional(p.lazy(() => Tree)),
     });
-    const shape = { name: p.string(), url: p.string() };
-    const Bare = p.array(p.object(shape));
-    for (const Row of [
-      p.array(p.object(shape).follows({ url: 'name' })),
-      p.array(p.object(shape).follows({ url: 'name' }).adaptive()),
+    const node = (Tree as unknown as PObject<any>).adaptive() as unknown as PNode<Tree>;
+    const tree: Tree = {
+      v: 1,
+      kids: [
+        { v: 2, kids: [] },
+        { v: 3, kids: [{ v: 4, kids: [] }], next: { v: 5, kids: [] } },
+      ],
+      next: { v: 6, kids: [] },
+    };
+    expect(trip(node, tree)).toEqual(tree);
+    expect(node.decode(node.encode(tree))).toEqual(Tree.decode(Tree.encode(tree)));
+  });
+
+  it('validates its options', () => {
+    const node = p.object({ a: p.int() });
+    expect(() => node.adaptive({ window: 0 })).toThrow(
+      new RangeError('p.object: adaptive window must be at least 1')
+    );
+    expect(() => p.object({}).adaptive({ order: 3 })).toThrow(
+      new TypeError("p.object: adaptive order 3 differs from the prior's order 8")
+    );
+    expect(() => node.adaptive().adaptive()).toThrow(
+      new TypeError('p.object adaptive is already set')
+    );
+  });
+
+  it('locates a missing required field at its key', () => {
+    const node = p.object({ id: p.int(), inner: p.object({ name: p.string() }) }).adaptive();
+    expect(() => node.encode({ inner: { name: 'x' } } as never)).toThrow(
+      new TypeError('id: Required field is missing')
+    );
+    expect(() => node.encode({ id: 1, inner: {} } as never)).toThrow(
+      new TypeError('inner.name: Required field is missing')
+    );
+  });
+
+  it('locates an error reading a field at its key', () => {
+    const newer = p.object({ v: p.versioned(p.int(), p.int()) });
+    const older = p.object({ v: p.versioned(p.int()) });
+    for (const [write, read] of [
+      [newer, older],
+      [newer.adaptive(), older.adaptive()],
     ]) {
-      expect(size(Row, rows)).toBeLessThan(size(Bare, rows) * 0.25);
+      const bytes = write.encode({ v: 1 });
+      expect(() => read.decode(bytes)).toThrow(UnknownVersionError);
+      expect(() => read.decode(bytes)).toThrow(/^v: /);
     }
   });
+});
 
-  it('checks a template against its own field', () => {
-    const Rows = p.array(p.object({ a: p.string(), b: p.string().max(6) }).follows({ b: 'a' }));
-    const rows = [
-      { a: 'ab', b: 'ab!' },
-      { a: 'abc', b: 'abc!' },
-    ];
-    expect(trip(Rows, rows)).toEqual(rows);
-    expect(() => Rows.encode([...rows, { a: 'abcdef', b: 'abcdef!' }])).toThrow(RangeError);
+describe('a plain object holding an adaptive field', () => {
+  it('holds adaptive where a field does, and round-trips', () => {
+    const plain = p.object({ a: p.int(), b: p.string() });
+    expect(plain._holdsAdaptive).toBe(false);
+    const holding = p.object({ a: p.int(), b: p.string().adaptive() });
+    expect(holding._holdsAdaptive).toBe(true);
+    expect(holding._adaptive).toBeUndefined();
+    expect(holding.adaptive()._holdsAdaptive).toBe(true);
+    const value = { a: 3, b: 'hello' };
+    expect(trip(holding, value)).toEqual(value);
+    const rows = Array.from({ length: 30 }, (_, i) => ({ a: i, b: `row ${i % 4}` }));
+    expect(trip(p.array(holding), rows)).toEqual(rows);
+    expect(trip(p.array(holding).adaptive(), rows)).toEqual(rows);
   });
 
-  it('takes back what a rolled-back write of a followed field learned', () => {
-    const node = numberedSchema(starred);
-    const before = numbered(events(7, 20, true));
-    const tried = numbered(events(8, 100, true));
-    const after = numbered(events(9, 40, true));
+  it('codes no structure symbols of its own', () => {
+    const b = p.string().adaptive();
+    const holding = p.object({ a: p.int().min(0).max(9), b });
     const enc = new Encoder();
-    node._write(enc, before);
-    const mark = enc.mark();
-    node._write(enc, tried);
-    enc.rollback(mark);
-    node._write(enc, after);
-    const plain = new Encoder();
-    node._write(plain, before);
-    node._write(plain, after);
-    expect(enc.output()).toEqual(plain.output());
-  });
-
-  it('codes no flag while the field it follows holds no string or number', () => {
-    const Row = p.array(
-      p
-        .object({ a: p.optional(p.string()), b: p.any() })
-        .follows({ b: 'a' })
-        .recall()
-    );
-    const rows = [
-      { b: 1 },
-      { a: 'x', b: 'x' },
-      { a: 'x', b: { y: 1 } },
-      { a: 'x', b: 'x' },
-      { b: 1 },
-    ];
-    expect(trip(Row, rows)).toEqual(rows);
-  });
-
-  it('checks a value taken from the field it follows against its own field', () => {
-    const Row = p.object({ a: p.int(), b: p.int().max(9) }).follows({ b: 'a' });
-    expect(trip(Row, { a: 3, b: 3 })).toEqual({ a: 3, b: 3 });
-    expect(() => Row.encode({ a: 30, b: 30 })).toThrow(RangeError);
-  });
-
-  it.each([
-    [{ c: 'a' }, '"c" is not a field'],
-    [{ a: 'b' }, '"a" can only follow an earlier field, not "b"'],
-    [{ b: 'b' }, '"b" can only follow an earlier field, not "b"'],
-    [{ b: 'z' }, '"b" can only follow an earlier field, not "z"'],
-  ])('rejects %j', (pins, message) => {
-    const Pair = p.object({ a: p.int(), b: p.int() });
-    expect(() => Pair.follows(pins as never)).toThrow(message);
-  });
-
-  it('rejects a field that already follows one', () => {
-    const Trio = p.object({ a: p.int(), b: p.int(), c: p.int() }).follows({ c: 'a' });
-    expect(() => Trio.adaptive().follows({ c: 'b' })).toThrow('"c" already follows a field');
-    expect(trip(Trio.follows({ b: 'a' }), { a: 1, b: 1, c: 1 })).toEqual({ a: 1, b: 1, c: 1 });
+    p.int().min(0).max(9)._write(enc, 3);
+    b._write(enc, 'hello');
+    expect(holding.encode({ a: 3, b: 'hello' })).toEqual(enc.output());
   });
 });
 
-describe('optional fields of an adaptive object', () => {
-  type Thread = { id: number; count?: number; latest?: string; locked?: boolean; note?: string };
-  const thread = (optional: <T>(node: PNode<T>) => PNode<T | undefined>) =>
-    p.object({
-      id: p.int().min(0)._open(),
-      count: optional(p.int().min(0)._open()),
-      latest: optional(p.string().adaptive()),
-      locked: optional(p.bool().adaptive()),
-      note: optional(p.string()),
-    });
-  const learned = <T>(node: PNode<T>) => p.optional(node).adaptive();
-  const threads = (seed: number, n: number, together: boolean): Thread[] => {
-    const random = mulberry32(seed);
-    return Array.from({ length: n }, (_, id) => {
-      const replied = random() < 0.5;
-      const there = () => (together ? replied : random() < 0.5);
-      const item: Thread = { id };
-      if (there()) item.count = Math.floor(random() * 9);
-      if (there()) item.latest = `${1000 + Math.floor(random() * 50)}`;
-      if (there()) item.locked = random() < 0.1;
-      if (random() < 0.3) item.note = 'see above';
-      return item;
-    });
-  };
-  const node = p.array(thread(learned).adaptive()).adaptive() as unknown as PNode<Thread[]>;
-
-  it('learns fields that come and go together', () => {
-    const together = size(node, threads(1, 200, true));
-    const apart = size(node, threads(1, 200, false));
-    expect(together).toBeLessThan(apart - 25);
+describe('p.object internals', () => {
+  it('starts every value with the object marker', () => {
+    const node = p.object({ a: p.int() });
+    expect(node._marker()).toBe(STRUCT.OBJ_START);
+    expect([...node._markers()]).toEqual([STRUCT.OBJ_START]);
   });
 
-  it('decodes every way the fields are there, under declared weights and inside a recall', () => {
-    const weighted = <T>(inner: PNode<T>) => p.optional(inner).weights([9, 1]).adaptive();
-    const recalled = thread(weighted).adaptive().recall();
-    const values = threads(2, 120, false);
-    expect(size(p.array(recalled).adaptive(), [...values, ...values.slice(0, 20)])).toBeGreaterThan(
-      0
-    );
-    expect(size(thread(learned).adaptive(), { id: 0 })).toBeGreaterThan(0);
+  it('rebuilds with other methods', () => {
+    const node = p.object({ a: p.int() });
+    const adaptive = node._withMethods({ adaptive: {} });
+    expect(adaptive._adaptive).toEqual({});
+    expect(trip(adaptive, { a: 1 })).toEqual({ a: 1 });
+    expect(node._has('a')).toBe(true);
+    expect(node._has('toString')).toBe(false);
   });
+});
 
-  it('leaves the flags to fields without .adaptive() and to an object without it', () => {
-    const fixed = <T>(inner: PNode<T>) => p.optional(inner);
-    const values = threads(3, 60, true);
-    expect(size(p.array(thread(fixed).adaptive()).adaptive(), values)).toBeGreaterThan(0);
-    expect(size(p.array(thread(learned)).adaptive(), values)).toBeGreaterThan(0);
-  });
-
-  it('refuses a missing required field among them', () => {
-    expect(() =>
-      thread(learned)
-        .adaptive()
-        .encode({ count: 1 } as Thread)
-    ).toThrow(new TypeError('id: Required field is missing'));
+describe('PNode', () => {
+  it('defaults a custom node', () => {
+    const digit = new Digit();
+    expect(inspect(digit)).toBe('Digit');
+    expect(digit._takesUndefined()).toBe(true);
+    expect(digit._holdsAdaptive).toBe(false);
+    expect(digit._marker(3)).toBe(STRUCT.INT);
+    expect(digit._markers()).toBeUndefined();
+    expect(digit._markerPrior()).toBeUndefined();
+    expect(digit.decode(digit.encode(7, { type: 'text' }), { type: 'text' })).toBe(7);
+    expect(trip(p.object({ d: digit }).adaptive(), { d: 4 })).toEqual({ d: 4 });
   });
 });

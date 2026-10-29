@@ -1098,6 +1098,23 @@ describe('MessageState / state', () => {
 });
 
 describe('composeSelector / composeAlternatives', () => {
+  it('charge a selector and its alternatives to a try that is running', () => {
+    const enc = new Encoder();
+    const chosen = enc.decide([0, 1], [0, 1], (choice) => {
+      const group = {};
+      enc.composeSelector(group, [
+        [0, 1, 2],
+        [1, 1, 2],
+      ]);
+      enc.composeAlternatives(group, [
+        [0, 1, 4],
+        [1, 1, 4],
+      ]);
+      enc.compose(0, choice === 0 ? 1000 : 2);
+    });
+    expect(chosen).toBe(1);
+  });
+
   /** A uniform digit, a group's selector, or one of a group's symbols. */
   type Step =
     | ['u', number, number]

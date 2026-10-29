@@ -7,6 +7,7 @@ import { typedArrayKind, type Kind, type TypedArray } from './guards';
 import { checkUnset, type LengthBounds } from './lattice';
 import type { Cdf } from './weights';
 import { Learned, PlainText, type Symbols } from './text';
+import { markerOfKind } from './markers';
 
 /**
  * A typed-array class: its element width and a way to build it on a buffer.
@@ -184,6 +185,18 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
   weights(w: readonly number[]): PBinary<A> {
     checkUnset(this._bounds.prior, 'p.binary', 'prior');
     return this._with({ ...this._bounds, prior: w });
+  }
+
+  _adapted(options: AdaptiveOptions): PBinary<A> {
+    return this._adaptive !== undefined ? this : this.adaptive(options);
+  }
+
+  _marker(): number {
+    return markerOfKind(this._kinds[0]);
+  }
+
+  _markers(): ReadonlySet<number> {
+    return new Set([this._marker()]);
   }
 
   /**

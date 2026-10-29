@@ -3,21 +3,12 @@
  */
 
 import { p, Encoder, CorruptInputError, type AnyValue, type PNode, type PAny } from '../../index';
-import {
-  AnyMissing,
-  MAX_DEPTH,
-  MAX_KEYS,
-  TAG_TIERS,
-  sameValue,
-  treeKey,
-  typedNode,
-} from '../../nodes/any';
+import { AnyMissing, MAX_DEPTH, TAG_TIERS, sameValue, typedNode } from '../../nodes/any';
 import { PBinary, type TypedArrayClass } from '../../nodes/binary';
 import type { Float16ArrayLike } from '../../nodes/guards';
 import { members } from '../../nodes/members';
-import { Scope } from '../../nodes/companion';
 import { DEPTH } from '../../nodes/lazy';
-import { mulberry32, trip } from '../support';
+import { trip } from '../support';
 
 /** The static tag table inside a plain `p.any`. */
 const tags = () => members(TAG_TIERS.length, { weights: TAG_TIERS }, 'p.any');
@@ -43,33 +34,11 @@ const everyKind = (): AnyValue => ({
   typed: [Int16Array.of(-1, 2), Float64Array.of(0.5), BigUint64Array.of(1n)],
 });
 
-/**
- * The bytes `p.any().adaptive()` gives this value, its schema built key by
- * key, pinned as a regression check of its wire format.
- */
-const LEARNING_VALUE = {
-  name: 'Ada',
-  tags: ['x', 'y', 'x'],
-  rows: [
-    { id: 1, ok: true, at: null },
-    { id: 2, ok: false, at: 2.5 },
-  ],
-  big: -12n,
-};
-const LEARNING_BYTES = [
-  1, 132, 83, 94, 5, 246, 158, 204, 119, 118, 162, 213, 170, 35, 101, 88, 58, 205, 46, 151, 57, 17,
-  149, 88, 167, 7, 252, 154, 44, 247, 241, 78, 250, 39, 40, 12, 98, 233, 18, 227, 204, 103, 31, 177,
-];
-
 /** The tags of the kinds the hand-built messages use. */
 const TAG = { INT: 4, FLOAT: 5, BIGINT: 6, REGEXP: 9, OBJECT: 11, FLOAT64_ARRAY: 24 };
 
 describe('Schema any', () => {
-  it.each([
-    ['p.any()', p.any()],
-    ['p.any().adaptive()', p.any().adaptive()],
-    ['p.any().adaptive({ window: 30 })', p.any().adaptive({ window: 30 })],
-  ])('round-trips a value of every kind through %s', (_name, node) => {
+  it.each([['p.any()', p.any()]])('round-trips a value of every kind through %s', (_name, node) => {
     const value = everyKind();
     const back = trip(node, value) as { buffer: ArrayBuffer; view: DataView };
     expect(back).toEqual(value);
@@ -77,34 +46,8 @@ describe('Schema any', () => {
     expect([...new Uint8Array(back.view.buffer)]).toEqual([4, 5]);
   });
 
-  it('keeps the pinned wire format of p.any().adaptive()', () => {
-    expect([...p.any().adaptive().encode(LEARNING_VALUE)]).toEqual(LEARNING_BYTES);
-    expect(p.any().adaptive().decode(Uint8Array.from(LEARNING_BYTES))).toEqual(LEARNING_VALUE);
-  });
-
-  it('spells a recurring key list again when plain, and recalls it when adaptive', () => {
-    const once = [{ a: 1, b: 2 }];
-    const twice = [...once, ...once];
-    const extra = (node: PNode<AnyValue>) => node.encode(twice).length - node.encode(once).length;
-    expect(trip(p.any(), twice)).toEqual(twice);
-    expect(extra(p.any().adaptive())).toBeLessThan(extra(p.any()));
-  });
-
-  it.each([
-    [0, RangeError],
-    [-1, RangeError],
-    [1.5, TypeError],
-  ])('refuses the learning window %p', (window, type) => {
-    expect(() => p.any().adaptive({ window })).toThrow(
-      new type(`p.any learning window must be a positive integer, got ${window}`)
-    );
-  });
-
-  it('halves its counts after the declared window', () => {
-    const value = Array.from({ length: 400 }, (_, i) => (i < 200 ? 'ok' : i % 3 ? 'warn' : i));
-    const windowed = p.any().adaptive({ window: 30 });
-    expect(trip(windowed, value)).toEqual(value);
-    expect(windowed.encode(value)).not.toEqual(p.any().adaptive().encode(value));
+  it('refuses .adaptive(), which lands in stage 2', () => {
+    expect(() => p.any().adaptive()).toThrow(new Error('p.any().adaptive() lands in stage 2'));
   });
 
   it('copies shared references', () => {
@@ -133,7 +76,7 @@ describe('Schema any', () => {
    */
   const tooDeep = (node: PNode<AnyValue>, value: AnyValue): Uint8Array => {
     const enc = new Encoder();
-    enc.state(node, () => ({ depth: -1, children: new Map(), scope: new Scope() }));
+    enc.state(node, () => ({ depth: -1 }));
     node._write(enc, value);
     return enc.output();
   };
@@ -149,11 +92,9 @@ describe('Schema any', () => {
   });
 
   it.each(wrappers)('refuses to encode %s nesting deeper than MAX_DEPTH', (_kind, wrap) => {
-    for (const node of [p.any(), p.any().adaptive()]) {
-      expect(() => node.encode(nest(wrap, MAX_DEPTH + 1))).toThrow(
-        new RangeError(`p.any nests deeper than ${MAX_DEPTH} levels`)
-      );
-    }
+    expect(() => p.any().encode(nest(wrap, MAX_DEPTH + 1))).toThrow(
+      new RangeError(`p.any nests deeper than ${MAX_DEPTH} levels`)
+    );
   });
 
   it('leaves the path out of the depth error, even below a field', () => {
@@ -168,21 +109,9 @@ describe('Schema any', () => {
     const loop: { [key: string]: AnyValue } = {};
     loop.self = loop;
     expect(() => p.any().encode(loop)).toThrow(message);
-    expect(() =>
-      p
-        .any()
-        .adaptive()
-        .encode([{ self: 1 }, loop])
-    ).toThrow(message);
     const ring: AnyValue[] = [];
     ring.push(ring);
     expect(() => p.any().encode(ring)).toThrow(message);
-    expect(() =>
-      p
-        .any()
-        .adaptive()
-        .encode([[1], ring])
-    ).toThrow(message);
     const map = new Map<AnyValue, AnyValue>();
     map.set('self', [map]);
     expect(() => p.any().encode(map)).toThrow(message);
@@ -192,11 +121,10 @@ describe('Schema any', () => {
   });
 
   it.each(wrappers)('rejects input with %s nesting deeper than MAX_DEPTH', (_kind, wrap) => {
-    for (const node of [p.any(), p.any().adaptive()]) {
-      expect(() => node.decode(tooDeep(node, nest(wrap, MAX_DEPTH + 1)))).toThrow(
-        new CorruptInputError(`p.any input nests deeper than ${MAX_DEPTH} levels`)
-      );
-    }
+    const node = p.any();
+    expect(() => node.decode(tooDeep(node, nest(wrap, MAX_DEPTH + 1)))).toThrow(
+      new CorruptInputError(`p.any input nests deeper than ${MAX_DEPTH} levels`)
+    );
   });
 
   it('packs a JSON-like value into fewer bytes than a uniform tag would', () => {
@@ -224,66 +152,10 @@ describe('Schema any', () => {
     expect(node.decode(bytes)).toEqual(value);
   });
 
-  it.each([
-    ['p.any()', p.any()],
-    ['p.any().adaptive()', p.any().adaptive()],
-  ])('names the key of a record value %s cannot encode', (_name, node) => {
-    expect(() => node.encode({ a: [Symbol('s') as never] })).toThrow(
+  it('names the key of a record value p.any() cannot encode', () => {
+    expect(() => p.any().encode({ a: [Symbol('s') as never] })).toThrow(
       'a[0]: p.any cannot encode symbol values'
     );
-  });
-
-  it('packs 100 strings drawn from 3 into at most 30 bytes', () => {
-    const rand = mulberry32(1);
-    const statuses = Array.from({ length: 100 }, () => {
-      const r = rand();
-      return r < 0.9 ? 'ok' : r < 0.99 ? 'warn' : 'error';
-    });
-    expect(new Set(statuses).size).toBe(3);
-    expect(trip(p.any().adaptive(), statuses)).toEqual(statuses);
-    expect(p.any().adaptive().encode(statuses).length).toBeLessThanOrEqual(30);
-  });
-
-  it('spends about a byte per object on keys when the objects share a shape', () => {
-    const objects = Array.from({ length: 20 }, (_, i) => ({ id: i, name: 'x', ok: i % 2 === 0 }));
-    const tuples = objects.map(({ id, name, ok }) => [id, name, ok]);
-    expect(trip(p.any().adaptive(), objects)).toEqual(objects);
-    expect(p.any().adaptive().encode(objects).length).toBeLessThanOrEqual(
-      p.any().adaptive().encode(tuples).length + objects.length
-    );
-  });
-
-  it('spends under a bit on each boolean of a long run', () => {
-    const flags = Array.from({ length: 200 }, (_, i) => i % 7 !== 0);
-    expect(trip(p.any().adaptive(), flags)).toEqual(flags);
-    expect(p.any().adaptive().encode(flags).length).toBeLessThan(flags.length / 8);
-  });
-
-  it('learns per node, so two nodes in one object each spell a string anew', () => {
-    const value = { a: 'hello', b: 'hello' };
-    const shared = p.any().adaptive();
-    const together = p.object({ a: shared, b: shared });
-    const apart = p.object({ a: p.any().adaptive(), b: p.any().adaptive() });
-    expect(trip(together, value)).toEqual(value);
-    expect(trip(apart, value)).toEqual(value);
-    expect(together.encode(value).length).toBeLessThan(apart.encode(value).length);
-  });
-
-  it('copies stretches that strings share', () => {
-    const value = [
-      'the quick brown fox jumps over the lazy dog',
-      'the quick brown cat jumps over the lazy dog',
-      'a quick brown fox jumps over a lazy dog',
-    ];
-    expect(trip(p.any().adaptive(), value)).toEqual(value);
-  });
-
-  it('recalls a Map key among string values, and round-trips a record key', () => {
-    const node = p.any().adaptive();
-    const recalled = node.encode(new Map([['hello', 'hello']]));
-    expect(recalled.length).toBeLessThan(node.encode(new Map([['hello', 'world']])).length);
-    const record = { éè: 'éè' };
-    expect(trip(node, record)).toEqual(record);
   });
 
   it('round-trips Maps and Sets of any values, keys included', () => {
@@ -602,10 +474,7 @@ describe('Schema any', () => {
     expect(New.decode(bytes)).toEqual(migrated);
   });
 
-  it.each([
-    ['p.any()', () => p.any()],
-    ['p.any().adaptive()', () => p.any().adaptive()],
-  ])(
+  it.each([['p.any()', () => p.any()]])(
     'round-trips %s through p.lazy recursion, with nothing left over between messages',
     (_name, any) => {
       type Tree = { v?: AnyValue; kids: Tree[] };
@@ -639,14 +508,14 @@ describe('p.any hints', () => {
     expect(p.any([]).encode(value)).toEqual(p.any().encode(value));
   });
 
-  it.each([
-    ['p.any(hints)', p.any([uuid]), p.any()],
-    ['p.any(hints).adaptive()', p.any([uuid]).adaptive(), p.any().adaptive()],
-  ])('codes the values a hint takes behind its tag, at any depth, through %s', (_n, node, bare) => {
-    const value = { ids, deep: [new Map([[ids[0], new Set([ids[1], 'other'])]])], n: 1 };
-    expect(trip(node, value)).toEqual(value);
-    expect(node.encode(value).length).toBeLessThan(bare.encode(value).length);
-  });
+  it.each([['p.any(hints)', p.any([uuid]), p.any()]])(
+    'codes the values a hint takes behind its tag, at any depth, through %s',
+    (_n, node, bare) => {
+      const value = { ids, deep: [new Map([[ids[0], new Set([ids[1], 'other'])]])], n: 1 };
+      expect(trip(node, value)).toEqual(value);
+      expect(node.encode(value).length).toBeLessThan(bare.encode(value).length);
+    }
+  );
 
   it('tries the hints of the value kind in order, and takes the first that writes it', () => {
     const small = p.int().min(0).max(3);
@@ -676,24 +545,6 @@ describe('p.any hints', () => {
     expect(node.encode([3, 1, 2]).length).toBeGreaterThan(node.encode([1, 2, 3]).length);
   });
 
-  it('keeps its hints through .adaptive(), in their adaptive form where they have one', () => {
-    const counts = Array.from({ length: 200 }, (_, i) => (i % 5 === 0 ? 7 : 3));
-    const hinted = p.any([p.int().min(0).max(10)]);
-    expect(trip(hinted.adaptive(), counts)).toEqual(counts);
-    expect(hinted.adaptive().encode(counts).length).toBeLessThan(hinted.encode(counts).length);
-    // A hint without .adaptive() codes as declared.
-    const nulls = p.any([p.null()]).adaptive();
-    expect(trip(nulls, [null, { a: null }])).toEqual([null, { a: null }]);
-  });
-
-  it('recalls the values of a hint that takes only strings, under .adaptive()', () => {
-    const node = p.any([uuid]).adaptive();
-    const once = node.encode([ids[0], ids[1]]).length;
-    expect(node.encode([ids[0], ids[1], ids[0], ids[1]]).length).toBeLessThan(once + 4);
-    const both = { a: ids[0], b: ids[0] };
-    expect(trip(node, both)).toEqual(both);
-  });
-
   it('counts a hint value as a level, so a hint holding p.any cannot nest without bound', () => {
     const Any: PAny = p.any([p.array(p.lazy((): PNode<AnyValue> => Any))]);
     let deep: AnyValue = 0;
@@ -702,131 +553,12 @@ describe('p.any hints', () => {
       new RangeError(`p.any nests deeper than ${MAX_DEPTH} levels`)
     );
     const enc = new Encoder();
-    enc.state(Any, () => ({ depth: -1, children: new Map(), scope: new Scope() }));
+    enc.state(Any, () => ({ depth: -1 }));
     enc.state(DEPTH, () => ({ depth: -1 }));
     Any._write(enc, deep);
     expect(() => Any.decode(enc.output())).toThrow(
       new CorruptInputError(`p.any input nests deeper than ${MAX_DEPTH} levels`)
     );
-  });
-});
-
-describe('p.any().adaptive() per key', () => {
-  it('learns each key apart: steady ids under one key cost a few bits each', () => {
-    const rows = Array.from({ length: 100 }, (_, i) => ({ id: 1000 + i, n: (i * 7919) % 1000 }));
-    const node = p.any().adaptive();
-    expect(trip(node, rows)).toEqual(rows);
-    const ids = rows.map(({ id }) => ({ id }));
-    expect(node.encode(ids).length).toBeLessThan(ids.length);
-  });
-
-  it('learns the decimals of each key apart', () => {
-    const rows = Array.from({ length: 100 }, (_, i) => ({
-      price: ((i * 7919) % 10000) / 100,
-      at: [52 + i / 1e4, -0, NaN, 0.1 + 0.2],
-    }));
-    const node = p.any().adaptive();
-    expect(trip(node, rows)).toEqual(rows);
-    const prices = rows.map(({ price }) => ({ price }));
-    expect(node.encode(prices).length).toBeLessThan(p.any().encode(prices).length / 2);
-  });
-
-  it('starts a new key from what every key learned', () => {
-    const node = p.any().adaptive();
-    const value = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`k${i}`, [i, i + 1]]));
-    expect(trip(node, value)).toEqual(value);
-  });
-
-  it('recalls a whole array or record equal to one coded earlier, as a copy', () => {
-    const node = p.any().adaptive();
-    const item = { x: 1, tags: ['a', 'b'] };
-    const value = { a: item, b: item, c: [item, { ...item }], d: [item.tags, item.tags] };
-    const back = trip(node, value) as typeof value;
-    expect(back).toEqual(value);
-    expect(back.a).not.toBe(back.b);
-    expect(back.c[0]).not.toBe(back.c[1]);
-    const other = { a: item, b: { x: 1, tags: ['a', 'c'] } };
-    expect(node.encode({ a: item, b: item }).length).toBeLessThan(node.encode(other).length);
-  });
-
-  it('lists containers it cannot recall all the same', () => {
-    const node = p.any().adaptive();
-    const value = [[1n], [1n], { at: new Date(0) }, { at: new Date(0) }, [-0], [-0], [], []];
-    expect(trip(node, value)).toEqual(value);
-  });
-
-  it('refuses a recall before any container was coded', () => {
-    const enc = new Encoder();
-    members(TAG_TIERS.length + 1, { weights: [...TAG_TIERS, 1] }, 'p.any').write(
-      enc,
-      TAG_TIERS.length
-    );
-    expect(() => p.any().adaptive().decode(enc.output())).toThrow(
-      new CorruptInputError('p.any recalls a container before any was coded')
-    );
-  });
-
-  it('refuses a value too deep to recall where it is too deep to encode', () => {
-    let deep: AnyValue = 0;
-    for (let i = 0; i <= MAX_DEPTH; i++) deep = [deep];
-    expect(() =>
-      p
-        .any()
-        .adaptive()
-        .encode([[1], deep])
-    ).toThrow(new RangeError(`p.any nests deeper than ${MAX_DEPTH} levels`));
-  });
-});
-
-describe('treeKey', () => {
-  const key = (value: unknown) => treeKey(value, new WeakMap());
-
-  it('spells JSON values', () => {
-    expect(key('a"b')).toBe('"a\\"b"');
-    expect(key(1.5)).toBe('1.5');
-    expect(key(true)).toBe('true');
-    expect(key(false)).toBe('false');
-    expect(key(null)).toBe('null');
-    expect(key([1, 'x', [null]])).toBe('[1,"x",[null]]');
-    expect(key({ a: 1, '"': [] })).toBe('{"a":1,"\\"":[]}');
-    expect(key(JSON.parse('{"__proto__":{}}'))).toBe('{"__proto__":{}}');
-    expect(key(Object.assign(Object.create(null) as object, { a: 1 }))).toBe('{"a":1}');
-  });
-
-  it.each([
-    ['undefined', undefined],
-    ['-0', -0],
-    ['NaN', NaN],
-    ['Infinity', Infinity],
-    ['a bigint', 1n],
-    ['a symbol', Symbol('s')],
-    ['a function', () => 0],
-    ['a Date', new Date(0)],
-    ['a Map', new Map()],
-    ['a hole', [1, , 3]],
-    ['an array holding a non-JSON value', [1, undefined]],
-    ['a record holding a non-JSON value', { a: -0 }],
-  ])('has none for %s', (_name, value) => {
-    expect(key(value)).toBeNull();
-  });
-
-  it('has none for a value holding itself or nesting past MAX_DEPTH', () => {
-    const ring: unknown[] = [1];
-    ring.push(ring);
-    expect(key(ring)).toBeNull();
-    let deep: unknown = 0;
-    for (let i = 0; i <= MAX_DEPTH; i++) deep = [deep];
-    expect(key(deep)).toBeNull();
-    let fits: unknown = 0;
-    for (let i = 0; i < MAX_DEPTH; i++) fits = [fits];
-    expect(key(fits)).toBe(`${'['.repeat(MAX_DEPTH)}0${']'.repeat(MAX_DEPTH)}`);
-  });
-
-  it('keeps each container key, and reuses it for a shared one', () => {
-    const memo = new WeakMap<object, string | null>();
-    const shared = { k: 1 };
-    expect(treeKey({ a: shared, b: shared }, memo)).toBe('{"a":{"k":1},"b":{"k":1}}');
-    expect(memo.get(shared)).toBe('{"k":1}');
   });
 });
 
@@ -895,51 +627,5 @@ describe('sameValue', () => {
     const ring: unknown[] = [1];
     ring.push(ring);
     expect(sameValue([1, [1, 2]], ring)).toBe(false);
-  });
-});
-
-describe('p.any().adaptive() key cap', () => {
-  it('gives the first MAX_KEYS keys a codec each and shares one among the rest', () => {
-    const node = p.any().adaptive();
-    const value = Object.fromEntries(
-      Array.from({ length: MAX_KEYS + 500 }, (_, i) => [
-        `k${i}`,
-        i % 3 === 0 ? [i, { n: i }] : i % 3 === 1 ? new Map([[`m${i}`, new Set([i])]]) : `v${i}`,
-      ])
-    );
-    const enc = new Encoder();
-    node._write(enc, value);
-    const { children, overflow } = enc.state(node, () => ({
-      children: new Map(),
-      overflow: undefined,
-    })) as { children: Map<string, unknown>; overflow?: unknown };
-    expect(children.size).toBe(MAX_KEYS);
-    expect(overflow).toBeDefined();
-    expect(trip(node, value)).toEqual(value);
-  });
-
-  it('drops the codecs a rolled-back write built', () => {
-    const node = p.any().adaptive();
-    const nested = [[1, 2], [[3]]];
-    const tried = new Encoder();
-    const mark = tried.mark();
-    node._write(tried, nested);
-    tried.rollback(mark);
-    const state = tried.state(node, () => ({
-      children: new Map(),
-      overflow: undefined,
-      scope: new Scope(),
-    })) as { children: Map<string, unknown> };
-    expect(state.children.size).toBe(0);
-    node._write(tried, [5]);
-    const plain = new Encoder();
-    node._write(plain, [5]);
-    expect(tried.output()).toEqual(plain.output());
-  });
-
-  it('refuses to write an object inside a try: its keys go through the predictor', () => {
-    const tried = new Encoder();
-    tried.mark();
-    expect(() => p.any().adaptive()._write(tried, { a: 1 })).toThrow(/inside a spelling/);
   });
 });

@@ -11,7 +11,7 @@ import { Encoder, Decoder, Alphabet, CorruptInputError, costUnits } from '../pac
 import type { Charset } from '../packer';
 import { checkAdaptive, resolve } from '../predictor/options';
 import { Priors } from '../predictor/prior';
-import type { AdaptiveOptions } from '../predictor/types';
+import { STRUCT, type AdaptiveOptions } from '../predictor/types';
 import { PNode, type Run } from './base';
 import { describe } from './path';
 import { checkUnset, type LengthBounds } from './lattice';
@@ -41,6 +41,8 @@ import { buildWeights } from './weights';
 import { members, type Members } from './members';
 import { LOWER, MIXED, SHAPE_COUNT, SHAPE_WEIGHTS, plain, restore, shapesOf } from './shape';
 import { Learned, PlainText, type Ascent, type Symbols } from './text';
+
+const STR_MARKERS: ReadonlySet<number> = new Set([STRUCT.STR]);
 
 /** What every text alphabet shares: a length prefix counting UTF-16 code units. */
 abstract class Text {
@@ -654,6 +656,18 @@ export class PString extends PNode<string> {
     return this._with({ ...this._bounds, prior: w });
   }
 
+  _adapted(options: AdaptiveOptions): PString {
+    return this._adaptive !== undefined ? this : this.adaptive(options);
+  }
+
+  _marker(): number {
+    return STRUCT.STR;
+  }
+
+  _markers(): ReadonlySet<number> {
+    return STR_MARKERS;
+  }
+
   /**
    * Code the strings through the similarity predictor: each code point is
    * predicted from what came before it in the message, the node's own past
@@ -696,10 +710,6 @@ export class PString extends PNode<string> {
   prose(model: ProseModel = ProseModels.english): PString {
     checkUnset(this._prose, 'p.string', 'prose');
     return this._with(this._bounds, this._alphabet?.charset, model);
-  }
-
-  get _exact(): boolean {
-    return true;
   }
 
   _write(enc: Encoder, value: string): void {

@@ -71,6 +71,37 @@ export interface MemberAccess {
   read(dec: Decoder): number;
 }
 
+/** A container end a structure step bounds: `end` is an entry only when `allow`. */
+export interface Bound {
+  readonly end: number;
+  readonly allow: boolean;
+}
+
+/**
+ * A choice node's declared weights as prior counts of the structure symbols it is coded by,
+ * loaded once per (`key`, population) on first use.
+ */
+export interface MarkerPrior {
+  readonly key: object;
+  readonly counts: readonly (readonly [sym: number, count: number])[];
+}
+
+/**
+ * Codes a structure symbol (spec §6.5) through the innermost open container's structure
+ * predictor, or the caller's own outside every container. `target` is the node the symbol is the
+ * first structure symbol of, which then takes it with `Session.take`.
+ */
+export interface MarkerAccess {
+  write(enc: Encoder, sym: number, target?: object, bound?: Bound, prior?: MarkerPrior): void;
+  read(dec: Decoder, target?: object, bound?: Bound, prior?: MarkerPrior): number;
+}
+
+/** A container on the predictor: where its children's structure symbols are coded. */
+interface Scope {
+  readonly path: PathKey;
+  readonly o: Resolved;
+}
+
 /** A path's number state and the coder bound to it. */
 interface NumberPath {
   readonly state: NumberState;
@@ -245,6 +276,13 @@ export class Session {
   private readonly records: RecordEntry[][] = [];
   private readonly spaces = new Map<LoadedPrior, Space>();
   private first: Space | null = null;
+  /** The open containers, innermost last; null for a container off the predictor. */
+  private readonly scopes: (Scope | null)[] = [];
+  /** The last structure symbol coded for a node, until that node takes it. */
+  private pendingSym = -1;
+  private pendingFor: object | null = null;
+  /** The choice nodes whose weights each structure population holds. */
+  private readonly loaded = new Map<Population, Set<object>>();
 
   constructor(
     options: SessionOptions = {},
@@ -410,6 +448,92 @@ export class Session {
       },
       read: (dec) => code((d) => d.idAt(dec.parseMember(d.total, d))),
     };
+  }
+
+  /** Opens a container on the predictor: its children's structure symbols code at `path`. */
+  enterScope(path: PathKey, o: Resolved): void {
+    this.scopes.push({ path, o });
+  }
+
+  /** Opens a container off the predictor: its children code no structure symbols for it. */
+  enterPlain(): void {
+    this.scopes.push(null);
+  }
+
+  leaveScope(): void {
+    this.scopes.pop();
+  }
+
+  /** Whether a container on the predictor is the innermost open one. */
+  inScope(): boolean {
+    const top = this.scopes[this.scopes.length - 1];
+    return top !== undefined && top !== null;
+  }
+
+  /** The structure symbol coded last for `node`, −1 when none waits for it. */
+  take(node: object): number {
+    if (this.pendingFor !== node) {
+      return -1;
+    }
+    const sym = this.pendingSym;
+    this.pendingFor = null;
+    this.pendingSym = -1;
+    return sym;
+  }
+
+  /** Hands `sym`, already coded, to `node`, as a structure symbol coded for it. */
+  give(sym: number, node: object): void {
+    this.pendingSym = sym;
+    this.pendingFor = node;
+  }
+
+  /** The structure symbols at the innermost open container, or at `path` outside every one. */
+  marker(path: PathKey, o: Resolved): MarkerAccess {
+    const top = this.scopes[this.scopes.length - 1];
+    const at = top === undefined || top === null ? { path, o } : top;
+    const pred = this.symbols(at.path, at.o, 'structure');
+    const before = (bound?: Bound, prior?: MarkerPrior): [boolean, number] => {
+      if (prior !== undefined) {
+        this.load(this.space(at.o.prior).pathState(at.path, at.o).pop, prior);
+      }
+      return bound === undefined ? [false, END] : [bound.allow, bound.end];
+    };
+    const after = (sym: number, target: object | undefined, bound: Bound | undefined): void => {
+      if (target === undefined || (bound !== undefined && sym === bound.end)) {
+        this.pendingFor = null;
+        this.pendingSym = -1;
+      } else {
+        this.give(sym, target);
+      }
+    };
+    return {
+      write: (enc, sym, target, bound, prior) => {
+        this.checkCommitted();
+        const [allow, end] = before(bound, prior);
+        pred.code(enc, sym, allow, end);
+        after(sym, target, bound);
+      },
+      read: (dec, target, bound, prior) => {
+        const [allow, end] = before(bound, prior);
+        const sym = pred.decode(dec, allow, end);
+        after(sym, target, bound);
+        return sym;
+      },
+    };
+  }
+
+  /** Loads `prior`'s counts into `pop`'s order-0 entry once. */
+  private load(pop: Population, prior: MarkerPrior): void {
+    let keys = this.loaded.get(pop);
+    if (keys === undefined) {
+      keys = new Set();
+      this.loaded.set(pop, keys);
+    }
+    if (keys.has(prior.key)) {
+      return;
+    }
+    keys.add(prior.key);
+    for (const [sym, c] of prior.counts) pop.tab.load(0, sym, c);
   }
 
   enterList(): void {

@@ -1,9 +1,13 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
-import { PNode } from './base';
+import { resolve } from '../predictor/options';
+import { Priors } from '../predictor/prior';
+import { session, type Session } from '../predictor/session';
+import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
+import { PNode, adapt } from './base';
 import { atPath } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
-import type { Cdf } from './weights';
+import { checkIndex, type Cdf } from './weights';
 import type { LearningOptions } from './adaptive';
 import {
   checkOrder,
@@ -14,10 +18,12 @@ import {
   writeOrdinal,
   type Order,
 } from './ordinal';
-import { readRun, writeRun } from './runs';
+import { readRun, runOrder, writeRun } from './runs';
 import { members, type Members } from './members';
-import { CONTAINER_METHODS, learningOf, MethodNode, recallOf, type MethodSet } from './methods';
-import { copy, identity, type Recall } from './recall';
+import { readMarker, writeMarker } from './markers';
+import { learningOf, MethodNode, type MethodSet } from './methods';
+
+const ARRAY_MARKERS: ReadonlySet<number> = new Set([STRUCT.ARR_START]);
 
 const MAX_ARRAY_LENGTH = 2 ** 32 - 1;
 
@@ -34,11 +40,13 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
   private readonly _bounds: LengthBounds;
   private readonly _count: IndexRange;
   private readonly _order: Order;
-  /** The methods the node has, declared or open. */
+  /** How the node learns. */
   readonly _methods: MethodSet;
-  readonly _methodNames = CONTAINER_METHODS;
-  /** Set by `.recall()` or opened: learned where the node learns. */
-  private readonly _recall?: Recall<TItem[]>;
+  readonly _adaptive?: AdaptiveOptions;
+  /** Under `.adaptive()`: the options the array's structure symbols code under. */
+  private readonly _resolved?: Resolved;
+  /** Whether the node or its item codes through the predictor. */
+  private readonly _holds: boolean;
   /**
    * How distinct strings in their own order are spelled, see `./runs`:
    * learned when the count is adaptive.
@@ -61,7 +69,16 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     }
     this._order = order;
     this._methods = methods;
-    this._recall = recallOf(methods, copy);
+    this._adaptive = methods.adaptive;
+    if (this._adaptive !== undefined) {
+      if (bounds.prior !== undefined) {
+        throw new TypeError(
+          'p.array adaptive cannot weigh the count: an adaptive array ends with a symbol'
+        );
+      }
+      this._resolved = resolve(this._adaptive, Priors.text, 'p.array');
+    }
+    this._holds = this._adaptive !== undefined || item._holdsAdaptive;
     this._choice = members(2, learning === undefined ? undefined : { learn: learning }, 'p.array');
   }
 
@@ -114,32 +131,51 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
    * the message goes on. From its second value on, the node spends one bit to
    * stay static, or a few to name the learning rate that paid off. Without a
    * max, the count learns on the magnitude scale from the min instead: by its
-   * distance's bit-length class. Takes weights, not a cdf; part of the wire
-   * format, like the weights.
+   * distance's bit-length class. `window` is how many observations a table's
+   * counts hold before they halve, so the newest weigh most (1024 when left
+   * out, and raised to the number of values counted when smaller), and
+   * `separate` keeps its tables from starting where other nodes of its kind and
+   * window got to. Takes weights, not a cdf; part of the wire format, like the
+   * weights. Not with `.adaptive()`.
    */
-  learn(): PArray<TItem> {
-    return this._declare('learn', 'p.array');
+  learn(options?: LearningOptions): PArray<TItem> {
+    return this._declare('learn', 'p.array', options);
   }
 
   /**
-   * What the node's learning goes by, for `.learn()` and the methods that
-   * learn: `window` is how many observations a table's counts hold before
-   * they halve, so the newest weigh most (1024 when left out, and raised to
-   * the number of values counted when smaller), and `separate` keeps its
-   * tables from starting where other nodes of its kind and window got to.
-   * Set once.
+   * Code the array through the similarity predictor: its start, each item
+   * after the symbol it starts with, and its end in place of a count, as
+   * symbols of the message's structure, `.min()` and `.max()` bounding where
+   * the end may come; and the item as under its own `.adaptive(options)`
+   * unless it has `.adaptive()` or `.learn()` already. A restricted order
+   * still holds: the items go one by one, ascending unless they keep their
+   * own order. Not with `.learn()`, `.weights()` or `.cdf()`. Set once.
    */
-  learning(options: LearningOptions): PArray<TItem> {
-    return this._learning(options, 'p.array');
+  adaptive(options?: AdaptiveOptions): PArray<TItem> {
+    return this._sugar(options, 'p.array');
   }
 
-  /**
-   * Learn with every method the node has: `.learn()`, and `.recall()` opens to
-   * a learned choice per value unless declared, under `options` as
-   * `.learning()` takes them.
-   */
-  adaptive(options?: LearningOptions): PArray<TItem> {
-    return this._adapt(options, 'p.array');
+  _adapted(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PArray<TItem> {
+    if (this._keeps()) {
+      return this;
+    }
+    const item = adapt(this._item, options, memo);
+    return new PArray<TItem>(item, this._bounds, this._order, {
+      ...this._methods,
+      adaptive: options,
+    });
+  }
+
+  get _holdsAdaptive(): boolean {
+    return this._holds;
+  }
+
+  _marker(): number {
+    return STRUCT.ARR_START;
+  }
+
+  _markers(): ReadonlySet<number> {
+    return ARRAY_MARKERS;
   }
 
   /**
@@ -182,18 +218,6 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     return this._with(this._bounds, { ...this._order, unordered: true });
   }
 
-  /**
-   * Spell an array this node already wrote in the message by its place
-   * among the distinct arrays it wrote, and a new one as an escape and then
-   * in full: with n arrays seen, a repeat costs log2(n + 1) bits, less the
-   * more often it recurs. The message's first array
-   * costs nothing extra. Arrays the schema writes the same way are the same
-   * array, and a repeat decodes as a copy of the array first decoded.
-   */
-  recall(): PArray<TItem> {
-    return this._declare('recall', 'p.array');
-  }
-
   /** This node with `methods` in place of its own. */
   _withMethods(methods: MethodSet): PArray<TItem> {
     return new PArray<TItem>(this._item, this._bounds, this._order, methods);
@@ -204,22 +228,111 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
   }
 
   _write(enc: Encoder, value: TItem[]): void {
-    const recall = this._recall;
-    if (recall === undefined) {
+    if (!this._holds) {
       this._spell(enc, value);
-    } else {
-      const key = () => identity((alone) => this._spell(alone, value));
-      recall.write(enc, key, () => this._spell(enc, value));
+      return;
+    }
+    const s = session(enc);
+    const o = this._resolved;
+    if (o !== undefined && s.take(this) < 0) s.marker(this, o).write(enc, STRUCT.ARR_START);
+    this._enter(s);
+    try {
+      if (o === undefined) {
+        this._spell(enc, value, s);
+      } else {
+        this._items(enc, value, o, s);
+      }
+    } finally {
+      this._leave(s);
     }
   }
 
   _read(dec: Decoder): TItem[] {
-    const recall = this._recall;
-    return recall === undefined ? this._unspell(dec) : recall.read(dec, () => this._unspell(dec));
+    if (!this._holds) {
+      return this._unspell(dec);
+    }
+    const s = session(dec);
+    const o = this._resolved;
+    if (o !== undefined && s.take(this) < 0) s.marker(this, o).read(dec);
+    this._enter(s);
+    try {
+      return o === undefined ? this._unspell(dec, s) : this._unitems(dec, o, s);
+    } finally {
+      this._leave(s);
+    }
+  }
+
+  /** Opens the array's list and marker scope. */
+  private _enter(s: Session): void {
+    const o = this._resolved;
+    if (o === undefined) {
+      s.enterPlain();
+    } else {
+      s.enterScope(this, o);
+    }
+    s.enterList();
+  }
+
+  private _leave(s: Session): void {
+    s.leaveList();
+    s.leaveScope();
+  }
+
+  /**
+   * Writes the items under `.adaptive()`, each after its first structure symbol, then the end
+   * unless the array is at its max: in order, or ascending where the order is let go.
+   */
+  private _items(enc: Encoder, value: TItem[], o: Resolved, s: Session): void {
+    const count = value.length;
+    const { lo, hi } = this._count;
+    checkIndex(count, lo, hi, () => `Array length ${count}`);
+    const item = this._item;
+    const min = lo as number;
+    let at: readonly number[] = value.map((_, i) => i);
+    if (restricts(this._order)) {
+      at = ordinal(item)
+        ? ordinalDigits(item, value, this._order, (i) => i).at
+        : runOrder(value, this._order, (i) => i, true);
+    }
+    for (let k = 0; k < count; k++) {
+      const i = at[k];
+      s.nextItem();
+      try {
+        const bound = { end: STRUCT.ARR_END, allow: k >= min };
+        writeMarker(enc, this, o, item, item._marker(value[i]), bound);
+        item._write(enc, value[i]);
+      } catch (error) {
+        throw atPath(error, i);
+      }
+    }
+    if (count !== hi) {
+      s.marker(this, o).write(enc, STRUCT.ARR_END, undefined, { end: STRUCT.ARR_END, allow: true });
+    }
+  }
+
+  /** Reads the items `_items` wrote. */
+  private _unitems(dec: Decoder, o: Resolved, s: Session): TItem[] {
+    const { lo, hi } = this._count;
+    const min = lo as number;
+    const item = this._item;
+    const value: TItem[] = [];
+    while (value.length !== hi) {
+      s.nextItem();
+      const bound = { end: STRUCT.ARR_END, allow: value.length >= min };
+      if (readMarker(dec, this, o, item, bound) === STRUCT.ARR_END) {
+        break;
+      }
+      try {
+        value.push(item._read(dec));
+      } catch (error) {
+        throw atPath(error, value.length);
+      }
+    }
+    return value;
   }
 
   /** Writes the array in full. */
-  private _spell(enc: Encoder, value: TItem[]): void {
+  private _spell(enc: Encoder, value: TItem[], s?: Session): void {
     const count = value.length;
 
     this._count.write(enc, count, () => `Array length ${count}`);
@@ -228,7 +341,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     if (restricts(this._order)) {
       // checkOrder accepted the item when the order was set.
       if (!ordinal(this._item)) {
-        writeRun(enc, this._item, value, this._order, (i) => i, this._choice);
+        writeRun(enc, this._item, value, this._order, (i) => i, this._choice, s);
         return;
       }
       const { digits } = ordinalDigits(this._item, value, this._order, (i) => i);
@@ -242,6 +355,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     let i = 0;
     try {
       for (; i < count; i++) {
+        s?.nextItem();
         this._item._write(enc, value[i]);
       }
     } catch (error) {
@@ -250,7 +364,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
   }
 
   /** Reads an array `_spell` wrote. */
-  private _unspell(dec: Decoder): TItem[] {
+  private _unspell(dec: Decoder, s?: Session): TItem[] {
     const count = this._count.read(dec);
     // No array is longer than 2^32 - 1, so a larger count was never written.
     // Items that take no bits never run out of input to say so themselves.
@@ -271,11 +385,12 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
       return value;
     }
     if (restricts(this._order)) {
-      return readRun(dec, item, count, this._order, this._choice) as TItem[];
+      return readRun(dec, item, count, this._order, this._choice, s) as TItem[];
     }
     let i = 0;
     try {
       for (; i < count; i++) {
+        s?.nextItem();
         value.push(item._read(dec));
       }
     } catch (error) {

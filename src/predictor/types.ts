@@ -205,13 +205,13 @@ export const STRUCT = {
   SET_END: 20,
   BUFFER: 21,
   DATAVIEW: 22,
-  TYPED_0: 23, // ..TYPED_10 = 33
-  HINT: 34,
+  TYPED_0: 23, // ..TYPED_11 = 34
+  HINT: 35,
 } as const;
-export const DIGIT = 35;
+export const DIGIT = 36;
 /** Byte ids are fixed too, so the byte and text alphabets never collide within one id space. */
-export const BYTE_BASE = 36;
-export const CP_BASE = BYTE_BASE + 256; // 292: first id a code point can take
+export const BYTE_BASE = 37;
+export const CP_BASE = BYTE_BASE + 256; // 293: first id a code point can take
 export const ESCAPE = -1;
 
 /** Which symbols a predictor codes; a charset is a text alphabet closed to its members. */

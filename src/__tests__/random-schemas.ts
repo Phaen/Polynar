@@ -192,14 +192,10 @@ const hotGen = <T>(draw: () => T): (() => T) => {
   return () => (rand() < 0.8 ? pick(hot) : draw());
 };
 
-/** A method a node may declare, as its type has them: the learning of its priors, or recall. */
-type Method = 'learn' | 'recall';
+/** A method a node may declare, as its type has them: the learning of its priors. */
+type Method = 'learn';
 
-/**
- * `c` with each of `methods` declared a third of the time, in the order
- * listed, after its other refinements. Under a recall the values come
- * mostly from three drawn up front, so some recur.
- */
+/** `c` with each of `methods` declared a third of the time, in the order listed, after its other refinements. */
 const withMethods = (c: Case, methods: readonly Method[]): Case => {
   const chosen = methods.filter(() => rand() < 1 / 3);
   if (chosen.length === 0) {
@@ -208,9 +204,57 @@ const withMethods = (c: Case, methods: readonly Method[]): Case => {
   return {
     ...c,
     build: (m) => chosen.reduce((n, method) => n[method](), c.build(m)),
-    gen: chosen.includes('recall') ? hotGen(c.gen) : c.gen,
     src: `${c.src}${chosen.map((method) => `.${method}()`).join('')}`,
   };
+};
+
+/**
+ * Whether `a` takes on the node `build` makes: a container's `.adaptive()`
+ * reaches every node below it, which a string or count with a declared
+ * prior refuses.
+ */
+const takes = (a: Step, build: (m: Lib) => Node): boolean => {
+  try {
+    a.apply(build(lib));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * `c` under `.adaptive()` on its root a fourth of the time, which reaches
+ * every node below it, where none refuses it: the default options, apart
+ * from its kin, a window, a short history or a coarse quantisation.
+ */
+const sugarCase = (c: Case): Case => {
+  if (rand() >= 0.25) {
+    return c;
+  }
+  const options = pick([
+    {},
+    { separate: true },
+    { window: randInt(1, 256) },
+    { history: randInt(1, 128) },
+    { quantisation: 2 ** randInt(12, 24) },
+  ]);
+  const a: Step = { apply: (n) => n.adaptive(options), src: `.adaptive(${json(options)})` };
+  return takes(a, c.build)
+    ? { ...c, build: (m) => a.apply(c.build(m)), src: `${c.src}${a.src}` }
+    : c;
+};
+
+/** `.learn()` on a count: the defaults, apart from its kin, or a window of at least `members`. */
+const randLearn = (members: number): Step => {
+  const draw = rand();
+  if (draw < 0.4) {
+    return { apply: (n) => n.learn(), src: '.learn()' };
+  }
+  if (draw < 0.6) {
+    return { apply: (n) => n.learn({ separate: true }), src: '.learn({ separate: true })' };
+  }
+  const window = members + randInt(0, 64);
+  return { apply: (n) => n.learn({ window }), src: `.learn({ window: ${window} })` };
 };
 
 /** The methods of a number: its learning, which `.adaptive()` excludes. */
@@ -1021,15 +1065,13 @@ const ANY_HINTS: readonly Case[] = [
   },
 ];
 
-// Plain or adaptive, with hints now and then; an adaptive window covers the
-// 27 type tags and the hints.
+// With hints now and then.
 const anyCase = (): Case => {
   const hints = rand() < 0.3 ? ANY_HINTS.filter(() => rand() < 0.4) : [];
-  const a = rand() < 0.5 ? randAdaptive(28 + hints.length) : undefined;
   const any = (m: Lib): Node =>
     hints.length === 0 ? m.p.any() : m.p.any(hints.map((h) => h.build(m)));
   return {
-    build: (m) => (a ? a.apply(any(m)) : any(m)),
+    build: any,
     // Most values nest two levels, some up to six; a container holds fewer
     // than one container on average, so deep values stay small. Now and
     // then a value one of the hints takes.
@@ -1037,7 +1079,7 @@ const anyCase = (): Case => {
       hints.length > 0 && rand() < 0.3
         ? pick(hints).gen()
         : anyValue(rand() < 0.2 ? randInt(3, 6) : 2, true),
-    src: `p.any(${hints.length === 0 ? '' : `[${hints.map((h) => h.src).join(', ')}]`})${a ? a.src : ''}`,
+    src: `p.any(${hints.length === 0 ? '' : `[${hints.map((h) => h.src).join(', ')}]`})`,
   };
 };
 
@@ -1107,11 +1149,11 @@ const countSteps = (length: number): Step[] => {
   }
   // Without a max, a count learns on the magnitude scale now and then.
   if (open && rand() < 0.25) {
-    steps.push(randAdaptive(2));
+    steps.push(randLearn(2));
   }
   // A count prior needs a max and a free length.
   if (free && rand() < 0.5) {
-    // A cdf, weights, an adaptive prior, or adaptive weights.
+    // A cdf, weights, a learned prior, or learned weights.
     const r = randInt(0, 3);
     if (r === 0) {
       const cdf = randCdf(0);
@@ -1122,7 +1164,7 @@ const countSteps = (length: number): Step[] => {
       add(`.weights(${json(w)})`, (n) => n.weights(w));
     }
     if (r >= 2) {
-      steps.push(randAdaptive(hi - lo + 1));
+      steps.push(randLearn(hi - lo + 1));
     }
   }
   return steps;
@@ -1137,15 +1179,12 @@ const arrayCase = (depth: number): Case => {
   const long = (): number => (rand() < 0.5 ? randInt(100, 3000) : 256 * randInt(1, 8));
   const length = depth === 1 && rand() < 0.15 ? long() : randInt(0, 4);
   const steps = countSteps(length);
-  return withMethods(
-    {
-      build: (m) => withSteps(m.p.array(item.build(m)), steps),
-      migrates: item.migrates,
-      gen: () => Array.from({ length }, () => item.gen()),
-      src: `p.array(${item.src})${steps.map((s) => s.src).join('')}`,
-    },
-    ['recall']
-  );
+  return {
+    build: (m) => withSteps(m.p.array(item.build(m)), steps),
+    migrates: item.migrates,
+    gen: () => Array.from({ length }, () => item.gen()),
+    src: `p.array(${item.src})${steps.map((s) => s.src).join('')}`,
+  };
 };
 
 // Keys and items come from nodes with far more values than a collection
@@ -1167,7 +1206,7 @@ const fill = <T>(into: T, size: (c: T) => number, length: number, add: (c: T) =>
 
 // One map, record or set over random keys, values and count methods. A
 // record's keys include integer-like ones, which an object lists first.
-const collectionCase = (depth: number): Case => withMethods(collectionOf(depth), ['recall']);
+const collectionCase = (depth: number): Case => collectionOf(depth);
 
 // One map, record or set, before its methods.
 const collectionOf = (depth: number): Case => {
@@ -1244,6 +1283,11 @@ const objectCase = (depth: number): Case => {
       adaptive: mode !== 'plain' && rand() < 0.3 ? randAdaptive(2) : undefined,
     });
   }
+  for (const f of fields) {
+    const inner = f.c;
+    const a = f.adaptive;
+    if (a !== undefined && !takes(a, (m) => m.p.optional(inner.build(m)))) f.adaptive = undefined;
+  }
   const wrap = (m: Lib, f: Field): Node => {
     const inner = f.c.build(m);
     if (f.mode === 'plain') return inner;
@@ -1255,7 +1299,7 @@ const objectCase = (depth: number): Case => {
     f.mode === 'plain'
       ? f.c.src
       : `p.${f.mode}(${f.c.src})${f.w ? `.weights(${json(f.w)})` : ''}${f.adaptive?.src ?? ''}`;
-  return withMethods(objectOf(fields, wrap, fieldSrc), ['recall']);
+  return objectOf(fields, wrap, fieldSrc);
 };
 
 /** The object of `fields`, before its methods. */
@@ -1284,12 +1328,13 @@ const taggedCase = (depth: number): Case => {
   const members: [string, Case][] = [];
   for (let i = 0, n = randInt(1, 3); i < n; i++) members.push([`m${i}`, objectCase(depth - 1)]);
   const w = rand() < 0.5 ? randWeights(members.length, 1000) : undefined;
-  const a = rand() < 0.3 ? randAdaptive(members.length) : undefined;
-  const build = (m: Lib): Node => {
+  const plain = (m: Lib): Node => {
     const node = m.p.tagged('t', Object.fromEntries(members.map(([tag, c]) => [tag, c.build(m)])));
-    const weighted = w ? node.weights(w) : node;
-    return a ? a.apply(weighted) : weighted;
+    return w ? node.weights(w) : node;
   };
+  const drawn = rand() < 0.3 ? randAdaptive(members.length) : undefined;
+  const a = drawn !== undefined && takes(drawn, plain) ? drawn : undefined;
+  const build = (m: Lib): Node => (a ? a.apply(plain(m)) : plain(m));
   return {
     build,
     migrates: members.some(([, c]) => c.migrates),
@@ -1363,7 +1408,11 @@ export const randomCase = (depth: number): Case => {
   }
   const chosen =
     depth > 0 && rand() < 0.4
-      ? pick([arrayCase, objectCase, taggedCase, anyCase, lazyCase, collectionCase] as const)(depth)
+      ? sugarCase(
+          pick([arrayCase, objectCase, taggedCase, anyCase, lazyCase, collectionCase] as const)(
+            depth
+          )
+        )
       : rand() < 0.9
         ? scalarCase()
         : anyCase();

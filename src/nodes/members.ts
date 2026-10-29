@@ -8,7 +8,7 @@ import {
   AdaptivePrior,
   checkAdaptation,
   checkAdaptiveMembers,
-  lineageOf,
+  kinOf,
   type LearningOptions,
 } from './adaptive';
 import { buildWeights, readTable, writeTable, type WeightTable } from './weights';
@@ -96,7 +96,7 @@ class AdaptiveMembers implements Members {
     adaptation: LearningOptions,
     who: string
   ) {
-    this.prior = new AdaptivePrior(rows, count, adaptation.window, who, lineageOf(adaptation));
+    this.prior = new AdaptivePrior(rows, count, adaptation.window, who, kinOf(adaptation));
   }
 
   write(enc: Encoder, pos: number, row = 0): void {

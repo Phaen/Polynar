@@ -2,7 +2,9 @@
  * `p.nullable()`: the value or null.
  */
 
-import { p, Encoder, type PNode } from '../../index';
+import { p, Encoder, Decoder, PNode } from '../../index';
+import { Priors } from '../../predictor/prior';
+import { STRUCT } from '../../predictor/types';
 import { mulberry32, trip } from '../support';
 
 describe('Schema nullable', () => {
@@ -50,19 +52,154 @@ describe('Schema nullable', () => {
   });
 });
 
+describe('p.nullable structure symbols', () => {
+  it('spells null as NULL and a value as its inner node does', () => {
+    const node = p.nullable(p.int());
+    expect([node._marker(null), node._marker(5)]).toEqual([STRUCT.NULL, STRUCT.INT]);
+    expect(p.nullable(p.bool())._marker(false)).toBe(STRUCT.FALSE);
+    expect(node._markers()).toEqual(new Set([STRUCT.NULL, STRUCT.INT]));
+    expect(p.nullable(p.any())._markers()).toBeUndefined();
+    expect(node._markerPrior()).toBeUndefined();
+  });
+
+  it('weighs the null side against the value’s own symbols', () => {
+    expect(p.nullable(p.bool()).weights([2, 1]).adaptive()._markerPrior()?.counts).toEqual([
+      [STRUCT.TRUE, 16],
+      [STRUCT.FALSE, 16],
+      [STRUCT.NULL, 16],
+    ]);
+    expect(p.nullable(p.any()).weights([2, 1]).adaptive()._markerPrior()?.counts).toEqual([
+      [STRUCT.NULL, 16],
+    ]);
+  });
+
+  it('takes undefined when its inner node does', () => {
+    expect(p.nullable(p.int())._takesUndefined()).toBe(false);
+    expect(p.nullable(p.optional(p.int()))._takesUndefined()).toBe(true);
+  });
+
+  it('holds adaptive coding when it or its inner node codes adaptively', () => {
+    expect(p.nullable(p.bool())._holdsAdaptive).toBe(false);
+    expect(p.nullable(p.bool().adaptive())._holdsAdaptive).toBe(true);
+    expect(p.nullable(p.bool()).adaptive()._holdsAdaptive).toBe(true);
+  });
+});
+
+describe('p.nullable learn', () => {
+  const plain = p.nullable(p.int().min(0).max(3));
+  const values = (() => {
+    const rnd = mulberry32(5);
+    return Array.from({ length: 300 }, () => (rnd() < 0.9 ? null : Math.floor(rnd() * 4)));
+  })();
+
+  it('round-trips a run, learning the skew under its options', () => {
+    for (const node of [plain.learn(), plain.learn({ window: 8 }), plain.weights([1, 9]).learn()]) {
+      expect(trip(p.array(node), values)).toEqual(values);
+    }
+    expect(p.array(plain.learn()).encode(values)).not.toEqual(p.array(plain).encode(values));
+  });
+
+  it('sets each method once, and not both', () => {
+    expect(() => plain.learn().learn()).toThrow(new TypeError('p.nullable learn is already set'));
+    expect(() => plain.learn().adaptive()).toThrow(
+      new TypeError('p.nullable learn and adaptive cannot both be set')
+    );
+    expect(() => plain.adaptive().learn()).toThrow(
+      new TypeError('p.nullable learn and adaptive cannot both be set')
+    );
+    expect(() => plain.adaptive().adaptive()).toThrow(
+      new TypeError('p.nullable adaptive is already set')
+    );
+  });
+
+  it('refuses bad options', () => {
+    expect(() => plain.learn({ window: 0 })).toThrow(
+      new RangeError('p.nullable learning window must be a positive integer, got 0')
+    );
+  });
+});
+
 describe('p.nullable adaptive', () => {
   const plain = p.nullable(p.int().min(0).max(3));
   const weights: [number, number] = [1, 9];
   const run = (length: number, seed: number) => {
     const rnd = mulberry32(seed);
-    return Array.from({ length }, () => (rnd() < 0.9 ? null : Math.floor(rnd() * 4)));
+    return Array.from({ length }, () => (rnd() < 0.7 ? null : Math.floor(rnd() * 4)));
   };
 
-  it('round-trips a run of values, inside an array too', () => {
-    const values = run(300, 1);
+  it('round-trips a run alone, in a plain array and in an adaptive object', () => {
+    const values = run(200, 1);
     for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 8 })]) {
+      for (const value of values.slice(0, 20)) expect(trip(node, value)).toBe(value);
       expect(trip(p.array(node), values)).toEqual(values);
-      expect(trip(node, values[0])).toEqual(values[0]);
+    }
+    const Row = p.object({ n: plain, flag: p.nullable(p.bool()) });
+    const rows = values.map((n, i) => ({ n, flag: i % 3 === 0 ? null : i % 2 === 0 }));
+    expect(trip(p.array(Row.adaptive()), rows)).toEqual(rows);
+    expect(trip(p.array(Row).adaptive(), rows)).toEqual(rows);
+  });
+
+  it('names the side of a NULL when its inner node may spell NULL too', () => {
+    const rnd = mulberry32(3);
+    const values = Array.from({ length: 120 }, () => {
+      const r = rnd();
+      return r < 0.4 ? null : r < 0.7 ? Math.floor(r * 10) : 'x';
+    });
+    for (const inner of [p.any(), p.enum([null, 1, 2, 3, 4, 5, 6, 'x'])]) {
+      const node = p.nullable(inner);
+      expect(trip(p.array(node.adaptive()), values)).toEqual(values);
+      expect(trip(p.array(node).adaptive(), values)).toEqual(values);
+    }
+    const union = p.nullable(p.union([p.null(), p.int(), p.string()]));
+    expect(trip(p.array(union).adaptive(), values)).toEqual(values);
+  });
+
+  it('names the value side of a NULL its inner node spells for a value of its own', () => {
+    // A custom node spelling the empty string with the null symbol.
+    class PBlank extends PNode<string> {
+      _marker(value: unknown): number {
+        return value === '' ? STRUCT.NULL : STRUCT.STR;
+      }
+      _write(enc: Encoder, value: string): void {
+        p.string()._write(enc, value);
+      }
+      _read(dec: Decoder): string {
+        return p.string()._read(dec);
+      }
+    }
+    const values = ['', null, 'a', '', null, null, '', 'b'];
+    const node = p.nullable(new PBlank());
+    expect(trip(p.array(node.adaptive()), values)).toEqual(values);
+    expect(trip(p.array(node).adaptive(), values)).toEqual(values);
+  });
+
+  it('adapts its inner node unless that one learns or adapts already', () => {
+    expect(p.nullable(p.bool()).adaptive().inner._adaptive).toEqual({ prior: Priors.text.source });
+    const learning = p.bool().learn();
+    expect(p.nullable(learning).adaptive().inner).toBe(learning);
+    const values = [true, null, false, true, null];
+    expect(trip(p.array(p.nullable(learning).adaptive()), values)).toEqual(values);
+  });
+
+  it('stays as it is under an adaptive parent when it learns', () => {
+    const node = plain.learn();
+    expect(node._adapted({}, new Map())).toBe(node);
+    const Row = p.object({ n: node }).adaptive();
+    expect(trip(Row, { n: 2 })).toEqual({ n: 2 });
+    expect(trip(Row, { n: null })).toEqual({ n: null });
+  });
+
+  it('takes its weights as prior counts of its symbols, coded by itself or its parent', () => {
+    const nulls = Array<null>(12).fill(null);
+    const size = (w: [number, number], parent: boolean) => {
+      const node = plain.weights(w);
+      const list = parent
+        ? p.array(node).length(12).adaptive()
+        : p.array(node.adaptive()).length(12);
+      return list.encode(nulls).length;
+    };
+    for (const parent of [false, true]) {
+      expect(size([1, 30], parent)).toBeLessThan(size([30, 1], parent));
     }
   });
 
@@ -73,60 +210,12 @@ describe('p.nullable adaptive', () => {
     );
   });
 
-  it('learns a skew, at most a byte over the static prior of it', () => {
-    const values = run(2000, 3);
-    const size = (node: typeof plain) => p.array(node).encode(values).length;
-    expect(size(plain.adaptive())).toBeLessThan(size(plain));
-    expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
-      size(plain.weights(weights)) + 1
-    );
-  });
-
-  it('written once, spends the bytes of its static form', () => {
-    for (const value of run(20, 4)) {
-      expect(plain.adaptive().encode(value)).toEqual(plain.encode(value));
-      expect(plain.weights(weights).adaptive().encode(value)).toEqual(
-        plain.weights(weights).encode(value)
-      );
-    }
-  });
-
-  it('learns by `.learn()`, spending what `.adaptive()` does', () => {
-    const values = run(300, 5);
-    const size = (node: typeof plain) => p.array(node).encode(values);
-    expect(size(plain.learn())).toEqual(size(plain.adaptive()));
-    expect(size(plain.weights(weights).learn())).toEqual(size(plain.weights(weights).adaptive()));
-    expect(size(plain.learn().weights(weights))).toEqual(size(plain.weights(weights).adaptive()));
-    expect(size(plain.learning({ window: 8 }).learn())).toEqual(
-      size(plain.adaptive({ window: 8 }))
-    );
-    expect(size(plain.learn())).not.toEqual(size(plain));
-  });
-
-  it('sets its learning once and each method once', () => {
-    expect(() => plain.learning({}).learning({})).toThrow(
-      new TypeError('p.nullable learning is already set')
-    );
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.nullable learn is already set'));
-    expect(() => plain.learning({ window: 8 }).adaptive({ window: 8 })).toThrow(
-      new TypeError('p.nullable learning is already set')
-    );
-    expect(() => plain.adaptive({ window: 8 }).learning({ window: 8 })).toThrow(
-      new TypeError('p.nullable learning is already set')
-    );
-  });
-
   it('refuses bad options', () => {
     expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.nullable learning window must be a positive integer, got 0')
+      new RangeError('p.nullable: adaptive window must be at least 1')
     );
-    expect(() => plain.adaptive({ window: 1.5 })).toThrow(
-      new TypeError('p.nullable learning window must be a positive integer, got 1.5')
-    );
-    expect(() => plain.weights([2 ** 45, 2 ** 45]).adaptive()).toThrow(
-      new RangeError(
-        'p.nullable adaptive prior 4 and window 1024 overflow with weights totalling 70368744177664'
-      )
+    expect(() => plain.adaptive({ window: 2.5 })).toThrow(
+      new TypeError('p.nullable: adaptive window must be an integer, got 2.5')
     );
   });
 });

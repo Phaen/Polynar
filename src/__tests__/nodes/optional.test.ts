@@ -3,6 +3,8 @@
  */
 
 import { p, Encoder } from '../../index';
+import { Priors } from '../../predictor/prior';
+import { STRUCT } from '../../predictor/types';
 import { mulberry32, trip } from '../support';
 
 describe('Schema optional', () => {
@@ -33,19 +35,112 @@ describe('Schema optional', () => {
   });
 });
 
+describe('p.optional structure symbols', () => {
+  it('spells presence as KEY or NOKEY', () => {
+    const node = p.optional(p.int());
+    expect([node._marker(5), node._marker(undefined)]).toEqual([STRUCT.KEY, STRUCT.NOKEY]);
+    expect(node._markers()).toEqual(new Set([STRUCT.KEY, STRUCT.NOKEY]));
+    expect(node._markerPrior()).toBeUndefined();
+    expect(node.weights([1, 3]).adaptive()._markerPrior()?.counts).toEqual([
+      [STRUCT.KEY, 8],
+      [STRUCT.NOKEY, 24],
+    ]);
+  });
+
+  it('holds adaptive coding when it or its inner node codes adaptively', () => {
+    expect(p.optional(p.bool())._holdsAdaptive).toBe(false);
+    expect(p.optional(p.bool().adaptive())._holdsAdaptive).toBe(true);
+    expect(p.optional(p.bool()).adaptive()._holdsAdaptive).toBe(true);
+  });
+});
+
+describe('p.optional learn', () => {
+  const plain = p.optional(p.int().min(0).max(3));
+  const values = (() => {
+    const rnd = mulberry32(5);
+    return Array.from({ length: 300 }, () => (rnd() < 0.9 ? undefined : Math.floor(rnd() * 4)));
+  })();
+
+  it('round-trips a run, learning the skew under its options', () => {
+    for (const node of [plain.learn(), plain.learn({ window: 8 }), plain.weights([1, 9]).learn()]) {
+      expect(trip(p.array(node), values)).toEqual(values);
+    }
+    expect(p.array(plain.learn()).encode(values)).not.toEqual(p.array(plain).encode(values));
+  });
+
+  it('sets each method once, and not both', () => {
+    expect(() => plain.learn().learn()).toThrow(new TypeError('p.optional learn is already set'));
+    expect(() => plain.learn().adaptive()).toThrow(
+      new TypeError('p.optional learn and adaptive cannot both be set')
+    );
+    expect(() => plain.adaptive().learn()).toThrow(
+      new TypeError('p.optional learn and adaptive cannot both be set')
+    );
+    expect(() => plain.adaptive().adaptive()).toThrow(
+      new TypeError('p.optional adaptive is already set')
+    );
+  });
+
+  it('refuses bad options', () => {
+    expect(() => plain.learn({ window: 0 })).toThrow(
+      new RangeError('p.optional learning window must be a positive integer, got 0')
+    );
+  });
+});
+
 describe('p.optional adaptive', () => {
   const plain = p.optional(p.int().min(0).max(3));
   const weights = [1, 9] as [number, number];
   const run = (length: number, seed: number) => {
     const rnd = mulberry32(seed);
-    return Array.from({ length }, () => (rnd() < 0.9 ? undefined : Math.floor(rnd() * 4)));
+    return Array.from({ length }, () => (rnd() < 0.7 ? undefined : Math.floor(rnd() * 4)));
   };
 
-  it('round-trips a run of values, inside an array too', () => {
-    const values = run(300, 1);
+  it('round-trips a run alone, in a plain array and in an adaptive object', () => {
+    const values = run(200, 1);
     for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 8 })]) {
+      for (const value of values.slice(0, 20)) expect(trip(node, value)).toBe(value);
       expect(trip(p.array(node), values)).toEqual(values);
-      expect(trip(node, values[0])).toEqual(values[0]);
+    }
+    const Row = p.object({ n: plain, flag: p.optional(p.bool()), name: p.optional(p.string()) });
+    const rows = values.map((n, i) => {
+      const row: { n?: number; flag?: boolean; name?: string } = {};
+      if (n !== undefined) row.n = n;
+      if (i % 3 === 0) row.flag = i % 2 === 0;
+      if (i % 4 === 1) row.name = `x${i % 5}`;
+      return row;
+    });
+    expect(trip(p.array(Row.adaptive()), rows)).toEqual(rows);
+    expect(trip(p.array(Row).adaptive(), rows)).toEqual(rows);
+  });
+
+  it('adapts its inner node unless that one learns or adapts already', () => {
+    expect(p.optional(p.bool()).adaptive().inner._adaptive).toEqual({ prior: Priors.text.source });
+    const learning = p.bool().learn();
+    expect(p.optional(learning).adaptive().inner).toBe(learning);
+    const values = [true, undefined, false, true, undefined];
+    expect(trip(p.array(p.optional(learning).adaptive()), values)).toEqual(values);
+  });
+
+  it('stays as it is under an adaptive parent when it learns', () => {
+    const node = plain.learn();
+    expect(node._adapted({}, new Map())).toBe(node);
+    const Row = p.object({ n: node }).adaptive();
+    expect(trip(Row, { n: 2 })).toEqual({ n: 2 });
+    expect(trip(Row, {})).toEqual({});
+  });
+
+  it('takes its weights as prior counts of its symbols, coded by itself or its parent', () => {
+    const absent = Array<undefined>(12).fill(undefined);
+    const size = (w: [number, number], parent: boolean) => {
+      const node = plain.weights(w);
+      const list = parent
+        ? p.array(node).length(12).adaptive()
+        : p.array(node.adaptive()).length(12);
+      return list.encode(absent).length;
+    };
+    for (const parent of [false, true]) {
+      expect(size([1, 30], parent)).toBeLessThan(size([30, 1], parent));
     }
   });
 
@@ -56,60 +151,12 @@ describe('p.optional adaptive', () => {
     );
   });
 
-  it('learns a skew, at most a byte over the static prior of it', () => {
-    const values = run(2000, 3);
-    const size = (node: typeof plain) => p.array(node).encode(values).length;
-    expect(size(plain.adaptive())).toBeLessThan(size(plain));
-    expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
-      size(plain.weights(weights)) + 1
-    );
-  });
-
-  it('written once, spends the bytes of its static form', () => {
-    for (const value of run(20, 4)) {
-      expect(plain.adaptive().encode(value)).toEqual(plain.encode(value));
-      expect(plain.weights(weights).adaptive().encode(value)).toEqual(
-        plain.weights(weights).encode(value)
-      );
-    }
-  });
-
-  it('learns by `.learn()`, spending what `.adaptive()` does', () => {
-    const values = run(300, 5);
-    const size = (node: typeof plain) => p.array(node).encode(values);
-    expect(size(plain.learn())).toEqual(size(plain.adaptive()));
-    expect(size(plain.weights(weights).learn())).toEqual(size(plain.weights(weights).adaptive()));
-    expect(size(plain.learn().weights(weights))).toEqual(size(plain.weights(weights).adaptive()));
-    expect(size(plain.learning({ window: 8 }).learn())).toEqual(
-      size(plain.adaptive({ window: 8 }))
-    );
-    expect(size(plain.learn())).not.toEqual(size(plain));
-  });
-
-  it('sets its learning once and each method once', () => {
-    expect(() => plain.learning({}).learning({})).toThrow(
-      new TypeError('p.optional learning is already set')
-    );
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.optional learn is already set'));
-    expect(() => plain.learning({ window: 8 }).adaptive({ window: 8 })).toThrow(
-      new TypeError('p.optional learning is already set')
-    );
-    expect(() => plain.adaptive({ window: 8 }).learning({ window: 8 })).toThrow(
-      new TypeError('p.optional learning is already set')
-    );
-  });
-
   it('refuses bad options', () => {
     expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.optional learning window must be a positive integer, got 0')
+      new RangeError('p.optional: adaptive window must be at least 1')
     );
-    expect(() => plain.adaptive({ window: 1.5 })).toThrow(
-      new TypeError('p.optional learning window must be a positive integer, got 1.5')
-    );
-    expect(() => plain.weights([2 ** 45, 2 ** 45] as [number, number]).adaptive()).toThrow(
-      new RangeError(
-        'p.optional adaptive prior 4 and window 1024 overflow with weights totalling 70368744177664'
-      )
+    expect(() => plain.adaptive([] as never)).toThrow(
+      new TypeError('p.optional: adaptive options must be an object')
     );
   });
 });

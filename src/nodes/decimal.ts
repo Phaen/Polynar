@@ -1,13 +1,15 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { describe } from './path';
 import type { Kind } from './guards';
-import { INDEX_METHODS, IndexMethods, IndexRange, checkUnset } from './lattice';
+import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 import type { LearningOptions } from './adaptive';
 import { learningOf, learns, MethodNode, type MethodSet } from './methods';
 import { checkAdaptive, resolve } from '../predictor/options';
 import { Priors } from '../predictor/prior';
-import type { AdaptiveOptions } from '../predictor/types';
+import { STRUCT, type AdaptiveOptions } from '../predictor/types';
+
+const INT_MARKERS: ReadonlySet<number> = new Set([STRUCT.INT]);
 
 const valueSubject = (value: number): string => `Value ${value}`;
 
@@ -58,8 +60,6 @@ export class PDecimal extends MethodNode<number> {
   private readonly _range: IndexRange;
   /** The methods the node has, declared or open. */
   readonly _methods: MethodSet;
-  readonly _methodNames = INDEX_METHODS;
-  private readonly _coding: IndexMethods;
   declare readonly _radix?: number;
 
   /** The options `.adaptive()` set, which hand the step multiples to the predictor. */
@@ -108,17 +108,14 @@ export class PDecimal extends MethodNode<number> {
         : { path: this, options: resolve(adaptive, Priors.text, 'p.decimal') }
     );
     this._methods = methods;
-    this._coding = new IndexMethods(this._range, methods, 'p.decimal');
-    if (this._coding.plain) {
-      this._radix = this._range.radix;
-      const fromDigit = this._range.fromDigit;
-      if (fromDigit !== undefined) {
-        this._fromDigit = (digit) => this._decode(fromDigit(digit));
-      }
-      const toDigit = this._range.toDigit;
-      if (toDigit !== undefined) {
-        this._toDigit = (value) => toDigit(this._index(value), () => valueSubject(value));
-      }
+    this._radix = this._range.radix;
+    const fromDigit = this._range.fromDigit;
+    if (fromDigit !== undefined) {
+      this._fromDigit = (digit) => this._decode(fromDigit(digit));
+    }
+    const toDigit = this._range.toDigit;
+    if (toDigit !== undefined) {
+      this._toDigit = (value) => toDigit(this._index(value), () => valueSubject(value));
     }
   }
 
@@ -171,8 +168,7 @@ export class PDecimal extends MethodNode<number> {
     if (this._adaptive !== undefined) {
       throw new TypeError('p.decimal learn and adaptive cannot both be set');
     }
-    const node = this._declare('learn', 'p.decimal');
-    return options === undefined ? node : node._learning(options, 'p.decimal');
+    return this._declare('learn', 'p.decimal', options);
   }
 
   /**
@@ -190,6 +186,18 @@ export class PDecimal extends MethodNode<number> {
       throw new TypeError('p.decimal learn and adaptive cannot both be set');
     }
     return this._with({ adaptive: checkAdaptive(options, 'p.decimal') });
+  }
+
+  _adapted(options: AdaptiveOptions): PDecimal {
+    return this._adaptive !== undefined || learns(this._methods) ? this : this.adaptive(options);
+  }
+
+  _marker(): number {
+    return STRUCT.INT;
+  }
+
+  _markers(): ReadonlySet<number> {
+    return INT_MARKERS;
   }
 
   /** This node with `methods` in place of its own. */
@@ -214,12 +222,8 @@ export class PDecimal extends MethodNode<number> {
     );
   }
 
-  get _exact(): boolean {
-    return true;
-  }
-
   _write(enc: Encoder, value: number): void {
-    this._coding.write(enc, this._index(value), () => valueSubject(value));
+    this._range.writeValue(enc, this._index(value), () => valueSubject(value));
   }
 
   /** The step multiple `value` is, refused unless it is a finite number on the grid. */
@@ -231,7 +235,7 @@ export class PDecimal extends MethodNode<number> {
   }
 
   _read(dec: Decoder): number {
-    return this._decode(this._coding.read(dec));
+    return this._decode(this._range.readValue(dec));
   }
 
   /**

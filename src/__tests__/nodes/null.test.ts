@@ -3,6 +3,7 @@
  */
 
 import { p } from '../../index';
+import { STRUCT } from '../../predictor/types';
 import { trip } from '../support';
 
 describe('Schema null', () => {
@@ -16,5 +17,13 @@ describe('Schema null', () => {
     expect(trip(Nullable, null)).toBeNull();
     expect(trip(Nullable, 'x')).toBe('x');
     expect(() => p.union([p.null(), p.nullable(p.int())])).toThrow('overlap on kind "null"');
+  });
+
+  it('spells null first as the null symbol', () => {
+    expect(p.null()._markers()).toEqual(new Set([STRUCT.NULL]));
+    expect(p.null()._marker(null)).toBe(STRUCT.NULL);
+    const Row = p.object({ n: p.null(), v: p.union([p.null(), p.int()]) }).adaptive();
+    expect(trip(Row, { n: null, v: null })).toEqual({ n: null, v: null });
+    expect(trip(Row, { n: null, v: 4 })).toEqual({ n: null, v: 4 });
   });
 });

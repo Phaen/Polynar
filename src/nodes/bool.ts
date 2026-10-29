@@ -1,9 +1,16 @@
 import { Encoder, Decoder } from '../packer';
+import { resolve } from '../predictor/options';
+import { Priors } from '../predictor/prior';
+import type { MarkerPrior } from '../predictor/session';
+import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
 import type { Kind } from './guards';
 import type { LearningOptions } from './adaptive';
 import { checkUnset } from './lattice';
+import { markerPrior, ownMarker, readOwnMarker } from './markers';
 import { members, type MemberPrior, type Members } from './members';
-import { MethodNode, PRIOR_METHODS, learningOf, type MethodSet } from './methods';
+import { MethodNode, learningOf, type MethodSet } from './methods';
+
+const BOOL_MARKERS: ReadonlySet<number> = new Set([STRUCT.TRUE, STRUCT.FALSE]);
 
 /** Boolean. `p.bool`. */
 export class PBool extends MethodNode<boolean> {
@@ -11,10 +18,12 @@ export class PBool extends MethodNode<boolean> {
 
   /** The prior as declared, `[true, false]`, for the rebuilds. */
   private readonly _prior?: MemberPrior;
-  readonly _methodNames = PRIOR_METHODS;
   /** Member 0 is true, as the weights list it first. */
   private readonly _members: Members;
   declare readonly _radix?: number;
+  readonly _adaptive?: AdaptiveOptions;
+  /** Under `.adaptive()`: the options the value's symbol codes under. */
+  private readonly _resolved?: Resolved;
 
   constructor(
     prior?: MemberPrior,
@@ -23,7 +32,12 @@ export class PBool extends MethodNode<boolean> {
     super();
     this._prior = prior;
     this._members = members(2, { ...prior, learn: learningOf(_methods) }, 'p.bool');
-    this._radix = this._members.radix;
+    this._adaptive = _methods.adaptive;
+    if (this._adaptive === undefined) {
+      this._radix = this._members.radix;
+    } else {
+      this._resolved = resolve(this._adaptive, Priors.text, 'p.bool');
+    }
   }
 
   /**
@@ -40,43 +54,61 @@ export class PBool extends MethodNode<boolean> {
    * when none are, are where it starts, and each value coded counts as one
    * observation, so a value that keeps recurring gets cheaper as the message
    * goes on. From its second value on, the node spends one bit to stay static,
-   * or a few to name the learning rate that paid off. Part of the wire format,
-   * like the weights.
+   * or a few to name the learning rate that paid off. `window` is how many
+   * observations the counts hold before they halve, so the newest weigh most
+   * (1024 when left out, and raised to the number of values counted when
+   * smaller), and `separate` keeps it from starting where other nodes of its
+   * kind and window got to. Part of the wire format, like the weights. Not
+   * with `.adaptive()`.
    */
-  learn(): PBool {
-    return this._declare('learn', 'p.bool');
+  learn(options?: LearningOptions): PBool {
+    return this._declare('learn', 'p.bool', options);
   }
 
   /**
-   * What the node's learning goes by: `window` is how many observations the
-   * counts hold before they halve, so the newest weigh most (1024 when left
-   * out, and raised to the number of values counted when smaller), and
-   * `separate` keeps it from starting where other nodes of its kind and window
-   * got to. Set once; it applies once something learns.
+   * Code the values through the similarity predictor, as the symbols true
+   * and false of the structure around them, with the weights as their prior
+   * counts. Not with `.learn()`. Set once.
    */
-  learning(options: LearningOptions): PBool {
-    return this._learning(options, 'p.bool');
+  adaptive(options?: AdaptiveOptions): PBool {
+    return this._adapt(options, 'p.bool');
   }
 
-  /** Learn with every method the node has, here `.learn()`, under `options` as `.learning()` takes them. */
-  adaptive(options?: LearningOptions): PBool {
-    return this._adapt(options, 'p.bool');
+  _adapted(options: AdaptiveOptions): PBool {
+    return this._adaptedTo(options);
   }
 
   _withMethods(methods: MethodSet): PBool {
     return new PBool(this._prior, methods);
   }
 
-  get _exact(): boolean {
-    return true;
+  _marker(value: unknown): number {
+    return value ? STRUCT.TRUE : STRUCT.FALSE;
+  }
+
+  _markers(): ReadonlySet<number> {
+    return BOOL_MARKERS;
+  }
+
+  _markerPrior(): MarkerPrior | undefined {
+    return this._adaptive === undefined
+      ? undefined
+      : markerPrior(this, this._prior?.weights, [new Set([STRUCT.TRUE]), new Set([STRUCT.FALSE])]);
   }
 
   _write(enc: Encoder, value: boolean): void {
-    this._members.write(enc, this._toDigit(value));
+    if (this._resolved === undefined) {
+      this._members.write(enc, this._toDigit(value));
+    } else {
+      ownMarker(enc, this, this._resolved, this._marker(value));
+    }
   }
 
   _read(dec: Decoder): boolean {
-    return this._members.read(dec) === 0;
+    if (this._resolved === undefined) {
+      return this._members.read(dec) === 0;
+    }
+    return readOwnMarker(dec, this, this._resolved) === STRUCT.TRUE;
   }
 
   /** `digit` lies in `[0, _radix)`, as a digit read in `_radix` does. */

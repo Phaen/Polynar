@@ -15,6 +15,7 @@ import type { PNode, Run } from './base';
 import { atPath, describe } from './path';
 import { arrangementDigits, arrangementRanks, type Order } from './ordinal';
 import type { Members } from './members';
+import type { Session } from '../predictor/session';
 
 /** The two spellings of distinct values in their own order, the plain one winning a tie. */
 const PLAIN = 0;
@@ -33,20 +34,15 @@ const runOf = (node: PNode<any>, order: Order): Run<unknown> =>
   (node._run as (unique: boolean) => Run<unknown>).call(node, order.unique !== undefined);
 
 /**
- * Writes `values` of `node`, which spells runs, restricted by `order`, and
- * returns the position in `values` of each value in ascending order. A
- * repeat under `unique` and a descent under `sorted` throw, as does a value
- * `node` refuses, located by `segment` of its position. Values that keep
- * their order spell the choice between their two spellings in `choice`, of
- * two members, which they need.
+ * The positions of `values` in the order a run under `order` codes them: ascending, or as given
+ * where they keep their order and `inOrder` holds. A repeat under `unique` and a descent under
+ * `sorted` throw, located by `segment` of the offending value's position.
  */
-export function writeRun(
-  enc: Encoder,
-  node: PNode<any>,
+export function runOrder(
   values: readonly unknown[],
   order: Order,
   segment: (i: number) => string | number,
-  choice?: Members
+  inOrder: boolean
 ): number[] {
   const seen = order.unique === undefined ? undefined : new Set<unknown>();
   for (let i = 0; i < values.length; i++) {
@@ -63,13 +59,34 @@ export function writeRun(
     }
     seen?.add(value);
   }
+  const at = values.map((_, i) => i);
+  if (order.sorted === undefined && !(inOrder && kept(order))) {
+    at.sort((a, b) => ascending(values[a], values[b]));
+  }
+  return at;
+}
+
+/**
+ * Writes `values` of `node`, which spells runs, restricted by `order`, and
+ * returns the position in `values` of each value in ascending order. A
+ * repeat under `unique` and a descent under `sorted` throw, as does a value
+ * `node` refuses, located by `segment` of its position. Values that keep
+ * their order spell the choice between their two spellings in `choice`, of
+ * two members, which they need.
+ */
+export function writeRun(
+  enc: Encoder,
+  node: PNode<any>,
+  values: readonly unknown[],
+  order: Order,
+  segment: (i: number) => string | number,
+  choice?: Members,
+  list?: Session
+): number[] {
   // A node on the predictor codes inside no try, so its values go one by one: ascending, or
   // in their own order where they keep it (spec D11).
   const adaptive = node._adaptive !== undefined;
-  const at = values.map((_, i) => i);
-  if (order.sorted === undefined && !(adaptive && kept(order))) {
-    at.sort((a, b) => ascending(values[a], values[b]));
-  }
+  const at = runOrder(values, order, segment, adaptive);
   const spell = (write: (value: unknown) => void, i: number): void => {
     try {
       write(values[i]);
@@ -85,6 +102,7 @@ export function writeRun(
   };
   if (adaptive) {
     for (const i of at) {
+      list?.nextItem();
       spell((value) => node._write(enc, value), i);
     }
     return at;
@@ -118,11 +136,13 @@ export function readRun(
   node: PNode<any>,
   count: number,
   order: Order,
-  choice?: Members
+  choice?: Members,
+  list?: Session
 ): unknown[] {
   const values: unknown[] = [];
   if (node._adaptive !== undefined) {
     for (let k = 0; k < count; k++) {
+      list?.nextItem();
       values.push(node._read(dec));
     }
     return values;

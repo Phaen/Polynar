@@ -1,13 +1,15 @@
 import { Encoder, Decoder } from '../packer';
 import { describe } from './path';
 import type { Kind } from './guards';
-import { INDEX_METHODS, IndexMethods, IndexRange, checkUnset } from './lattice';
+import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 import type { LearningOptions } from './adaptive';
 import { learningOf, learns, MethodNode, type MethodSet } from './methods';
 import { checkAdaptive, resolve } from '../predictor/options';
 import { Priors } from '../predictor/prior';
-import type { AdaptiveOptions } from '../predictor/types';
+import { STRUCT, type AdaptiveOptions } from '../predictor/types';
+
+const INT_MARKERS: ReadonlySet<number> = new Set([STRUCT.INT]);
 
 /**
  * `value`, refused unless it is an integer. Strict, like every other node: a
@@ -29,8 +31,6 @@ export class PInt extends MethodNode<number> {
   private readonly _range: IndexRange;
   /** The methods the node has, declared or open. */
   readonly _methods: MethodSet;
-  readonly _methodNames = INDEX_METHODS;
-  private readonly _coding: IndexMethods;
   declare readonly _radix?: number;
   /** The options `.adaptive()` set, which hand the values to the predictor. */
   readonly _adaptive?: AdaptiveOptions;
@@ -56,14 +56,11 @@ export class PInt extends MethodNode<number> {
         : { path: this, options: resolve(adaptive, Priors.text, 'p.int') }
     );
     this._methods = methods;
-    this._coding = new IndexMethods(this._range, methods, 'p.int');
-    if (this._coding.plain) {
-      this._radix = this._range.radix;
-      this._fromDigit = this._range.fromDigit;
-      const toDigit = this._range.toDigit;
-      if (toDigit !== undefined) {
-        this._toDigit = (value) => toDigit(checkInteger(value), () => `Value ${value}`);
-      }
+    this._radix = this._range.radix;
+    this._fromDigit = this._range.fromDigit;
+    const toDigit = this._range.toDigit;
+    if (toDigit !== undefined) {
+      this._toDigit = (value) => toDigit(checkInteger(value), () => `Value ${value}`);
     }
   }
 
@@ -117,8 +114,7 @@ export class PInt extends MethodNode<number> {
     if (this._adaptive !== undefined) {
       throw new TypeError('p.int learn and adaptive cannot both be set');
     }
-    const node = this._declare('learn', 'p.int');
-    return options === undefined ? node : node._learning(options, 'p.int');
+    return this._declare('learn', 'p.int', options);
   }
 
   /**
@@ -139,6 +135,18 @@ export class PInt extends MethodNode<number> {
     return new PInt(lo, hi, declared, this._methods, checkAdaptive(options, 'p.int'));
   }
 
+  _adapted(options: AdaptiveOptions): PInt {
+    return this._adaptive !== undefined || learns(this._methods) ? this : this.adaptive(options);
+  }
+
+  _marker(): number {
+    return STRUCT.INT;
+  }
+
+  _markers(): ReadonlySet<number> {
+    return INT_MARKERS;
+  }
+
   /** This node with `methods` in place of its own. */
   _withMethods(methods: MethodSet): PInt {
     const { lo, hi, declared } = this._range;
@@ -150,16 +158,12 @@ export class PInt extends MethodNode<number> {
     return new PInt(lo, hi, prior, this._methods, this._adaptive);
   }
 
-  get _exact(): boolean {
-    return true;
-  }
-
   _write(enc: Encoder, value: number): void {
     // -0 packs as 0 on the lattice wire.
-    this._coding.write(enc, checkInteger(value), () => `Value ${value}`);
+    this._range.writeValue(enc, checkInteger(value), () => `Value ${value}`);
   }
 
   _read(dec: Decoder): number {
-    return this._coding.read(dec);
+    return this._range.readValue(dec);
   }
 }

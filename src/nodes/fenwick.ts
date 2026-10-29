@@ -10,9 +10,8 @@ import type { LiveTable } from './adaptive';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 
-/** The ops a Fenwick takes back: an `add` and a `push`. */
+/** The op a Fenwick takes back: an `add`. */
 const ADD = 0;
-const PUSH = 1;
 
 /**
  * The lowest set bit of `i`, a positive tree position. Positions stay below
@@ -181,30 +180,9 @@ export class Fenwick implements LiveTable, Undoable {
     return pos;
   }
 
-  /** Appends `count`, a non-negative safe integer, keeping the total safe. */
-  push(count: number): void {
-    checkCount(count);
-    checkTotal(this.sum + count);
-    const n = this.size;
-    // tree[n + 1] covers the counts from n + 2 - lowbit(n + 1) to n + 1.
-    const partial = this.prefix(n) - this.prefix(n + 1 - lowbit(n + 1));
-    this.counts.push(count);
-    this.tree.push(count + partial);
-    this.sum += count;
-    if (this.journal?.active === true) {
-      this.journal.own(this, PUSH, count);
-    }
-  }
-
-  /** Takes back an `add` of `b` at `a` (`ADD`) or a `push` of `a` (`PUSH`). */
-  undo(op: number, a: number, b: number): void {
-    if (op === ADD) {
-      this.shift(a, -b);
-    } else {
-      this.counts.pop();
-      this.tree.pop();
-      this.sum -= a;
-    }
+  /** Takes back an `add` of `b` at `a`, the one op the tree records. */
+  undo(_op: number, a: number, b: number): void {
+    this.shift(a, -b);
   }
 
   /** Every count becomes `floor(count / 2)`, or `ceil(count / 2)` when `up`, so no count above 0 drops to it. */

@@ -81,22 +81,22 @@ describe('assignment order', () => {
     expect(ids.cpOf(CP_BASE + 13)).toBe(cp('b'));
   });
 
-  it('seeds a prior first: symbols [97, 98] take 292 and 293', () => {
+  it('seeds a prior first: symbols [97, 98] take 293 and 294', () => {
     const ids = new Ids(priorWith([97, 98]));
-    expect(ids.idOf(97)).toBe(292);
-    expect(ids.idOf(98)).toBe(293);
-    expect(ids.digitIds()[0]).toBe(294);
-    expect(ids.digitIds()[9]).toBe(303);
-    expect(ids.newlineId()).toBe(304);
-    expect(ids.boundaryIds()[2]).toBe(305);
-    expect(ids.size()).toBe(306);
+    expect(ids.idOf(97)).toBe(293);
+    expect(ids.idOf(98)).toBe(294);
+    expect(ids.digitIds()[0]).toBe(295);
+    expect(ids.digitIds()[9]).toBe(304);
+    expect(ids.newlineId()).toBe(305);
+    expect(ids.boundaryIds()[2]).toBe(306);
+    expect(ids.size()).toBe(307);
   });
 
   it('reuses a prior symbol that is also a digit, newline or space', () => {
     const ids = new Ids(priorWith([32, 0x35, 10]));
-    expect(ids.boundaryIds()[2]).toBe(292);
-    expect(ids.digitIds()[5]).toBe(293);
-    expect(ids.newlineId()).toBe(294);
+    expect(ids.boundaryIds()[2]).toBe(293);
+    expect(ids.digitIds()[5]).toBe(294);
+    expect(ids.newlineId()).toBe(295);
     expect(ids.size()).toBe(CP_BASE + 12);
   });
 

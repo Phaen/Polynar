@@ -4,7 +4,12 @@ import { oneOf, describe } from './path';
 import type { LearningOptions } from './adaptive';
 import { checkUnset } from './lattice';
 import { members, type MemberPrior, type Members } from './members';
-import { MethodNode, PRIOR_METHODS, learningOf, type MethodSet } from './methods';
+import { MethodNode, learningOf, type MethodSet } from './methods';
+import { kindMarker } from './markers';
+import { resolve } from '../predictor/options';
+import { Priors } from '../predictor/prior';
+import { session } from '../predictor/session';
+import type { AdaptiveOptions, Resolved } from '../predictor/types';
 
 /**
  * Enum: a fixed list of values, packed as a sub-byte index. `p.enum`.
@@ -18,9 +23,11 @@ export class PEnum<T> extends MethodNode<T> {
   private readonly _list: readonly T[];
   /** The prior as declared, for the rebuilds. */
   private readonly _prior?: MemberPrior;
-  readonly _methodNames = PRIOR_METHODS;
   private readonly _members: Members;
   declare readonly _radix?: number;
+  readonly _adaptive?: AdaptiveOptions;
+  /** Under `.adaptive()`: the options the member step codes under. */
+  private readonly _resolved?: Resolved;
 
   constructor(
     list: readonly T[],
@@ -47,7 +54,12 @@ export class PEnum<T> extends MethodNode<T> {
     this._kinds = [...new Set(this._list.map(kindOf))];
     this._prior = prior;
     this._members = members(this._list.length, { ...prior, learn: learningOf(_methods) }, 'p.enum');
-    this._radix = this._members.radix;
+    this._adaptive = _methods.adaptive;
+    if (this._adaptive === undefined) {
+      this._radix = this._members.radix;
+    } else {
+      this._resolved = resolve(this._adaptive, Priors.text, 'p.enum');
+    }
   }
 
   /**
@@ -65,43 +77,59 @@ export class PEnum<T> extends MethodNode<T> {
    * when none are, are where it starts, and each member coded counts as one
    * observation, so a member that keeps recurring gets cheaper as the message
    * goes on. From its second value on, the node spends one bit to stay static,
-   * or a few to name the learning rate that paid off. Part of the wire format,
-   * like the weights.
+   * or a few to name the learning rate that paid off. `window` is how many
+   * observations the counts hold before they halve, so the newest weigh most
+   * (1024 when left out, and raised to the number of values counted when
+   * smaller), and `separate` keeps it from starting where other nodes of its
+   * kind and window got to. Part of the wire format, like the weights. Not
+   * with `.adaptive()`.
    */
-  learn(): PEnum<T> {
-    return this._declare('learn', 'p.enum');
+  learn(options?: LearningOptions): PEnum<T> {
+    return this._declare('learn', 'p.enum', options);
   }
 
   /**
-   * What the node's learning goes by: `window` is how many observations the
-   * counts hold before they halve, so the newest weigh most (1024 when left
-   * out, and raised to the number of values counted when smaller), and
-   * `separate` keeps it from starting where other nodes of its kind and window
-   * got to. Set once; it applies once something learns.
+   * Code the members through the similarity predictor: each is predicted
+   * from the members the node coded before, how recently and in what
+   * company, with the weights as their prior counts. Not with `.learn()`.
+   * Set once.
    */
-  learning(options: LearningOptions): PEnum<T> {
-    return this._learning(options, 'p.enum');
+  adaptive(options?: AdaptiveOptions): PEnum<T> {
+    return this._adapt(options, 'p.enum');
   }
 
-  /** Learn with every method the node has, here `.learn()`, under `options` as `.learning()` takes them. */
-  adaptive(options?: LearningOptions): PEnum<T> {
-    return this._adapt(options, 'p.enum');
+  _adapted(options: AdaptiveOptions): PEnum<T> {
+    return this._adaptedTo(options);
+  }
+
+  _markers(): ReadonlySet<number> {
+    return new Set(this._list.map(kindMarker));
   }
 
   _withMethods(methods: MethodSet): PEnum<T> {
     return new PEnum<T>(this._list, this._prior, methods);
   }
 
-  get _exact(): boolean {
-    return true;
-  }
-
   _write(enc: Encoder, value: T): void {
-    this._members.write(enc, this._toDigit(value));
+    const pos = this._toDigit(value);
+    if (this._resolved === undefined) {
+      this._members.write(enc, pos);
+    } else {
+      this._step(enc).write(enc, pos);
+    }
   }
 
   _read(dec: Decoder): T {
-    return this._list[this._members.read(dec)];
+    if (this._resolved === undefined) {
+      return this._list[this._members.read(dec)];
+    }
+    return this._list[this._step(dec).read(dec)];
+  }
+
+  /** The member step of the node on the session of `side`. */
+  private _step(side: Encoder | Decoder) {
+    const o = this._resolved as Resolved;
+    return session(side).step(this, o, this._list.length, this._prior?.weights);
   }
 
   /** `digit` lies in `[0, _radix)`, as a digit read in `_radix` does. */

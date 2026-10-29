@@ -8,27 +8,14 @@ import {
 import { describe } from './path';
 import type { Kind } from './guards';
 import { buildWeights, writeTable, readTable, type WeightTable } from './weights';
-import { AdaptivePrior, checkAdaptation, lineageOf, type Learning } from './adaptive';
 import { decimalPlaces } from './decimal';
-import { Delta, IndexRange } from './lattice';
-import { LearnedMagnitude } from './magnitude';
-import {
-  ModeChoice,
-  Previous,
-  chooses,
-  learns,
-  optionsOf,
-  MethodNode,
-  type Method,
-  type MethodName,
-  type MethodSet,
-  type ValueProvider,
-} from './methods';
+import { IndexRange } from './lattice';
+import { PNode } from './base';
 import { checkAdaptive, resolve } from '../predictor/options';
 import { Priors } from '../predictor/prior';
 import { session } from '../predictor/session';
 import type { PlainNumber } from '../predictor/session';
-import type { AdaptiveOptions, Resolved } from '../predictor/types';
+import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
 
 // Scratch views for splitting a double into its IEEE-754 fields and back.
 // Both views share one buffer, so platform endianness cancels out; the wire
@@ -494,131 +481,7 @@ export function placesOf(value: number): number {
   return places === null || digitsAt(value, places) === undefined ? AS_DOUBLE : places;
 }
 
-/** A decimal a node spelled: its value, and the places it was spelled at. */
-interface Decimal {
-  readonly value: number;
-  readonly places: number;
-}
-
-/**
- * The spelling `.adaptive()` gives a float: a learned symbol naming its
- * decimal places, or that it is spelled as a double, then its digits as an
- * integer, by a learned mode between the plain magnitude and the difference
- * from the previous decimal, rounded to the same places. Each decimal then
- * teaches the places, the plain magnitude and the difference its digits,
- * and becomes the previous decimal.
- */
-class LearnedDecimal {
-  private readonly places: AdaptivePrior;
-  /** The difference from the previous decimal and the mode choosing it, where the node picks between spellings. */
-  private readonly delta?: Delta;
-  private readonly mode?: ModeChoice<number>;
-  /** The plain magnitude, the range's learned odds. */
-  private readonly plain: Method<number> & ValueProvider<number>;
-  /** What the digits of every decimal teach, in order. */
-  private readonly providers: readonly ValueProvider<number>[];
-  private readonly previous = new Previous<Decimal>();
-
-  constructor(learning: Learning, who: string, differs: boolean) {
-    const { window } = checkAdaptation(learning, who);
-    const symbols = AS_DOUBLE + 1;
-    this.places = new AdaptivePrior(
-      [new Array<number>(symbols).fill(1)],
-      symbols,
-      window,
-      who,
-      lineageOf(learning)
-    );
-    const range = new IndexRange(who, undefined, undefined, undefined, learning);
-    // An unbounded adaptive range always learns.
-    const plain = range.learned as Method<number> & ValueProvider<number>;
-    this.plain = plain;
-    if (differs) {
-      const delta = new Delta(new LearnedMagnitude(true, learning, who), range.low, range.high);
-      this.delta = delta;
-      this.mode = new ModeChoice([plain, delta], learning, who);
-      this.providers = [plain, delta];
-    } else {
-      this.providers = [plain];
-    }
-  }
-
-  /**
-   * Points the difference at the previous decimal's digits at `places`,
-   * rounded and clamped to the safe integers, once there is one. A -0 from
-   * the rounding counts as 0, so no difference reads back as -0. At the
-   * previous decimal's own places the difference already counts from its
-   * digits, which it learned last.
-   */
-  private aim(side: Encoder | Decoder, places: number): void {
-    const previous = this.previous.get(side);
-    if (this.delta !== undefined && previous !== undefined && previous.places !== places) {
-      const origin = Math.round(previous.value * POWERS[places]) + 0;
-      this.delta.from(side, Math.max(-MAX_SAFE, Math.min(MAX_SAFE, origin)));
-    }
-  }
-
-  /** Teaches the decimal `value`, just coded at `places` as `digits`. */
-  private after(side: Encoder | Decoder, value: number, places: number, digits: number): void {
-    this.places.learn(side, places);
-    for (const provider of this.providers) {
-      provider.learn(side, digits);
-    }
-    this.previous.learn(side, { value, places });
-  }
-
-  /**
-   * Writes `value`: its places symbol, then its digits, or `double` when it
-   * is spelled as a double. A value with decimal places takes whichever the
-   * encoder prices cheapest of its fewest, the previous decimal's when it
-   * has digits there too, and the double, in that order on a tie.
-   */
-  write(enc: Encoder, value: number, double: () => void): void {
-    const places = placesOf(value);
-    if (places === AS_DOUBLE) {
-      this.spell(enc, value, AS_DOUBLE, double);
-      return;
-    }
-    const last = this.previous.get(enc)?.places;
-    const symbols =
-      last !== undefined && last > places && digitsAt(value, last) !== undefined
-        ? [places, last, AS_DOUBLE]
-        : [places, AS_DOUBLE];
-    enc.decide(symbols, symbols, (symbol) => this.spell(enc, value, symbol, double));
-  }
-
-  /** Writes `value` at places symbol `symbol`, at which it has digits unless it is `AS_DOUBLE`. */
-  private spell(enc: Encoder, value: number, symbol: number, double: () => void): void {
-    this.places.write(enc, symbol);
-    if (symbol === AS_DOUBLE) {
-      this.places.learn(enc, symbol);
-      double();
-      return;
-    }
-    this.aim(enc, symbol);
-    const digits = digitsAt(value, symbol) as number;
-    if (this.mode === undefined) {
-      this.plain.write(enc, digits);
-    } else {
-      this.mode.write(enc, digits);
-    }
-    this.after(enc, value, symbol, digits);
-  }
-
-  /** Reads a value `write` wrote, through `double` for one spelled as a double. */
-  read(dec: Decoder, double: () => number): number {
-    const places = this.places.read(dec);
-    if (places === AS_DOUBLE) {
-      this.places.learn(dec, places);
-      return double();
-    }
-    this.aim(dec, places);
-    const digits = this.mode === undefined ? this.plain.read(dec) : this.mode.read(dec);
-    const value = digits / POWERS[places];
-    this.after(dec, value, places, digits);
-    return value;
-  }
-}
+const NUM_MARKERS: ReadonlySet<number> = new Set([STRUCT.NUM]);
 
 /** The kinds of number `.adaptive()` names first, in member order. */
 const KIND_ZERO = 0;
@@ -725,13 +588,6 @@ class AdaptiveFloat {
 }
 
 /**
- * The methods of a float, which `.adaptive()` opens: learning, which spells
- * decimals, and the difference from the previous decimal, which only
- * `.adaptive()` opens.
- */
-export const FLOAT_METHODS: readonly MethodName[] = ['learn', 'delta'];
-
-/**
  * IEEE-754 double, bit-exact apart from NaN payloads. The significand
  * travels as the cheapest of four spellings — flat mantissa, simplest
  * fraction or simplest dyadic in the double's rounding interval, or that
@@ -740,7 +596,7 @@ export const FLOAT_METHODS: readonly MethodName[] = ['learn', 'delta'];
  * selector names the spelling; its weights are the node's prior over the
  * kinds of number it carries. `p.float`.
  */
-export class PFloat extends MethodNode<number> {
+export class PFloat extends PNode<number> {
   readonly _kinds: readonly Kind[] = ['number'];
 
   private readonly _declared: Readonly<FloatWeights>;
@@ -749,11 +605,6 @@ export class PFloat extends MethodNode<number> {
   private readonly _forms: WeightTable;
   /** The selector at exponent code 0, where the zero state lives. */
   private readonly _formsAtBias: WeightTable;
-  /** The methods the node has, declared or open. */
-  readonly _methods: MethodSet;
-  readonly _methodNames = FLOAT_METHODS;
-  /** Set where the node learns: the decimal spelling, which falls back on the double's. */
-  private readonly _learned?: LearnedDecimal;
   /** The options `.adaptive()` set, which hand the values to the predictor. */
   readonly _adaptive?: AdaptiveOptions;
   /** Set under `.adaptive()`: the predictor's spelling, which falls back on the double's. */
@@ -762,19 +613,10 @@ export class PFloat extends MethodNode<number> {
   constructor(
     weights?: Partial<FloatWeights>,
     base: Readonly<FloatWeights> = DEFAULT_FLOAT_WEIGHTS,
-    methods: MethodSet = {},
     adaptive?: AdaptiveOptions
   ) {
     super();
-    this._methods = methods;
     this._adaptive = adaptive;
-    if (learns(methods)) {
-      this._learned = new LearnedDecimal(
-        optionsOf(methods),
-        'p.float',
-        chooses(methods, ['delta'])
-      );
-    }
     const resolved = { ...base };
     for (const key of FLOAT_WEIGHT_KEYS) {
       const weight = weights?.[key];
@@ -807,7 +649,7 @@ export class PFloat extends MethodNode<number> {
    * constraint, and part of the wire format.
    */
   weights(w: Partial<FloatWeights>): PFloat {
-    return new PFloat(w, this._declared, this._methods, this._adaptive);
+    return new PFloat(w, this._declared, this._adaptive);
   }
 
   /**
@@ -824,23 +666,24 @@ export class PFloat extends MethodNode<number> {
     if (this._adaptive !== undefined) {
       throw new TypeError('p.float adaptive is already set');
     }
-    return new PFloat(undefined, this._declared, this._methods, checkAdaptive(options, 'p.float'));
+    return new PFloat(undefined, this._declared, checkAdaptive(options, 'p.float'));
   }
 
-  /** This node with `methods` in place of its own. */
-  _withMethods(methods: MethodSet): PFloat {
-    return new PFloat(undefined, this._declared, methods, this._adaptive);
+  _adapted(options: AdaptiveOptions): PFloat {
+    return this._adaptive !== undefined ? this : this.adaptive(options);
   }
 
-  get _exact(): boolean {
-    return true;
+  _marker(): number {
+    return STRUCT.NUM;
+  }
+
+  _markers(): ReadonlySet<number> {
+    return NUM_MARKERS;
   }
 
   _write(enc: Encoder, value: number): void {
     if (this._predicted !== undefined) {
       this._predicted.write(enc, value, () => this._double(enc, value));
-    } else if (this._learned !== undefined) {
-      this._learned.write(enc, value, () => this._double(enc, value));
     } else {
       this._double(enc, value);
     }
@@ -850,9 +693,7 @@ export class PFloat extends MethodNode<number> {
     if (this._predicted !== undefined) {
       return this._predicted.read(dec, () => this._readDouble(dec));
     }
-    return this._learned === undefined
-      ? this._readDouble(dec)
-      : this._learned.read(dec, () => this._readDouble(dec));
+    return this._readDouble(dec);
   }
 
   /** Writes `value` as a double. */

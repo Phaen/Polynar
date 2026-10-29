@@ -6,6 +6,7 @@ import { p, CorruptInputError } from '../../index';
 import { Decoder, Encoder } from '../../packer';
 import { Bytes } from '../../nodes/binary';
 import { mulberry32, trip } from '../support';
+import { STRUCT } from '../../predictor/types';
 
 const rand = mulberry32(0xb1a5);
 
@@ -253,5 +254,39 @@ describe('Bytes', () => {
     expect(bytes.units()).toBe(1);
     expect(bytes.tails()).toBe(1);
     expect(bytes.untail(new Decoder(enc.output()), 7)).toBe(7);
+  });
+});
+
+describe('p.binary methods', () => {
+  it('adapts under a container sugar unless it adapts already', () => {
+    const adaptive = p.binary().adaptive({ window: 8 });
+    expect(adaptive._adapted({ window: 16 })).toBe(adaptive);
+    const plain = p.binary();
+    const adapted = plain._adapted({ window: 16 });
+    expect(adapted).not.toBe(plain);
+    expect(adapted._adaptive).toEqual({ window: 16 });
+  });
+
+  it.each([
+    [Int8Array, STRUCT.TYPED_0],
+    [Uint8Array, STRUCT.TYPED_0 + 1],
+    [Uint8ClampedArray, STRUCT.TYPED_0 + 2],
+    [Int16Array, STRUCT.TYPED_0 + 3],
+    [Uint16Array, STRUCT.TYPED_0 + 4],
+    [Int32Array, STRUCT.TYPED_0 + 5],
+    [Uint32Array, STRUCT.TYPED_0 + 6],
+    [Float32Array, STRUCT.TYPED_0 + 7],
+    [Float64Array, STRUCT.TYPED_0 + 8],
+    [BigInt64Array, STRUCT.TYPED_0 + 9],
+    [BigUint64Array, STRUCT.TYPED_0 + 10],
+  ])('names the marker of its typed-array class, %p, its only one', (type, marker) => {
+    const node = p.binary(type as typeof Int8Array);
+    expect(node._marker()).toBe(marker);
+    expect(node._markers()).toEqual(new Set([marker]));
+  });
+
+  it('names the byte-array marker by default', () => {
+    expect(p.binary()._marker()).toBe(24);
+    expect(p.binary(Int16Array)._marker()).toBe(26);
   });
 });

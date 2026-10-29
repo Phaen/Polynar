@@ -1,4 +1,4 @@
-import { Encoder, Decoder, CorruptInputError, ReplayDecoder, type Journal } from '../packer';
+import { Encoder, Decoder, CorruptInputError, ReplayDecoder } from '../packer';
 import { isPlainObject, kindOf, type Float16ArrayLike, type Kind, type TypedArray } from './guards';
 import { PNode } from './base';
 import { PInt } from './int';
@@ -10,20 +10,10 @@ import { PEnum } from './enum';
 import { PNull } from './null';
 import { PArray } from './array';
 import { PCollection, MAP, RECORD, SET } from './collection';
-import { atPath, unlocated } from './path';
-import {
-  Lineage,
-  checkAdaptation,
-  readLive,
-  writeLive,
-  type LearningOptions,
-  type Learning,
-} from './adaptive';
-import type { MethodName } from './methods';
+import { unlocated } from './path';
 import { members, type Members } from './members';
-import { PRecall, Recall, copy } from './recall';
-import { Fenwick } from './fenwick';
-import { Companion, Scope } from './companion';
+
+export { kindMarker } from './markers';
 
 /**
  * Every value `p.any` encodes: the JSON-like scalars plus `undefined`,
@@ -49,8 +39,7 @@ export type AnyValue =
 
 // Type tags for the self-describing `any` codec: absent values, then scalars,
 // then containers, then raw bytes: an ArrayBuffer, a DataView and one tag per
-// typed-array class in TYPED_ARRAYS order, Float16Array last. Each boolean is a tag of its own,
-// so an adaptive tag table learns them like any other tag.
+// typed-array class in TYPED_ARRAYS order, Float16Array last. Each boolean is a tag of its own.
 const TAG_UNDEFINED = 0;
 const TAG_NULL = 1;
 const TAG_FALSE = 2;
@@ -105,7 +94,7 @@ const COMMON_TAGS: ReadonlySet<number> = new Set([
 /** The declared weight of a common tag, and of every hint's: a hint is declared, so it is common. */
 const COMMON_TIER = 100;
 
-/** The declared weight of a rare tag, and of the recall tag under `.adaptive()`. */
+/** The declared weight of a rare tag. */
 const RARE_TIER = 1;
 
 /**
@@ -139,13 +128,6 @@ const nests = (tag: number): boolean => (tag >= TAG_ARRAY && tag <= TAG_SET) || 
  * stack, about what a browser gives, and leaves the rest to the caller.
  */
 export const MAX_DEPTH = 512;
-
-/**
- * How many key names get a codec of their own under `p.any().adaptive()`
- * in one message; later new keys share one, so a message of many distinct
- * keys keeps a bounded number of codecs.
- */
-export const MAX_KEYS = 1024;
 
 /** Bits of a bigint's zigzag per digit, below 53 so each digit is an exact number. */
 const BIGINT_CHUNK = 32;
@@ -326,24 +308,21 @@ const TAG_BY_KIND = new Map<Kind, number>([
   ...ANY_BINARY.map((node, i): [Kind, number] => [node._kinds[0], TAG_TYPED + i]),
 ]);
 
-/** The tags whose node each key builds for itself under `.adaptive()`. */
-const OWN_TAGS = [TAG_INT, TAG_FLOAT, TAG_STRING, TAG_ARRAY, TAG_OBJECT, TAG_MAP, TAG_SET];
-
 /**
  * The nodes behind the tags, in tag order: the default scalars, then the
  * given int, float, string, array, record, map and set nodes, then the raw
- * bytes, then the hints. A node left out is built on first use.
+ * bytes, then the hints.
  */
 function tagNodes(
-  int: PNode<number> | undefined,
-  float: PNode<number> | undefined,
-  text: PNode<string> | undefined,
-  array: PNode<AnyValue[]> | undefined,
-  record: PNode<{ [key: string]: AnyValue }> | undefined,
-  map: PNode<Map<AnyValue, AnyValue>> | undefined,
-  set: PNode<Set<AnyValue>> | undefined,
+  int: PNode<number>,
+  float: PNode<number>,
+  text: PNode<string>,
+  array: PNode<AnyValue[]>,
+  record: PNode<{ [key: string]: AnyValue }>,
+  map: PNode<Map<AnyValue, AnyValue>>,
+  set: PNode<Set<AnyValue>>,
   hints: readonly PNode<any>[]
-): (PNode<any> | undefined)[] {
+): PNode<any>[] {
   return [
     ANY_UNDEFINED,
     ANY_NULL,
@@ -366,344 +345,33 @@ function tagNodes(
   ];
 }
 
-/**
- * The identity a whole array or record is recalled under: its JSON with
- * every number in the form `String` gives, or null when anything in it is
- * not JSON (undefined, a hole, -0, a non-finite number, any other class)
- * or it nests past `MAX_DEPTH`. Each container's identity is kept in
- * `memo`; a container is null there while its own is worked out, so a
- * value holding itself is null too. Each entry made records its undo in
- * `journal`.
- */
-export function treeKey(
-  value: unknown,
-  memo: WeakMap<object, string | null>,
-  depth = 0,
-  journal?: Journal
-): string | null {
-  switch (typeof value) {
-    case 'string':
-      return JSON.stringify(value);
-    case 'number':
-      return Number.isFinite(value) && !Object.is(value, -0) ? String(value) : null;
-    case 'boolean':
-      return value ? 'true' : 'false';
-    case 'object':
-      break;
-    default:
-      return null;
-  }
-  if (value === null) {
-    return 'null';
-  }
-  if (memo.has(value) || depth === MAX_DEPTH) {
-    return memo.get(value) ?? null;
-  }
-  memo.set(value, null);
-  if (journal?.active === true) {
-    journal.drop(memo, value);
-  }
-  const parts: string[] = [];
-  let key: string;
-  if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) {
-      const part = treeKey(value[i], memo, depth + 1, journal);
-      if (part === null) {
-        return null;
-      }
-      parts.push(part);
-    }
-    key = `[${parts.join()}]`;
-  } else if (isPlainObject(value)) {
-    for (const name of Object.keys(value)) {
-      const part = treeKey(value[name], memo, depth + 1, journal);
-      if (part === null) {
-        return null;
-      }
-      parts.push(`${JSON.stringify(name)}:${part}`);
-    }
-    key = `{${parts.join()}}`;
-  } else {
-    return null;
-  }
-  memo.set(value, key);
-  return key;
-}
-
-/** Whether `value` is an array or a record holding nothing. */
-const isEmpty = (value: object): boolean =>
-  Array.isArray(value) ? value.length === 0 : Object.keys(value).length === 0;
-
-/**
- * What one side knows of the arrays and records coded in full so far in a
- * message: the encoder each one's member by identity, the decoder each one
- * by member, and both how often each was recalled.
- */
-interface Listing {
-  readonly memo: WeakMap<object, string | null>;
-  readonly index: Map<string, number>;
-  readonly values: unknown[];
-  readonly counts: Fenwick;
-}
-
-/**
- * Every non-empty array and record `p.any().adaptive()` coded in full in
- * the message, in the order they were done, each one's count starting at 1
- * and rising each time it is recalled. The encoder finds a value among
- * them by its `treeKey`; one without a key is listed all the same, so both
- * sides list the same containers.
- */
-class Trees {
-  state(side: Encoder | Decoder): Listing {
-    return side.state(this, () => ({
-      memo: new WeakMap(),
-      index: new Map(),
-      values: [],
-      counts: Fenwick.zeros(0, side.journal),
-    }));
-  }
-
-  /** The member of a listed array or record equal to `value`, if any. */
-  find(enc: Encoder, value: unknown): number | undefined {
-    const { memo, index } = this.state(enc);
-    if (index.size === 0 || typeof value !== 'object' || value === null) {
-      return undefined;
-    }
-    const key = treeKey(value, memo, 0, enc.journal);
-    return key === null ? undefined : index.get(key);
-  }
-
-  /** Lists an array or record just coded in full, unless it is empty. */
-  list(side: Encoder | Decoder, value: object): void {
-    if (isEmpty(value)) {
-      return;
-    }
-    const state = this.state(side);
-    const member = state.counts.size;
-    state.counts.push(1);
-    if (side instanceof Encoder) {
-      const key = treeKey(value, state.memo, 0, side.journal);
-      // A container equal to a listed one is recalled, not coded in full,
-      // so its key is new to the index.
-      if (key !== null) {
-        state.index.set(key, member);
-        if (side.journal.active) {
-          side.journal.drop(state.index, key);
-        }
-      }
-    } else {
-      state.values.push(value);
-    }
-  }
-
-  /**
-   * Writes listed member `member`: its place in `local`, the containers
-   * one key recalled before, or an escape and then its place among all.
-   */
-  write(enc: Encoder, local: Recall<number>, member: number): void {
-    const { counts } = this.state(enc);
-    local.write(enc, String(member), () => writeLive(enc, counts, member));
-    counts.add(member, 1);
-  }
-
-  /** Reads a member `write` wrote, as a copy of the container it stands for. */
-  read(dec: Decoder, local: Recall<number>): unknown {
-    const { values, counts } = this.state(dec);
-    const member = local.read(dec, () => {
-      // The encoder recalls only a listed container.
-      if (counts.size === 0) {
-        throw new CorruptInputError('p.any recalls a container before any was coded');
-      }
-      return readLive(dec, counts);
-    });
-    counts.add(member, 1);
-    return copy(values[member]);
-  }
-}
-
-/**
- * A tag table and the node behind each tag: all of a plain `p.any`, or one
- * key's under `.adaptive()`, which `make` builds a node of the first time
- * its tag comes up. There, `local` is set too: a whole array or record
- * equal to one coded in full earlier takes the tag past the hints, then
- * its place among those this key recalled, or an escape and its place
- * among all. A key's own codec there has a companion too, whose flag,
- * when offered, comes first and on a hit stands for the whole value.
- */
+/** A tag table and the node behind each tag: all of a plain `p.any`. */
 class AnyCodec extends PNode<AnyValue> {
-  companion?: Companion;
-
   constructor(
     private readonly any: PAny,
     private readonly tags: Members,
-    private readonly nodes: (PNode<any> | undefined)[],
-    private readonly make?: (tag: number) => PNode<any>,
-    private readonly local?: Recall<number>
+    private readonly nodes: readonly PNode<any>[]
   ) {
     super();
   }
 
-  /** The node behind `tag`, built now if it is not yet. */
-  node(tag: number): PNode<any> {
-    return (this.nodes[tag] ??= (this.make as (tag: number) => PNode<any>)(tag));
-  }
-
   _write(enc: Encoder, value: AnyValue): void {
-    const { companion } = this;
-    if (companion === undefined) {
-      this.writeValue(enc, value);
-      return;
-    }
-    const turn = companion.write(enc, value, () => this.writeValue(enc, value));
-    companion.learn(turn, value, enc.journal);
-  }
-
-  _read(dec: Decoder): AnyValue {
-    const { companion } = this;
-    if (companion === undefined) {
-      return this.readValue(dec);
-    }
-    const turn = companion.read(dec);
-    const value = turn.hit ? (turn.prediction as AnyValue) : this.readValue(dec);
-    companion.learn(turn, value);
-    return value;
-  }
-
-  /** Writes `value` by its tag, or as a recalled container. */
-  private writeValue(enc: Encoder, value: AnyValue): void {
-    const { any, local } = this;
-    const trees = any._trees;
-    if (trees !== undefined && local !== undefined) {
-      const member = trees.find(enc, value);
-      if (member !== undefined) {
-        this.tags.write(enc, this.nodes.length);
-        trees.write(enc, local, member);
-        any._recalled(enc, value);
-        return;
-      }
-    }
+    const { any } = this;
     const tag = any._tagOf(enc, value);
     this.tags.write(enc, tag);
-    any._nest(enc, tag, () => this.node(tag)._write(enc, value));
-    if (trees !== undefined && (tag === TAG_ARRAY || tag === TAG_OBJECT)) {
-      trees.list(enc, value as object);
-    }
-  }
-
-  /** Reads a value `writeValue` wrote. */
-  private readValue(dec: Decoder): AnyValue {
-    const { any, local } = this;
-    const trees = any._trees;
-    const tag = this.tags.read(dec);
-    if (trees !== undefined && local !== undefined && tag === this.nodes.length) {
-      const value = trees.read(dec, local) as AnyValue;
-      any._recalled(dec, value);
-      return value;
-    }
-    const value = any._nest(dec, tag, () => this.node(tag)._read(dec) as AnyValue);
-    if (trees !== undefined && (tag === TAG_ARRAY || tag === TAG_OBJECT)) {
-      trees.list(dec, value as object);
-    }
-    return value;
-  }
-}
-
-/**
- * The values of one key under `p.any().adaptive()`, through that key's
- * codec in the message: the shared one past `MAX_KEYS` when `key` is
- * undefined.
- */
-class AnyKey extends PNode<AnyValue> {
-  constructor(
-    private readonly any: PAny,
-    private readonly key: string | undefined
-  ) {
-    super();
-  }
-
-  _write(enc: Encoder, value: AnyValue): void {
-    this.any._scoped(enc, () => this.any._child(enc, this.key)._write(enc, value));
+    any._nest(enc, tag, () => this.nodes[tag]._write(enc, value));
   }
 
   _read(dec: Decoder): AnyValue {
-    return this.any._scoped(dec, () => this.any._child(dec, this.key)._read(dec));
+    const tag = this.tags.read(dec);
+    return this.any._nest(dec, tag, () => this.nodes[tag]._read(dec) as AnyValue);
   }
-}
-
-/**
- * A plain object under `p.any().adaptive()`: its key list, then each value
- * in that order, through the codec of its key. The key list is the object's
- * own key order, so the empty object is the empty list.
- */
-class AnyRecord extends PNode<{ [key: string]: AnyValue }> {
-  constructor(
-    private readonly _shape: PNode<string[]>,
-    private readonly _any: PAny
-  ) {
-    super();
-  }
-
-  _write(enc: Encoder, value: { [key: string]: AnyValue }): void {
-    const keys = Object.keys(value);
-    this._shape._write(enc, keys);
-    for (const key of keys) {
-      try {
-        this._any._child(enc, key)._write(enc, value[key]);
-      } catch (error) {
-        throw atPath(error, key);
-      }
-    }
-  }
-
-  _read(dec: Decoder): { [key: string]: AnyValue } {
-    const keys = this._shape._read(dec);
-    const entries = new Map<unknown, unknown>();
-    for (const key of keys) {
-      try {
-        entries.set(key, this._any._child(dec, key)._read(dec));
-      } catch (error) {
-        throw atPath(error, key);
-      }
-    }
-    return RECORD.build(entries);
-  }
-}
-
-/** The options `p.any().adaptive()` takes: a window, as no node of it learns apart. */
-type AnyOptions = Pick<LearningOptions, 'window'>;
-
-/** What every key's codec under `p.any().adaptive()` shares. */
-interface AnyLearning {
-  /** The options as declared, which every key's nodes adapt by. */
-  readonly options: LearningOptions;
-  /** The lineage the tag table of every key starts from. */
-  readonly tagRoot: Lineage;
-  /** The lineage the node of each tag in `OWN_TAGS` of every key starts from, by tag. */
-  readonly roots: ReadonlyMap<number, Lineage>;
-  /** The tag weights: the tiers, the hints, then the recall tag. */
-  readonly tiers: readonly number[];
-  /** Record keys: recalled among every key, a new one spelled by one shared string node. */
-  readonly key: PNode<string>;
-  /** Every string value, which a key's own recall escapes to. */
-  readonly texts: Recall<string>;
-  /** Every key list, which a key's own recall escapes to. */
-  readonly shapes: Recall<string[]>;
-  /** The hints as every key codes them: adaptive where they can be, a string-only one recalled. */
-  readonly hints: readonly PNode<any>[];
-  /** Whether each hint takes only strings, and so each key recalls its values first. */
-  readonly textual: readonly boolean[];
 }
 
 /** One message's state of a `p.any` on one side. */
 interface Message {
   /** How many values that may hold `p.any` the value being coded sits in. */
   depth: number;
-  /** Under `.adaptive()`, each of the first `MAX_KEYS` keys' codec, built on first sight. */
-  readonly children: Map<string, AnyCodec>;
-  /** Under `.adaptive()`, the codec every later key shares, built on first sight. */
-  overflow?: AnyCodec;
-  /** Under `.adaptive()`, the values a key's companion may be predicted from. */
-  readonly scope: Scope;
 }
 
 /**
@@ -778,19 +446,6 @@ export function sameValue(a: unknown, b: unknown): boolean {
   );
 }
 
-/** The identity of a string. */
-const same = (text: string): string => text;
-
-/** The identity of a key list. */
-const listed = (keys: string[]): string => JSON.stringify(keys);
-
-/**
- * The methods `p.any` leaves closed on the nodes it builds and on a hint
- * of strings: it recalls their values itself, and an int's recall would
- * save next to nothing on top of its companion.
- */
-const RECALLED: readonly MethodName[] = ['recall'];
-
 /**
  * Self-describing escape hatch: a type tag, then the value through the node
  * that tag stands for. Containers hold `p.any` itself. The tags take two
@@ -803,23 +458,17 @@ const RECALLED: readonly MethodName[] = ['recall'];
 export class PAny extends PNode<AnyValue> {
   readonly _kinds: readonly Kind[] = [...TAG_BY_KIND.keys(), 'boolean', 'number'];
 
-  /** The hints as declared. */
-  private readonly _hints: readonly PNode<any>[];
+  /** The hints as declared, which values are tried against and coded by. */
+  private readonly _forms: readonly PNode<any>[];
   /** The hints that take each kind, by index, in declared order. */
   private readonly _byKind = new Map<Kind, number[]>();
-  /** The hints as values are tried against and coded by them. */
-  private readonly _forms: readonly PNode<any>[];
-  /** Without `.adaptive()`: the one codec every value goes through. */
-  private readonly _codec?: AnyCodec;
-  /** Under `.adaptive()`: what every key's codec shares. */
-  private readonly _learning?: AnyLearning;
-  /** Under `.adaptive()`: the arrays and records coded in full, for recall. */
-  readonly _trees?: Trees;
+  /** The one codec every value goes through. */
+  private readonly _codec: AnyCodec;
 
-  constructor(hints: readonly PNode<any>[] = [], adaptive?: AnyOptions) {
+  constructor(hints: readonly PNode<any>[] = []) {
     super();
-    this._hints = [...hints];
-    this._hints.forEach((hint, i) => {
+    this._forms = [...hints];
+    this._forms.forEach((hint, i) => {
       if (hint._kinds === undefined) {
         throw new TypeError('p.any hints must declare their kinds');
       }
@@ -827,187 +476,31 @@ export class PAny extends PNode<AnyValue> {
         this._byKind.set(kind, [...(this._byKind.get(kind) ?? []), i]);
       }
     });
-    const tiers = [...TAG_TIERS, ...this._hints.map(() => COMMON_TIER)];
-    if (adaptive === undefined) {
-      this._forms = this._hints;
-      this._codec = new AnyCodec(
-        this,
-        members(tiers.length, { weights: tiers }, 'p.any'),
-        tagNodes(
-          ANY_INT,
-          ANY_FLOAT,
-          ANY_STRING,
-          new PArray<AnyValue>(this),
-          new PCollection(RECORD, ANY_STRING, this),
-          new PCollection(MAP, this, this),
-          new PCollection(SET, this),
-          this._hints
-        )
-      );
-      return;
-    }
-    const options = checkAdaptation(adaptive, 'p.any');
-    this._forms = this._hints.map((hint) => {
-      // Every hint declares its kinds, checked above.
-      const textual = (hint._kinds as readonly Kind[]).every((kind) => kind === 'string');
-      // p.any recalls the strings, so a string hint opens no recall of its own.
-      const form = hint._open?.(options, textual ? RECALLED : []) ?? hint;
-      return textual ? new PRecall<string>(form, same) : form;
-    });
-    this._learning = {
-      options,
-      tagRoot: new Lineage(),
-      roots: new Map(OWN_TAGS.map((tag) => [tag, new Lineage()])),
-      tiers: [...tiers, RARE_TIER],
-      // A lineage of the key's own, so its tables learn apart from any
-      // declared string's.
-      key: new PRecall<string>(new PString().adaptive(), same),
-      texts: new Recall<string>(),
-      shapes: new Recall<string[]>(),
-      hints: this._forms,
-      textual: this._forms.map((form) => form instanceof PRecall),
-    };
-    this._trees = new Trees();
-    // A key's codec with every node built now, never used: its tables root
-    // the lineages.
-    const root = this._build('', true);
-    for (const tag of OWN_TAGS) {
-      root.node(tag);
-    }
+    const tiers = [...TAG_TIERS, ...this._forms.map(() => COMMON_TIER)];
+    this._codec = new AnyCodec(
+      this,
+      members(tiers.length, { weights: tiers }, 'p.any'),
+      tagNodes(
+        ANY_INT,
+        ANY_FLOAT,
+        ANY_STRING,
+        new PArray<AnyValue>(this),
+        new PCollection(RECORD, ANY_STRING, this),
+        new PCollection(MAP, this, this),
+        new PCollection(SET, this),
+        this._forms
+      )
+    );
   }
 
-  /**
-   * Learns as the message goes on, a schema built on the fly: each key name
-   * gets its own tag table, ints, floats, strings, arrays, records, maps
-   * and sets, all adaptive, the first time it appears, and keeps them wherever it
-   * appears again; an array's items sit under its key with `[]` added, and
-   * values outside any record under a key of their own. A key's tables
-   * start from what every key learned so far. Ints, floats and strings
-   * each pick their plain spelling or the difference from the key's previous
-   * one, as their nodes' `.adaptive()` does, and floats learn their decimal
-   * places; strings, key lists and whole arrays and records equal to an earlier one
-   * are recalled, from the key's own first, then from every key's, and the
-   * characters of new strings and keys learn across the whole message, as
-   * under `p.string().adaptive()`. A value a key had the last time an
-   * earlier key of its record, or of a record around it, had its current
-   * value, or that is that key's value, costs a learned flag once the key's
-   * own values show that earlier key predicting it. Hints are used in their own adaptive
-   * form where they have one, and a hint taking only strings recalls them
-   * as `p.any` does its own. `window` is how many observations each table
-   * holds before its counts halve, so the newest weigh most (1024 when left
-   * out). Encoding and decoding take 5 to 40 times as long as without. Part
-   * of the wire format.
-   */
-  adaptive(options?: AnyOptions): PAny {
-    return new PAny(this._hints, options ?? {});
-  }
-
-  _open(options: Learning): PAny {
-    return this.adaptive(options);
+  /** The values through the similarity predictor, which lands in the next stage. */
+  adaptive(): PAny {
+    throw new Error('p.any().adaptive() lands in stage 2');
   }
 
   /** This message's state on `side`. */
   private _message(side: Encoder | Decoder): Message {
-    return side.state(this, () => ({ depth: 0, children: new Map(), scope: new Scope() }));
-  }
-
-  /**
-   * The codec of key `key` in this message on `side`, built on first
-   * sight: its own for the first `MAX_KEYS` keys, and for every later one,
-   * or an undefined key, the one they share.
-   */
-  _child(side: Encoder | Decoder, key: string | undefined): AnyCodec {
-    const message = this._message(side);
-    const { children } = message;
-    let child = key === undefined ? undefined : children.get(key);
-    if (child === undefined) {
-      const { journal } = side;
-      if (key !== undefined && children.size < MAX_KEYS) {
-        child = this._build(key);
-        child.companion = new Companion(message.scope, journal);
-        children.set(key, child);
-        if (journal?.active === true) {
-          journal.drop(children, key);
-        }
-      } else if (message.overflow === undefined) {
-        // Past `MAX_KEYS` keys only objects lead, whose key text goes through the predictor,
-        // which codes inside no try: the shared codec is never built in one.
-        child = this._build(undefined);
-        message.overflow = child;
-      } else {
-        child = message.overflow;
-      }
-    }
-    return child;
-  }
-
-  /**
-   * The codec of key `key`, or the shared one past `MAX_KEYS` when
-   * undefined, its adaptive tables starting from the roots' lineages, or
-   * rooting them when `roots`. Its int, float, string, array, record, map
-   * and set nodes are built on first use; the shared codec's arrays, maps and sets
-   * hold values of the shared codec too.
-   */
-  private _build(key: string | undefined, roots = false): AnyCodec {
-    const learning = this._learning as AnyLearning;
-    const { tiers, texts, shapes } = learning;
-    const options = (root: Lineage) => ({
-      ...learning.options,
-      lineage: roots ? root : new Lineage(root),
-    });
-    const make = (tag: number): PNode<any> => {
-      // Strings, key lists and containers are recalled by the codec, and an
-      // int's recall saves next to nothing on top of its companion, so the
-      // nodes open no recall of their own.
-      const adaptive = options(learning.roots.get(tag) as Lineage);
-      switch (tag) {
-        case TAG_INT:
-          return new PInt()._open(adaptive, RECALLED);
-        case TAG_FLOAT:
-          return new PFloat()._open(adaptive, RECALLED);
-        case TAG_STRING: {
-          const text = new PString().adaptive();
-          return new PRecall(new PRecall(text, same, texts), same);
-        }
-        case TAG_ARRAY: {
-          const items = new AnyKey(this, key === undefined ? undefined : `${key}[]`);
-          return new PArray<AnyValue>(items)._open(adaptive, RECALLED);
-        }
-        case TAG_OBJECT: {
-          const list = new PArray(learning.key)._open(adaptive, RECALLED);
-          return new AnyRecord(new PRecall(new PRecall(list, listed, shapes), listed), this);
-        }
-        case TAG_MAP: {
-          const here = new AnyKey(this, key);
-          return new PCollection<Map<AnyValue, AnyValue>>(MAP, here, here)._open(
-            adaptive,
-            RECALLED
-          );
-        }
-        default:
-          // The last of OWN_TAGS, the only tags left unbuilt.
-          return new PCollection<Set<AnyValue>>(SET, new AnyKey(this, key))._open(
-            adaptive,
-            RECALLED
-          );
-      }
-    };
-    return new AnyCodec(
-      this,
-      members(tiers.length, { weights: tiers, learn: options(learning.tagRoot) }, 'p.any'),
-      tagNodes(
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        learning.hints.map((hint, i) => (learning.textual[i] ? new PRecall(hint, same) : hint))
-      ),
-      make,
-      new Recall<number>()
-    );
+    return side.state(this, () => ({ depth: 0 }));
   }
 
   /**
@@ -1036,60 +529,12 @@ export class PAny extends PNode<AnyValue> {
     }
   }
 
-  /**
-   * Runs `code`, the coding under `.adaptive()` of a value standing on its
-   * own: an array item, a map entry's key or value, a set item or a
-   * top-level value, whose values leave the scope when it is done.
-   */
-  _scoped<T>(side: Encoder | Decoder, code: () => T): T {
-    const { scope } = this._message(side);
-    const base = scope.open();
-    const result = code();
-    scope.close(base, side.journal);
-    return result;
-  }
-
-  /**
-   * Puts the strings and numbers of `value`, a recalled container, in the
-   * scope under their keys as if coded one by one: those of a record and
-   * of the records in it.
-   */
-  _recalled(side: Encoder | Decoder, value: unknown): void {
-    if (Array.isArray(value)) {
-      return;
-    }
-    const { scope } = this._message(side);
-    const record = value as { [key: string]: unknown };
-    for (const key of Object.keys(record)) {
-      const item = record[key];
-      if (typeof item === 'string' || typeof item === 'number') {
-        const codec = this._child(side, key);
-        if (codec.companion !== undefined) {
-          scope.push(codec.companion, item, side.journal);
-        }
-      } else if (isPlainObject(item)) {
-        this._recalled(side, item);
-      }
-    }
-  }
-
-  get _exact(): boolean {
-    return true;
-  }
-
   _write(enc: Encoder, value: AnyValue): void {
-    if (this._codec !== undefined) {
-      this._codec._write(enc, value);
-    } else {
-      this._scoped(enc, () => this._child(enc, '')._write(enc, value));
-    }
+    this._codec._write(enc, value);
   }
 
   _read(dec: Decoder): AnyValue {
-    if (this._codec !== undefined) {
-      return this._codec._read(dec);
-    }
-    return this._scoped(dec, () => this._child(dec, '')._read(dec));
+    return this._codec._read(dec);
   }
 
   /**

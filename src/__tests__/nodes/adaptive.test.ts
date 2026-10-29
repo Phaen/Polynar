@@ -9,16 +9,13 @@ import { Encoder, Decoder } from '../../packer';
 import {
   AdaptivePrior,
   AdaptiveTable,
-  BLEND_SHARE,
   DEFAULT_ADAPTIVE_WINDOW,
-  KIN,
-  Lineage,
+  kinOf,
   LiveCounts,
   LADDER,
   MAX_ADAPTIVE_MEMBERS,
   checkAdaptation,
   checkAdaptiveMembers,
-  lineageOf,
   readLive,
   writeLive,
 } from '../../nodes/adaptive';
@@ -881,6 +878,32 @@ describe('AdaptivePrior exclusion and learning', () => {
   });
 });
 
+describe('AdaptivePrior default row', () => {
+  it('writes and reads row 0 where none is given', () => {
+    const symbols = [0, 3, 3, 1];
+    const mine = new AdaptivePrior([[5, 3, 2, 1]], 4, undefined, 'w');
+    const enc = new Encoder();
+    symbols.forEach((symbol) => {
+      mine.write(enc, symbol);
+      mine.learn(enc, symbol);
+    });
+    const bytes = enc.output();
+    const explicit = new Encoder();
+    const other = new AdaptivePrior([[5, 3, 2, 1]], 4, undefined, 'w');
+    symbols.forEach((symbol) => put(other, explicit, symbol, 0));
+    expect(bytes).toEqual(explicit.output());
+    const back = new AdaptivePrior([[5, 3, 2, 1]], 4, undefined, 'w');
+    const dec = new Decoder(bytes);
+    expect(
+      symbols.map(() => {
+        const pos = back.read(dec);
+        back.learn(dec, pos);
+        return pos;
+      })
+    ).toEqual(symbols);
+  });
+});
+
 describe('AdaptivePrior estimate', () => {
   const weights = [[5, 3, 2, 1, 1], ones(5)];
   const symbols = [0, 1, 0, 2, 0, 0, 3, 1];
@@ -946,166 +969,18 @@ describe('AdaptivePrior estimate', () => {
   });
 });
 
-describe('Lineage', () => {
-  const rows = (members: number, count = 1) => Array.from({ length: count }, () => ones(members));
-  const prior = (members: number, count = 1, lineage?: Lineage) =>
-    new AdaptivePrior(rows(members, count), members, undefined, 'w', lineage);
-
-  it('pairs each prior a later node builds with the root prior built at the same place', () => {
-    const root = new Lineage();
-    const first = prior(3, 1, root);
-    const second = prior(5, 2, root);
-    const later = new Lineage(root);
-    expect(later.pair(3, rows(3), 'w')).toBe(first);
-    later.join(prior(3));
-    expect(later.pair(5, rows(5, 2), 'w')).toBe(second);
-    expect(new Lineage().pair(3, rows(3), 'w')).toBeUndefined();
-  });
-
-  it('refuses a prior past the root, or of other members or weights', () => {
-    const root = new Lineage();
-    prior(3, 1, root);
-    const refusal = (at: number) =>
-      new TypeError(`w adaptive prior ${at} does not match its lineage's`);
-    const later = new Lineage(root);
-    expect(() => later.pair(4, rows(4), 'w')).toThrow(refusal(0));
-    expect(() => later.pair(3, rows(3, 2), 'w')).toThrow(refusal(0));
-    expect(() => later.pair(3, [[1, 1]], 'w')).toThrow(refusal(0));
-    expect(() => later.pair(3, [[1, 2, 1]], 'w')).toThrow(refusal(0));
-    later.join(prior(3));
-    expect(() => later.pair(3, rows(3), 'w')).toThrow(refusal(1));
-  });
-
-  it('takes a prior only once it is built', () => {
-    const root = new Lineage();
-    expect(() => new AdaptivePrior([[1, 0]], 2, undefined, 'w', root)).toThrow(TypeError);
-    const first = prior(2, 1, root);
-    expect(new Lineage(root).pair(2, rows(2), 'w')).toBe(first);
-  });
-
-  it('rides on what a node learns under', () => {
-    const lineage = new Lineage();
-    expect(lineageOf({ window: 5, lineage })).toBe(lineage);
-    expect(lineageOf({ separate: true, lineage })).toBe(lineage);
-
-    expect(lineageOf({ window: 5 })).toBe(KIN);
-    expect(lineageOf({ separate: true })).toBeUndefined();
-    expect(lineageOf(undefined)).toBeUndefined();
-  });
-});
-
-describe('AdaptivePrior in a lineage', () => {
-  const weights = [[5, 3, 2, 1, 1], ones(5)];
-  const kin = (window?: number) => {
-    const root = new Lineage();
-    const gatherer = new AdaptivePrior(weights, 5, window, 'w', root);
-    const node = () => new AdaptivePrior(weights, 5, window, 'w', new Lineage(root));
-    return { gatherer, node };
-  };
-
-  /** The gathered table of row 0 after `values`, by hand, at the second rung's prior. */
-  const gathered = (gatherer: AdaptivePrior, values: readonly number[], window = 1024) => {
-    const live = new LiveCounts(buildWeights(weights[0], 5, 'w'), gatherer.rungs[1], window);
-    values.forEach((value) => live.learn(value));
-    return live;
-  };
-
-  it('starts from what its kin learned, its own values counting on top', () => {
-    const { gatherer, node } = kin();
-    const [a, b] = [node(), node()];
-    const enc = new Encoder();
-    const first = [0, 1, 0, 2];
-    first.forEach((value) => put(a, enc, value));
-    const all = gathered(gatherer, first);
-    // Nothing of its own yet: the gathered table, counted as BLEND_SHARE observations.
-    for (let pos = 0; pos < 5; pos++) {
-      const [cum, freq, total] = all.bucket(pos);
-      expect(b.estimate(enc, pos)).toEqual([
-        cum * BLEND_SHARE,
-        freq * BLEND_SHARE,
-        total * BLEND_SHARE,
-      ]);
-    }
-    put(b, enc, 3);
-    b.learn(enc, 3);
-    const after = gathered(gatherer, [...first, 3, 3]);
-    const [cum, freq] = after.bucket(3);
-    expect(b.estimate(enc, 3)).toEqual([
-      cum * BLEND_SHARE,
-      freq * BLEND_SHARE + 2 * after.total,
-      after.total * (BLEND_SHARE + 2),
-    ]);
-  });
-
-  it('decodes what it encodes, rows, exclusions and learned values included', () => {
-    const { node } = kin(8);
-    const script = sequence(4, 300, 5, 0.5);
-    const encoders = [node(), node()];
-    const enc = new Encoder();
-    const lone = new Exclusion(5);
-    [1, 2, 3, 4].forEach((pos) => lone.add(pos));
-    const some = new Exclusion(5);
-    some.add(4);
-    const step = (i: number) => ({
-      row: i % 3 === 0 ? 1 : 0,
-      excluded: i % 7 === 0 ? some : undefined,
-    });
-    script.forEach((value, i) => {
-      const { row, excluded } = step(i);
-      const prior = encoders[i % 2];
-      if (value === 4) {
-        prior.learn(enc, value, row);
-      } else {
-        put(prior, enc, value, row, excluded);
-      }
-    });
-    put(encoders[0], enc, 0, 0, lone);
-    const decoders = [encoders[0], encoders[1]];
-    const dec = new Decoder(enc.output());
-    script.forEach((value, i) => {
-      const { row, excluded } = step(i);
-      const prior = decoders[i % 2];
-      if (value === 4) {
-        prior.learn(dec, value, row);
-      } else {
-        expect(take(prior, dec, row, excluded)).toBe(value);
-      }
-    });
-    expect(take(decoders[0], dec, 0, lone)).toBe(0);
-    dec.finalize();
-  });
-
-  it('halves its own counts past its window, and writes nothing for a lone member', () => {
-    const { gatherer, node } = kin();
-    const prior = node();
-    const enc = new Encoder();
-    for (let i = 0; i < 1100; i++) put(prior, enc, 0);
-    const all = gathered(gatherer, Array<number>(1100).fill(0));
-    // 1025 own observations halve to 512, then 75 more.
-    expect(prior.estimate(enc, 0)[2]).toBe(all.total * (BLEND_SHARE + 587));
-    const root = new Lineage();
-    new AdaptivePrior([[1]], 1, undefined, 'w', root);
-    const lone = new AdaptivePrior([[1]], 1, undefined, 'w', new Lineage(root));
-    const quiet = new Encoder();
-    put(lone, quiet, 0);
-    expect(quiet.output()).toEqual(new Encoder().output());
-  });
-
-  it('refuses a root whose gathered table, counted with its own, overflows', () => {
-    const root = new Lineage();
-    new AdaptivePrior([[2 ** 33, 1]], 2, undefined, 'w', root);
-    expect(() => new AdaptivePrior([[2 ** 33, 1]], 2, undefined, 'w', new Lineage(root))).toThrow(
-      new RangeError(
-        'w adaptive prior 2 and window 1024 overflow with weights totalling 8830452761604'
-      )
-    );
+describe('kinOf', () => {
+  it('learns with the kin unless separate', () => {
+    expect(kinOf({ window: 5 })).toBe(true);
+    expect(kinOf({ separate: true })).toBe(false);
+    expect(kinOf(undefined)).toBe(false);
   });
 });
 
 describe('AdaptivePrior with its kin', () => {
   const weights = [[5, 3, 2, 1, 1], ones(5)];
   const kin = (who = 'w', rows: number[][] = weights, window?: number) =>
-    new AdaptivePrior(rows, rows[0].length, window, who, KIN);
+    new AdaptivePrior(rows, rows[0].length, window, who, true);
   const alone = () => new AdaptivePrior(weights, 5, undefined, 'w');
   /** Member 4, the declared weights' least likely, nine times in ten. */
   const unlikely = (seed: number, length: number) =>
@@ -1131,7 +1006,7 @@ describe('AdaptivePrior with its kin', () => {
 
   it('takes up what its kin learned in place of its fastest rung', () => {
     const wide = [ones(64)];
-    const [a, b] = [0, 1].map(() => new AdaptivePrior(wide, 64, undefined, 'w', KIN));
+    const [a, b] = [0, 1].map(() => new AdaptivePrior(wide, 64, undefined, 'w', true));
     const pattern = [7, 19, 40, 7, 7, 19, 40, 7];
     const before = Array.from({ length: 300 }, (_, i) => pattern[i % pattern.length]);
     const bytes = message(a, before, b, pattern);
@@ -1213,8 +1088,21 @@ describe('AdaptivePrior with its kin', () => {
     expect(enc.output()).toEqual(encodeAll(alone(), after));
   });
 
+  it('takes back what a rolled-back write taught its kin past the window', () => {
+    const window = 8;
+    const [a, b] = [kin('w', weights, window), kin('w', weights, window)];
+    const after = unlikely(16, 30);
+    const enc = new Encoder();
+    const mark = enc.mark();
+    unlikely(15, 100).forEach((value) => put(a, enc, value));
+    after.forEach((value) => put(b, enc, value));
+    enc.rollback(mark);
+    after.forEach((value) => put(b, enc, value));
+    expect(enc.output()).toEqual(encodeAll(new AdaptivePrior(weights, 5, window, 'w'), after));
+  });
+
   it('refuses a kin whose gathered table, counted with its own, overflows', () => {
-    expect(() => new AdaptivePrior([[2 ** 33, 1]], 2, undefined, 'w', KIN)).toThrow(
+    expect(() => new AdaptivePrior([[2 ** 33, 1]], 2, undefined, 'w', true)).toThrow(
       new RangeError(
         'w adaptive prior 2 and window 1024 overflow with weights totalling 8830452761604'
       )

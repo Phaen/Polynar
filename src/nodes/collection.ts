@@ -1,9 +1,13 @@
 import { Encoder, Decoder } from '../packer';
-import { PNode } from './base';
+import { resolve } from '../predictor/options';
+import { Priors } from '../predictor/prior';
+import { session, type Bound, type Session } from '../predictor/session';
+import { STRUCT, type AdaptiveOptions, type Ends, type Resolved } from '../predictor/types';
+import { PNode, adapt } from './base';
 import { atPath } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
-import type { Cdf } from './weights';
+import { checkIndex, type Cdf } from './weights';
 import type { LearningOptions } from './adaptive';
 import {
   checkOrder,
@@ -13,10 +17,13 @@ import {
   writeOrdinal,
   type Order,
 } from './ordinal';
-import { readRun, writeRun } from './runs';
-import { CONTAINER_METHODS, learningOf, MethodNode, recallOf, type MethodSet } from './methods';
-import { copy, identity, type Recall } from './recall';
+import { readRun, runOrder, writeRun } from './runs';
+import { readMarker, writeMarker } from './markers';
+import { learningOf, MethodNode, type MethodSet } from './methods';
 import { PString } from './string';
+
+/** A record key's text under `.adaptive()`: any length, ended by END. */
+const KEY_TEXT: Ends = { min: 0, max: undefined, fixed: false };
 
 /** The keys of an unordered collection: distinct by construction, so a set of digits. */
 const UNORDERED: Order = { unordered: true, unique: true };
@@ -32,14 +39,18 @@ export interface Layout<T> {
   /** The collection, as value errors name it. */
   readonly name: string;
   readonly kind: Kind;
+  /** The structure symbols the collection starts and ends with under `.adaptive()`. */
+  readonly start: number;
+  readonly end: number;
   size(value: T): number;
   /** Each key with its value, in write order. A set's item is its own key and value. */
   entries(value: T): Iterable<readonly [unknown, unknown]>;
   /** The collection of `entries`, whose keys are distinct and never -0. */
   build(entries: Map<unknown, unknown>): T;
   /**
-   * The node the keys go through under `.adaptive()`, for a layout whose
-   * keys have no node of the caller's to adapt; the declared key otherwise.
+   * The node the keys go through under `.learn()`, for a layout whose keys
+   * have no node of the caller's; the declared key otherwise. A layout with
+   * one has string keys, which `.adaptive()` codes as key text.
    */
   learnedKey?(): PNode<any>;
 }
@@ -48,6 +59,8 @@ export const MAP: Layout<Map<any, any>> = {
   who: 'p.map',
   name: 'Map',
   kind: 'map',
+  start: STRUCT.MAP_START,
+  end: STRUCT.MAP_END,
   size: (value) => value.size,
   entries: (value) => value.entries(),
   build: (entries) => entries,
@@ -57,6 +70,8 @@ export const SET: Layout<Set<any>> = {
   who: 'p.set',
   name: 'Set',
   kind: 'set',
+  start: STRUCT.SET_START,
+  end: STRUCT.SET_END,
   size: (value) => value.size,
   entries: (value) => value.entries(),
   build: (entries) => new Set(entries.keys()),
@@ -66,6 +81,8 @@ export const RECORD: Layout<Record<string, any>> = {
   who: 'p.record',
   name: 'Record',
   kind: 'object',
+  start: STRUCT.OBJ_START,
+  end: STRUCT.OBJ_END,
   size: (value) => Object.keys(value).length,
   entries: (value) => Object.entries(value),
   build: (entries) => {
@@ -96,11 +113,13 @@ export class PCollection<T> extends MethodNode<T> {
   private readonly _count: IndexRange;
   /** Set by `.unordered()`. */
   private readonly _unordered?: true;
-  /** The methods the node has, declared or open. */
+  /** How the node learns. */
   readonly _methods: MethodSet;
-  readonly _methodNames = CONTAINER_METHODS;
-  /** Set by `.recall()` or opened: learned where the node learns. */
-  private readonly _recall?: Recall<T>;
+  readonly _adaptive?: AdaptiveOptions;
+  /** Under `.adaptive()`: the options the collection's structure symbols code under. */
+  private readonly _resolved?: Resolved;
+  /** Whether the node or a node of its entries codes through the predictor. */
+  private readonly _holds: boolean;
 
   constructor(
     layout: Layout<T>,
@@ -122,7 +141,19 @@ export class PCollection<T> extends MethodNode<T> {
     this._kinds = [layout.kind];
     this._unordered = unordered;
     this._methods = methods;
-    this._recall = recallOf(methods, copy);
+    this._adaptive = methods.adaptive;
+    if (this._adaptive !== undefined) {
+      if (bounds.prior !== undefined) {
+        throw new TypeError(
+          `${layout.who} adaptive cannot weigh the count: an adaptive collection ends with a symbol`
+        );
+      }
+      this._resolved = resolve(this._adaptive, Priors.text, layout.who);
+    }
+    this._holds =
+      this._adaptive !== undefined ||
+      key._holdsAdaptive ||
+      (value !== undefined && value._holdsAdaptive);
   }
 
   /** Require at least `n` entries. A raised floor packs the count denser. */
@@ -174,34 +205,58 @@ export class PCollection<T> extends MethodNode<T> {
    * recurring gets cheaper as the message goes on. From its second value on,
    * the node spends one bit to stay static, or a few to name the learning rate
    * that paid off. Without a max, the count learns on the magnitude scale from
-   * the min instead: by its distance's bit-length class. Takes weights, not a
-   * cdf; part of the wire format, like the weights. A record's keys learn as
-   * under `p.string().adaptive()`: keys that recur are recalled and new ones
-   * learn their characters with the message's other strings.
+   * the min instead: by its distance's bit-length class. `window` is how many
+   * observations a table's counts hold before they halve, so the newest weigh
+   * most (1024 when left out, and raised to the number of values counted when
+   * smaller), and `separate` keeps its tables from starting where other nodes
+   * of its kind and window got to. Takes weights, not a cdf; part of the wire
+   * format, like the weights. A record's keys learn as under
+   * `p.string().adaptive()`: keys that recur are recalled and new ones learn
+   * their characters with the message's other strings. Not with
+   * `.adaptive()`.
    */
-  learn(): PCollection<T> {
-    return this._declare('learn', this._layout.who);
+  learn(options?: LearningOptions): PCollection<T> {
+    return this._declare('learn', this._layout.who, options);
   }
 
   /**
-   * What the node's learning goes by, for `.learn()` and the methods that
-   * learn: `window` is how many observations a table's counts hold before
-   * they halve, so the newest weigh most (1024 when left out, and raised to
-   * the number of values counted when smaller), and `separate` keeps its
-   * tables from starting where other nodes of its kind and window got to.
-   * Set once.
+   * Code the collection through the similarity predictor: its start, each
+   * entry, and its end in place of a count, as symbols of the message's
+   * structure, `.min()` and `.max()` bounding where the end may come. A map's
+   * key and value and a set's item each follow the symbol they start with; a
+   * record's key is a key symbol and the key's characters, then its value.
+   * The nodes of the entries code as under their own `.adaptive(options)`
+   * unless they have `.adaptive()` or `.learn()` already. Unordered entries go
+   * ascending by key. Not with `.learn()`, `.weights()` or `.cdf()`. Set once.
    */
-  learning(options: LearningOptions): PCollection<T> {
-    return this._learning(options, this._layout.who);
+  adaptive(options?: AdaptiveOptions): PCollection<T> {
+    return this._sugar(options, this._layout.who);
   }
 
-  /**
-   * Learn with every method the node has: `.learn()`, and `.recall()` opens to
-   * a learned choice per value unless declared, under `options` as
-   * `.learning()` takes them.
-   */
-  adaptive(options?: LearningOptions): PCollection<T> {
-    return this._adapt(options, this._layout.who);
+  _adapted(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PCollection<T> {
+    if (this._keeps()) {
+      return this;
+    }
+    const { _layout, _key, _value } = this;
+    // A record's keys are key text under `.adaptive()`, whatever their node.
+    const key = _layout.learnedKey === undefined ? adapt(_key, options, memo) : _key;
+    const value = _value === undefined ? undefined : adapt(_value, options, memo);
+    return new PCollection<T>(_layout, key, value, this._bounds, this._unordered, {
+      ...this._methods,
+      adaptive: options,
+    });
+  }
+
+  get _holdsAdaptive(): boolean {
+    return this._holds;
+  }
+
+  _marker(): number {
+    return this._layout.start;
+  }
+
+  _markers(): ReadonlySet<number> {
+    return new Set([this._layout.start]);
   }
 
   /**
@@ -216,19 +271,6 @@ export class PCollection<T> extends MethodNode<T> {
     checkUnset(this._unordered, who, 'unordered');
     checkOrder(this._key, who, 'unordered', this._value === undefined ? 'items' : 'keys');
     return this._with(this._bounds, true);
-  }
-
-  /**
-   * Spell a collection this node already wrote in the message by its place
-   * among the distinct collections it wrote, and a new one as an escape and
-   * then in full: with n collections seen, a repeat costs log2(n + 1) bits,
-   * less the more often it recurs. The message's
-   * first collection costs nothing extra. Collections the schema writes the
-   * same way are the same collection, and a repeat decodes as a copy
-   * of the collection first decoded.
-   */
-  recall(): PCollection<T> {
-    return this._declare('recall', this._layout.who);
   }
 
   /** This node with `methods` in place of its own. */
@@ -254,22 +296,155 @@ export class PCollection<T> extends MethodNode<T> {
   }
 
   _write(enc: Encoder, value: T): void {
-    const recall = this._recall;
-    if (recall === undefined) {
+    if (!this._holds) {
       this._spell(enc, value);
-    } else {
-      const key = () => identity((alone) => this._spell(alone, value));
-      recall.write(enc, key, () => this._spell(enc, value));
+      return;
+    }
+    const s = session(enc);
+    const o = this._resolved;
+    if (o !== undefined && s.take(this) < 0) s.marker(this, o).write(enc, this._layout.start);
+    this._enter(s);
+    try {
+      if (o === undefined) {
+        this._spell(enc, value, s);
+      } else {
+        this._entries(enc, value, o, s);
+      }
+    } finally {
+      this._leave(s);
     }
   }
 
   _read(dec: Decoder): T {
-    const recall = this._recall;
-    return recall === undefined ? this._unspell(dec) : recall.read(dec, () => this._unspell(dec));
+    if (!this._holds) {
+      return this._unspell(dec);
+    }
+    const s = session(dec);
+    const o = this._resolved;
+    if (o !== undefined && s.take(this) < 0) s.marker(this, o).read(dec);
+    this._enter(s);
+    try {
+      return o === undefined ? this._unspell(dec, s) : this._unentries(dec, o, s);
+    } finally {
+      this._leave(s);
+    }
+  }
+
+  /** Opens the collection's list and marker scope. */
+  private _enter(s: Session): void {
+    const o = this._resolved;
+    if (o === undefined) {
+      s.enterPlain();
+    } else {
+      s.enterScope(this, o);
+    }
+    s.enterList();
+  }
+
+  private _leave(s: Session): void {
+    s.leaveList();
+    s.leaveScope();
+  }
+
+  /**
+   * Writes the entries under `.adaptive()`, then the end unless the collection is at its max:
+   * in insertion order, or ascending by key when unordered.
+   */
+  private _entries(enc: Encoder, value: T, o: Resolved, s: Session): void {
+    const { name, end } = this._layout;
+    const size = this._layout.size(value);
+    const { lo, hi } = this._count;
+    checkIndex(size, lo, hi, () => `${name} size ${size}`);
+    const entries = [...this._layout.entries(value)];
+    const keys = entries.map(([key]) => key);
+    const segment = (j: number): string | number => this._segment(keys[j], j);
+    let at: readonly number[] = keys.map((_, j) => j);
+    if (this._unordered !== undefined) {
+      at = ordinal(this._keys)
+        ? ordinalDigits(this._keys, keys, UNORDERED, segment).at
+        : runOrder(keys, UNORDERED, segment, true);
+    }
+    const min = lo as number;
+    for (let k = 0; k < at.length; k++) {
+      const j = at[k];
+      const [key, item] = entries[j];
+      s.nextItem();
+      const bound = { end, allow: k >= min };
+      try {
+        this._writeKey(enc, key, o, bound);
+      } catch (error) {
+        throw atPath(this._value === undefined ? error : atPath(error, '<key>'), j);
+      }
+      const node = this._value;
+      if (node !== undefined) {
+        try {
+          writeMarker(enc, this, o, node, node._marker(item));
+          node._write(enc, item);
+        } catch (error) {
+          throw atPath(error, this._segment(key, j));
+        }
+      }
+    }
+    if (size !== hi) {
+      s.marker(this, o).write(enc, end, undefined, { end, allow: true });
+    }
+  }
+
+  /** Writes a key, a record's as key text, after its first structure symbol. */
+  private _writeKey(enc: Encoder, key: unknown, o: Resolved, bound: Bound): void {
+    if (this._layout.learnedKey === undefined) {
+      const node = this._keys;
+      writeMarker(enc, this, o, node, node._marker(key), bound);
+      node._write(enc, key);
+      return;
+    }
+    const s = session(enc);
+    s.marker(this, o).write(enc, STRUCT.KEY, undefined, bound);
+    // A record's entries come from `Object.entries`, whose keys are strings.
+    const cps = Array.from(key as string, (ch) => ch.codePointAt(0) as number);
+    s.text(this, o, 'text').write(enc, cps, cps.length, KEY_TEXT);
+  }
+
+  /** Reads the entries `_entries` wrote. */
+  private _unentries(dec: Decoder, o: Resolved, s: Session): T {
+    const { end } = this._layout;
+    const { lo, hi } = this._count;
+    const min = lo as number;
+    const entries = new Map<unknown, unknown>();
+    for (let i = 0; i !== hi; i++) {
+      s.nextItem();
+      const bound = { end, allow: i >= min };
+      let key: unknown;
+      try {
+        if (this._layout.learnedKey === undefined) {
+          const node = this._keys;
+          if (readMarker(dec, this, o, node, bound) === end) break;
+          key = node._read(dec);
+        } else {
+          if (s.marker(this, o).read(dec, undefined, bound) === end) break;
+          let text = '';
+          for (const cp of s.text(this, o, 'text').read(dec, KEY_TEXT)) {
+            text += String.fromCodePoint(cp);
+          }
+          key = text;
+        }
+      } catch (error) {
+        throw atPath(this._value === undefined ? error : atPath(error, '<key>'), i);
+      }
+      const node = this._value;
+      try {
+        if (node !== undefined) readMarker(dec, this, o, node);
+        // A repeated key overwrites, as it does in an object literal.
+        entries.set(key, node?._read(dec));
+      } catch (error) {
+        throw atPath(error, this._segment(key, i));
+      }
+    }
+    return this._layout.build(entries);
   }
 
   /** Writes the collection in full. */
-  private _spell(enc: Encoder, value: T): void {
+  private _spell(enc: Encoder, value: T, s?: Session): void {
     const { name } = this._layout;
     const size = this._layout.size(value);
     this._count.write(enc, size, () => `${name} size ${size}`);
@@ -285,7 +460,7 @@ export class PCollection<T> extends MethodNode<T> {
         writeOrdinal(enc, ordered.digits, this._keys._radix as number, UNORDERED);
         at = ordered.at;
       } else {
-        at = writeRun(enc, this._keys, keys, UNORDERED, segment);
+        at = writeRun(enc, this._keys, keys, UNORDERED, segment, undefined, s);
       }
       for (const j of at) {
         try {
@@ -298,6 +473,7 @@ export class PCollection<T> extends MethodNode<T> {
     }
     let i = 0;
     for (const [key, item] of this._layout.entries(value)) {
+      s?.nextItem();
       try {
         this._keys._write(enc, key);
       } catch (error) {
@@ -313,7 +489,7 @@ export class PCollection<T> extends MethodNode<T> {
   }
 
   /** Reads a collection `_spell` wrote. */
-  private _unspell(dec: Decoder): T {
+  private _unspell(dec: Decoder, s?: Session): T {
     const count = this._count.read(dec);
     this._count.learn(dec, count);
     dec.charge(count);
@@ -321,7 +497,7 @@ export class PCollection<T> extends MethodNode<T> {
     if (this._unordered !== undefined) {
       const keys = this._keys;
       if (!ordinal(keys)) {
-        for (const key of readRun(dec, keys, count, UNORDERED)) {
+        for (const key of readRun(dec, keys, count, UNORDERED, undefined, s)) {
           entries.set(key, this._value?._read(dec));
         }
         return this._layout.build(entries);
@@ -333,6 +509,7 @@ export class PCollection<T> extends MethodNode<T> {
       return this._layout.build(entries);
     }
     for (let i = 0; i < count; i++) {
+      s?.nextItem();
       let key: unknown;
       try {
         key = this._keys._read(dec);

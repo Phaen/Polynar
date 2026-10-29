@@ -6,7 +6,15 @@ import { atPath, oneOf, describe } from './path';
 import type { LearningOptions } from './adaptive';
 import { checkUnset } from './lattice';
 import { members, type MemberPrior, type Members } from './members';
-import { MethodNode, PRIOR_METHODS, learningOf, type MethodSet } from './methods';
+import { MethodNode, learningOf, type MethodSet } from './methods';
+import { adapt, type PNode } from './base';
+import { ownMarker, readOwnMarker } from './markers';
+import { resolve } from '../predictor/options';
+import { Priors } from '../predictor/prior';
+import { session } from '../predictor/session';
+import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
+
+const OBJECT_MARKERS: ReadonlySet<number> = new Set([STRUCT.OBJ_START]);
 
 /**
  * Tagged union: object shapes picked by the value's tag field. `p.tagged`.
@@ -26,9 +34,11 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
   private readonly _index = new Map<string, number>();
   /** The prior as declared, for the rebuilds. */
   private readonly _prior?: MemberPrior;
-  readonly _methodNames = PRIOR_METHODS;
   /** How the tag is spelled. */
   private readonly _pick: Members;
+  readonly _adaptive?: AdaptiveOptions;
+  /** Under `.adaptive()`: the options the tag step codes under. */
+  private readonly _resolved?: Resolved;
 
   constructor(
     key: K,
@@ -61,6 +71,10 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
     });
     this._prior = prior;
     this._pick = members(this._tags.length, { ...prior, learn: learningOf(_methods) }, 'p.tagged');
+    this._adaptive = _methods.adaptive;
+    if (this._adaptive !== undefined) {
+      this._resolved = resolve(this._adaptive, Priors.text, 'p.tagged');
+    }
   }
 
   /**
@@ -83,27 +97,53 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
    * when none are, are where it starts, and each tag coded counts as one
    * observation, so a tag that keeps recurring gets cheaper as the message
    * goes on. From its second value on, the node spends one bit to stay static,
-   * or a few to name the learning rate that paid off. Part of the wire format,
-   * like the weights.
+   * or a few to name the learning rate that paid off. `window` is how many
+   * observations the counts hold before they halve, so the newest weigh most
+   * (1024 when left out, and raised to the number of values counted when
+   * smaller), and `separate` keeps it from starting where other nodes of its
+   * kind and window got to. Part of the wire format, like the weights. Not
+   * with `.adaptive()`.
    */
-  learn(): PTagged<K, M> {
-    return this._declare('learn', 'p.tagged');
+  learn(options?: LearningOptions): PTagged<K, M> {
+    return this._declare('learn', 'p.tagged', options);
   }
 
   /**
-   * What the node's learning goes by: `window` is how many observations the
-   * counts hold before they halve, so the newest weigh most (1024 when left
-   * out, and raised to the number of values counted when smaller), and
-   * `separate` keeps it from starting where other nodes of its kind and window
-   * got to. Set once; it applies once something learns.
+   * Code the tags through the similarity predictor: each is predicted from
+   * the tags the node coded before, how recently and in what company, with
+   * the weights as their prior counts; the members as under their own
+   * `.adaptive(options)`. Not with `.learn()`. Set once.
    */
-  learning(options: LearningOptions): PTagged<K, M> {
-    return this._learning(options, 'p.tagged');
+  adaptive(options?: AdaptiveOptions): PTagged<K, M> {
+    return this._sugar(options, 'p.tagged');
   }
 
-  /** Learn with every method the node has, here `.learn()`, under `options` as `.learning()` takes them. */
-  adaptive(options?: LearningOptions): PTagged<K, M> {
-    return this._adapt(options, 'p.tagged');
+  _adapted(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PTagged<K, M> {
+    if (this._keeps()) {
+      return this;
+    }
+    // fromEntries defines own properties, so a '__proto__' tag stays a member.
+    const shapes = Object.fromEntries(
+      this._tags.map((tag) => [tag, adapt(this._members[tag], options, memo)])
+    );
+    return new PTagged<K, M>(this._key, shapes as M, this._prior, {
+      ...this._methods,
+      adaptive: options,
+    });
+  }
+
+  get _holdsAdaptive(): boolean {
+    return (
+      this._adaptive !== undefined || this._tags.some((tag) => this._members[tag]._holdsAdaptive)
+    );
+  }
+
+  _marker(): number {
+    return STRUCT.OBJ_START;
+  }
+
+  _markers(): ReadonlySet<number> {
+    return OBJECT_MARKERS;
   }
 
   _withMethods(methods: MethodSet): PTagged<K, M> {
@@ -119,13 +159,37 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
     if (pos === undefined) {
       throw atPath(new RangeError(`Value ${describe(tag)} is not ${oneOf(this._tags)}`), this._key);
     }
-    this._pick.write(enc, pos);
+    const member = this._members[this._tags[pos]];
+    const o = this._resolved;
+    if (o === undefined) {
+      this._pick.write(enc, pos);
+    } else {
+      const sym = ownMarker(enc, this, o, STRUCT.OBJ_START);
+      this._step(enc).write(enc, pos);
+      // The member's object starts with the symbol the tag was coded after.
+      session(enc).give(sym, member);
+    }
     // The member ignores the tag key as it ignores any key outside its shape.
-    this._members[this._tags[pos]]._write(enc, value);
+    member._write(enc, value);
   }
 
   _read(dec: Decoder): InferTagged<K, M> {
-    const tag = this._tags[this._pick.read(dec)];
+    const o = this._resolved;
+    let pos: number;
+    if (o === undefined) {
+      pos = this._pick.read(dec);
+    } else {
+      const sym = readOwnMarker(dec, this, o);
+      pos = this._step(dec).read(dec);
+      session(dec).give(sym, this._members[this._tags[pos]]);
+    }
+    const tag = this._tags[pos];
     return { [this._key]: tag, ...this._members[tag]._read(dec) } as InferTagged<K, M>;
+  }
+
+  /** The tag step of the node on the session of `side`. */
+  private _step(side: Encoder | Decoder) {
+    const o = this._resolved as Resolved;
+    return session(side).step(this, o, this._tags.length, this._prior?.weights);
   }
 }

@@ -1,4 +1,4 @@
-import { DEFAULTS, checkAdaptive, resolve } from '../../predictor/options';
+import { DEFAULTS, applyAdaptive, checkAdaptive, resolve } from '../../predictor/options';
 import { Priors } from '../../predictor/prior';
 import { text } from '../../predictor/shipped/text';
 import type { AdaptiveOptions, Prior } from '../../predictor/types';
@@ -116,5 +116,38 @@ describe('resolve', () => {
     expect(() => resolve({ order: 6 }, Priors.text, who)).toThrow(
       "adaptive order 6 differs from the prior's order 8"
     );
+  });
+});
+
+describe('applyAdaptive', () => {
+  it('leaves a node the sugar does not reach as it is', () => {
+    const node = {};
+    expect(applyAdaptive(node, {}, Priors.text.source)).toBe(node);
+  });
+
+  it('hands the options and a fresh memo to a node it reaches', () => {
+    const seen: unknown[] = [];
+    const out = {};
+    const node = {
+      _adapted(options: AdaptiveOptions, memo: Map<unknown, unknown>) {
+        seen.push(options, memo.size);
+        return out;
+      },
+    };
+    expect(applyAdaptive(node, { window: 4 }, Priors.text.source)).toBe(out);
+    expect(seen).toEqual([{ window: 4, prior: Priors.text.source }, 0]);
+  });
+
+  it('keeps a prior the options name', () => {
+    const seen: unknown[] = [];
+    const node = {
+      _adapted(options: AdaptiveOptions) {
+        seen.push(options.prior);
+        return node;
+      },
+    };
+    const prior = { ...Priors.text.source };
+    applyAdaptive(node, { prior }, Priors.text.source);
+    expect(seen).toEqual([prior]);
   });
 });

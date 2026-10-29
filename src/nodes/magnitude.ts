@@ -16,7 +16,7 @@
  */
 
 import type { Encoder, Decoder } from '../packer';
-import { AdaptivePrior, checkAdaptation, lineageOf, type Learning } from './adaptive';
+import { AdaptivePrior, checkAdaptation, kinOf, type LearningOptions } from './adaptive';
 import { Exclusion } from './excluded';
 
 const TWO_32 = 2 ** 32;
@@ -287,13 +287,13 @@ export class LearnedMagnitude implements Magnitude {
 
   constructor(
     readonly signed: boolean,
-    learning: Learning,
+    learning: LearningOptions,
     private readonly who: string,
     prices: Prices = 'term'
   ) {
     const { window } = checkAdaptation(learning, who);
     const weights = WEIGHTS[prices][signed ? 1 : 0];
-    this.prior = new AdaptivePrior([weights], weights.length, window, who, lineageOf(learning));
+    this.prior = new AdaptivePrior([weights], weights.length, window, who, kinOf(learning));
   }
 
   /** `check`, and for an unsigned scale an interval starting at the origin. */

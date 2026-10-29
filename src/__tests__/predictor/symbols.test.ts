@@ -184,7 +184,7 @@ describe('SymbolPredictor round trips', () => {
     const o = opts();
     const values = [
       Int32Array.of(STRUCT.OBJ_START, STRUCT.KEY, STRUCT.STR, STRUCT.OBJ_END),
-      Int32Array.from({ length: 34 }, (_, i) => 34 - i),
+      Int32Array.from({ length: 35 }, (_, i) => 35 - i),
       Int32Array.of(STRUCT.HINT, STRUCT.TRUE),
     ];
     trip(values, { alphabet: 'structure', o, ends: { min: 2, max: undefined, fixed: false } });
@@ -401,5 +401,65 @@ describe('SymbolPredictor tables', () => {
       );
       pred.learn(BYTE_BASE + 1);
     }
+  });
+});
+
+describe('SymbolPredictor container ends', () => {
+  /** A structure step: the symbol, whether its container may end here, and that container's end. */
+  type Step = [sym: number, allow: boolean, end: number];
+
+  /** Codes the steps through one structure predictor, decodes them, compares symbols and triples. */
+  function steps(list: readonly Step[]): void {
+    const o = opts();
+    const enc = new Encoder();
+    const sink = new RecSink(enc);
+    const pe = new Session().symbols('s', o, 'structure');
+    for (const [sym, allow, end] of list) pe.code(sink, sym, allow, end);
+    const dec = new Decoder(enc.output());
+    const source = new RecSource(dec);
+    const pd = new Session().symbols('s', o, 'structure');
+    expect(list.map(([, allow, end]) => pd.decode(source, allow, end))).toEqual(
+      list.map(([sym]) => sym)
+    );
+    dec.finalize();
+    expect(source.calls).toEqual(sink.calls);
+  }
+
+  const IDS = Array.from({ length: STRUCT.HINT }, (_, i) => i + 1);
+
+  it('leaves out an end that may not come yet, and END whenever another end is bound', () => {
+    const pred = new Session().symbols('s', opts(), 'structure');
+    const enc = new Encoder();
+    for (const allow of [false, true]) {
+      const d = pred.distribution(allow, STRUCT.ARR_END);
+      expect(d.indexOf(END)).toBe(-1);
+      expect(() => pred.write(enc, END)).toThrow(RangeError);
+    }
+    pred.distribution(false, STRUCT.ARR_END);
+    expect(pred.dist.indexOf(STRUCT.ARR_END)).toBe(-1);
+    expect(() => pred.write(enc, STRUCT.ARR_END)).toThrow(RangeError);
+  });
+
+  it.each([
+    ['excluded', false],
+    ['allowed', true],
+  ])('escapes each structure id by its rank with the end %s', (_name, allow) => {
+    for (const end of [STRUCT.OBJ_START, STRUCT.ARR_END, STRUCT.HINT]) {
+      for (const sym of IDS) {
+        if (allow || sym !== end) steps([[sym, allow, end]]);
+      }
+    }
+  });
+
+  it('codes a run of containers whose items may end once there are two', () => {
+    const list: Step[] = [];
+    for (let n = 0; n < 12; n++) {
+      list.push([STRUCT.ARR_START, true, END]);
+      for (let k = 0; k < 2 + (n % 3); k++) {
+        list.push([k % 2 ? STRUCT.STR : STRUCT.INT + (n % 5), k >= 2, STRUCT.ARR_END]);
+      }
+      list.push([STRUCT.ARR_END, true, STRUCT.ARR_END]);
+    }
+    steps(list);
   });
 });

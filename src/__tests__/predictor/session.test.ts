@@ -5,7 +5,15 @@ import { resolve } from '../../predictor/options';
 import { Priors } from '../../predictor/prior';
 import { text as shippedText } from '../../predictor/shipped/text';
 import { Session, session } from '../../predictor/session';
-import type { Sink, Source, TextCoder } from '../../predictor/session';
+import type {
+  Bound,
+  MarkerPrior,
+  PlainNumber,
+  Sink,
+  Source,
+  TextCoder,
+} from '../../predictor/session';
+import { END, STRUCT } from '../../predictor/types';
 import type { AdaptiveOptions, AlphabetKind, Ends, PathKey, Resolved } from '../../predictor/types';
 
 const OPEN: Ends = { min: 0, max: undefined, fixed: false };
@@ -334,6 +342,21 @@ describe('string coders', () => {
   });
 });
 
+describe('string coders without deltas', () => {
+  it('round-trip repeated values through the value step', () => {
+    const o = opts();
+    const values = ['alpha', 'beta', 'alpha', 'alpha', 'beta'];
+    const options = { features: { deltas: false } };
+    const enc = new Encoder();
+    const se = session(enc, options);
+    for (const v of values) se.string('p', o, 'text').write(enc, cps(v), v.length, OPEN);
+    const dec = new Decoder(enc.output());
+    const sd = session(dec, options);
+    expect(values.map(() => str(sd.string('p', o, 'text').read(dec, OPEN)))).toEqual(values);
+    dec.finalize();
+  });
+});
+
 describe('cost', () => {
   it('prices English text under 4 bits per character and a repeat far lower', () => {
     const s = new Session();
@@ -395,5 +418,250 @@ describe('Session.step', () => {
     expect(() =>
       s.number({}, opts(), {}, { write: () => {}, read: () => 0 }).write(enc, 0)
     ).toThrow(/cannot code inside/);
+  });
+});
+
+describe('Session records', () => {
+  const PLAIN: PlainNumber = {
+    write: (enc, x) => enc.composeTerm(x),
+    read: (dec) => dec.parseTerm(),
+  };
+
+  it('round-trips numbers outside any record and in a record nested in another', () => {
+    const o = opts();
+    const [a, b] = [{}, {}];
+    const xs = Array.from({ length: 20 }, (_, i) => 100 * i);
+    const enc = new Encoder();
+    const se = session(enc);
+    se.number(a, o, {}, PLAIN).write(enc, 7);
+    for (const x of xs) {
+      se.enterRecord();
+      se.enterRecord();
+      se.number(a, o, {}, PLAIN).write(enc, x);
+      se.leaveRecord();
+      se.number(b, o, {}, PLAIN).write(enc, x + 1);
+      se.leaveRecord();
+    }
+    const dec = new Decoder(enc.output());
+    const sd = session(dec);
+    expect(sd.number(a, o, {}, PLAIN).read(dec)).toBe(7);
+    for (const x of xs) {
+      sd.enterRecord();
+      sd.enterRecord();
+      expect(sd.number(a, o, {}, PLAIN).read(dec)).toBe(x);
+      sd.leaveRecord();
+      expect(sd.number(b, o, {}, PLAIN).read(dec)).toBe(x + 1);
+      sd.leaveRecord();
+    }
+    dec.finalize();
+  });
+});
+
+describe('Session markers', () => {
+  const o = opts();
+
+  /** One structure symbol: where it is coded, for which node, under which bound and prior. */
+  interface Mark {
+    sym: number;
+    self?: PathKey;
+    target?: object;
+    bound?: Bound;
+    prior?: MarkerPrior;
+  }
+
+  /** Codes the marks through `marker`, decodes them, compares symbols and triples; returns the bytes. */
+  function tripMarks(marks: readonly Mark[], around: (s: Session) => void = () => undefined) {
+    const enc = new Encoder();
+    const se = session(enc);
+    around(se);
+    for (const m of marks)
+      se.marker(m.self ?? 'self', o).write(enc, m.sym, m.target, m.bound, m.prior);
+    const bytes = enc.output();
+    const dec = new Decoder(bytes);
+    const sd = session(dec);
+    around(sd);
+    expect(
+      marks.map((m) => sd.marker(m.self ?? 'self', o).read(dec, m.target, m.bound, m.prior))
+    ).toEqual(marks.map((m) => m.sym));
+    dec.finalize();
+    return bytes;
+  }
+
+  /**
+   * Codes `syms` through `write` after a run of HINTs straight at `path`, then reads them all back
+   * straight off the structure predictor at `path`, whose own history sets it apart from any other
+   * path's.
+   */
+  function readsAt(
+    path: PathKey,
+    syms: readonly number[],
+    write: (s: Session, enc: Encoder, sym: number) => void
+  ) {
+    const enc = new Encoder();
+    const se = session(enc);
+    const ahead = se.symbols(path, o, 'structure');
+    for (let i = 0; i < 8; i++) ahead.code(enc, STRUCT.HINT, false);
+    for (const sym of syms) write(se, enc, sym);
+    const dec = new Decoder(enc.output());
+    const pred = session(dec).symbols(path, o, 'structure');
+    for (let i = 0; i < 8; i++) pred.decode(dec, false);
+    expect(syms.map(() => pred.decode(dec, false))).toEqual(syms);
+    dec.finalize();
+  }
+
+  const SYMS = [STRUCT.OBJ_START, STRUCT.KEY, STRUCT.STR, STRUCT.KEY, STRUCT.INT, STRUCT.OBJ_END];
+
+  it('tracks which open container is the innermost one on the predictor', () => {
+    const s = new Session();
+    expect(s.inScope()).toBe(false);
+    s.enterScope('a', o);
+    expect(s.inScope()).toBe(true);
+    s.enterPlain();
+    expect(s.inScope()).toBe(false);
+    s.leaveScope();
+    expect(s.inScope()).toBe(true);
+    s.leaveScope();
+    expect(s.inScope()).toBe(false);
+    s.leaveScope();
+    expect(s.inScope()).toBe(false);
+  });
+
+  it('codes at its own path outside every container', () => {
+    readsAt('self', SYMS, (s, enc, sym) => s.marker('self', o).write(enc, sym));
+  });
+
+  it('codes at the innermost container on the predictor', () => {
+    readsAt('inner', SYMS, (s, enc, sym) => {
+      s.enterScope('outer', o);
+      s.enterScope('inner', o);
+      s.marker('self', o).write(enc, sym);
+      s.leaveScope();
+      s.leaveScope();
+    });
+  });
+
+  it('codes at its own path under a container off the predictor', () => {
+    readsAt('self', SYMS, (s, enc, sym) => {
+      s.enterScope('outer', o);
+      s.enterPlain();
+      s.marker('self', o).write(enc, sym);
+      s.leaveScope();
+      s.leaveScope();
+    });
+  });
+
+  it('holds a symbol for its target alone, until the target takes it once', () => {
+    const [node, other] = [{}, {}];
+    const enc = new Encoder();
+    const s = session(enc);
+    expect(s.take(node)).toBe(-1);
+    s.marker('self', o).write(enc, STRUCT.STR, node);
+    expect(s.take(other)).toBe(-1);
+    expect(s.take(node)).toBe(STRUCT.STR);
+    expect(s.take(node)).toBe(-1);
+    s.give(STRUCT.TRUE, other);
+    expect(s.take(node)).toBe(-1);
+    expect(s.take(other)).toBe(STRUCT.TRUE);
+    expect(s.take(other)).toBe(-1);
+  });
+
+  it('drops a held symbol on a symbol written for no target', () => {
+    const node = {};
+    const enc = new Encoder();
+    const s = session(enc);
+    s.marker('self', o).write(enc, STRUCT.STR, node);
+    s.marker('self', o).write(enc, STRUCT.KEY);
+    expect(s.take(node)).toBe(-1);
+  });
+
+  it('drops a held symbol on a container end written under its bound', () => {
+    const [node, item] = [{}, {}];
+    const enc = new Encoder();
+    const s = session(enc);
+    const bound: Bound = { end: STRUCT.ARR_END, allow: true };
+    s.marker('self', o).write(enc, STRUCT.STR, node);
+    s.marker('self', o).write(enc, STRUCT.ARR_END, item, bound);
+    expect(s.take(item)).toBe(-1);
+    expect(s.take(node)).toBe(-1);
+    s.marker('self', o).write(enc, STRUCT.INT, item, bound);
+    expect(s.take(item)).toBe(STRUCT.INT);
+  });
+
+  it('refuses a container end its bound excludes, and END under a bound', () => {
+    const enc = new Encoder();
+    const s = session(enc);
+    const marker = s.marker('self', o);
+    expect(() =>
+      marker.write(enc, STRUCT.ARR_END, {}, { end: STRUCT.ARR_END, allow: false })
+    ).toThrow(RangeError);
+    expect(() => marker.write(enc, END, {}, { end: STRUCT.ARR_END, allow: true })).toThrow(
+      RangeError
+    );
+    expect(() => marker.write(enc, END)).toThrow(RangeError);
+  });
+
+  it('round-trips bounded symbols, held for their targets alike on both sides', () => {
+    const list = {};
+    const items = [{}, {}, {}];
+    const below: Bound = { end: STRUCT.ARR_END, allow: false };
+    const after: Bound = { end: STRUCT.ARR_END, allow: true };
+    const marks: Mark[] = [
+      { sym: STRUCT.ARR_START, target: list },
+      { sym: STRUCT.INT, target: items[0], bound: below },
+      { sym: STRUCT.STR, target: items[1], bound: below },
+      { sym: STRUCT.HINT, target: items[2], bound: after },
+      { sym: STRUCT.ARR_END, target: list, bound: after },
+    ];
+    for (let i = 0; i < 6; i++) tripMarks(marks.concat(marks), (s) => s.enterScope('list', o));
+    const enc = new Encoder();
+    const se = session(enc);
+    const dec = new Decoder(tripMarks(marks));
+    const sd = session(dec);
+    for (const m of marks) {
+      se.marker('self', o).write(enc, m.sym, m.target, m.bound);
+      expect(sd.marker('self', o).read(dec, m.target, m.bound)).toBe(m.sym);
+      expect(sd.take(m.target!)).toBe(se.take(m.target!));
+    }
+  });
+
+  it('makes the symbols its prior favours cheaper', () => {
+    const prior: MarkerPrior = { key: {}, counts: [[STRUCT.HINT, 5000]] };
+    const marks: Mark[] = Array.from({ length: 4 }, () => ({ sym: STRUCT.HINT }));
+    const plain = tripMarks(marks).length;
+    const primed = tripMarks(marks.map((m) => ({ ...m, prior }))).length;
+    expect(primed).toBeLessThan(plain);
+  });
+
+  it('loads a prior once per key and population', () => {
+    const prior: MarkerPrior = { key: {}, counts: [[STRUCT.HINT, 3]] };
+    const twin: MarkerPrior = { key: {}, counts: prior.counts };
+    const marks: Mark[] = [STRUCT.HINT, STRUCT.STR, STRUCT.KEY, STRUCT.HINT, STRUCT.INT].map(
+      (sym) => ({ sym })
+    );
+    const bytes = (list: readonly Mark[]) => Array.from(tripMarks(list));
+    const once = bytes([{ ...marks[0], prior }, ...marks.slice(1)]);
+    expect(bytes(marks.map((m) => ({ ...m, prior })))).toEqual(once);
+    expect(
+      bytes([{ ...marks[0], prior }, { ...marks[1], prior: twin }, ...marks.slice(2)])
+    ).not.toEqual(once);
+  });
+
+  it('loads a prior again in a population of its own', () => {
+    const separate = opts({ separate: true });
+    const prior: MarkerPrior = { key: {}, counts: [[STRUCT.HINT, 5000]] };
+    const code = (load: boolean) => {
+      const enc = new Encoder();
+      const s = session(enc);
+      s.marker('a', separate).write(enc, STRUCT.HINT, undefined, undefined, prior);
+      s.marker('b', separate).write(
+        enc,
+        STRUCT.HINT,
+        undefined,
+        undefined,
+        load ? prior : undefined
+      );
+      return enc.output().length;
+    };
+    expect(code(true)).toBeLessThan(code(false));
   });
 });

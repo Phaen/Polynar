@@ -3,6 +3,8 @@
  */
 
 import { p } from '../../index';
+import { Priors } from '../../predictor/prior';
+import { STRUCT } from '../../predictor/types';
 import type { Infer, PObject } from '../../index';
 import { mulberry32, trip } from '../support';
 
@@ -107,13 +109,28 @@ describe('p.tagged adaptive', () => {
       rnd() < 0.9 ? { kind: 'a' as const } : { kind: 'b' as const, n: 2 }
     );
   };
+  const members = (node: typeof plain) =>
+    (node as unknown as { _members: Record<string, PObject<any>> })._members;
 
-  it('round-trips a run of values, inside an array too', () => {
+  it('round-trips a run of values, alone, in an array and in an adaptive object', () => {
     const values = run(300, 1);
     for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 8 })]) {
       expect(trip(p.array(node), values)).toEqual(values);
-      expect(trip(node, values[0])).toEqual(values[0]);
+      expect(trip(p.array(node).adaptive(), values)).toEqual(values);
+      for (const value of values.slice(0, 20)) {
+        expect(trip(node, value)).toEqual(value);
+        expect(trip(p.object({ op: node }), { op: value })).toEqual({ op: value });
+        expect(trip(p.object({ op: plain }).adaptive(), { op: value })).toEqual({ op: value });
+      }
     }
+  });
+
+  it('adapts its members, which take their start from the tag', () => {
+    const node = plain.adaptive({ window: 64 });
+    expect(node._adaptive).toEqual({ window: 64, prior: Priors.text.source });
+    expect(members(node).a._adaptive).toEqual({ window: 64, prior: Priors.text.source });
+    expect(members(node).b._adaptive).toEqual({ window: 64, prior: Priors.text.source });
+    expect(trip(node, { kind: 'b', n: 3 })).toEqual({ kind: 'b', n: 3 });
   });
 
   it('takes its weights before or after', () => {
@@ -123,60 +140,63 @@ describe('p.tagged adaptive', () => {
     );
   });
 
-  it('learns a skew, at most a byte over the static prior of it', () => {
+  it('learns a skew', () => {
     const values = run(2000, 3);
-    const size = (node: typeof plain) => p.array(node).encode(values).length;
+    const size = (node: typeof plain) => {
+      expect(trip(p.array(node), values)).toEqual(values);
+      return p.array(node).encode(values).length;
+    };
     expect(size(plain.adaptive())).toBeLessThan(size(plain));
-    expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
-      size(plain.weights(weights)) + 1
-    );
+    expect(size(plain.learn())).toBeLessThan(size(plain));
+    expect(size(plain.learn({ window: 8 }))).toBeLessThan(size(plain));
   });
 
-  it('written once, spends the bytes of its static form', () => {
-    for (const value of run(20, 4)) {
-      expect(plain.adaptive().encode(value)).toEqual(plain.encode(value));
-      expect(plain.weights(weights).adaptive().encode(value)).toEqual(
-        plain.weights(weights).encode(value)
+  it('holds adaptive where it or a member adapts', () => {
+    expect(plain._holdsAdaptive).toBe(false);
+    expect(plain.learn()._holdsAdaptive).toBe(false);
+    expect(plain.adaptive()._holdsAdaptive).toBe(true);
+    const holding = p.tagged('kind', { a: p.object({ s: p.string().adaptive() }) });
+    expect(holding._holdsAdaptive).toBe(true);
+    expect(trip(holding, { kind: 'a', s: 'x' })).toEqual({ kind: 'a', s: 'x' });
+  });
+
+  it('stays as it is under an adaptive container when it learns', () => {
+    const learned = plain.learn();
+    const outer = p.object({ op: learned }).adaptive();
+    const field = (outer as unknown as { _shape: { op: typeof plain } })._shape.op;
+    expect(field).toBe(learned);
+    expect(trip(outer, { op: { kind: 'b', n: 1 } })).toEqual({ op: { kind: 'b', n: 1 } });
+  });
+
+  it('locates a missing tag at its key', () => {
+    for (const node of [plain, plain.adaptive()]) {
+      expect(() => node.encode({} as never)).toThrow(
+        new TypeError('kind: Required field is missing')
       );
     }
   });
 
-  it('learns by `.learn()`, spending what `.adaptive()` does', () => {
-    const values = run(300, 5);
-    const size = (node: typeof plain) => p.array(node).encode(values);
-    expect(size(plain.learn())).toEqual(size(plain.adaptive()));
-    expect(size(plain.weights(weights).learn())).toEqual(size(plain.weights(weights).adaptive()));
-    expect(size(plain.learn().weights(weights))).toEqual(size(plain.weights(weights).adaptive()));
-    expect(size(plain.learning({ window: 8 }).learn())).toEqual(
-      size(plain.adaptive({ window: 8 }))
-    );
-    expect(size(plain.learn())).not.toEqual(size(plain));
+  it('starts every value with the object marker', () => {
+    expect(plain._marker()).toBe(STRUCT.OBJ_START);
+    expect([...plain._markers()]).toEqual([STRUCT.OBJ_START]);
   });
 
-  it('sets its learning once and each method once', () => {
-    expect(() => plain.learning({}).learning({})).toThrow(
-      new TypeError('p.tagged learning is already set')
-    );
+  it('sets each method once, and not both', () => {
     expect(() => plain.learn().learn()).toThrow(new TypeError('p.tagged learn is already set'));
-    expect(() => plain.learning({ window: 8 }).adaptive({ window: 8 })).toThrow(
-      new TypeError('p.tagged learning is already set')
+    expect(() => plain.adaptive().adaptive()).toThrow(
+      new TypeError('p.tagged adaptive is already set')
     );
-    expect(() => plain.adaptive({ window: 8 }).learning({ window: 8 })).toThrow(
-      new TypeError('p.tagged learning is already set')
+    expect(() => plain.learn().adaptive()).toThrow(
+      new TypeError('p.tagged learn and adaptive cannot both be set')
+    );
+    expect(() => plain.adaptive().learn()).toThrow(
+      new TypeError('p.tagged learn and adaptive cannot both be set')
     );
   });
 
   it('refuses bad options', () => {
     expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.tagged learning window must be a positive integer, got 0')
-    );
-    expect(() => plain.adaptive({ window: 1.5 })).toThrow(
-      new TypeError('p.tagged learning window must be a positive integer, got 1.5')
-    );
-    expect(() => plain.weights([2 ** 45, 2 ** 45]).adaptive()).toThrow(
-      new RangeError(
-        'p.tagged adaptive prior 4 and window 1024 overflow with weights totalling 70368744177664'
-      )
+      new RangeError('p.tagged: adaptive window must be at least 1')
     );
     expect(() => plain.adaptive().weights([1])).toThrow(
       new TypeError('p.tagged weights must list one weight per value: expected 2, got 1')

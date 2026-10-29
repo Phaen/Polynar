@@ -3,6 +3,7 @@
  */
 
 import { p, CorruptInputError, type PNode } from '../../index';
+import { STRUCT } from '../../predictor/types';
 import { trip } from '../support';
 
 type Block =
@@ -68,6 +69,11 @@ describe('Schema lazy', () => {
     expect(trip(Thread, value)).toEqual(value);
   });
 
+  it('takes undefined where its target does', () => {
+    expect(p.lazy(() => p.optional(p.int()))._takesUndefined()).toBe(true);
+    expect(p.lazy(() => p.int())._takesUndefined()).toBe(false);
+  });
+
   it('is no union member: its kinds are unknown until first use', () => {
     expect(() => p.union([p.lazy(() => p.string()), p.null()])).toThrow('must declare their kinds');
   });
@@ -108,5 +114,69 @@ describe('Schema lazy', () => {
     const b: PNode<number> = p.lazy(() => a);
     expect(() => a.encode(1)).toThrow(new TypeError('p.lazy resolves to itself'));
     expect(() => b.decode(new Uint8Array())).toThrow(new TypeError('p.lazy resolves to itself'));
+  });
+});
+
+describe('p.lazy under .adaptive()', () => {
+  it('holds adaptive, its target unknown, and speaks for its target', () => {
+    const target = p.optional(p.int()).weights([1, 3]).adaptive();
+    const node = p.lazy(() => target);
+    expect(node._holdsAdaptive).toBe(true);
+    expect(p.lazy(() => p.int())._holdsAdaptive).toBe(true);
+    expect(node._marker(undefined)).toBe(target._marker(undefined));
+    expect(node._marker(2)).toBe(target._marker(2));
+    expect(node._markers()).toEqual(target._markers());
+    expect(node._markerPrior()).toEqual(target._markerPrior());
+    const object = p.lazy(() => p.object({}));
+    expect(object._marker({})).toBe(STRUCT.OBJ_START);
+    expect(object._markers()).toEqual(new Set([STRUCT.OBJ_START]));
+    expect(object._markerPrior()).toBeUndefined();
+  });
+
+  it('adapts to a new reference to the adapted target, ending at a cycle', () => {
+    type Chain = { next?: Chain };
+    const Chain: PNode<Chain> = p.object({ next: p.optional(p.lazy(() => Chain)) });
+    const ref = p.lazy(() => Chain);
+    const memo = new Map<PNode<any>, PNode<any>>();
+    const out = ref._adapted({}, memo);
+    expect(out).not.toBe(ref);
+    expect(memo.get(ref)).toBe(out);
+    expect(out._target._adaptive).toEqual({});
+    const value: Chain = { next: { next: { next: {} } } };
+    expect(trip(out, value)).toEqual(value);
+    expect(memo.get(Chain)).toBe(out._target);
+  });
+
+  it('hands the structure symbol its parent coded on to its target', () => {
+    const Inner = p.object({ a: p.int(), b: p.optional(p.string()) });
+    const Op = p.tagged('kind', { x: p.object({}), y: p.object({ n: p.int() }) });
+    const Doc = p.object({
+      inner: p.lazy(() => Inner),
+      maybe: p.optional(p.lazy(() => Inner)),
+      nullable: p.nullable(p.lazy(() => Op)),
+      list: p.array(p.lazy(() => p.bool())),
+      flag: p.lazy(() => p.bool()),
+    });
+    const node = Doc.adaptive();
+    const values = [
+      { inner: { a: 1 }, nullable: null, list: [], flag: true },
+      {
+        inner: { a: 2, b: 'x' },
+        maybe: { a: 3 },
+        nullable: { kind: 'y' as const, n: 4 },
+        list: [true, false],
+        flag: false,
+      },
+    ];
+    for (const value of values) {
+      expect(trip(node, value)).toEqual(value);
+    }
+    expect(trip(p.array(node), values)).toEqual(values);
+    expect(
+      trip(
+        p.lazy(() => node),
+        values[1]
+      )
+    ).toEqual(values[1]);
   });
 });

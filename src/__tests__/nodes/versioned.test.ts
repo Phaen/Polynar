@@ -4,6 +4,7 @@
 
 import { p, CorruptInputError, UnknownVersionError } from '../../index';
 import type { Infer, PNode } from '../../index';
+import { STRUCT } from '../../predictor/types';
 import { trip } from '../support';
 
 const V1 = p.object({ name: p.string().max(40) });
@@ -308,5 +309,69 @@ describe('Schema versioned', () => {
     expect(() => Outer.decode(old)).toThrow(
       'Value 50 is above the maximum 10, in data migrated from version 1 to 2'
     );
+  });
+});
+
+describe('p.versioned under .adaptive()', () => {
+  it('stays itself when no version changes', () => {
+    const node = p.versioned(p.null(), [p.bool().learn(), () => true]);
+    expect(node._adapted({}, new Map())).toBe(node);
+    expect(node._holdsAdaptive).toBe(false);
+    const outer = p.object({ v: node }).adaptive() as unknown as { _shape: { v: unknown } };
+    expect(outer._shape.v).toBe(node);
+  });
+
+  it('adapts its versions and keeps the migrations', () => {
+    const adapted = Current._adapted({ window: 16 }, new Map());
+    expect(adapted).not.toBe(Current);
+    expect(adapted._holdsAdaptive).toBe(true);
+    expect(Current._holdsAdaptive).toBe(false);
+    const Old = p.object({ user: p.versioned(V1) }).adaptive();
+    const New = p.object({ user: Current }).adaptive();
+    expect(New.decode(Old.encode({ user: { name: 'Ada' } }))).toEqual({
+      user: { name: 'Ada', age: 0 },
+    });
+    expect(adapted.walk({ name: 'Ada' })).toEqual({ name: 'Ada', age: 0 });
+    expect(trip(New, { user: { name: 'Bo', age: 3 } })).toEqual({ user: { name: 'Bo', age: 3 } });
+  });
+
+  it("is marked as its newest version's values are", () => {
+    expect(Current._marker({ name: 'Ada', age: 1 })).toBe(STRUCT.OBJ_START);
+    expect(Current._markers()).toEqual(new Set([STRUCT.OBJ_START]));
+    const Counted = p.versioned(p.string(), [p.int(), (s: string) => s.length]);
+    expect(Counted._marker(3)).toBe(STRUCT.INT);
+    expect(Counted._markers()).toBe(p.int()._markers());
+    expect(Counted._takesUndefined()).toBe(false);
+    expect(p.versioned(p.int(), p.optional(p.int()))._takesUndefined()).toBe(true);
+  });
+
+  it('hands the structure symbol its parent coded on to the version', () => {
+    const Doc = p.object({
+      user: Current,
+      maybe: p.optional(p.versioned(p.int(), [p.int().min(0), (n: number) => Math.abs(n)])),
+      either: p.union([p.versioned(p.bool()), p.string()]),
+    });
+    const node = Doc.adaptive();
+    const values = [
+      { user: { name: 'Ada', age: 3 }, either: true },
+      { user: { name: 'Bo', age: 4 }, maybe: 5, either: 'x' },
+    ];
+    for (const value of values) {
+      expect(trip(node, value)).toEqual(value);
+    }
+    expect(trip(p.array(node), values)).toEqual(values);
+    const top = p.versioned(p.object({ a: p.int() }).adaptive());
+    expect(top._holdsAdaptive).toBe(true);
+    expect(trip(top, { a: 1 })).toEqual({ a: 1 });
+    const Old = p.object({ v: p.versioned(p.object({ a: p.int() })) }).adaptive();
+    const New = p
+      .object({
+        v: p.versioned(p.object({ a: p.int() }), [
+          p.object({ a: p.int(), b: p.bool() }),
+          (o) => ({ ...o, b: false }),
+        ]),
+      })
+      .adaptive();
+    expect(New.decode(Old.encode({ v: { a: 1 } }))).toEqual({ v: { a: 1, b: false } });
   });
 });

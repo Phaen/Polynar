@@ -32,8 +32,6 @@ describe('Fenwick', () => {
     expect([tree.size, tree.total, tree.prefix(0)]).toEqual([0, 0, 0]);
     tree.halve();
     expect(tree.total).toBe(0);
-    tree.push(3);
-    expectModel(tree, [3]);
   });
 
   it.each([1, 2, 7, 33])('tracks a prefix-sum model over seeded operations from %i counts', (n) => {
@@ -44,15 +42,11 @@ describe('Fenwick', () => {
     expectModel(tree, model);
     for (let step = 0; step < 100; step++) {
       const op = int(10);
-      if (op < 6) {
+      if (op < 9) {
         const i = int(model.length);
         const delta = int(12) - Math.min(model[i], 5);
         tree.add(i, delta);
         model[i] += delta;
-      } else if (op < 9) {
-        const count = int(20);
-        tree.push(count);
-        model.push(count);
       } else {
         tree.halve();
         for (let i = 0; i < model.length; i++) {
@@ -81,7 +75,7 @@ describe('Fenwick', () => {
     expect(tree.nodes).toEqual([0, 3, 3, 2, 10, 1, 5]);
   });
 
-  it('locates members as a live table, following every push', () => {
+  it('locates members as a live table', () => {
     const tree = new Fenwick([3, 0, 2]);
     const located = (i: number) => [i, tree.cum(i), tree.freq(i)];
     expect([0, 1, 2].map(located)).toEqual([
@@ -89,9 +83,7 @@ describe('Fenwick', () => {
       [1, 3, 0],
       [2, 3, 2],
     ]);
-    tree.push(4);
-    expect(located(3)).toEqual([3, 5, 4]);
-    expect(() => located(4)).toThrow(RangeError);
+    expect(() => located(3)).toThrow(RangeError);
   });
 
   it('halves by flooring, down to 0', () => {
@@ -127,15 +119,11 @@ describe('Fenwick', () => {
     [2 ** 53, RangeError, `Fenwick count ${2 ** 53} is not a non-negative safe integer`],
   ])('refuses a count of %p', (count, kind, message) => {
     expect(() => new Fenwick([1, count])).toThrow(new kind(message));
-    expect(() => new Fenwick([1]).push(count)).toThrow(new kind(message));
   });
 
   it('refuses a total past the safe integers', () => {
     expect(() => new Fenwick([MAX_SAFE, 1])).toThrow(
       new RangeError(`Fenwick total ${2 ** 53} is above the maximum ${MAX_SAFE}`)
-    );
-    expect(() => new Fenwick([MAX_SAFE]).push(1)).toThrow(
-      `Fenwick total ${2 ** 53} is above the maximum`
     );
     expect(() => new Fenwick([MAX_SAFE - 1]).add(0, 2)).toThrow(
       `Fenwick total ${2 ** 53} is above the maximum`

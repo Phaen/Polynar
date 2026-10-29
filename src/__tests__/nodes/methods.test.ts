@@ -1,457 +1,136 @@
 /**
- * Methods: the method set nodes carry through rebuilds and the queries on
- * it, the previous value a node keeps, and the per-value mode that picks
- * among the methods available for a value.
+ * Methods: how a node learns, `.learn(options?)` or `.adaptive(options?)`,
+ * set once and not both, as carried through rebuilds and as a container's
+ * `.adaptive()` reaches the nodes below it.
  */
 
-import { p, type PNode } from '../../index';
-import { Encoder, Decoder } from '../../packer';
-import { AdaptivePrior } from '../../nodes/adaptive';
-import { Exclusion } from '../../nodes/excluded';
-import {
-  ModeChoice,
-  Previous,
-  chooses,
-  declaresAny,
-  learningOf,
-  learns,
-  opened,
-  recallOf,
-  withMethod,
-  type Method,
-  type MethodName,
-  type MethodSet,
-  type ValueProvider,
-} from '../../nodes/methods';
-import { mulberry32 } from '../support';
-import { declare, learning } from './declare';
-
-/**
- * A method spelling a byte as one digit after a marker of 1 in `odds`
- * states, so it costs log2(odds) bits more than the byte (unable to spell
- * anything when undefined): open when `open` says so, counting the values
- * it reads, and recording every value it learns with the side that learned
- * it.
- */
-class Toy implements Method<number>, ValueProvider<number> {
-  readonly learned: [string, number][] = [];
-  reads = 0;
-
-  constructor(
-    public odds: number | undefined,
-    public open = true
-  ) {}
-
-  available(): boolean {
-    return this.open;
-  }
-
-  write(enc: Encoder, value: number): void {
-    if (this.odds === undefined) {
-      throw new RangeError(`Toy cannot spell ${value}`);
-    }
-    enc.composeWeighted(0, 1, this.odds);
-    if (value > 255) {
-      throw new RangeError(`Toy byte ${value}`);
-    }
-    enc.compose(value, 256);
-  }
-
-  read(dec: Decoder): number {
-    const odds = this.odds as number;
-    this.reads++;
-    dec.parseWeighted(odds, (r) => (r === 0 ? [0, 0, 1] : [1, 1, odds - 1]));
-    return dec.parse(256);
-  }
-
-  learn(side: Encoder | Decoder, value: number): void {
-    this.learned.push([side instanceof Encoder ? 'enc' : 'dec', value]);
-  }
-}
-
-/** The mode over `toys`. */
-const modes = (toys: readonly Toy[], adaptive: { window?: number } = {}): ModeChoice<number> =>
-  new ModeChoice(toys, adaptive, 'test');
-
-/** Writes `values` through `choice`, then reads them back through `back`, a choice over fresh methods of the same shape. */
-const trip = (choice: ModeChoice<number>, back: ModeChoice<number>, values: readonly number[]) => {
-  const enc = new Encoder();
-  for (const value of values) choice.write(enc, value);
-  const bytes = enc.output();
-  const dec = new Decoder(bytes);
-  const read = values.map(() => back.read(dec));
-  dec.finalize();
-  return { bytes, read };
-};
-
-describe('withMethod', () => {
-  it('declares a method once, keeping the others, over one left open', () => {
-    const delta = withMethod({}, 'delta', 'p.int');
-    expect(delta).toEqual({ delta: 'declared' });
-    expect(withMethod(delta, 'recall', 'p.int')).toEqual({ delta: 'declared', recall: 'declared' });
-    expect(() => withMethod(delta, 'delta', 'p.int')).toThrow(
-      new TypeError('p.int delta is already set')
-    );
-    expect(withMethod({ recall: 'open' }, 'recall', 'toy')).toEqual({ recall: 'declared' });
-  });
-});
-
-describe('opened', () => {
-  it('opens every method named that is not declared, and learns under the options given', () => {
-    const declared = withMethod({ recall: 'open' }, 'delta', 'p.int');
-    expect(opened(declared, ['learn', 'delta'], { window: 8 })).toEqual({
-      learn: 'open',
-      delta: 'declared',
-      recall: 'open',
-      learning: { window: 8 },
-    });
-    // Opened again, the latest options hold.
-    const twice = opened(opened({}, ['learn'], { window: 8 }), ['learn'], {});
-    expect(twice).toEqual({ learn: 'open', learning: {} });
-    expect(learningOf(twice)).toEqual({});
-    expect(learningOf({ learning: { window: 8 } })).toBeUndefined();
-  });
-});
-
-describe('recallOf', () => {
-  it('is pinned when declared, open when opened, else none', () => {
-    expect(recallOf({})).toBeUndefined();
-    const pinned = recallOf({ recall: 'declared' });
-    expect(pinned?.open).toBe(false);
-    const open = recallOf({ recall: 'open' });
-    expect(open?.open).toBe(true);
-  });
-});
+import { p } from '../../index';
+import { Priors } from '../../predictor/prior';
+import { learningOf, learns } from '../../nodes/methods';
 
 describe('method set queries', () => {
   it('learns only with learn set', () => {
     expect(learns({})).toBe(false);
-    expect(learns({ learning: { window: 8 } })).toBe(false);
-    expect(learns({ learn: 'open' })).toBe(true);
+    expect(learns({ adaptive: {} })).toBe(false);
+    expect(learns({ learn: true })).toBe(true);
+    expect(learns({ learn: { window: 8 } })).toBe(true);
   });
 
-  it('declares any of the names only where one is declared', () => {
-    const names: MethodName[] = ['delta', 'recall'];
-    expect(declaresAny({ learn: 'declared', recall: 'open' }, names)).toBe(false);
-    expect(declaresAny({ recall: 'declared' }, names)).toBe(true);
-  });
-
-  it('chooses with one of the names open and none declared', () => {
-    const names: MethodName[] = ['delta', 'recall'];
-    expect(chooses({}, names)).toBe(false);
-    expect(chooses({ learn: 'open' }, names)).toBe(false);
-    expect(chooses({ recall: 'open' }, names)).toBe(true);
-    expect(chooses({ delta: 'open', recall: 'declared' }, names)).toBe(false);
+  it('learns under the options given, the defaults for true, none unless it learns', () => {
+    expect(learningOf({})).toBeUndefined();
+    expect(learningOf({ adaptive: {} })).toBeUndefined();
+    expect(learningOf({ learn: true })).toEqual({});
+    expect(learningOf({ learn: { window: 8 } })).toEqual({ window: 8 });
   });
 });
 
-describe('Previous', () => {
-  it('keeps the last value each side learned, none before the first', () => {
-    const previous = new Previous<number>();
-    const enc = new Encoder();
-    const dec = new Decoder(new Uint8Array(0));
-    expect(previous.get(enc)).toBeUndefined();
-    previous.learn(enc, 4);
-    previous.learn(enc, 6);
-    expect([previous.get(enc), previous.get(dec)]).toEqual([6, undefined]);
+describe('.learn()', () => {
+  it('sets the defaults, or a copy of the options given', () => {
+    expect(p.bool().learn()._methods).toEqual({ learn: true });
+    const options = { window: 8 };
+    const node = p.bool().learn(options);
+    expect(node._methods).toEqual({ learn: { window: 8 } });
+    expect(node._methods.learn).not.toBe(options);
   });
 
-  it('takes back what a transaction learned when it rolls back', () => {
-    const previous = new Previous<number>();
-    const enc = new Encoder();
-    previous.learn(enc, 4);
-    const mark = enc.journal.mark();
-    previous.learn(enc, 9);
-    enc.journal.rollback(mark);
-    expect(previous.get(enc)).toBe(4);
-  });
-});
-
-describe('ModeChoice', () => {
-  it('needs a method and valid adaptive options', () => {
-    expect(() => new ModeChoice<number>([], {}, 'test')).toThrow(
-      new TypeError('test needs at least one method')
+  it('is set once', () => {
+    expect(() => p.bool().learn().learn()).toThrow(new TypeError('p.bool learn is already set'));
+    expect(() => p.array(p.bool()).learn({ window: 8 }).learn()).toThrow(
+      new TypeError('p.array learn is already set')
     );
-    expect(() => modes([new Toy(2)], { window: 0 })).toThrow(RangeError);
   });
 
-  it('refuses a value no method is available for, on both sides', () => {
-    const choice = modes([new Toy(2, false), new Toy(2, false)]);
-    const message = 'test has no method available for the value';
-    expect(() => choice.write(new Encoder(), 1)).toThrow(new RangeError(message));
-    expect(() => choice.read(new Decoder(new Uint8Array(0)))).toThrow(new RangeError(message));
+  it('refuses options out of range', () => {
+    expect(() => p.bool().learn({ window: 0 })).toThrow(
+      new RangeError('p.bool learning window must be a positive integer, got 0')
+    );
   });
 
-  it('writes no mode when one method is available, and teaches no method', () => {
-    const plain = new Toy(2);
-    const other = new Toy(1, false);
-    const choice = modes([plain, other]);
-    const { bytes, read } = trip(choice, modes([new Toy(2), new Toy(1, false)]), [7]);
-    const enc = new Encoder();
-    enc.composeWeighted(0, 1, 2);
-    enc.compose(7, 256);
-    expect(bytes).toEqual(enc.output());
-    expect(read).toEqual([7]);
-    expect(plain.learned).toEqual([]);
-    expect(other.learned).toEqual([]);
+  it('refuses a node that adapts already, in either order', () => {
+    const both = new TypeError('p.bool learn and adaptive cannot both be set');
+    expect(() => p.bool().adaptive().learn()).toThrow(both);
+    expect(() => p.bool().learn().adaptive()).toThrow(both);
+    expect(() => p.array(p.bool()).adaptive().learn()).toThrow(
+      new TypeError('p.array learn and adaptive cannot both be set')
+    );
   });
 
-  it('picks the cheapest spelling, the lower index on a tie, as one digit over the available', () => {
-    const methods = [new Toy(4), new Toy(4, false), new Toy(2), new Toy(2)];
-    const choice = modes(methods);
-    const enc = new Encoder();
-    choice.write(enc, 9);
-    // Method 2 beats 0 and ties 3; method 1 is out, so the digit is 1 of 3.
-    const model = new Encoder();
-    model.compose(1, 3);
-    model.composeWeighted(0, 1, 2);
-    model.compose(9, 256);
-    expect(enc.output()).toEqual(model.output());
-  });
-
-  it('passes over a method that cannot spell the value', () => {
-    const choice = modes([new Toy(8), new Toy(undefined)]);
-    const enc = new Encoder();
-    choice.write(enc, 3);
-    const model = new Encoder();
-    model.compose(0, 2);
-    model.composeWeighted(0, 1, 8);
-    model.compose(3, 256);
-    expect(enc.output()).toEqual(model.output());
-  });
-
-  it("throws the lowest available method's error when none can spell the value", () => {
-    const choice = modes([new Toy(2), new Toy(undefined)]);
-    const enc = new Encoder();
-    expect(() => choice.write(enc, 300)).toThrow(new RangeError('Toy byte 300'));
-    // Each try is taken back, so the message holds nothing.
-    expect(enc.output()).toEqual(new Encoder().output());
-  });
-
-  it('reads each value back by the method the mode names', () => {
-    const write = [new Toy(4), new Toy(2), new Toy(8, false)];
-    const read = [new Toy(4), new Toy(2), new Toy(8, false)];
-    const back = trip(modes(write), modes(read), [1, 2, 3]);
-    expect(back.read).toEqual([1, 2, 3]);
-    expect(read.map((toy) => toy.reads)).toEqual([0, 3, 0]);
-  });
-
-  it('codes the mode under the adaptive prior with the unavailable methods ruled out', () => {
-    const shape = (): Toy[] => [new Toy(4), new Toy(2), new Toy(2)];
-    const methods = shape();
-    const choice = modes(methods, { window: 64 });
-    const back = shape();
-    const reader = modes(back, { window: 64 });
-    const values = [5, 6, 7, 8, 9, 10];
-    const openings = [true, false, true, true, false, true];
-    const enc = new Encoder();
-    const dec: number[] = [];
-    // Method 2 opens and closes from value to value, the same on both sides.
-    values.forEach((value, i) => {
-      methods[2].open = openings[i];
-      choice.write(enc, value);
-    });
-    const bytes = enc.output();
-    const decoder = new Decoder(bytes);
-    values.forEach((_, i) => {
-      back[2].open = openings[i];
-      dec.push(reader.read(decoder));
-    });
-    decoder.finalize();
-    expect(dec).toEqual(values);
-
-    // The model: method 1 wins wherever it is available, which is always.
-    const prior = new AdaptivePrior([[1, 1, 1]], 3, 64, 'test');
-    const model = new Encoder();
-    const without2 = new Exclusion(3);
-    without2.add(2);
-    values.forEach((value, i) => {
-      prior.write(model, 1, 0, openings[i] ? undefined : without2);
-      prior.learn(model, 1);
-      model.composeWeighted(0, 1, 2);
-      model.compose(value, 256);
-    });
-    expect(bytes).toEqual(model.output());
-  });
-
-  it('picks again where the last winner is no longer available', () => {
-    const write = [new Toy(2), new Toy(1), new Toy(4)];
-    const read = [new Toy(2), new Toy(1), new Toy(4)];
-    const choice = modes(write);
-    const back = modes(read);
-    const enc = new Encoder();
-    choice.write(enc, 1);
-    write[1].open = false;
-    choice.write(enc, 2);
-    const dec = new Decoder(enc.output());
-    const values = [back.read(dec)];
-    read[1].open = false;
-    values.push(back.read(dec));
-    dec.finalize();
-    expect(values).toEqual([1, 2]);
-    // Method 1 won the first value; method 0 the second, without it.
-    expect(read.map((toy) => toy.reads)).toEqual([1, 1, 0]);
-  });
-
-  it('prices the mode as the table learns it', () => {
-    /** The method that spells a byte after `warmup` ties, once method 1 got cheaper. */
-    const winner = (warmup: number): number => {
-      const shape = (): Toy[] => [new Toy(2), new Toy(2)];
-      const methods = shape();
-      const back = shape();
-      const choice = modes(methods, {});
-      const reader = modes(back, {});
-      const enc = new Encoder();
-      // Ties go to method 0, whose mode the table learns.
-      for (let i = 0; i < warmup; i++) choice.write(enc, i);
-      methods[1].odds = 1;
-      choice.write(enc, 255);
-      const dec = new Decoder(enc.output());
-      for (let i = 0; i < warmup; i++) reader.read(dec);
-      back[1].odds = 1;
-      reader.read(dec);
-      return back[1].reads;
-    };
-
-    // Fresh, the modes are even and the cheaper spelling wins; once mode 0
-    // has recurred, its cheaper mode outweighs the spelling.
-    expect(winner(0)).toBe(1);
-    expect(winner(30)).toBe(0);
+  it('survives the rebuild a later setting makes', () => {
+    const node = p.array(p.bool()).learn({ window: 8 }).max(5);
+    expect(node._methods).toEqual({ learn: { window: 8 } });
   });
 });
 
-describe('.adaptive() and _open()', () => {
-  /** A node `.adaptive()` or `_open()` opens, as each node type takes it. */
-  interface Adaptive {
-    readonly _methods: MethodSet;
-    adaptive(options?: { window?: number }): Adaptive & PNode<any>;
-    _open(options?: { window?: number }, except?: readonly MethodName[]): Adaptive & PNode<any>;
-    _withMethods(methods: MethodSet): Adaptive & PNode<any>;
-    learn?(): Adaptive & PNode<any>;
-    learning?(options: { window?: number }): Adaptive & PNode<any>;
-  }
+describe('.adaptive() on a leaf', () => {
+  it('sets the options once, checked', () => {
+    expect(p.bool().adaptive({ window: 8 })._methods).toEqual({ adaptive: { window: 8 } });
+    expect(p.enum(['a', 'b']).adaptive()._methods.adaptive).toBeDefined();
+    expect(() => p.bool().adaptive().adaptive()).toThrow(
+      new TypeError('p.bool adaptive is already set')
+    );
+    expect(() => p.enum(['a', 'b']).adaptive({ candidates: 65 })).toThrow(
+      new RangeError('p.enum: adaptive candidates must be in 0..64, got 65')
+    );
+  });
+});
 
-  const index: MethodName[] = ['learn', 'delta', 'recall'];
-  const container: MethodName[] = ['learn', 'recall'];
+describe('.adaptive() on a container', () => {
+  const leaf = (node: unknown) => (node as { _methods: object })._methods;
 
-  const random = mulberry32(11);
-  const pick = <T>(list: readonly T[]): T => list[Math.floor(random() * list.length)];
-  const many = <T>(make: (i: number) => T, n = 60): T[] =>
-    Array.from({ length: n }, (_, i) => make(i));
-  const words = ['north', 'south', 'east', 'west', 'Order-1042', 'order-1043', 'v2.10.3', ''];
-  const ints = many((i) => (i % 7 === 0 ? pick([5, 9, 1000]) : 1000 + i * 3 + pick([-1, 0, 2])));
-
-  // The number nodes open their methods through `_open()` alone: their
-  // `.adaptive()` hands the values to the predictor instead.
-  const cases = [
-    ['p.int', p.int(), index, ints, false],
-    ['p.decimal', p.decimal(0.01), index, ints.map((v) => v / 100), false],
-    ['p.date', p.date().precision('day'), index, ints.map((v) => new Date(v * 86400000)), false],
-    ['p.float', p.float(), ['learn', 'delta'], ints.map((v) => v / 8 + 0.1), false],
-    ['p.array', p.array(p.int().min(0).max(9)), container, many((i) => [i % 3, 4, i % 5]), true],
-    ['p.set', p.set(p.int().min(0).max(9)), container, many((i) => new Set([i % 3, 9])), true],
-    [
-      'p.record',
-      p.record(p.bool()),
-      container,
-      many((i) => ({ [pick(words)]: i % 2 === 0 })),
-      true,
-    ],
-    [
-      'p.object',
-      p.object({ id: p.int().min(0), name: p.optional(p.string().adaptive()) }),
-      container,
-      many((i) => ({ id: i % 4, name: i % 3 === 0 ? undefined : pick(words) })),
-      true,
-    ],
-  ] as [string, Adaptive, MethodName[], unknown[], boolean][];
-
-  /** `node` with its methods open, under `options`: `.adaptive()` where it opens them. */
-  const adapt = (node: Adaptive, opens: boolean, options?: { window?: number }) =>
-    opens ? node.adaptive(options) : node._open(options);
-
-  it.each(cases)(
-    'opens every method of %s, and round-trips under them',
-    (_name, node, names, values, opens) => {
-      const adapted = adapt(node, opens);
-      const open = Object.fromEntries(names.map((name) => [name, 'open']));
-      expect({ ...adapted._methods, learning: undefined }).toEqual(open);
-      const list = p.array(adapted);
-      expect(list.decode(list.encode(values))).toEqual(values);
-    }
-  );
-
-  it('keeps a declared method declared', () => {
-    expect(declare(p.int(), 'delta')._open()._methods).toEqual({
-      learn: 'open',
-      delta: 'declared',
-      recall: 'open',
-    });
+  it('adapts the node and every node below it that neither learns nor adapts', () => {
+    const own = p.bool().adaptive({ window: 8 });
+    const learner = p.bool().learn();
+    const node = p.object({ a: p.bool(), b: own, c: learner, d: p.array(p.enum(['x', 'y'])) });
+    const adapted = node.adaptive({ window: 16 });
+    const { _shape: shape } = adapted as unknown as { _shape: Record<string, never> };
+    expect(leaf(adapted)).toEqual({ adaptive: { window: 16, prior: Priors.text.source } });
+    expect(leaf(shape.a)).toEqual({ adaptive: { window: 16, prior: Priors.text.source } });
+    expect(shape.b).toBe(own);
+    expect(shape.c).toBe(learner);
+    expect(leaf(shape.d)).toEqual({ adaptive: { window: 16, prior: Priors.text.source } });
   });
 
-  it('carries its options into the set it opens', () => {
-    const options = { window: 64, separate: true };
-    expect(p.int()._open(options)._methods.learning).toEqual(options);
-    expect(p.array(p.int()).adaptive(options)._methods.learning).toEqual(options);
+  it('leaves a node that learns, and what is below it, as it is', () => {
+    const inner = p.array(p.bool()).learn();
+    const outer = p.array(inner).adaptive();
+    const { _item: item } = outer as unknown as { _item: unknown };
+    expect(item).toBe(inner);
   });
 
-  const priors = [
-    ['p.bool', p.bool(), [true, true, false, true, true, true]],
-    ['p.enum', p.enum(['a', 'b', 'c']), ['a', 'a', 'c', 'a', 'a', 'a']],
-    ['p.optional', p.optional(p.bool()), [true, undefined, true, true, true, true]],
-    ['p.nullable', p.nullable(p.bool()), [true, null, true, true, true, true]],
-    ['p.union', p.union([p.bool(), p.int()]), [1, true, 2, 3, 4, 5]],
-    [
-      'p.tagged',
-      p.tagged('k', { a: p.object({}), b: p.object({}) }),
-      [{ k: 'a' }, { k: 'a' }, { k: 'b' }, { k: 'a' }, { k: 'a' }, { k: 'a' }],
-    ],
-    ['p.any', p.any(), [1, 'a', 2, 3, 'b', 4]],
-  ] as [string, Adaptive, unknown[]][];
-
-  it.each(priors)('opens %s without methods as .adaptive() does', (_name, node, values) => {
-    const opened = (node._open as (options: object) => PNode<any>)({ window: 16 });
-    const bytes = p.array(opened).encode(values);
-    expect(bytes).toEqual(p.array(node.adaptive({ window: 16 })).encode(values));
-    expect(p.array(opened).decode(bytes)).toEqual(values);
+  it('keeps a node that adapts or learns under a choice node', () => {
+    const adaptive = p.optional(p.bool()).adaptive({ window: 8 });
+    const learner = p.nullable(p.bool()).learn();
+    expect(p.array(adaptive).adaptive()).toBeDefined();
+    const list = p.array(learner).adaptive();
+    expect((list as unknown as { _item: unknown })._item).toBe(learner);
+    const again = p.array(adaptive).adaptive();
+    expect((again as unknown as { _item: unknown })._item).toBe(adaptive);
   });
 
-  it.each([
-    ...cases.map(([n, node, , values, opens]) => [n, node, values, opens] as const),
-    ...priors.map(([n, node, values]) => [n, node, values, true] as const),
-  ])(
-    'learns the same declaring learn and its options first as opening them on %s',
-    (_name, node, values, opens) => {
-      const encode = (n: PNode<any>) => p.array(n).encode(values);
-      // p.object, p.float and p.any take their learning from opening alone.
-      if (node.learn === undefined) {
-        return;
-      }
-      const adaptive = encode(adapt(node, opens));
-      expect(encode(adapt(node.learn!(), opens))).toEqual(adaptive);
-      const learned = opens ? node.learning!({ window: 8 }) : learning(node, { window: 8 });
-      expect(encode(adapt(learned, opens))).toEqual(encode(adapt(node, opens, { window: 8 })));
-    }
-  );
-
-  it('learns a declared delta or recall without .adaptive()', () => {
-    const long = Array.from({ length: 200 }, (_, i) => 1000 + i * 3);
-    const delta = (n: PNode<number>) => p.array(n).encode(long).length;
-    expect(delta(declare(p.int(), 'delta'))).toBeLessThan(delta(p.int()));
-    const ids = Array.from({ length: 200 }, (_, i) => [1000, 52000, 777000][i % 3]);
-    const recall = (n: PNode<number>) => p.array(n).encode(ids).length;
-    expect(recall(declare(p.int(), 'recall'))).toBeLessThan(recall(p.int()));
-    const list = p.array(declare(p.int(), 'delta'));
-    expect(list.decode(list.encode(long))).toEqual(long);
+  it('is set once, and not beside learn', () => {
+    expect(() => p.array(p.bool()).adaptive().adaptive()).toThrow(
+      new TypeError('p.array adaptive is already set')
+    );
+    expect(() => p.object({ a: p.bool() }).adaptive().adaptive()).toThrow(
+      new TypeError('p.object adaptive is already set')
+    );
+    expect(() => p.array(p.bool()).learn().adaptive()).toThrow(
+      new TypeError('p.array learn and adaptive cannot both be set')
+    );
   });
 
-  it('leaves the methods p.any names closed, and adapts a node without methods', () => {
-    const number = p.int()._open({ window: 8 }, ['recall']);
-    expect(number._methods.recall).toBeUndefined();
-    expect(number._methods.delta).toBe('open');
-    const flags = Array.from({ length: 40 }, (_, i) => i % 5 === 0);
-    const adapted = p.array(p.bool()._open({ window: 16 })).encode(flags);
-    expect(adapted).toEqual(p.array(p.bool().adaptive({ window: 16 })).encode(flags));
-    expect(adapted).not.toEqual(p.array(p.bool()).encode(flags));
+  it('refuses options out of range', () => {
+    expect(() => p.array(p.bool()).adaptive({ candidates: 65 })).toThrow(
+      new RangeError('p.array: adaptive candidates must be in 0..64, got 65')
+    );
+  });
+
+  it('round-trips under the sugar', () => {
+    const node = p.array(p.object({ ok: p.bool(), kind: p.enum(['a', 'b']) })).adaptive();
+    const values = Array.from({ length: 30 }, (_, i) => ({
+      ok: i % 3 === 0,
+      kind: i % 2 === 0 ? ('a' as const) : ('b' as const),
+    }));
+    expect(node.decode(node.encode(values))).toEqual(values);
   });
 });

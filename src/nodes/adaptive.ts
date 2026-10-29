@@ -44,36 +44,9 @@ export interface LearningOptions {
   readonly separate?: boolean;
 }
 
-/**
- * What a prior learns with besides its own values: a lineage, or `KIN`,
- * its kin in the message.
- */
-export type Kinship = Lineage | typeof KIN;
-
-/** The kinship of a prior that learns with its kin. */
-export const KIN: unique symbol = Symbol('kin');
-
-/**
- * What a node's tables learn under: its adaptive options, and, where
- * `p.any` builds the node, the lineage every adaptive prior it builds
- * joins instead of its kin, through every rebuild that passes them on.
- */
-export interface Learning extends LearningOptions {
-  readonly lineage?: Lineage;
-}
-
-/**
- * What the priors a node builds from `learning` learn with: its lineage,
- * else nothing under `separate`, else their kin.
- */
-export function lineageOf(learning: Learning | undefined): Kinship | undefined {
-  if (learning === undefined) {
-    return undefined;
-  }
-  if (learning.lineage !== undefined) {
-    return learning.lineage;
-  }
-  return learning.separate === true ? undefined : KIN;
+/** Whether the priors a node builds from `learning` learn with their kin: unless `separate`. */
+export function kinOf(learning: LearningOptions | undefined): boolean {
+  return learning !== undefined && learning.separate !== true;
 }
 
 /** The observations an adaptive prior holds before halving, unless declared; a table with more members holds that many. */
@@ -321,65 +294,15 @@ export class AdaptiveTable {
 }
 
 /**
- * How many observations a lineage's gathered table counts as in the table
- * of a prior that starts from it: 2, so a node's own values soon outweigh
- * what its kin learned.
+ * How many observations the kin's gathered table counts as in the blend of
+ * a prior that takes it up: 2, so a node's own values soon outweigh what its
+ * kin learned.
  */
 export const BLEND_SHARE = 2;
 
 /**
- * The adaptive priors of nodes built alike, as `p.any().adaptive()` builds
- * one per key: a root lineage, whose node only gathers, and a lineage per
- * later node that starts from it. Every adaptive prior built from options
- * carrying a lineage joins it in the order it is built, so a node built
- * the way the root's was pairs each of its priors with the root's prior at
- * the same place.
- */
-export class Lineage {
-  /** The priors that joined, in order: the root's, which the others pair with. */
-  private readonly joined: AdaptivePrior[] = [];
-
-  /** `root` is the lineage this one starts from; none for the root itself. */
-  constructor(private readonly root?: Lineage) {}
-
-  /**
-   * The root's prior that the next prior to join, over `members` members
-   * of weights `rows`, pairs with: none in the root. Throws when the root
-   * has no prior at that place, or one of other members or weights.
-   */
-  pair(
-    members: number,
-    rows: readonly (readonly number[])[],
-    who: string
-  ): AdaptivePrior | undefined {
-    if (this.root === undefined) {
-      return undefined;
-    }
-    const at = this.joined.length;
-    const parent = this.root.joined[at];
-    const same = (base: WeightTable, r: number): boolean =>
-      base.freqs.length === rows[r].length && base.freqs.every((w, i) => w === rows[r][i]);
-    if (
-      parent === undefined ||
-      parent.members !== members ||
-      parent.bases.length !== rows.length ||
-      !parent.bases.every(same)
-    ) {
-      throw new TypeError(`${who} adaptive prior ${at} does not match its lineage's`);
-    }
-    return parent;
-  }
-
-  /** Adds `prior`, which `pair` was asked about, at the next place. */
-  join(prior: AdaptivePrior): void {
-    this.joined.push(prior);
-  }
-}
-
-/**
- * One message's table of a prior that starts from its lineage or its kin:
- * the gathered table, every value any node of the lineage or the kin
- * learned on top of the weights, counts as `BLEND_SHARE` observations, and
+ * One message's table of a prior that starts from its kin: the gathered
+ * table, every value any node of the kin learned on top of the weights, counts as `BLEND_SHARE` observations, and
  * the prior's own observations are learned on top, each worth that table's
  * total, halving past `window`. Learning a value teaches the gathered
  * table too. The own observations are kept by member, only for members
@@ -776,13 +699,9 @@ function blended(state: Reading): boolean {
  * written. Coding learns nothing: each value, coded here or elsewhere, is
  * learned through `learn` once it is coded.
  *
- * A prior built with a lineage it does not root codes every value under
- * the `Blend` of the root's prior instead, with no selector: a node built
- * as a message goes starts from what its lineage already learned.
- *
- * A prior built with `KIN` learns with its kin: every prior so built of
+ * A prior built with `kin` learns with its kin: every prior so built of
  * the same `who`, members, weights and window in the message gathers what
- * it learns into one table, as a lineage's root does. Where another of
+ * it learns into one table. Where another of
  * them learned before the selector, the fastest rung is instead the
  * `Blend` of that table, so a node can take up what its kin learned before
  * it, while the slower rungs and the static coding still let it go its own
@@ -799,11 +718,7 @@ export class AdaptivePrior {
   /** The selector's table and its buckets. */
   private readonly selector: WeightTable;
   private readonly choices: readonly Bucket[];
-  /** Set when the prior joined a lineage it does not root: the root's prior it starts from. */
-  private readonly parent?: AdaptivePrior;
-  /** The key of the prior's gathered tables in a message's state, when it roots a lineage. */
-  private readonly gathering = {};
-  /** The key of the prior's blended tables in a message's state, when it has a parent. */
+  /** The key of the prior's blended tables in a message's state. */
   private readonly blending = {};
   /** Set when the prior learns with its kin: the provider of their gathered tables. */
   private readonly kin?: ProviderRef<Kin, Kindred>;
@@ -816,7 +731,7 @@ export class AdaptivePrior {
     readonly members: number,
     window: number | undefined,
     who: string,
-    lineage?: Kinship
+    kin = false
   ) {
     this.writer = new ProviderRef(WRITER, { members });
     this.reader = new ProviderRef(READER, { members });
@@ -827,15 +742,10 @@ export class AdaptivePrior {
     if (window !== undefined) {
       checkPositive(window, who, 'window');
     }
-    const kin = lineage === KIN;
-    const parent = kin ? undefined : lineage?.pair(members, rows, who);
-    this.parent = parent;
     if (kin) {
       this.kin = new ProviderRef(KINDRED, { who, members, rows, window });
     }
-    // A prior paired with its root's has the same weights, and so shares
-    // the root's tables.
-    const { bases, statics } = parent ?? rowTables(rows, members, who);
+    const { bases, statics } = rowTables(rows, members, who);
     this.bases = bases;
     this.statics = statics;
     this.window = Math.max(window ?? DEFAULT_ADAPTIVE_WINDOW, members);
@@ -848,33 +758,9 @@ export class AdaptivePrior {
     for (const prior of [...this.rungs].reverse()) {
       checkOverflow(total, prior, this.window, who);
     }
-    if (parent !== undefined) {
-      // A blend codes every value, so the selector is never used.
-      checkOverflow(total * (this.rungs[1] + parent.window), BLEND_SHARE, this.window, who);
-      (lineage as Lineage).join(this);
-      return;
-    }
     if (kin) {
       checkOverflow(total * (this.rungs[1] + this.window), BLEND_SHARE, this.window, who);
     }
-    if (lineage !== undefined && lineage !== KIN) {
-      lineage.join(this);
-    }
-  }
-
-  /**
-   * This message's gathered table of `row` on `side`: the weights at the
-   * second rung's prior, a middle learner, and every value the lineage's
-   * nodes learned.
-   */
-  private gathered(side: Encoder | Decoder, row: number): LiveCounts {
-    const tables = side.state<(LiveCounts | undefined)[]>(this.gathering, () => []);
-    return (tables[row] ??= this.built(
-      side,
-      tables,
-      row,
-      new LiveCounts(this.bases[row], this.rungs[1], this.window, side.journal)
-    ));
   }
 
   /**
@@ -890,18 +776,14 @@ export class AdaptivePrior {
     return table;
   }
 
-  /** This message's blended table of `row` on `side`, from the parent's gathered one, or the kin's. */
+  /** This message's blended table of `row` on `side`, from the kin's gathered one. */
   private blend(side: Encoder | Decoder, row: number): Blend {
     const tables = side.state<(Blend | undefined)[]>(this.blending, () => []);
     return (tables[row] ??= this.built(
       side,
       tables,
       row,
-      new Blend(
-        this.parent === undefined ? this.kinGathered(side, row) : this.parent.gathered(side, row),
-        this.window,
-        side.journal
-      )
+      new Blend(this.kinGathered(side, row), this.window, side.journal)
     ));
   }
 
@@ -912,7 +794,7 @@ export class AdaptivePrior {
 
   /**
    * The kin's gathered table of `row` on `side`: the weights at the second
-   * rung's prior, as a root's, and every value the kin learned.
+   * rung's prior, a middle learner, and every value the kin learned.
    */
   private kinGathered(side: Encoder | Decoder, row: number): LiveCounts {
     const { tables } = this.kindred(side);
@@ -984,10 +866,6 @@ export class AdaptivePrior {
     if (this.members === 1) {
       return;
     }
-    if (this.parent !== undefined) {
-      writeExcluded(enc, this.blend(enc, row), excluded, pos);
-      return;
-    }
     const state = this.writing(enc);
     if (excluded === undefined || excluded.count < this.members - 1) {
       const table = this.statics[row];
@@ -1019,9 +897,6 @@ export class AdaptivePrior {
    */
   estimate(enc: Encoder, pos: number, row = 0, excluded?: Exclusion): Bucket {
     this.check(pos, row);
-    if (this.parent !== undefined) {
-      return excludedBucket(this.blend(enc, row), excluded, pos);
-    }
     // The slowest rung, twice the members, is above the fastest, at most
     // half of them, so there are always at least two.
     const lives = this.rowLives(this.writing(enc), row);
@@ -1033,9 +908,6 @@ export class AdaptivePrior {
     this.base(row);
     if (this.members === 1) {
       return 0;
-    }
-    if (this.parent !== undefined) {
-      return readExcluded(dec, this.blend(dec, row), excluded);
     }
     const state = this.reading(dec);
     let pos: number;
@@ -1091,9 +963,7 @@ export class AdaptivePrior {
     if (this.members === 1) {
       return;
     }
-    if (this.parent !== undefined) {
-      this.blend(side, row).learn(pos);
-    } else if (side instanceof Encoder) {
+    if (side instanceof Encoder) {
       this.teach(this.writing(side), pos, row);
       if (this.kin !== undefined) {
         this.kinLearn(side, pos, row, true);

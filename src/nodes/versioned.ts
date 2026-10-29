@@ -1,5 +1,7 @@
 import { Encoder, ReplayDecoder, UnknownVersionError, type Decoder } from '../packer';
-import { PNode } from './base';
+import { PNode, adapt } from './base';
+import { session } from '../predictor/session';
+import type { AdaptiveOptions } from '../predictor/types';
 import type { Kind } from './guards';
 import { IndexRange } from './lattice';
 import { noted } from './path';
@@ -70,9 +72,35 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
     return this._nodes[this._nodes.length - 1]._takesUndefined();
   }
 
+  /** The versions under a container's `.adaptive()`, the migrations kept. */
+  _adapted(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PVersioned<T, TFirst> {
+    const nodes = this._nodes.map((node) => adapt(node, options, memo));
+    if (nodes.every((node, i) => node === this._nodes[i])) {
+      return this;
+    }
+    const versions = nodes.map((node, i) =>
+      i === 0 ? node : ([node, this._migrations[i - 1]] as const)
+    );
+    return new PVersioned<T, TFirst>(versions as unknown as Versions);
+  }
+
+  get _holdsAdaptive(): boolean {
+    return this._nodes.some((node) => node._holdsAdaptive);
+  }
+
+  /** The newest version's: the structure symbol a parent codes is that version's first. */
+  _marker(value: unknown): number {
+    return this._nodes[this._nodes.length - 1]._marker(value);
+  }
+
+  _markers(): ReadonlySet<number> | undefined {
+    return this._nodes[this._nodes.length - 1]._markers();
+  }
+
   _write(enc: Encoder, value: T): void {
     const newest = this._nodes.length - 1;
     VERSION.write(enc, newest);
+    this._pass(enc, this._nodes[newest]);
     this._nodes[newest]._write(enc, value);
   }
 
@@ -81,8 +109,18 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
     if (index >= this._nodes.length) {
       throw new UnknownVersionError(index + 1, this._nodes.length);
     }
+    this._pass(dec, this._nodes[index]);
     const value = this._nodes[index]._read(dec);
     return index === this._nodes.length - 1 ? value : this._upgrade(value, index);
+  }
+
+  /** Hands the structure symbol coded for this node on to `node`, where one was. */
+  private _pass(side: Encoder | Decoder, node: PNode<any>): void {
+    if (this._holdsAdaptive) {
+      const s = session(side);
+      const sym = s.take(this);
+      if (sym >= 0) s.give(sym, node);
+    }
   }
 
   /**

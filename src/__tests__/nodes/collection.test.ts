@@ -3,7 +3,7 @@
  * like an array's, read back into a Map, a plain object or a Set.
  */
 
-import { p, Encoder, CorruptInputError } from '../../index';
+import { p, Encoder, Decoder, CorruptInputError, PNode } from '../../index';
 import { mulberry32, trip } from '../support';
 
 /** A wire of `count`, then each of `keys` written by `write`. */
@@ -216,7 +216,7 @@ describe('Schema set', () => {
   });
 });
 
-describe('p.set adaptive', () => {
+describe('p.set learn', () => {
   const plain = p.set(p.int().min(0).max(9)).max(7);
   const weights = Array.from({ length: 8 }, (_, i) => (i === 3 ? 29 : 1));
   const run = (length: number, seed: number) => {
@@ -227,9 +227,17 @@ describe('p.set adaptive', () => {
     );
   };
 
+  it("learns a record's keys with its count, in any order", () => {
+    const values: Record<string, number>[] = [{ a: 1, b: 2 }, { b: 3, a: 4 }, {}, { c: 5 }];
+    const record = p.record(p.int()).learn();
+    expect(trip(p.array(record), values)).toEqual(values);
+    const unordered = p.record(p.int()).unordered().learn();
+    expect(Object.keys(trip(unordered, { b: 1, '': 2, a: 3 }))).toEqual(['', 'a', 'b']);
+  });
+
   it('round-trips a run of values, inside an array too', () => {
     const values = run(300, 1);
-    for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 8 })]) {
+    for (const node of [plain.learn(), plain.weights(weights).learn({ window: 8 })]) {
       expect(trip(p.array(node), values)).toEqual(values);
       expect(trip(node, values[0])).toEqual(values[0]);
     }
@@ -237,24 +245,24 @@ describe('p.set adaptive', () => {
 
   it('takes its weights before or after', () => {
     const values = run(200, 2);
-    expect(p.array(plain.weights(weights).adaptive({ window: 64 })).encode(values)).toEqual(
-      p.array(plain.adaptive({ window: 64 }).weights(weights)).encode(values)
+    expect(p.array(plain.weights(weights).learn({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.learn({ window: 64 }).weights(weights)).encode(values)
     );
   });
 
   it('learns a skew, at most a byte over the static prior of it', () => {
     const values = run(2000, 3);
     const size = (node: typeof plain) => p.array(node).encode(values).length;
-    expect(size(plain.adaptive())).toBeLessThan(size(plain));
-    expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
+    expect(size(plain.learn())).toBeLessThan(size(plain));
+    expect(size(plain.weights(weights).learn())).toBeLessThanOrEqual(
       size(plain.weights(weights)) + 1
     );
   });
 
   it('written once, spends the bytes of its static form', () => {
     for (const value of run(20, 4)) {
-      expect(plain.adaptive().encode(value)).toEqual(plain.encode(value));
-      expect(plain.weights(weights).adaptive().encode(value)).toEqual(
+      expect(plain.learn().encode(value)).toEqual(plain.encode(value));
+      expect(plain.weights(weights).learn().encode(value)).toEqual(
         plain.weights(weights).encode(value)
       );
     }
@@ -263,27 +271,28 @@ describe('p.set adaptive', () => {
   it('learns a count without a max on the magnitude scale', () => {
     const values = run(300, 5);
     const open = p.set(p.int().min(0).max(9));
-    expect(trip(p.array(open.adaptive()), values)).toEqual(values);
-    expect(p.array(open.adaptive()).encode(values).length).toBeLessThan(
+    expect(trip(p.array(open.learn()), values)).toEqual(values);
+    expect(p.array(open.learn()).encode(values).length).toBeLessThan(
       p.array(open).encode(values).length
     );
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.adaptive({ window: 0 })).toThrow(
+    expect(() => plain.learn({ window: 0 })).toThrow(
       new RangeError('p.set learning window must be a positive integer, got 0')
     );
-    expect(() => plain.adaptive({ window: 1.5 })).toThrow(
+    expect(() => plain.learn({ window: 1.5 })).toThrow(
       new TypeError('p.set learning window must be a positive integer, got 1.5')
     );
-    expect(() => plain.weights([2 ** 45, ...Array<number>(7).fill(1)]).adaptive()).toThrow(
+    expect(() => plain.weights([2 ** 45, ...Array<number>(7).fill(1)]).learn()).toThrow(
       new RangeError(
         'p.set adaptive prior 16 and window 1024 overflow with weights totalling 35184372088839'
       )
     );
     const cdf = new TypeError('p.set learn takes weights, not a cdf');
-    expect(() => plain.cdf((v) => v).adaptive()).toThrow(cdf);
-    expect(() => plain.adaptive().cdf((v) => v)).toThrow(cdf);
+    expect(() => plain.cdf((v) => v).learn()).toThrow(cdf);
+    expect(() => plain.learn().cdf((v) => v)).toThrow(cdf);
+    expect(() => plain.learn().learn()).toThrow(new TypeError('p.set learn is already set'));
   });
 });
 
@@ -360,6 +369,7 @@ describe('Unordered collections', () => {
         .unordered()
         .max(3)
         .cdf((n) => n * 2),
+      p.set(p.int().min(0).max(9)).unordered().max(3).learn(),
       p.set(p.int().min(0).max(9)).unordered().max(3).adaptive(),
     ]) {
       expect([...trip(node, value)]).toEqual([1, 4]);
@@ -388,33 +398,378 @@ describe('Unordered collections', () => {
   });
 });
 
-describe('p.set learn', () => {
-  const plain = p.set(p.int().min(0).max(9)).max(7);
-  const run = (length: number, seed: number) => {
-    const rnd = mulberry32(seed);
-    return Array.from(
-      { length },
-      () => new Set(Array.from({ length: rnd() < 0.8 ? 3 : Math.floor(rnd() * 8) }, (_, i) => i))
-    );
-  };
+/** A digit 0–9 as a custom ordinal node, which `.adaptive()` leaves as it is. */
+class PDigit extends PNode<number> {
+  readonly _radix = 10;
+  _toDigit(value: number): number {
+    if (!Number.isInteger(value) || value < 0 || value > 9) {
+      throw new RangeError(`Value ${value} is no digit`);
+    }
+    return value;
+  }
+  _fromDigit(digit: number): number {
+    return digit;
+  }
+  _write(enc: Encoder, value: number): void {
+    enc.compose(this._toDigit(value), 10);
+  }
+  _read(dec: Decoder): number {
+    return dec.parse(10);
+  }
+}
 
-  it('round-trips a seeded run on its own', () => {
-    const values = run(300, 5);
-    expect(trip(p.array(plain.learn()), values)).toEqual(values);
+/** Writes any number as a digit and refuses a 9 when it reads one back. */
+class PNoNine extends PNode<number> {
+  _write(enc: Encoder, value: number): void {
+    enc.compose(value, 10);
+  }
+  _read(dec: Decoder): number {
+    const digit = dec.parse(10);
+    if (digit === 9) {
+      throw new CorruptInputError('Nine');
+    }
+    return digit;
+  }
+}
+
+describe('Adaptive collections', () => {
+  const digit = p.int().min(0).max(9);
+
+  it('round-trip maps with keys of several kinds', () => {
+    const cases: [PNode<any>, PNode<any>, Map<unknown, unknown>][] = [
+      [
+        p.string(),
+        digit,
+        new Map([
+          ['a', 1],
+          ['', 2],
+          ['__proto__', 3],
+        ]),
+      ],
+      [
+        digit,
+        p.string(),
+        new Map([
+          [3, 'x'],
+          [0, ''],
+        ]),
+      ],
+      [
+        p.int(),
+        p.bool(),
+        new Map([
+          [-5, true],
+          [1e9, false],
+        ]),
+      ],
+      [p.date(), p.null(), new Map([[new Date(0), null]])],
+      [
+        p.enum(['a', 'b', 1]),
+        p.optional(digit),
+        new Map<unknown, unknown>([
+          ['b', 1],
+          [1, undefined],
+        ]),
+      ],
+      [
+        p.array(digit),
+        p.array(p.string()),
+        new Map([
+          [[1, 2], ['x']],
+          [[], []],
+        ]),
+      ],
+      [
+        p.union([p.string(), p.int()]),
+        p.nullable(digit),
+        new Map<unknown, unknown>([
+          ['a', null],
+          [2, 3],
+        ]),
+      ],
+      [
+        p.any(),
+        p.any(),
+        new Map<unknown, unknown>([
+          [{ a: 1 }, [1]],
+          ['k', 'v'],
+        ]),
+      ],
+      [new PDigit(), new PDigit(), new Map([[4, 5]])],
+    ];
+    for (const [key, value, map] of cases) {
+      const node = p.map(key, value).adaptive();
+      expect([...trip(node, map)]).toEqual([...map]);
+      expect(trip(node, new Map())).toEqual(new Map());
+      const nested = p.array(node);
+      expect(trip(nested, [map, new Map(), map]).map((m) => [...m])).toEqual([
+        [...map],
+        [],
+        [...map],
+      ]);
+    }
   });
 
-  it('round-trips with its methods declared beside it', () => {
-    const values = run(300, 6);
-    expect(trip(p.array(plain.learn().recall()), values)).toEqual(values);
+  it('round-trip records with any key text', () => {
+    const node = p.record(p.union([digit, p.string()])).adaptive();
+    const value = JSON.parse(
+      '{"": 1, "__proto__": "p", "\\ud800": 2, "\\udc00x": "lone", "😀": 3, "a": "b"}'
+    ) as Record<string, number | string>;
+    const back = trip(node, value);
+    expect(Object.getPrototypeOf(back)).toBe(Object.prototype);
+    expect(Object.entries(back)).toEqual(Object.entries(value));
+    expect(trip(node, {})).toEqual({});
+    const many = Object.fromEntries(
+      Array.from({ length: 50 }, (_, i) => [`key${i % 7}${i}`, i % 10])
+    );
+    expect(trip(node, many)).toEqual(many);
+    const deep = p.record(p.record(p.array(p.string()))).adaptive();
+    const inner = { a: { b: ['x', 'y'], c: [] }, d: {} };
+    expect(trip(deep, inner)).toEqual(inner);
   });
 
-  it('takes its learning options once, before `.adaptive()`', () => {
-    const values = run(200, 7);
-    expect(p.array(plain.learning({ window: 8 }).adaptive()).encode(values)).toEqual(
-      p.array(plain.adaptive({ window: 8 })).encode(values)
+  it('round-trip sets of several kinds', () => {
+    const cases: [PNode<any>, Set<unknown>][] = [
+      [p.string(), new Set(['b', '', 'a'])],
+      [digit, new Set([3, 1, 2])],
+      [p.bool(), new Set([false, true])],
+      [p.object({ a: digit }), new Set([{ a: 1 }, { a: 1 }])],
+      [p.set(p.string()), new Set([new Set(['a']), new Set<string>()])],
+      [new PDigit(), new Set([9, 0])],
+    ];
+    for (const [item, set] of cases) {
+      const node = p.set(item).adaptive();
+      expect([...trip(node, set)]).toEqual([...set]);
+      expect(trip(node, new Set())).toEqual(new Set());
+    }
+  });
+
+  it('code no end at their max, and decode every count between min and max', () => {
+    const value = new Set([1, 2, 3]);
+    const fixed = p.set(digit).length(3).adaptive();
+    expect(trip(fixed, value)).toEqual(value);
+    expect(fixed.encode(value).length).toBeLessThanOrEqual(
+      p.set(digit).adaptive().encode(value).length
     );
-    expect(() => plain.learning({ window: 8 }).learning({ window: 8 })).toThrow(
-      new TypeError('p.set learning is already set')
+    const bounded = p.record(digit).min(1).max(3).adaptive();
+    for (const record of [{ a: 1 }, { a: 1, b: 2 }, { a: 1, b: 2, c: 3 }] as Record<
+      string,
+      number
+    >[]) {
+      expect(trip(bounded, record)).toEqual(record);
+    }
+    expect(() => bounded.encode({})).toThrow(
+      new RangeError('Record size 0 is below the minimum 1')
     );
+    expect(() => bounded.encode({ a: 1, b: 2, c: 3, d: 4 })).toThrow(
+      new RangeError('Record size 4 is above the maximum 3')
+    );
+    const map = p.map(p.string(), digit).max(1).adaptive();
+    expect(() =>
+      map.encode(
+        new Map([
+          ['a', 1],
+          ['b', 2],
+        ])
+      )
+    ).toThrow(new RangeError('Map size 2 is above the maximum 1'));
+  });
+
+  it('refuse weights or a cdf over the count, in either order', () => {
+    for (const [node, who] of [
+      [p.map(p.string(), digit).max(2), 'p.map'],
+      [p.record(digit).max(2), 'p.record'],
+      [p.set(digit).max(2), 'p.set'],
+    ] as const) {
+      const message = new TypeError(
+        `${who} adaptive cannot weigh the count: an adaptive collection ends with a symbol`
+      );
+      expect(() => node.weights([1, 1, 1]).adaptive()).toThrow(message);
+      expect(() => node.adaptive().weights([1, 1, 1])).toThrow(message);
+      expect(() => node.cdf((n) => n).adaptive()).toThrow(message);
+      expect(() => node.adaptive().cdf((n) => n)).toThrow(message);
+    }
+  });
+
+  it('set adaptive once, and not with learn', () => {
+    const node = p.map(p.string(), digit);
+    expect(() => node.adaptive().adaptive()).toThrow(
+      new TypeError('p.map adaptive is already set')
+    );
+    expect(() => node.learn().adaptive()).toThrow(
+      new TypeError('p.map learn and adaptive cannot both be set')
+    );
+    expect(() => p.record(digit).adaptive().learn()).toThrow(
+      new TypeError('p.record learn and adaptive cannot both be set')
+    );
+  });
+
+  it('keep a collection that learns as it is, beside adaptive ones', () => {
+    const node = p
+      .object({ m: p.map(p.string(), digit).learn(), s: p.set(digit), r: p.record(p.string()) })
+      .adaptive();
+    const value = { m: new Map([['a', 1]]), s: new Set([2]), r: { k: 'v' } };
+    expect(trip(node, value)).toEqual(value);
+    const union = p.union([p.map(p.string(), digit), p.set(p.string()), p.string()]).adaptive();
+    for (const one of [new Map([['a', 1]]), new Set(['b']), 'c']) {
+      expect(trip(union, one)).toEqual(one);
+    }
+    const nullable = p.nullable(p.record(digit)).adaptive();
+    expect(trip(nullable, null)).toBeNull();
+    expect(trip(nullable, { a: 1 })).toEqual({ a: 1 });
+  });
+
+  it('decode unordered entries ascending by key', () => {
+    const map = p.map(p.string(), digit).unordered().adaptive();
+    expect([
+      ...trip(
+        map,
+        new Map([
+          ['b', 1],
+          ['', 2],
+          ['a', 3],
+        ])
+      ),
+    ]).toEqual([
+      ['', 2],
+      ['a', 3],
+      ['b', 1],
+    ]);
+    const record = p.record(p.string()).unordered().adaptive();
+    expect(Object.keys(trip(record, { b: 'x', a: 'y' }))).toEqual(['a', 'b']);
+    expect([...trip(p.set(digit).unordered().adaptive(), new Set([5, 1, 3]))]).toEqual([1, 3, 5]);
+    expect([...trip(p.set(new PDigit()).unordered().adaptive(), new Set([5, 1]))]).toEqual([1, 5]);
+    const ordinal = p.map(new PDigit(), p.string()).unordered().adaptive();
+    expect([
+      ...trip(
+        ordinal,
+        new Map([
+          [7, 'a'],
+          [2, 'b'],
+        ])
+      ),
+    ]).toEqual([
+      [2, 'b'],
+      [7, 'a'],
+    ]);
+    expect(() =>
+      ordinal.encode(
+        new Map([
+          [1, 'a'],
+          [10, 'b'],
+        ])
+      )
+    ).toThrow(new RangeError('[1]: Value 10 is no digit'));
+  });
+
+  it('locate a key, an item or a value they refuse', () => {
+    expect(() =>
+      p
+        .map(digit, digit)
+        .adaptive()
+        .encode(
+          new Map([
+            [1, 1],
+            [10, 1],
+          ])
+        )
+    ).toThrow(new RangeError('[1].<key>: Value 10 is above the maximum 9'));
+    expect(() =>
+      p
+        .map(digit, digit)
+        .adaptive()
+        .encode(
+          new Map([
+            [1, 1],
+            [2, 10],
+          ])
+        )
+    ).toThrow(new RangeError('[1]: Value 10 is above the maximum 9'));
+    expect(() =>
+      p
+        .map(p.string(), digit)
+        .adaptive()
+        .encode(new Map([['a', 10]]))
+    ).toThrow(new RangeError('a: Value 10 is above the maximum 9'));
+    expect(() => p.record(digit).adaptive().encode({ a: 1, b: 10 })).toThrow(
+      new RangeError('b: Value 10 is above the maximum 9')
+    );
+    expect(() =>
+      p
+        .set(digit)
+        .adaptive()
+        .encode(new Set([1, 10]))
+    ).toThrow(new RangeError('[1]: Value 10 is above the maximum 9'));
+    const noNine = new PNoNine();
+    const cases: [PNode<any>, unknown, string][] = [
+      [
+        p.map(noNine, digit).adaptive(),
+        new Map([
+          [1, 1],
+          [9, 1],
+        ]),
+        '[1].<key>: Nine',
+      ],
+      [p.map(digit, noNine).adaptive(), new Map([[1, 9]]), '[0]: Nine'],
+      [p.map(p.string(), noNine).adaptive(), new Map([['k', 9]]), 'k: Nine'],
+      [p.record(noNine).adaptive(), { a: 1, b: 9 }, 'b: Nine'],
+      [p.set(noNine).adaptive(), new Set([1, 9]), '[1]: Nine'],
+    ];
+    for (const [node, value, message] of cases) {
+      expect(() => node.decode(node.encode(value))).toThrow(new CorruptInputError(message));
+    }
+  });
+});
+
+describe('Plain collections of adaptive nodes', () => {
+  const word = p.string().adaptive();
+  const digit = p.int().min(0).max(9);
+
+  it('round-trip entries in order and unordered', () => {
+    const map = new Map([
+      ['b', 'x'],
+      ['a', 'y'],
+    ]);
+    expect([...trip(p.map(word, word), map)]).toEqual([...map]);
+    expect([...trip(p.map(word, word).unordered(), map)]).toEqual([
+      ['a', 'y'],
+      ['b', 'x'],
+    ]);
+    expect([
+      ...trip(
+        p.map(digit, word).unordered(),
+        new Map([
+          [5, 'x'],
+          [1, 'y'],
+        ])
+      ),
+    ]).toEqual([
+      [1, 'y'],
+      [5, 'x'],
+    ]);
+    expect([...trip(p.set(word).unordered(), new Set(['b', 'a']))]).toEqual(['a', 'b']);
+    expect(trip(p.record(word), { a: 'x', '': 'y' })).toEqual({ a: 'x', '': 'y' });
+    expect(trip(p.array(p.set(word)), [new Set(['a']), new Set()])).toEqual([
+      new Set(['a']),
+      new Set(),
+    ]);
+  });
+
+  it('locate a key, an item or a value they refuse, written or read', () => {
+    expect(() => p.map(digit.adaptive(), word).encode(new Map([[10, 'a']]))).toThrow(
+      new RangeError('[0].<key>: Value 10 is above the maximum 9')
+    );
+    expect(() => p.record(digit.adaptive()).encode({ a: 10 })).toThrow(
+      new RangeError('a: Value 10 is above the maximum 9')
+    );
+    const noNine = new PNoNine();
+    const cases: [PNode<any>, unknown, string][] = [
+      [p.map(noNine, word), new Map([[9, 'a']]), '[0].<key>: Nine'],
+      [p.map(word, noNine), new Map([['k', 9]]), 'k: Nine'],
+      [p.set(p.object({ n: noNine, s: word })), new Set([{ n: 9, s: 'a' }]), '[0].n: Nine'],
+    ];
+    for (const [node, value, message] of cases) {
+      expect(() => node.decode(node.encode(value))).toThrow(new CorruptInputError(message));
+    }
   });
 });

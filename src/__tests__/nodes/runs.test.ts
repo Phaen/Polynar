@@ -188,10 +188,10 @@ describe('Restricted runs of strings', () => {
     for (const values of [hex, urls]) {
       for (const node of [p.string(), p.string().adaptive()]) {
         const ordered = p.array(node).encode(values);
-        for (const array of [p.array(node).unique(), p.array(node).adaptive().unique()]) {
+        for (const array of [p.array(node).unique(), p.array(node).learn().unique()]) {
           const kept = array.encode(values);
           expect(array.decode(kept)).toEqual(values);
-          // The choice costs at most a bit, and less when learned.
+          // The choice costs at most a bit, and an adaptive item writes none.
           expect(kept.length).toBeLessThanOrEqual(ordered.length + 1);
         }
       }

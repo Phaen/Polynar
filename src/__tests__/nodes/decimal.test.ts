@@ -4,8 +4,8 @@
 
 import { p, Encoder, CorruptInputError } from '../../index';
 import { mulberry32, trip } from '../support';
+import { STRUCT } from '../../predictor/types';
 import { decimalPlaces } from '../../nodes/decimal';
-import { declare, learning } from './declare';
 
 describe('Schema decimal', () => {
   it.each([0, 0.07, 0.29, 3.14, 99.99, 100])(
@@ -353,7 +353,7 @@ describe('p.decimal().adaptive()', () => {
   });
 });
 
-describe('p.decimal learned methods', () => {
+describe('p.decimal learn', () => {
   const plain = p.decimal(0.5).min(0).max(7.5);
   const weights = Array.from({ length: 16 }, (_, i) => (i === 3 ? 61 : 1));
   const run = (length: number, seed: number) => {
@@ -363,7 +363,7 @@ describe('p.decimal learned methods', () => {
 
   it('round-trips a run of values, inside an array too', () => {
     const values = run(300, 1);
-    for (const node of [plain._open(), plain.weights(weights)._open({ window: 16 })]) {
+    for (const node of [plain.learn(), plain.weights(weights).learn({ window: 16 })]) {
       expect(node._radix).toBeUndefined();
       expect(trip(p.array(node), values)).toEqual(values);
       expect(trip(node, values[0])).toEqual(values[0]);
@@ -372,30 +372,26 @@ describe('p.decimal learned methods', () => {
 
   it('takes its weights before or after', () => {
     const values = run(200, 2);
-    expect(p.array(plain.weights(weights)._open({ window: 64 })).encode(values)).toEqual(
-      p.array(plain._open({ window: 64 }).weights(weights)).encode(values)
+    expect(p.array(plain.weights(weights).learn({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.learn({ window: 64 }).weights(weights)).encode(values)
     );
   });
 
-  it('learns a skew, its mode symbols at most a twentieth over the static prior of it', () => {
+  it('learns a skew, staying near the static prior of it', () => {
     const values = run(2000, 3);
     const size = (node: typeof plain) => p.array(node).encode(values).length;
-    expect(size(plain._open())).toBeLessThan(size(plain));
-    expect(size(plain.weights(weights)._open())).toBeLessThanOrEqual(
+    expect(size(plain.learn())).toBeLessThan(size(plain));
+    expect(size(plain.weights(weights).learn())).toBeLessThanOrEqual(
       Math.ceil(size(plain.weights(weights)) * 1.05)
     );
   });
 
-  it('written once, spends the bytes of its static form', () => {
-    for (const value of run(20, 4)) {
-      // Unweighted, the static form is a uniform slot and the learned one an
-      // equal-weight bucket, which ends the message in bit-reversed order:
-      // the same states, in another order.
-      expect(plain._open().encode(value)).toHaveLength(plain.encode(value).length);
-      expect(plain.weights(weights)._open().encode(value)).toEqual(
-        plain.weights(weights).encode(value)
-      );
-    }
+  it('takes its learning options, once', () => {
+    const values = run(200, 4);
+    expect(p.array(plain.learn({ window: 8 })).encode(values)).not.toEqual(
+      p.array(plain.learn()).encode(values)
+    );
+    expect(() => plain.learn().learn()).toThrow(new TypeError('p.decimal learn is already set'));
   });
 
   it('refuses bad options', () => {
@@ -405,113 +401,59 @@ describe('p.decimal learned methods', () => {
     expect(() => plain.learn({ window: 1.5 })).toThrow(
       new TypeError('p.decimal learning window must be a positive integer, got 1.5')
     );
-    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)])._open()).toThrow(
+    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)]).learn()).toThrow(
       new RangeError(
         'p.decimal adaptive prior 32 and window 1024 overflow with weights totalling 35184372088847'
       )
     );
     const cdf = new TypeError('p.decimal learn takes weights, not a cdf');
-    expect(() => plain.cdf((v) => v)._open()).toThrow(cdf);
-    expect(() => plain._open().cdf((v) => v)).toThrow(cdf);
-  });
-});
-
-describe('p.decimal methods', () => {
-  const prices = [9.99, 10.01, 10.05, 10.02, 9.97, 10.01];
-
-  it('spells each price after the first as its difference in steps', () => {
-    const walk = Array.from({ length: 100 }, (_, i) => 10 + (i % 5) / 100);
-    const node = p.array(declare(p.decimal(0.01).min(0).max(100), 'delta'));
-    const bytes = node.encode(walk);
-    const plain = p.array(p.decimal(0.01).min(0).max(100)).encode(walk);
-    expect(bytes.length).toBeLessThan(plain.length / 2);
-    expect(node.decode(bytes)).toEqual(walk);
-    const short = p.array(declare(p.decimal(0.01).min(0).max(100), 'delta')).length(prices.length);
-    expect(short.decode(short.encode(prices))).toEqual(prices);
+    expect(() => plain.cdf((v) => v).learn()).toThrow(cdf);
+    expect(() => plain.learn().cdf((v) => v)).toThrow(cdf);
   });
 
-  it('round-trips with delta, recall and open methods on any grid', () => {
-    const random = mulberry32(21);
-    const values = Array.from({ length: 300 }, () => Math.round(random() * 40) / 4 - 3);
-    for (const node of [
-      declare(p.decimal(0.25), 'delta'),
-      declare(p.decimal(0.25).min(-5), 'delta', 'recall'),
-      declare(p.decimal(0.25), 'recall'),
-      p.decimal(0.25)._open(),
-      declare(p.decimal(0.25).max(100)._open(), 'recall'),
-      declare(p.decimal(0.25).min(-5).max(10)._open(), 'delta'),
-    ]) {
-      expect(trip(p.array(node), values)).toEqual(values);
-    }
-    const fives = values.map((v) => Math.round(v) * 5 + 0);
-    expect(trip(p.array(p.decimal(5)._open()), fives)).toEqual(fives);
+  it('learns on the magnitude scale over an unbounded grid', () => {
+    const values = [0.25, -3, 1000.5, 0.25, 7];
+    expect(trip(p.array(p.decimal(0.25).learn()), values)).toEqual(values);
+    expect(trip(p.array(p.decimal(0.25).min(-3).learn()), values)).toEqual(values);
+    expect(trip(p.array(p.decimal(0.25).max(1000.5).learn()), values)).toEqual(values);
+    expect(trip(p.array(p.decimal(5).learn()), [10, -15, 0, 10])).toEqual([10, -15, 0, 10]);
   });
 
-  it('carries its methods through every rebuild, set once, without weights', () => {
-    const declared = p.array(declare(p.decimal(0.5).min(0).max(9), 'delta', 'recall'));
-    const values = [1.5, 2, 1.5, 9];
-    for (const node of [
-      declare(p.decimal(0.5), 'delta', 'recall').min(0).max(9),
-      declare(p.decimal(0.5).max(9), 'recall', 'delta').min(0),
-    ]) {
-      expect(p.array(node).encode(values)).toEqual(declared.encode(values));
-    }
-    expect(declare(p.decimal(0.5).min(0).max(9), 'delta')._radix).toBeUndefined();
-    expect(declare(p.decimal(0.5).min(0).max(9), 'recall')._fromDigit).toBeUndefined();
-    expect(() => declare(p.decimal(0.5), 'delta', 'delta')).toThrow(
-      new TypeError('p.decimal delta is already set')
-    );
-    expect(() => declare(p.decimal(0.5), 'recall', 'recall')).toThrow(
-      new TypeError('p.decimal recall is already set')
-    );
-    expect(() => declare(p.decimal(0.5).min(0).max(0.5).weights([1, 1]), 'delta')).toThrow(
-      new TypeError('p.decimal delta takes no weights')
-    );
-    expect(() => declare(p.decimal(0.5).min(0).max(0.5), 'delta').cdf((v) => v)).toThrow(
-      new TypeError('p.decimal delta takes no cdf')
+  it('refuses a value off the grid before learning from it', () => {
+    expect(() => plain.learn().encode(0.25)).toThrow(
+      new RangeError('Value 0.25 is not a multiple of step 0.5')
     );
   });
 
   it('reads a step multiple whose product rounds as corrupt', () => {
-    // A difference far past the grid's exact range lands off the step.
     const bytes = p
-      .array(declare(p.int(), 'delta'))
+      .array(p.int().learn())
       .length(2)
       .encode([0, 2 ** 52 + 1]);
-    expect(() =>
-      p
-        .array(declare(p.decimal(3), 'delta'))
-        .length(2)
-        .decode(bytes)
-    ).toThrow(CorruptInputError);
+    expect(() => p.array(p.decimal(3).learn()).length(2).decode(bytes)).toThrow(CorruptInputError);
   });
 });
 
-describe('p.decimal learn', () => {
-  const plain = p.decimal(0.5).min(0).max(7.5);
-  const run = (length: number, seed: number) => {
-    const rnd = mulberry32(seed);
-    return Array.from({ length }, () => (rnd() < 0.8 ? 1.5 : Math.floor(rnd() * 16) / 2));
-  };
-
-  it('round-trips a seeded run on its own', () => {
-    const values = run(300, 5);
-    expect(trip(p.array(plain.learn()), values)).toEqual(values);
+describe('p.decimal methods', () => {
+  it('refuses learn beside adaptive, either order', () => {
+    const both = new TypeError('p.decimal learn and adaptive cannot both be set');
+    expect(() => p.decimal(0.5).adaptive().learn()).toThrow(both);
+    expect(() => p.decimal(0.5).learn().adaptive()).toThrow(both);
   });
 
-  it('round-trips with its methods declared beside it', () => {
-    const values = run(300, 6);
-    expect(trip(p.array(declare(plain.learn(), 'delta', 'recall')), values)).toEqual(values);
+  it('keeps a learner or an adaptive node as it is under a container sugar', () => {
+    const learner = p.decimal(0.5).min(0).max(9).learn();
+    const adaptive = p.decimal(0.5).adaptive({ window: 8 });
+    expect(learner._adapted({})).toBe(learner);
+    expect(adaptive._adapted({ window: 16 })).toBe(adaptive);
+    const plain = p.decimal(0.5).min(0).max(9);
+    const adapted = plain._adapted({ window: 16 });
+    expect(adapted).not.toBe(plain);
+    expect(adapted._adaptive).toEqual({ window: 16 });
   });
 
-  it('takes its learning options with it, once', () => {
-    const values = run(200, 7);
-    expect(p.array(plain.learn({ window: 8 })).encode(values)).toEqual(
-      p.array(learning(plain.learn(), { window: 8 })).encode(values)
-    );
-    expect(p.array(learning(plain, { window: 8 })._open()).encode(values)).toEqual(
-      p.array(plain._open({ window: 8 })).encode(values)
-    );
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.decimal learn is already set'));
+  it('names the integer marker, its only one', () => {
+    expect(p.decimal(0.5)._marker()).toBe(STRUCT.INT);
+    expect(p.decimal(0.5)._markers()).toEqual(new Set([STRUCT.INT]));
   });
 });

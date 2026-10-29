@@ -10,6 +10,7 @@ import { COST_UNITS } from '../../packer';
 import { MIXED, SHAPE_COUNT, SHAPE_WEIGHTS, shapesOf } from '../../nodes/shape';
 import { buildWeights } from '../../nodes/weights';
 import { mulberry32, trip } from '../support';
+import { STRUCT } from '../../predictor/types';
 
 /** The size comparison's lorem ipsum, from examples/size-comparison.ts. */
 const LOREM_IPSUM =
@@ -555,5 +556,21 @@ describe('p.string().adaptive()', () => {
         expect(error instanceof CorruptInputError || error instanceof RangeError).toBe(true);
       }
     }
+  });
+});
+
+describe('p.string methods', () => {
+  it('adapts under a container sugar unless it adapts already', () => {
+    const adaptive = p.string().adaptive({ window: 8 });
+    expect(adaptive._adapted({ window: 16 })).toBe(adaptive);
+    const plain = p.string();
+    const adapted = plain._adapted({ window: 16 });
+    expect(adapted).not.toBe(plain);
+    expect(adapted._adaptive).toEqual({ window: 16 });
+  });
+
+  it('names the string marker, its only one', () => {
+    expect(p.string()._marker()).toBe(STRUCT.STR);
+    expect(p.string()._markers()).toEqual(new Set([STRUCT.STR]));
   });
 });

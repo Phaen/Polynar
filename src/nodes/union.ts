@@ -1,11 +1,16 @@
-import { Encoder, Decoder } from '../packer';
-import { PNode } from './base';
+import { Encoder, Decoder, CorruptInputError } from '../packer';
+import { resolve } from '../predictor/options';
+import { Priors } from '../predictor/prior';
+import { session, type MarkerPrior } from '../predictor/session';
+import type { AdaptiveOptions, Resolved } from '../predictor/types';
+import { PNode, adapt } from './base';
 import { kindOf, type Kind } from './guards';
 import { describe, oneOf } from './path';
 import type { LearningOptions } from './adaptive';
 import { checkUnset } from './lattice';
 import { members, type MemberPrior, type Members } from './members';
-import { MethodNode, PRIOR_METHODS, learningOf, type MethodSet } from './methods';
+import { kindMarker, markerPrior, ownMarker, readOwnMarker, unionOf } from './markers';
+import { MethodNode, learningOf, type MethodSet } from './methods';
 
 /**
  * Union: one of several member nodes, picked by the value's JS kind
@@ -21,9 +26,11 @@ export class PUnion<T> extends MethodNode<T> {
   private readonly _byKind = new Map<Kind, number>();
   /** The prior as declared, for the rebuilds. */
   private readonly _prior?: MemberPrior;
-  readonly _methodNames = PRIOR_METHODS;
   /** How the member a value goes to is spelled. */
   private readonly _pick: Members;
+  readonly _adaptive?: AdaptiveOptions;
+  /** Under `.adaptive()`: the options the member's symbol codes under. */
+  private readonly _resolved?: Resolved;
 
   constructor(
     nodes: readonly PNode<any>[],
@@ -57,6 +64,10 @@ export class PUnion<T> extends MethodNode<T> {
       { ...prior, learn: learningOf(_methods) },
       'p.union'
     );
+    this._adaptive = _methods.adaptive;
+    if (this._adaptive !== undefined) {
+      this._resolved = resolve(this._adaptive, Priors.text, 'p.union');
+    }
   }
 
   /**
@@ -74,35 +85,81 @@ export class PUnion<T> extends MethodNode<T> {
    * when none are, are where it starts, and each member coded counts as one
    * observation, so a member that keeps recurring gets cheaper as the message
    * goes on. From its second value on, the node spends one bit to stay static,
-   * or a few to name the learning rate that paid off. Part of the wire format,
-   * like the weights.
+   * or a few to name the learning rate that paid off. `window` is how many
+   * observations the counts hold before they halve, so the newest weigh most
+   * (1024 when left out, and raised to the number of values counted when
+   * smaller), and `separate` keeps it from starting where other nodes of its
+   * kind and window got to. Part of the wire format, like the weights. Not
+   * with `.adaptive()`.
    */
-  learn(): PUnion<T> {
-    return this._declare('learn', 'p.union');
+  learn(options?: LearningOptions): PUnion<T> {
+    return this._declare('learn', 'p.union', options);
   }
 
   /**
-   * What the node's learning goes by: `window` is how many observations the
-   * counts hold before they halve, so the newest weigh most (1024 when left
-   * out, and raised to the number of values counted when smaller), and
-   * `separate` keeps it from starting where other nodes of its kind and window
-   * got to. Set once; it applies once something learns.
+   * Code which member takes the value through the similarity predictor, as
+   * the value's first symbol in the structure around it (its kind), with the
+   * weights as prior counts, and each member as under its own
+   * `.adaptive(options)` unless it has `.adaptive()` or `.learn()` already.
+   * Not with `.learn()`. Set once.
    */
-  learning(options: LearningOptions): PUnion<T> {
-    return this._learning(options, 'p.union');
+  adaptive(options?: AdaptiveOptions): PUnion<T> {
+    return this._sugar(options, 'p.union');
   }
 
-  /** Learn with every method the node has, here `.learn()`, under `options` as `.learning()` takes them. */
-  adaptive(options?: LearningOptions): PUnion<T> {
-    return this._adapt(options, 'p.union');
+  _adapted(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PUnion<T> {
+    if (this._keeps()) {
+      return this;
+    }
+    const nodes = this._members.map((member) => adapt(member, options, memo));
+    return new PUnion<T>(nodes, this._prior, { ...this._methods, adaptive: options });
+  }
+
+  get _holdsAdaptive(): boolean {
+    return this._adaptive !== undefined || this._members.some((member) => member._holdsAdaptive);
+  }
+
+  _marker(value: unknown): number {
+    const pos = this._byKind.get(kindOf(value));
+    return pos === undefined ? kindMarker(value) : this._members[pos]._marker(value);
+  }
+
+  _markers(): ReadonlySet<number> | undefined {
+    return unionOf(this._members);
+  }
+
+  _markerPrior(): MarkerPrior | undefined {
+    return this._adaptive === undefined
+      ? undefined
+      : markerPrior(
+          this,
+          this._prior?.weights,
+          this._members.map((member) => member._markers())
+        );
+  }
+
+  /** The members that may spell `sym` first, in list order. */
+  private _matching(sym: number): number[] {
+    const out: number[] = [];
+    this._members.forEach((member, i) => {
+      if (member._markers()?.has(sym) !== false) out.push(i);
+    });
+    return out;
+  }
+
+  /** The step naming one of `matched`, the members that may spell `sym` first. */
+  private _among(side: Encoder | Decoder, sym: number, matched: readonly number[]) {
+    const weights = this._prior?.weights;
+    return session(side).step(
+      [this, sym],
+      this._resolved as Resolved,
+      matched.length,
+      weights === undefined ? undefined : matched.map((i) => weights[i])
+    );
   }
 
   _withMethods(methods: MethodSet): PUnion<T> {
     return new PUnion<T>(this._members, this._prior, methods);
-  }
-
-  get _exact(): boolean {
-    return this._members.every((member) => member._exact);
   }
 
   _write(enc: Encoder, value: T): void {
@@ -111,11 +168,34 @@ export class PUnion<T> extends MethodNode<T> {
     if (pos === undefined) {
       throw new TypeError(`Kind ${describe(kind)} is not ${oneOf(this._kinds)}`);
     }
-    this._pick.write(enc, pos);
-    this._members[pos]._write(enc, value);
+    const member = this._members[pos];
+    if (this._resolved === undefined) {
+      this._pick.write(enc, pos);
+      member._write(enc, value);
+      return;
+    }
+    const sym = ownMarker(enc, this, this._resolved, member._marker(value));
+    const matched = this._matching(sym);
+    if (matched.length > 1) {
+      this._among(enc, sym, matched).write(enc, matched.indexOf(pos));
+    }
+    session(enc).give(sym, member);
+    member._write(enc, value);
   }
 
   _read(dec: Decoder): T {
-    return this._members[this._pick.read(dec)]._read(dec);
+    if (this._resolved === undefined) {
+      return this._members[this._pick.read(dec)]._read(dec);
+    }
+    const sym = readOwnMarker(dec, this, this._resolved);
+    const matched = this._matching(sym);
+    if (matched.length === 0) {
+      throw new CorruptInputError(`p.union has no member for structure symbol ${sym}`);
+    }
+    const pos =
+      matched.length === 1 ? matched[0] : matched[this._among(dec, sym, matched).read(dec)];
+    const member = this._members[pos];
+    session(dec).give(sym, member);
+    return member._read(dec);
   }
 }

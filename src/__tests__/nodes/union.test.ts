@@ -2,7 +2,8 @@
  * `p.union()`: one member per JS kind, picked by the value's kind.
  */
 
-import { p, PNode, Encoder, Decoder } from '../../index';
+import { p, PNode, Encoder, Decoder, CorruptInputError } from '../../index';
+import { STRUCT } from '../../predictor/types';
 import { mulberry32, trip } from '../support';
 
 describe('Schema union', () => {
@@ -108,19 +109,155 @@ describe('Schema union', () => {
   });
 });
 
-describe('p.union adaptive', () => {
+/** A string member that declares no structure symbols, so it may spell any first. */
+class PLoose extends PNode<string> {
+  readonly _kinds = ['string'];
+  _write(enc: Encoder, value: string): void {
+    p.string()._write(enc, value);
+  }
+  _read(dec: Decoder): string {
+    return p.string()._read(dec);
+  }
+}
+
+/** A number member that declares no structure symbols either. */
+class PLooseInt extends PNode<number> {
+  readonly _kinds = ['number'];
+  _write(enc: Encoder, value: number): void {
+    p.int()._write(enc, value);
+  }
+  _read(dec: Decoder): number {
+    return p.int()._read(dec);
+  }
+}
+
+describe('p.union structure symbols', () => {
+  it('spells a value as the member that takes its kind, by kind when none does', () => {
+    const node = p.union([p.int(), p.bool(), p.string()]);
+    expect([node._marker(5), node._marker(false), node._marker('x')]).toEqual([
+      STRUCT.INT,
+      STRUCT.FALSE,
+      STRUCT.STR,
+    ]);
+    expect(node._marker(null)).toBe(STRUCT.NULL);
+    expect(node._marker([])).toBe(STRUCT.ARR_START);
+    expect(node._markers()).toEqual(new Set([STRUCT.INT, STRUCT.TRUE, STRUCT.FALSE, STRUCT.STR]));
+    expect(p.union([p.int(), new PLoose()])._markers()).toBeUndefined();
+    expect(node._markerPrior()).toBeUndefined();
+  });
+
+  it('weighs each member over the symbols it spells first', () => {
+    expect(p.union([p.int(), p.bool()]).weights([2, 2]).adaptive()._markerPrior()?.counts).toEqual([
+      [STRUCT.INT, 24],
+      [STRUCT.TRUE, 12],
+      [STRUCT.FALSE, 12],
+    ]);
+  });
+
+  it('holds adaptive coding when it or a member codes adaptively', () => {
+    expect(p.union([p.int(), p.bool()])._holdsAdaptive).toBe(false);
+    expect(p.union([p.int(), p.bool().adaptive()])._holdsAdaptive).toBe(true);
+    expect(p.union([p.int(), p.bool()]).adaptive()._holdsAdaptive).toBe(true);
+  });
+});
+
+describe('p.union learn', () => {
   const plain = p.union([p.int().min(0).max(3), p.string().max(3)]);
-  const weights = [9, 1];
+  const values = (() => {
+    const rnd = mulberry32(5);
+    return Array.from({ length: 300 }, () => (rnd() < 0.9 ? Math.floor(rnd() * 4) : 'x'));
+  })();
+
+  it('round-trips a run, learning the skew under its options', () => {
+    for (const node of [plain.learn(), plain.learn({ window: 8 }), plain.weights([9, 1]).learn()]) {
+      expect(trip(p.array(node), values)).toEqual(values);
+    }
+    expect(p.array(plain.learn()).encode(values)).not.toEqual(p.array(plain).encode(values));
+  });
+
+  it('sets each method once, and not both', () => {
+    expect(() => plain.learn().learn()).toThrow(new TypeError('p.union learn is already set'));
+    expect(() => plain.learn().adaptive()).toThrow(
+      new TypeError('p.union learn and adaptive cannot both be set')
+    );
+    expect(() => plain.adaptive().learn()).toThrow(
+      new TypeError('p.union learn and adaptive cannot both be set')
+    );
+    expect(() => plain.adaptive().adaptive()).toThrow(
+      new TypeError('p.union adaptive is already set')
+    );
+  });
+
+  it('refuses bad options', () => {
+    expect(() => plain.learn({ window: 0 })).toThrow(
+      new RangeError('p.union learning window must be a positive integer, got 0')
+    );
+  });
+});
+
+describe('p.union adaptive', () => {
+  const plain = p.union([p.int().min(0).max(3), p.string().max(3), p.bool()]);
+  const weights = [9, 1, 1];
   const run = (length: number, seed: number) => {
     const rnd = mulberry32(seed);
-    return Array.from({ length }, () => (rnd() < 0.9 ? Math.floor(rnd() * 4) : 'x'));
+    return Array.from({ length }, () => {
+      const r = rnd();
+      return r < 0.7 ? Math.floor(r * 5) : r < 0.85 ? 'x' : r < 0.95;
+    });
   };
 
-  it('round-trips a run of values, inside an array too', () => {
-    const values = run(300, 1);
+  it('round-trips a run alone, in a plain array and in an adaptive object', () => {
+    const values = run(200, 1);
     for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 8 })]) {
+      for (const value of values.slice(0, 20)) expect(trip(node, value)).toBe(value);
       expect(trip(p.array(node), values)).toEqual(values);
-      expect(trip(node, values[0])).toEqual(values[0]);
+    }
+    const Row = p.object({ v: plain, w: p.union([p.null(), p.date()]) });
+    const rows = values.map((v, i) => ({ v, w: i % 3 === 0 ? null : new Date(i * 1000) }));
+    expect(trip(p.array(Row.adaptive()), rows)).toEqual(rows);
+    expect(trip(p.array(Row).adaptive(), rows)).toEqual(rows);
+  });
+
+  it('names the member among those that may spell the same symbol', () => {
+    const rnd = mulberry32(7);
+    const values = Array.from({ length: 150 }, () => (rnd() < 0.6 ? 'ab' : Math.floor(rnd() * 50)));
+    const loose = p.union([new PLoose(), new PLooseInt()]);
+    for (const node of [loose.adaptive(), loose.weights([3, 1]).adaptive()]) {
+      expect(trip(p.array(node), values)).toEqual(values);
+      expect(trip(p.array(node).adaptive(), values)).toEqual(values);
+      expect(trip(node, 'ab')).toBe('ab');
+    }
+  });
+
+  it('refuses a structure symbol no member spells on decode', () => {
+    const written = p.union([p.int(), p.string()]).adaptive().encode(5);
+    const reader = p.union([p.string(), p.bool()]).adaptive();
+    expect(() => reader.decode(written)).toThrow(
+      new CorruptInputError(`p.union has no member for structure symbol ${STRUCT.INT}`)
+    );
+  });
+
+  it('adapts its members unless they learn or adapt already', () => {
+    const learning = p.bool().learn();
+    const node = p.union([p.int(), learning]).adaptive();
+    const values = [1, true, 2, false, true];
+    expect(trip(p.array(node), values)).toEqual(values);
+    const kept = p.union([p.int(), p.bool()]).learn();
+    expect(kept._adapted({}, new Map())).toBe(kept);
+    expect(trip(p.object({ v: kept }).adaptive(), { v: true })).toEqual({ v: true });
+  });
+
+  it('takes its weights as prior counts of its members’ symbols', () => {
+    const ints = Array<number>(12).fill(1);
+    const size = (w: number[], parent: boolean) => {
+      const node = p.union([p.int().min(0).max(3), p.string()]).weights(w);
+      const list = parent
+        ? p.array(node).length(12).adaptive()
+        : p.array(node.adaptive()).length(12);
+      return list.encode(ints).length;
+    };
+    for (const parent of [false, true]) {
+      expect(size([30, 1], parent)).toBeLessThan(size([1, 30], parent));
     }
   });
 
@@ -131,63 +268,12 @@ describe('p.union adaptive', () => {
     );
   });
 
-  it('learns a skew, at most a byte over the static prior of it', () => {
-    const values = run(2000, 3);
-    const size = (node: typeof plain) => p.array(node).encode(values).length;
-    expect(size(plain.adaptive())).toBeLessThan(size(plain));
-    expect(size(plain.weights(weights).adaptive())).toBeLessThanOrEqual(
-      size(plain.weights(weights)) + 1
-    );
-  });
-
-  it('written once, spends the bytes of its static form', () => {
-    for (const value of run(20, 4)) {
-      expect(plain.adaptive().encode(value)).toEqual(plain.encode(value));
-      expect(plain.weights(weights).adaptive().encode(value)).toEqual(
-        plain.weights(weights).encode(value)
-      );
-    }
-  });
-
-  it('learns by `.learn()`, spending what `.adaptive()` does', () => {
-    const values = run(300, 5);
-    const size = (node: typeof plain) => p.array(node).encode(values);
-    expect(size(plain.learn())).toEqual(size(plain.adaptive()));
-    expect(size(plain.weights(weights).learn())).toEqual(size(plain.weights(weights).adaptive()));
-    expect(size(plain.learn().weights(weights))).toEqual(size(plain.weights(weights).adaptive()));
-    expect(size(plain.learning({ window: 8 }).learn())).toEqual(
-      size(plain.adaptive({ window: 8 }))
-    );
-    expect(size(plain.learn())).not.toEqual(size(plain));
-  });
-
-  it('sets its learning once and each method once', () => {
-    expect(() => plain.learning({}).learning({})).toThrow(
-      new TypeError('p.union learning is already set')
-    );
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.union learn is already set'));
-    expect(() => plain.learning({ window: 8 }).adaptive({ window: 8 })).toThrow(
-      new TypeError('p.union learning is already set')
-    );
-    expect(() => plain.adaptive({ window: 8 }).learning({ window: 8 })).toThrow(
-      new TypeError('p.union learning is already set')
-    );
-  });
-
   it('refuses bad options', () => {
     expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.union learning window must be a positive integer, got 0')
-    );
-    expect(() => plain.adaptive({ window: 1.5 })).toThrow(
-      new TypeError('p.union learning window must be a positive integer, got 1.5')
-    );
-    expect(() => plain.weights([2 ** 45, 2 ** 45]).adaptive()).toThrow(
-      new RangeError(
-        'p.union adaptive prior 4 and window 1024 overflow with weights totalling 70368744177664'
-      )
+      new RangeError('p.union: adaptive window must be at least 1')
     );
     expect(() => plain.adaptive().weights([1])).toThrow(
-      new TypeError('p.union weights must list one weight per value: expected 2, got 1')
+      new TypeError('p.union weights must list one weight per value: expected 3, got 1')
     );
   });
 });

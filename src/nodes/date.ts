@@ -1,13 +1,15 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { isDate, type Kind } from './guards';
 import { describe } from './path';
-import { INDEX_METHODS, IndexMethods, IndexRange, checkUnset } from './lattice';
+import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 import type { LearningOptions } from './adaptive';
 import { learningOf, learns, MethodNode, type MethodSet } from './methods';
 import { checkAdaptive, resolve } from '../predictor/options';
 import { Priors } from '../predictor/prior';
-import type { AdaptiveOptions } from '../predictor/types';
+import { STRUCT, type AdaptiveOptions } from '../predictor/types';
+
+const DATE_MARKERS: ReadonlySet<number> = new Set([STRUCT.DATE]);
 
 export type DateUnit =
   | 'millisecond'
@@ -143,8 +145,6 @@ export class PDate extends MethodNode<Date> {
   private readonly _range: IndexRange;
   /** The methods the node has, declared or open. */
   readonly _methods: MethodSet;
-  readonly _methodNames = INDEX_METHODS;
-  private readonly _coding: IndexMethods;
   declare readonly _radix?: number;
   /** The options `.adaptive()` set, which hand the bucket indices to the predictor. */
   readonly _adaptive?: AdaptiveOptions;
@@ -198,12 +198,11 @@ export class PDate extends MethodNode<Date> {
         : { path: this, options: resolve(adaptive, Priors.text, 'p.date') }
     );
     this._methods = methods;
-    this._coding = new IndexMethods(this._range, methods, 'p.date');
     // Bucket starts rise with the index and none starts after its bound,
     // which lies within the Date range, and the first bucket reads as the
     // earliest Date, so with a min reading a digit cannot fail.
     const fromDigit = this._range.fromDigit;
-    if (this._coding.plain && lo !== undefined && fromDigit !== undefined) {
+    if (lo !== undefined && fromDigit !== undefined) {
       this._radix = this._range.radix;
       this._fromDigit = (digit) => new Date(this._start(fromDigit(digit)));
       const toDigit = this._range.toDigit;
@@ -226,7 +225,7 @@ export class PDate extends MethodNode<Date> {
 
   /** Coarsen to buckets of `step` UTC calendar units. */
   precision(unit: DateUnit, step = 1): PDate {
-    checkUnset(this._exact ? undefined : this._unit, 'p.date', 'precision');
+    checkUnset(this._millis ? undefined : this._unit, 'p.date', 'precision');
     return this._with({ unit, step });
   }
 
@@ -269,8 +268,7 @@ export class PDate extends MethodNode<Date> {
     if (this._adaptive !== undefined) {
       throw new TypeError('p.date learn and adaptive cannot both be set');
     }
-    const node = this._declare('learn', 'p.date');
-    return options === undefined ? node : node._learning(options, 'p.date');
+    return this._declare('learn', 'p.date', options);
   }
 
   /**
@@ -291,18 +289,30 @@ export class PDate extends MethodNode<Date> {
     return this._with({ adaptive: checkAdaptive(options, 'p.date') });
   }
 
+  _adapted(options: AdaptiveOptions): PDate {
+    return this._adaptive !== undefined || learns(this._methods) ? this : this.adaptive(options);
+  }
+
+  _marker(): number {
+    return STRUCT.DATE;
+  }
+
+  _markers(): ReadonlySet<number> {
+    return DATE_MARKERS;
+  }
+
   /** This node with `methods` in place of its own. */
   _withMethods(methods: MethodSet): PDate {
     return this._with({ methods });
   }
 
-  /** Only to the millisecond: a coarser bucket reads back as its start. */
-  get _exact(): boolean {
+  /** Whether the node keeps every millisecond, as before `.precision()`. */
+  private get _millis(): boolean {
     return this._unit === 'millisecond' && this._step === 1;
   }
 
   _write(enc: Encoder, value: Date): void {
-    this._coding.write(enc, this._bucket(value), () => `Date ${value.toISOString()}`);
+    this._range.writeValue(enc, this._bucket(value), () => `Date ${value.toISOString()}`);
   }
 
   /** The bucket of `value`, refused when it is invalid or the decoder could not rebuild it. */
@@ -323,7 +333,7 @@ export class PDate extends MethodNode<Date> {
   }
 
   _read(dec: Decoder): Date {
-    const bucket = this._coding.read(dec);
+    const bucket = this._range.readValue(dec);
     const date = new Date(this._start(bucket));
     // A bucket starting beyond the ±8.64e15 ms Date range can only come from
     // a corrupted input or from a bucket that straddles the range's edge.

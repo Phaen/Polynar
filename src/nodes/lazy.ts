@@ -1,5 +1,7 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
-import { PNode } from './base';
+import { PNode, adapt } from './base';
+import { session, type MarkerPrior } from '../predictor/session';
+import type { AdaptiveOptions } from '../predictor/types';
 import { MAX_DEPTH } from './any';
 import { unlocated } from './path';
 
@@ -53,12 +55,50 @@ export class PLazy<T> extends PNode<T> {
     return this._target._takesUndefined();
   }
 
+  /** The target under a container's `.adaptive()`, resolved on first use like the target. */
+  _adapted(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PLazy<T> {
+    const out = new PLazy<T>(() => adapt(this._target, options, memo));
+    // Filled before the target adapts, so a cycle back here ends at `out`.
+    memo.set(this, out);
+    return out;
+  }
+
+  /** True, as the target is not known before first use. */
+  get _holdsAdaptive(): boolean {
+    return true;
+  }
+
+  _marker(value: unknown): number {
+    return this._target._marker(value);
+  }
+
+  _markers(): ReadonlySet<number> | undefined {
+    return this._target._markers();
+  }
+
+  _markerPrior(): MarkerPrior | undefined {
+    return this._target._markerPrior();
+  }
+
   _write(enc: Encoder, value: T): void {
-    this._nest(enc, () => this._target._write(enc, value));
+    this._nest(enc, () => {
+      this._pass(enc);
+      this._target._write(enc, value);
+    });
   }
 
   _read(dec: Decoder): T {
-    return this._nest(dec, () => this._target._read(dec));
+    return this._nest(dec, () => {
+      this._pass(dec);
+      return this._target._read(dec);
+    });
+  }
+
+  /** Hands the structure symbol coded for this node on to the target, where one was. */
+  private _pass(side: Encoder | Decoder): void {
+    const s = session(side);
+    const sym = s.take(this);
+    if (sym >= 0) s.give(sym, this._target);
   }
 
   /** Runs `code` one lazy reference deeper, refusing past `MAX_DEPTH`. */
