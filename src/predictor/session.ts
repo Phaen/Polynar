@@ -17,7 +17,7 @@
 
 import type { Decoder, Encoder } from '../packer';
 import { CorruptInputError } from '../packer/errors';
-import { log2Fix } from './arith';
+import { div, log2Fix } from './arith';
 import { Ids } from './alphabet';
 import { NumberCoder, NumberState } from './numbers';
 import type { NumberRange, PlainNumber, RecordEntry } from './numbers';
@@ -29,6 +29,7 @@ import type { Frozen } from './tables';
 import { END, ESCAPE } from './types';
 import type { AlphabetKind, Ends, LoadedPrior, PathKey, Resolved, RunPrior } from './types';
 import { MemberStep, VSTEP_N } from './values';
+import type { Occurrences, RecordView } from './values';
 import { newRunPrior } from './weights';
 
 export type { Features, Sink, Source, Table } from './symbols';
@@ -78,8 +79,9 @@ export interface Bound {
 }
 
 /**
- * A choice node's declared weights as prior counts of the structure symbols it is coded by,
- * loaded once per (`key`, population) on first use.
+ * A choice node's declared weights as prior counts of the structure symbols it is coded by, each at
+ * least 1, loaded once per (`key`, population) on first use, scaled up to the built-in's counts of
+ * the same symbols where those are larger.
  */
 export interface MarkerPrior {
   readonly key: object;
@@ -182,6 +184,11 @@ export class Space implements MessageCore {
     this.builtin = frozen(prior, this.ids);
   }
 
+  /** The built-in population's order-0 count of symbol id `sym`. */
+  builtinCount(sym: number): number {
+    return this.builtin.tab.count(0, sym);
+  }
+
   pathState(key: PathKey, o: Resolved): PathState {
     return this.paths.get(key, () => newPathState(o, this.features));
   }
@@ -266,7 +273,13 @@ export class Space implements MessageCore {
   }
 }
 
-export class Session {
+/** One record's value-step pairs in coding order: the step and the id of each. */
+interface RecordPairs {
+  readonly steps: Occurrences[];
+  readonly ids: number[];
+}
+
+export class Session implements RecordView {
   readonly features: Features;
   readonly valueFromSecond: boolean;
   /** The current item's index in the innermost list, −1 outside a list. */
@@ -274,6 +287,11 @@ export class Session {
   private readonly lists: number[] = [];
   /** The open records, innermost last: the numbers coded in each so far. */
   private readonly records: RecordEntry[][] = [];
+  /** Every record's value-step pairs, by record id. */
+  private readonly recordPairs: RecordPairs[] = [];
+  /** The open records' ids and, per open record, its pairs by step, innermost last. */
+  private readonly openRecords: number[] = [];
+  private readonly openPairs: Map<Occurrences, Set<number>>[] = [];
   private readonly spaces = new Map<LoadedPrior, Space>();
   private first: Space | null = null;
   /** The open containers, innermost last; null for a container off the predictor. */
@@ -373,15 +391,54 @@ export class Session {
    */
   enterRecord(): void {
     this.records.push([]);
+    this.openRecords.push(this.recordPairs.length);
+    this.recordPairs.push({ steps: [], ids: [] });
+    this.openPairs.push(new Map());
   }
 
   /** Closes the innermost record; its numbers join the enclosing record's. */
   leaveRecord(): void {
+    this.openRecords.pop();
+    this.openPairs.pop();
     const frame = this.records.pop();
     const outer = this.records[this.records.length - 1];
     if (frame !== undefined && outer !== undefined) {
       for (const e of frame) outer.push(e);
     }
+  }
+
+  /** The innermost open record's id, −1 outside every record. */
+  get current(): number {
+    const n = this.openRecords.length;
+    return n === 0 ? -1 : this.openRecords[n - 1];
+  }
+
+  agreement(rec: number, ri: number): number {
+    const held = this.openPairs[this.openPairs.length - 1];
+    const { steps, ids } = this.recordPairs[rec];
+    let a = 0;
+    for (let i = 0; i < ri; i++) {
+      if (held.get(steps[i])?.has(ids[i]) === true) a += steps[i].info(ids[i]);
+    }
+    return a;
+  }
+
+  pair(step: Occurrences, id: number): readonly [number, number] {
+    const rec = this.current;
+    if (rec < 0) {
+      return OUTSIDE;
+    }
+    const { steps, ids } = this.recordPairs[rec];
+    steps.push(step);
+    ids.push(id);
+    const held = this.openPairs[this.openPairs.length - 1];
+    let set = held.get(step);
+    if (set === undefined) {
+      set = new Set();
+      held.set(step, set);
+    }
+    set.add(id);
+    return [rec, steps.length - 1];
   }
 
   /**
@@ -428,10 +485,10 @@ export class Session {
       const t0 = pop.t;
       const delta = this.features.deltas ? mp.delta : null;
       const ms = mp.step;
-      const d = ms.distribution(pop.seq, t0, this.listIndex, run.vstep, delta);
+      const d = ms.distribution(pop.seq, t0, this.listIndex, run.vstep, delta, this);
       const v = member(d);
       ms.learn(v, ms.n, run.vstep, delta, run.loaded.constants);
-      ms.record(v, t0, this.listIndex);
+      ms.record(v, t0, this.listIndex, this);
       return v;
     };
     return {
@@ -494,7 +551,8 @@ export class Session {
     const pred = this.symbols(at.path, at.o, 'structure');
     const before = (bound?: Bound, prior?: MarkerPrior): [boolean, number] => {
       if (prior !== undefined) {
-        this.load(this.space(at.o.prior).pathState(at.path, at.o).pop, prior);
+        const space = this.space(at.o.prior);
+        this.load(space.pathState(at.path, at.o).pop, prior, space);
       }
       return bound === undefined ? [false, END] : [bound.allow, bound.end];
     };
@@ -523,7 +581,7 @@ export class Session {
   }
 
   /** Loads `prior`'s counts into `pop`'s order-0 entry once. */
-  private load(pop: Population, prior: MarkerPrior): void {
+  private load(pop: Population, prior: MarkerPrior, space: Space): void {
     let keys = this.loaded.get(pop);
     if (keys === undefined) {
       keys = new Set();
@@ -533,7 +591,16 @@ export class Session {
       return;
     }
     keys.add(prior.key);
-    for (const [sym, c] of prior.counts) pop.tab.load(0, sym, c);
+    // The declared counts weigh at least what the built-in counts of the same symbols weigh.
+    let total = 0;
+    let builtin = 0;
+    for (const [sym, c] of prior.counts) {
+      total += c;
+      builtin += space.builtinCount(sym);
+    }
+    const to = builtin > total ? builtin : total;
+    // Every count is at least 1 and `to` at least `total`, so none scales to 0.
+    for (const [sym, c] of prior.counts) pop.tab.load(0, sym, div(c * to, total));
   }
 
   enterList(): void {
@@ -664,7 +731,7 @@ class StringCoder implements TextCoder {
         run.loaded.constants
       );
     }
-    const id = values.record(key, t0, this.s.listIndex);
+    const id = values.record(key, t0, this.s.listIndex, this.s);
     if (id === ps.valueSyms.length) {
       ps.valueSyms.push(Int32Array.from(syms));
     }
@@ -687,7 +754,7 @@ class StringCoder implements TextCoder {
       t0 = ctx.t;
       const run = this.space.run;
       const delta = this.s.features.deltas ? ps.vsDelta : null;
-      const d = ps.values.distribution(ctx.seq, t0, this.s.listIndex, run.vstep, delta);
+      const d = ps.values.distribution(ctx.seq, t0, this.s.listIndex, run.vstep, delta, this.s);
       if (d !== null) {
         choice = ps.values.idOf(keyOf(value, len));
         let i = choice === ESCAPE ? -1 : d.indexOf(choice);
@@ -733,7 +800,7 @@ class StringCoder implements TextCoder {
       t0 = ctx.t;
       const run = this.space.run;
       const delta = this.s.features.deltas ? ps.vsDelta : null;
-      const d = ps.values.distribution(ctx.seq, t0, this.s.listIndex, run.vstep, delta);
+      const d = ps.values.distribution(ctx.seq, t0, this.s.listIndex, run.vstep, delta, this.s);
       if (d !== null) {
         choice = d.idAt(dec.parseMember(d.total, d));
         stepped = true;
@@ -771,6 +838,9 @@ class StringCoder implements TextCoder {
 }
 
 const NO_RECORD: readonly RecordEntry[] = [];
+
+/** The record pair of a value coded outside every record. */
+const OUTSIDE: readonly [number, number] = [-1, 0];
 
 const SESSION = {};
 

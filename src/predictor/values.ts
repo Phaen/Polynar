@@ -6,7 +6,8 @@
  * with theta[novelty rate] + theta[top share] + theta[distinct count] from its own cells. theta is
  * the run prior's vstep cell plus the path's delta. The last `history` occurrences carry the full
  * features; older ones vote through agreement 0, the values-ago bucket "more" and record agreement 0
- * (D6). Record agreement is 0 until records arrive. The sequence cells (values agreeing with the
+ * (D6). Record agreement is what an occurrence's record, before it, shares with the current record:
+ * the information of every (path, value) pair the two hold, from the session. The sequence cells (values agreeing with the
  * path's last values, the same list index) are used when `sequence` is on.
  */
 
@@ -98,6 +99,22 @@ function vsSeq(LV: number): number {
   return LV <= 1 ? LV : LV <= 3 ? 2 : LV <= 7 ? 3 : 4;
 }
 
+/**
+ * The session's records as the value step reads them (spec §6.3): which record is open, what an
+ * earlier record shares with it, and where a value just coded sits in it.
+ */
+export interface RecordView {
+  /** The innermost open record's id, −1 outside every record. */
+  readonly current: number;
+  /** The information, RB bits, of the pairs before index `ri` of record `rec` the current record holds. */
+  agreement(rec: number, ri: number): number;
+  /** Adds `id` of `step` to the current record: its record id and index there, or [−1, 0] outside. */
+  pair(step: Occurrences, id: number): readonly [number, number];
+}
+
+/** The record pair of an occurrence outside every record. */
+const NO_PAIR: readonly [number, number] = [-1, 0];
+
 function grown(a: Float64Array, cap: number): Float64Array {
   const b = new Float64Array(cap);
   b.set(a);
@@ -109,7 +126,7 @@ function grown(a: Float64Array, cap: number): Float64Array {
  * and the restricted member step share. Ids are small integers; `votes` gives each id its mass at
  * one block scale, NEW its own, and `learnCells` moves the cells by the chosen entry's share.
  */
-abstract class Occurrences {
+export abstract class Occurrences {
   /** The step's coded distribution, reused every step. */
   readonly dist = new Distribution();
   /** Occurrences recorded so far, values first seen, repeats, and the largest count. */
@@ -128,6 +145,9 @@ abstract class Occurrences {
   private readonly occV: Int32Array;
   private readonly occPos: Float64Array;
   private readonly occList: Int32Array;
+  /** Per occurrence its record id (−1 outside every record) and its index in that record. */
+  private readonly occRec: Int32Array;
+  private readonly occRi: Int32Array;
 
   /** The pending step: per full occurrence its mass and cells, per id its total and older mass. */
   protected pending = false;
@@ -137,6 +157,7 @@ abstract class Occurrences {
   private readonly cR: Int32Array;
   private readonly cS: Int32Array;
   private readonly cN: Int32Array;
+  private readonly cAr: Int32Array;
   protected V: Float64Array;
   private wOld: Float64Array;
   /** NEW's mass and the step's total (NEW included) at the step's block scale. */
@@ -165,11 +186,19 @@ abstract class Occurrences {
     this.occV = new Int32Array(this.cap);
     this.occPos = new Float64Array(this.cap);
     this.occList = new Int32Array(this.cap);
+    this.occRec = new Int32Array(this.cap);
+    this.occRi = new Int32Array(this.cap);
     this.wOcc = new Float64Array(history);
+    this.cAr = new Int32Array(history);
     this.cL = new Int32Array(history);
     this.cR = new Int32Array(history);
     this.cS = new Int32Array(history);
     this.cN = new Int32Array(history);
+  }
+
+  /** The information of id `v` at the path, RB bits: log2 of the occurrences over its count. */
+  info(v: number): number {
+    return log2Fix(this.n) - log2Fix(this.count[v]);
   }
 
   /** Room for ids below `size`. */
@@ -190,7 +219,8 @@ abstract class Occurrences {
     listIndex: number,
     vstep: Float64Array,
     delta: Float64Array | null,
-    d: number
+    d: number,
+    records?: RecordView
   ): void {
     const n = this.n;
     const th = (i: number): number => (delta ? vstep[i] + delta[i] : vstep[i]);
@@ -206,6 +236,7 @@ abstract class Occurrences {
     const base = th(this.cRep) + th(this.cOT) + th(this.cOD) - log2Fix(n > 0 ? n : 1);
     const eNew = th(this.cNew) + th(this.cNT) + th(this.cND);
     const cA = VS_A + vsA(0);
+    const cur = records === undefined ? -1 : records.current;
     const j0 = n > this.history ? n - this.history : 0;
     const k = n - j0;
     const wOcc = this.wOcc;
@@ -220,9 +251,15 @@ abstract class Occurrences {
       }
       const cl = VS_L + vsL(L);
       const cr = VS_REC + vsRec(n - j);
-      let e = th(cl) + th(cr) + th(cA) + base;
+      const rec = this.occRec[r];
+      const ca =
+        cur >= 0 && rec >= 0 && rec !== cur
+          ? VS_A + vsA((records as RecordView).agreement(rec, this.occRi[r]))
+          : cA;
+      let e = th(cl) + th(cr) + th(ca) + base;
       this.cL[i] = cl;
       this.cR[i] = cr;
+      this.cAr[i] = ca;
       if (this.sequence) {
         let LV = 0;
         while (
@@ -327,7 +364,7 @@ abstract class Occurrences {
       const mine = this.occV[(j0 + i) % this.cap] === choice;
       add(this.cL[i], w, mine);
       add(this.cR[i], w, mine);
-      add(cA, w, mine);
+      add(this.cAr[i], w, mine);
       if (this.sequence) {
         add(this.cS[i], w, mine);
         if (this.cN[i] >= 0) {
@@ -375,8 +412,17 @@ abstract class Occurrences {
     }
   }
 
-  /** Records an occurrence of `id` (new to the path when `isNew`) at message position `msgPos`. */
-  protected recordId(id: number, isNew: boolean, msgPos: number, listIndex: number): void {
+  /**
+   * Records an occurrence of `id` (new to the path when `isNew`) at message position `msgPos`, in
+   * the current record of `records` where one is open.
+   */
+  protected recordId(
+    id: number,
+    isNew: boolean,
+    msgPos: number,
+    listIndex: number,
+    records?: RecordView
+  ): void {
     this.pending = false;
     if (isNew) {
       this.nNew++;
@@ -391,6 +437,9 @@ abstract class Occurrences {
     this.occV[r] = id;
     this.occPos[r] = msgPos;
     this.occList[r] = listIndex;
+    const [rec, ri] = records === undefined ? NO_PAIR : records.pair(this, id);
+    this.occRec[r] = rec;
+    this.occRi[r] = ri;
     this.n++;
     const out = this.n - 1 - this.history;
     if (out >= 0) {
@@ -427,14 +476,15 @@ export class ValueStep extends Occurrences {
     t: number,
     listIndex: number,
     vstep: Float64Array,
-    delta: Float64Array | null
+    delta: Float64Array | null,
+    records?: RecordView
   ): Distribution | null {
     this.pending = false;
     if (this.n === 0) {
       return null;
     }
     const d = this.distinct;
-    this.votes(seq, t, listIndex, vstep, delta, d);
+    this.votes(seq, t, listIndex, vstep, delta, d, records);
     const V = this.V;
     const dropped = this.dropped;
     dropped.fill(0, 0, d);
@@ -485,7 +535,7 @@ export class ValueStep extends Occurrences {
   }
 
   /** Records the value that was coded (at message position `msgPos`, list index or -1) and returns its id. */
-  record(key: string, msgPos: number, listIndex: number): number {
+  record(key: string, msgPos: number, listIndex: number, records?: RecordView): number {
     let id = this.keys.get(key);
     const isNew = id === undefined;
     if (id === undefined) {
@@ -497,7 +547,7 @@ export class ValueStep extends Occurrences {
         this.dropped = new Uint8Array(c);
       }
     }
-    this.recordId(id, isNew, msgPos, listIndex);
+    this.recordId(id, isNew, msgPos, listIndex, records);
     return id;
   }
 }
@@ -540,10 +590,11 @@ export class MemberStep extends Occurrences {
     t: number,
     listIndex: number,
     vstep: Float64Array,
-    delta: Float64Array | null
+    delta: Float64Array | null,
+    records?: RecordView
   ): Distribution {
     const m = this.members;
-    this.votes(seq, t, listIndex, vstep, delta, m);
+    this.votes(seq, t, listIndex, vstep, delta, m, records);
     let unseen = 0;
     let first = -1;
     for (let v = 0; v < m; v++) {
@@ -601,11 +652,11 @@ export class MemberStep extends Occurrences {
   }
 
   /** Records member `v`, coded at message position `msgPos` (list index or −1). */
-  record(v: number, msgPos: number, listIndex: number): void {
+  record(v: number, msgPos: number, listIndex: number, records?: RecordView): void {
     const isNew = this.count[v] === 0;
     if (isNew) {
       this.distinct++;
     }
-    this.recordId(v, isNew, msgPos, listIndex);
+    this.recordId(v, isNew, msgPos, listIndex, records);
   }
 }

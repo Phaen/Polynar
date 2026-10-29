@@ -73,7 +73,7 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
     this._pick = members(this._tags.length, { ...prior, learn: learningOf(_methods) }, 'p.tagged');
     this._adaptive = _methods.adaptive;
     if (this._adaptive !== undefined) {
-      this._resolved = resolve(this._adaptive, Priors.text, 'p.tagged');
+      this._resolved = resolve(this._adaptive, Priors.json, 'p.tagged');
     }
   }
 

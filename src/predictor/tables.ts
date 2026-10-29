@@ -598,7 +598,8 @@ export interface IdLookup {
 const FROZEN_CACHE = new WeakMap<object, { ids: Int32Array; f: Frozen }>();
 
 /**
- * The built-in population of a prior with the session's symbol ids; −1 in the prior is END. The
+ * The built-in population of a prior with the session's symbol ids; −1 in the prior is END and
+ * −1 − s structure id s. The
  * ids are taken in the same order on every call, so their assignment does not depend on the
  * cache. A population built under the same ids is shared: nothing writes to it but `lookup`,
  * whose `E` and `m` are read within the same step.
@@ -607,7 +608,8 @@ export function frozen(
   prior: Pick<LoadedPrior, 'builtinSymbols' | 'builtinCounts0' | 'builtinContexts1'>,
   ids: IdLookup
 ): Frozen {
-  const id = (cp: number): number => (cp < 0 ? END : ids.idOf(cp));
+  // −1 is END and −1 − s structure id s; the rest are code points.
+  const id = (cp: number): number => (cp === -1 ? END : cp < -1 ? -1 - cp : ids.idOf(cp));
   const symbols = prior.builtinSymbols;
   const contexts = prior.builtinContexts1;
   const got = new Int32Array(symbols.length + 2 * contexts.length);

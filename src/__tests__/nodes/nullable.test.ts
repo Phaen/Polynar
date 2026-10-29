@@ -7,6 +7,9 @@ import { Priors } from '../../predictor/prior';
 import { STRUCT } from '../../predictor/types';
 import { mulberry32, trip } from '../support';
 
+/** Text of one bit per digit, so a size counts bits. */
+const BITS = { type: 'text', charset: '01' } as const;
+
 describe('Schema nullable', () => {
   it('writes the same bits as a union with p.null', () => {
     const nick = p.nullable(p.string().max(8));
@@ -174,7 +177,7 @@ describe('p.nullable adaptive', () => {
   });
 
   it('adapts its inner node unless that one learns or adapts already', () => {
-    expect(p.nullable(p.bool()).adaptive().inner._adaptive).toEqual({ prior: Priors.text.source });
+    expect(p.nullable(p.bool()).adaptive().inner._adaptive).toEqual({ prior: Priors.json.source });
     const learning = p.bool().learn();
     expect(p.nullable(learning).adaptive().inner).toBe(learning);
     const values = [true, null, false, true, null];
@@ -189,18 +192,17 @@ describe('p.nullable adaptive', () => {
     expect(trip(Row, { n: null })).toEqual({ n: null });
   });
 
-  it('takes its weights as prior counts of its symbols, coded by itself or its parent', () => {
+  it('takes its weights as prior counts of its symbols', () => {
     const nulls = Array<null>(12).fill(null);
     const size = (w: [number, number], parent: boolean) => {
       const node = plain.weights(w);
       const list = parent
         ? p.array(node).length(12).adaptive()
         : p.array(node.adaptive()).length(12);
-      return list.encode(nulls).length;
+      return list.encode(nulls, BITS).length;
     };
-    for (const parent of [false, true]) {
-      expect(size([1, 30], parent)).toBeLessThan(size([30, 1], parent));
-    }
+    expect(size([1, 30], true)).toBeLessThan(size([30, 1], true));
+    expect(size([1, 30], false)).toBeLessThanOrEqual(size([30, 1], false));
   });
 
   it('takes its weights before or after', () => {

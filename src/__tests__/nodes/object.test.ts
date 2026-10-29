@@ -74,6 +74,21 @@ class Digit extends PNode<number> {
 }
 
 describe('p.object().adaptive()', () => {
+  it('round-trips strings that follow the earlier strings of their record, nested records apart', () => {
+    const Event = p.object({
+      user: p.string(),
+      session: p.string(),
+      meta: p.object({ agent: p.string(), lang: p.string() }),
+    });
+    const users = ['ann', 'bob', 'cy', 'dee'];
+    const events = Array.from({ length: 40 }, (_, i) => {
+      const u = users[(i * 7) % 4];
+      return { user: u, session: `s-${u}`, meta: { agent: `ua-${u}`, lang: i % 3 ? 'en' : 'nl' } };
+    });
+    const node = p.array(Event).adaptive();
+    expect(node.decode(node.encode(events))).toEqual(events);
+  });
+
   const Item = p.object({
     name: p.string(),
     price: p.decimal(0.01).min(0),
@@ -183,19 +198,19 @@ describe('p.object().adaptive()', () => {
     expect(fields.own).toBe(own);
     expect(fields.inner).toBe(inner);
     expect(fields.kept).toBe(kept);
-    expect(fields.fresh._adaptive).toEqual({ prior: Priors.text.source });
-    expect(node._adaptive).toEqual({ prior: Priors.text.source });
+    expect(fields.fresh._adaptive).toEqual({ prior: Priors.json.source });
+    expect(node._adaptive).toEqual({ prior: Priors.json.source });
     const value = { learned: true, own: 'a', inner: { x: 1 }, kept: [true, false], fresh: 2 };
     expect(trip(node, value)).toEqual(value);
   });
 
-  it('leaves p.null, p.any and a custom node as they are', () => {
+  it('leaves p.null and a custom node as they are, and adapts p.any', () => {
     const nothing = p.null();
     const anything = p.any();
     const digit = new Digit();
     const fields = shape(p.object({ nothing, anything, digit }).adaptive());
     expect(fields.nothing).toBe(nothing);
-    expect(fields.anything).toBe(anything);
+    expect(fields.anything._adaptive).toEqual({ prior: Priors.json.source });
     expect(fields.digit).toBe(digit);
   });
 
@@ -205,7 +220,7 @@ describe('p.object().adaptive()', () => {
     const fields = shape(node);
     expect(fields.from).toBe(fields.to);
     expect(fields.from).not.toBe(point);
-    expect(fields.from._adaptive).toEqual({ window: 32, prior: Priors.text.source });
+    expect(fields.from._adaptive).toEqual({ window: 32, prior: Priors.json.source });
     const memo = new Map<PNode<any>, PNode<any>>();
     const outer = p.object({ a: point, b: p.array(point) });
     const adapted = outer._adapted({}, memo);

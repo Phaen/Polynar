@@ -76,7 +76,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
           'p.array adaptive cannot weigh the count: an adaptive array ends with a symbol'
         );
       }
-      this._resolved = resolve(this._adaptive, Priors.text, 'p.array');
+      this._resolved = resolve(this._adaptive, Priors.json, 'p.array');
     }
     this._holds = this._adaptive !== undefined || item._holdsAdaptive;
     this._choice = members(2, learning === undefined ? undefined : { learn: learning }, 'p.array');

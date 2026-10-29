@@ -69,9 +69,9 @@ export interface Prior {
     readonly numberStart: PriorTable; // 139
   };
   readonly builtin: {
-    readonly symbols: readonly number[]; // code points in id order (END is never listed; it is id 0)
+    readonly symbols: readonly number[]; // code points in id order, structure id s as -1 - s (END is never listed; it is id 0)
     readonly counts0: readonly number[]; // order-0 count per symbol, END's count first
-    readonly contexts1: readonly (readonly [prev: number, next: number, count: number])[]; // prev/next as -1 for END, else code points; sorted by (prev, next)
+    readonly contexts1: readonly (readonly [prev: number, next: number, count: number])[]; // prev/next as -1 for END, -1 - s for structure id s, else code points; sorted by (prev, next)
   };
   readonly trainedOn?: string;
 }

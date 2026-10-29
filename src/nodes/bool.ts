@@ -36,7 +36,7 @@ export class PBool extends MethodNode<boolean> {
     if (this._adaptive === undefined) {
       this._radix = this._members.radix;
     } else {
-      this._resolved = resolve(this._adaptive, Priors.text, 'p.bool');
+      this._resolved = resolve(this._adaptive, Priors.json, 'p.bool');
     }
   }
 

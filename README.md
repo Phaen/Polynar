@@ -34,13 +34,13 @@ The first table is self-describing: keys and types travel with the data. Polynar
 
 | Payload        |         JSON |  MessagePack |     url-safe |   ascii-safe |           binary |
 | -------------- | -----------: | -----------: | -----------: | -----------: | ---------------: |
-| User profile   |  62.8 (64.3) |  44.6 (48.4) |  53.7 (41.9) |  49.5 (38.5) |  40.7 (**31.7**) |
-| GPS position   |  32.0 (36.0) |  27.0 (31.0) |  26.8 (20.2) |  24.7 (18.6) |  20.4 (**15.4**) |
-| Chat message   |  95.5 (89.3) |  69.1 (71.1) |  79.2 (58.9) |  72.8 (54.3) |  59.9 (**44.6**) |
-| Sensor reading |  53.8 (55.9) |  39.9 (43.7) |  42.9 (34.1) |  39.5 (31.3) |  32.6 (**25.7**) |
-| Shopping cart  | 124.4 (67.0) |  85.1 (61.9) | 100.6 (37.9) |  92.6 (34.9) |  76.1 (**28.7**) |
-| Status feed    | 521.8 (63.4) | 323.8 (60.4) | 385.0 (26.1) | 354.2 (24.1) | 290.8 (**19.9**) |
-| Lorem ipsum    |   1375 (641) |   1372 (631) |   1596 (711) |   1469 (654) |   1206 (**537**) |
+| User profile   |  62.8 (64.3) |  44.6 (48.4) |  53.7 (36.0) |  49.5 (33.2) |  40.7 (**27.4**) |
+| GPS position   |  32.0 (36.0) |  27.0 (31.0) |  26.8 (24.8) |  24.7 (22.9) |  20.4 (**18.9**) |
+| Chat message   |  95.5 (89.3) |  69.1 (71.1) |  79.2 (55.2) |  72.8 (50.9) |  59.9 (**42.0**) |
+| Sensor reading |  53.8 (55.9) |  39.9 (43.7) |  42.9 (31.0) |  39.5 (28.6) |  32.6 (**23.6**) |
+| Shopping cart  | 124.4 (67.0) |  85.1 (61.9) | 100.6 (37.6) |  92.6 (34.6) |  76.1 (**28.5**) |
+| Status feed    | 521.8 (63.4) | 323.8 (60.4) | 385.0 (29.8) | 354.2 (27.4) | 290.8 (**22.6**) |
+| Lorem ipsum    |   1375 (641) |   1372 (631) |   1596 (695) |   1469 (639) |   1206 (**525**) |
 
 In the second table both sides share a schema and only the values are written. Protobuf and Avro get the same decimal steps as scaled integers, but only Polynar can use the bounds. Protobuf tags every field and rounds it up to whole bytes, Avro drops the tags but keeps the bytes, and Polynar spends fractional bits.
 
@@ -107,6 +107,7 @@ Each `p.*` factory creates a node for one type, and the node's methods narrow wh
 - [`p.bool`](#pbool)
 - [`p.enum`](#penumlist-readonly-unknown)
 - [`p.date`](#pdate)
+- [`p.uuid`](#puuid)
 - [`p.null`](#pnull)
 - [`p.object`](#pobjectshape-recordstring-pnode)
 - [`p.array`](#parrayitem-pnode)
@@ -230,6 +231,15 @@ A `Date`, lossless to the millisecond by default. Infers `Date`. An invalid date
 | `.adaptive(options?: AdaptiveOptions)` | Codes the values through the predictor; see [The predictor](#the-predictor-adaptive).                                                                                                                                                                                                                            |
 
 `DateUnit` is `'millisecond' | 'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'`. Bounds compare buckets, so a `min` in the middle of a bucket allows that whole bucket, and a date can decode to a time before `min`.
+
+### `p.uuid()`
+
+A UUID string: lowercase `8-4-4-4-12` hex, as `crypto.randomUUID()` gives it; anything else throws a `RangeError`. Infers `string`. The version digit and the variant bits are coded under weights that favour version 4, then 1 and 7, and RFC 4122's variant, and the other 122 bits as they are, so a v4 UUID takes about 16 bytes against 36 as text. In `p.any([p.uuid()])` it takes every string that is a UUID.
+
+| Method                                 | Description                                                                                                     |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `.learn(options?: LearningOptions)`    | The version and variant learn from the message; see [Priors that learn](#priors-that-learn-learn-and-adaptive). |
+| `.adaptive(options?: AdaptiveOptions)` | The version and variant learn, as under `.learn()`; the other bits carry nothing to predict.                    |
 
 ### `p.null()`
 
@@ -358,11 +368,11 @@ Self-describing escape hatch: numbers, bigints, strings, booleans, dates, regula
 
 Hints are nodes some values are expected to fit: `p.any([p.string().charset(CharSets.hex).length(32)])`. Each value, at any depth, tries the hints that take its kind in order, and the first that writes it codes it behind a tag of its own. A hint only takes values it gives back unchanged. A hint needs declared kinds, so `p.lazy` and custom nodes without `_kinds` throw.
 
-| Method                                     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.adaptive(options?: { window?: number })` | Builds a schema as the message goes: each key name gets its own type tags and adaptive int, float, string, array, record, map and set nodes the first time it appears, starting from what every key has learned so far, and an array's items sit under its key. Ints, floats and strings each pick their plain spelling or the difference from the key's previous one, strings also their digit fields or positions, and strings, key lists and whole arrays and records that recur are recalled, from the key's own first, then from the whole message. A value that follows an earlier key in its record or around it, like a session id that comes with the same user id each time, a count repeated under a second name, or a URL that is the key's previous one with the earlier key's new value in place of its old one, costs a learned flag once the key has seen that pay off. A number or a string of digits that sits close to an earlier key's, like a time sent just after the time it happened, is written as its difference from that one wherever that costs less, behind the same kind of flag. The characters of new strings and keys learn across the message, as English prose that the message takes over. Hints are used in their adaptive form where they have one, and a hint that takes only strings recalls them; a hinted string leaves the shared string learning. Encoding and decoding take 5–40× as long. See [Priors that learn](#priors-that-learn-learn-and-adaptive). |
+| Method                                 | Description                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.adaptive(options?: AdaptiveOptions)` | Codes the values through the predictor as one stream: each value's kind as a symbol of the structure, an object's keys as text, strings, integers and dates predicted from the values before them at the same key path, other numbers as their shortest text, and the rest as without. Hints are used as under their own `.adaptive()`. See [The predictor](#the-predictor-adaptive). |
 
-Under `.adaptive()` the status feed's hundred strings from a set of three average 23 bytes instead of 292, an array of same-shaped objects pays for its keys once, and lorem costs less than under `.prose()`. Thirteen real JSON documents (GitHub and npm API responses, GeoJSON, a Slack export and more) take 91.7 kB, where JSON with brotli takes 128.9 kB.
+Under `.adaptive()` the status feed's hundred strings from a set of three average 23 bytes instead of 292, the keys of an array of same-shaped objects soon cost next to nothing, and lorem costs less than under `.prose()`. Thirteen real JSON documents (GitHub and npm API responses, GeoJSON, a Slack export and more) take 88.7 kB, where JSON with brotli takes 128.9 kB.
 
 ### Priors: `.weights()`
 
@@ -421,7 +431,7 @@ Every value one node writes in a message goes through one table, so array items,
 
 ### The predictor: `.adaptive()`
 
-`.adaptive()` on `p.string` and `p.binary` hands the characters or bytes to the similarity predictor. Each one is predicted from the positions in the message whose context looks like the current one, in the same field, in every other field of the message and in a prior that ships with the package, and it learns as it goes, so text, ids, URLs and keys that resemble what came before cost little. A value the node already wrote costs a few bits, and the end of a value is one more symbol instead of a length. Strings start from a prior trained on English text; binaries start from nothing.
+`.adaptive()` on `p.string` and `p.binary` hands the characters or bytes to the similarity predictor. Each one is predicted from the positions in the message whose context looks like the current one, in the same field, in every other field of the message and in a prior that ships with the package, and it learns as it goes, so text, ids, URLs and keys that resemble what came before cost little. A value the node already wrote costs a few bits, and the end of a value is one more symbol instead of a length. Strings start from a prior trained on English text and binaries from nothing; every other node, and every node under one `.adaptive()` on a container or `p.any`, starts from a prior trained on JSON documents.
 
 ```typescript
 p.string().adaptive(); // alice.txt: 43,572 bytes, against 44,298 under the old learned prose model
@@ -514,7 +524,7 @@ A value that can't be encoded throws with its path in front and the limit it bro
 - `Cdf` — `(v: number) => number`, the function `.cdf()` takes.
 - `LearningOptions` — `{ window?: number; separate?: boolean }`, what `.learn()` takes.
 - `AdaptiveOptions` — what `.adaptive()` takes; see [The predictor](#the-predictor-adaptive).
-- `Prior` — a prior the predictor starts from, as `AdaptiveOptions.prior` takes it.
+- `Prior` — a prior the predictor starts from, as `AdaptiveOptions.prior` takes it; the package ships one trained on English text and one on JSON documents.
 - `MemberPrior` — `{ weights?: readonly number[]; rows?: readonly (readonly number[])[]; learn?: LearningOptions }`, the prior `members` takes.
 - `Members` — what `members` returns: its `count`, its `radix` when every member is equally likely, `write(enc, pos, row?)` and `read(dec, row?)`.
 - `Bucket` — `[cum, freq, total]`, one coding's range for a symbol, as `composeAlternatives` takes it.

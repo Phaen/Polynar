@@ -66,7 +66,7 @@ export class PUnion<T> extends MethodNode<T> {
     );
     this._adaptive = _methods.adaptive;
     if (this._adaptive !== undefined) {
-      this._resolved = resolve(this._adaptive, Priors.text, 'p.union');
+      this._resolved = resolve(this._adaptive, Priors.json, 'p.union');
     }
   }
 

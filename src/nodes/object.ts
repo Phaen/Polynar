@@ -36,7 +36,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<In
     this._methods = methods;
     this._adaptive = methods.adaptive;
     if (this._adaptive !== undefined) {
-      this._resolved = resolve(this._adaptive, Priors.text, 'p.object');
+      this._resolved = resolve(this._adaptive, Priors.json, 'p.object');
     }
     this._holds =
       this._adaptive !== undefined || this._keys.some((key) => this._shape[key]._holdsAdaptive);

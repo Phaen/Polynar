@@ -174,10 +174,23 @@ describe('loadPrior', () => {
     rejects((p) => (p.tables.numberShared.conf = zeros(10)), 'tables.numberShared.conf.data');
   });
 
+  it('takes structure ids s as -1 - s in the built-in', () => {
+    const p = small();
+    p.builtin.symbols = [97, -2, -36];
+    p.builtin.counts0 = [1, 2, 3, 4];
+    p.builtin.contexts1 = [
+      [-36, 97, 1],
+      [-2, -36, 2],
+      [-1, -2, 1],
+    ];
+    expect(loadPrior(p).builtinSymbols).toEqual([97, -2, -36]);
+  });
+
   it('rejects malformed built-ins', () => {
     rejects((p) => (p.builtin = null), 'builtin');
     rejects((p) => (p.builtin.symbols = 'ab'), 'builtin.symbols');
     rejects((p) => (p.builtin.symbols = [97, -1]), 'builtin.symbols');
+    rejects((p) => (p.builtin.symbols = [97, -37]), 'builtin.symbols');
     rejects((p) => (p.builtin.symbols = [97, 0x110000]), 'builtin.symbols');
     rejects((p) => (p.builtin.symbols = [97, 1.5]), 'builtin.symbols');
     rejects((p) => (p.builtin.symbols = [97, 97]), 'builtin.symbols');

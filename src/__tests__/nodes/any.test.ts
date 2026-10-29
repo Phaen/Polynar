@@ -3,11 +3,20 @@
  */
 
 import { p, Encoder, CorruptInputError, type AnyValue, type PNode, type PAny } from '../../index';
-import { AnyMissing, MAX_DEPTH, TAG_TIERS, sameValue, typedNode } from '../../nodes/any';
+import {
+  AnyMissing,
+  MAX_DEPTH,
+  TAG_TIERS,
+  kindMarker,
+  sameValue,
+  typedNode,
+} from '../../nodes/any';
 import { PBinary, type TypedArrayClass } from '../../nodes/binary';
 import type { Float16ArrayLike } from '../../nodes/guards';
 import { members } from '../../nodes/members';
 import { DEPTH } from '../../nodes/lazy';
+import { Priors } from '../../predictor/prior';
+import { STRUCT } from '../../predictor/types';
 import { trip } from '../support';
 
 /** The static tag table inside a plain `p.any`. */
@@ -44,10 +53,6 @@ describe('Schema any', () => {
     expect(back).toEqual(value);
     expect([...new Uint8Array(back.buffer)]).toEqual([1, 2, 3]);
     expect([...new Uint8Array(back.view.buffer)]).toEqual([4, 5]);
-  });
-
-  it('refuses .adaptive(), which lands in stage 2', () => {
-    expect(() => p.any().adaptive()).toThrow(new Error('p.any().adaptive() lands in stage 2'));
   });
 
   it('copies shared references', () => {
@@ -627,5 +632,337 @@ describe('sameValue', () => {
     const ring: unknown[] = [1];
     ring.push(ring);
     expect(sameValue([1, [1, 2]], ring)).toBe(false);
+  });
+});
+
+describe('p.any().adaptive()', () => {
+  const small = p.int().min(0).max(3);
+  const Float16 = (globalThis as { Float16Array?: TypedArrayClass<Float16ArrayLike> }).Float16Array;
+
+  it('round-trips a value of every kind', () => {
+    const value = everyKind();
+    const back = trip(p.any().adaptive(), value) as { buffer: ArrayBuffer; view: DataView };
+    expect(back).toEqual(value);
+    expect([...new Uint8Array(back.buffer)]).toEqual([1, 2, 3]);
+    expect([...new Uint8Array(back.view.buffer)]).toEqual([4, 5]);
+  });
+
+  it.each<[string, AnyValue]>([
+    ['null', null],
+    ['undefined', undefined],
+    ['true', true],
+    ['false', false],
+    ['a safe integer', -42],
+    ['the largest safe integer', Number.MAX_SAFE_INTEGER],
+    ['-0', -0],
+    ['a float', 0.1],
+    ['a small float', 5e-324],
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+    ['-Infinity', -Infinity],
+    ['a number past 2^53', 2 ** 60],
+    ['a negative number past 2^53', -(2 ** 53) - 2],
+    ['a bigint', -(2n ** 70n)],
+    ['an empty string', ''],
+    ['a string', 'héllo 👋'],
+    ['a lone surrogate', 'a\ud800b\udc00'],
+    ['a date', new Date(1700000000000)],
+    ['a date before 1970', new Date(-1)],
+    ['a regexp', /a+b/gimsuy],
+    ['an empty array', []],
+    ['an empty object', {}],
+    ['an empty map', new Map()],
+    ['an empty set', new Set()],
+  ])('round-trips %s at the root and inside containers', (_name, value) => {
+    const node = p.any().adaptive();
+    expect(trip(node, value)).toEqual(value);
+    const nested = [value, { k: value }, new Map([[value, value]]), new Set([value])];
+    expect(trip(node, nested)).toEqual(nested);
+  });
+
+  it.each([
+    new Int8Array([-1, 2]),
+    new Uint8Array([1, 255]),
+    new Uint8ClampedArray([0, 255]),
+    new Int16Array([-300, 2]),
+    new Uint16Array([65535]),
+    new Int32Array([-1]),
+    new Uint32Array([4294967295]),
+    new Float32Array([-0, NaN]),
+    new Float64Array([0.1, -Infinity]),
+    new BigInt64Array([-1n]),
+    new BigUint64Array([2n ** 64n - 1n]),
+  ])('round-trips a %s as the same class', (value) => {
+    const back = trip(p.any().adaptive(), { v: [value] }) as { v: [typeof value] };
+    expect(back.v[0]).toBeInstanceOf(value.constructor);
+    expect(back.v[0]).toEqual(value);
+  });
+
+  (Float16 === undefined ? it.skip : it)('round-trips a Float16Array as the same class', () => {
+    const value = new (Float16 as TypedArrayClass<Float16ArrayLike>)(
+      Uint16Array.of(0x3c00, 0x8000, 0x7e01).buffer
+    );
+    const back = trip(p.any().adaptive(), [value]) as [Float16ArrayLike];
+    expect(back[0]).toBeInstanceOf(Float16);
+    expect(new Uint16Array(back[0].buffer)).toEqual(Uint16Array.of(0x3c00, 0x8000, 0x7e01));
+  });
+
+  it('round-trips an ArrayBuffer and a DataView over part of a buffer', () => {
+    const bytes = Uint8Array.of(9, 8, 7, 6);
+    const value = [bytes.buffer, new DataView(bytes.buffer, 1, 2)];
+    const back = trip(p.any().adaptive(), value) as [ArrayBuffer, DataView];
+    expect(back[0]).toBeInstanceOf(ArrayBuffer);
+    expect([...new Uint8Array(back[0])]).toEqual([9, 8, 7, 6]);
+    expect(back[1]).toBeInstanceOf(DataView);
+    expect([...new Uint8Array(back[1].buffer)]).toEqual([8, 7]);
+  });
+
+  it('reads a hole in a sparse array as undefined', () => {
+    const back = trip(p.any().adaptive(), [1, , 3]) as AnyValue[];
+    expect(back).toStrictEqual([1, undefined, 3]);
+    expect(1 in back).toBe(true);
+  });
+
+  it('keeps a __proto__ key as an own property', () => {
+    const value = JSON.parse('{"__proto__": {"x": 1}, "a": [2]}') as AnyValue;
+    const back = trip(p.any().adaptive(), value) as Record<string, AnyValue>;
+    expect(Object.keys(back)).toEqual(['__proto__', 'a']);
+    expect(Object.getPrototypeOf(back)).toBe(Object.prototype);
+    expect(back['__proto__']).toEqual({ x: 1 });
+  });
+
+  it('round-trips nested objects, Maps with any keys and Sets', () => {
+    const value = {
+      user: { name: 'Ada', tags: ['a', 'b'], address: { city: 'X', zip: 1234 } },
+      index: new Map<AnyValue, AnyValue>([
+        ['k', 1],
+        [2, new Set<AnyValue>([null, 'x', [1]])],
+        [[0], new Map()],
+        [{ o: true }, -0],
+        [undefined, 1.5],
+      ]),
+      seen: new Set<AnyValue>([1, 'one', { one: 1 }]),
+    };
+    const back = trip(p.any().adaptive(), value) as typeof value;
+    expect(back).toEqual(value);
+    expect([...back.index.keys()]).toEqual(['k', 2, [0], { o: true }, undefined]);
+  });
+
+  it('round-trips values of different kinds at one key path', () => {
+    const value = [{ a: 1 }, { a: 'x' }, { a: [1, 'y'] }, { a: 1.5 }, { a: null }, { a: 2 }];
+    expect(trip(p.any().adaptive(), value)).toEqual(value);
+  });
+
+  it('round-trips a run of the same value, which the encoder classifies once per position', () => {
+    const value = [1, 1, 'a', 'a', true, true, [], []];
+    expect(trip(p.any().adaptive(), value)).toEqual(value);
+  });
+
+  it('learns from the values before, so a repeating record costs less than plain', () => {
+    const rows = Array.from({ length: 12 }, (_, i) => ({ id: i, name: 'item', ok: true }));
+    const node = p.any().adaptive();
+    expect(trip(node, rows)).toEqual(rows);
+    expect(node.encode(rows).length).toBeLessThan(p.any().encode(rows).length);
+  });
+
+  it('takes the predictor options', () => {
+    const value = { a: [1, 2, 3], b: 'text' };
+    const node = p.any().adaptive({ window: 4, separate: true, prior: Priors.json.source });
+    expect(trip(node, value)).toEqual(value);
+  });
+
+  it.each<[string, unknown, Error]>([
+    ['a non-object', 5, new TypeError('p.any: adaptive options must be an object')],
+    [
+      'a window below 1',
+      { window: 0 },
+      new RangeError('p.any: adaptive window must be at least 1'),
+    ],
+    [
+      'a non-boolean separate',
+      { separate: 1 },
+      new TypeError('p.any: adaptive separate must be a boolean'),
+    ],
+  ])('refuses %s as options', (_name, options, error) => {
+    expect(() => p.any().adaptive(options as never)).toThrow(error);
+  });
+
+  it('refuses a second .adaptive()', () => {
+    expect(() => p.any().adaptive().adaptive()).toThrow(
+      new TypeError('p.any adaptive is already set')
+    );
+  });
+
+  it('adapts under _adapted, and stays as it is when adaptive already', () => {
+    const plain = p.any([p.int().min(0).max(3)]);
+    const adapted = plain._adapted({});
+    expect(adapted).not.toBe(plain);
+    expect(adapted._adaptive).toEqual({});
+    const value = [2, 'x'];
+    expect(trip(adapted, value)).toEqual(value);
+    const own = p.any().adaptive({ window: 8 });
+    expect(own._adapted({})).toBe(own);
+  });
+
+  it('names the first structure symbol of a value in _marker', () => {
+    const node = p.any([p.int().min(0).max(3)]);
+    expect(node._marker(2)).toBe(STRUCT.HINT);
+    expect(node._marker(9)).toBe(STRUCT.INT);
+    expect(node._marker(-0)).toBe(STRUCT.NUM);
+    expect(node._marker('x')).toBe(STRUCT.STR);
+    expect(node._marker(true)).toBe(STRUCT.TRUE);
+    expect(node._marker([])).toBe(STRUCT.ARR_START);
+    expect(node._marker(new Map())).toBe(STRUCT.MAP_START);
+    expect(node._marker(new Uint8Array(1))).toBe(STRUCT.TYPED_0 + 1);
+  });
+
+  it.each<[string, unknown]>([
+    ['a symbol', Symbol('s')],
+    ['a function', () => 0],
+    ['a class instance', new (class Point {})()],
+    ['an invalid Date', new Date(NaN)],
+  ])('gives the kind marker of %s, which p.any cannot encode, without throwing', (_n, value) => {
+    expect(p.any()._marker(value)).toBe(kindMarker(value));
+  });
+
+  it.each<[string, unknown, Error]>([
+    ['a symbol', Symbol('s'), new TypeError('p.any cannot encode symbol values')],
+    ['a function', () => 0, new TypeError('p.any cannot encode function values')],
+    [
+      'a class instance',
+      new (class Point {})(),
+      new TypeError('p.any cannot encode Point values, only plain objects'),
+    ],
+    [
+      'an invalid Date',
+      new Date(NaN),
+      new TypeError('p.any expected a valid Date, got Invalid Date'),
+    ],
+  ])('refuses %s as plain p.any does', (_n, value, error) => {
+    expect(() =>
+      p
+        .any()
+        .adaptive()
+        .encode(value as AnyValue)
+    ).toThrow(error);
+    expect(() => p.any().encode(value as AnyValue)).toThrow(error);
+  });
+
+  it('locates an encode error at an object key, an array index and a map entry', () => {
+    const node = p.any().adaptive();
+    const bad = Symbol('s') as never;
+    expect(() => node.encode({ a: [1, bad] })).toThrow('a[1]: p.any cannot encode symbol values');
+    expect(() =>
+      node.encode({
+        m: new Map<AnyValue, AnyValue>([
+          ['k', 1],
+          ['j', bad],
+        ]),
+      })
+    ).toThrow('m[1]: p.any cannot encode symbol values');
+    expect(() => node.encode({ s: new Set<AnyValue>([1, bad]) })).toThrow(
+      's[1]: p.any cannot encode symbol values'
+    );
+  });
+
+  const wrappers: [string, (inner: AnyValue) => AnyValue][] = [
+    ['array', (inner) => [inner]],
+    ['record', (inner) => ({ k: inner })],
+    ['map key', (inner) => new Map([[inner, 0]])],
+    ['map value', (inner) => new Map([['k', inner]])],
+    ['set', (inner) => new Set([inner])],
+  ];
+  const nest = (wrap: (inner: AnyValue) => AnyValue, levels: number): AnyValue => {
+    let value: AnyValue = 0;
+    for (let i = 0; i < levels; i++) value = wrap(value);
+    return value;
+  };
+
+  it.each(wrappers)('round-trips %s nesting exactly MAX_DEPTH levels deep', (_kind, wrap) => {
+    const value = nest(wrap, MAX_DEPTH);
+    expect(trip(p.any().adaptive(), value)).toEqual(value);
+  });
+
+  it.each(wrappers)('refuses to encode %s nesting deeper than MAX_DEPTH', (_kind, wrap) => {
+    expect(() =>
+      p
+        .any()
+        .adaptive()
+        .encode(nest(wrap, MAX_DEPTH + 1))
+    ).toThrow(new RangeError(`p.any nests deeper than ${MAX_DEPTH} levels`));
+  });
+
+  it.each(wrappers)('rejects input with %s nesting deeper than MAX_DEPTH', (_kind, wrap) => {
+    const node = p.any().adaptive();
+    const enc = new Encoder();
+    enc.state(node, () => ({ depth: -1 }));
+    node._write(enc, nest(wrap, MAX_DEPTH + 1));
+    expect(() => node.decode(enc.output())).toThrow(
+      new CorruptInputError(`p.any input nests deeper than ${MAX_DEPTH} levels`)
+    );
+  });
+
+  describe('hints', () => {
+    it('codes a value a hint takes through it, and the rest by kind', () => {
+      const node = p.any([small]).adaptive();
+      const value = [2, 9, 'x', 3, -0];
+      const back = trip(node, value) as AnyValue[];
+      expect(back).toEqual(value);
+      expect(Object.is(back[4], -0)).toBe(true);
+    });
+
+    it('picks among several hints, the first that takes a value', () => {
+      const node = p.any([small, p.int().min(0).max(1000), p.string().length(1)]).adaptive();
+      const value = [2, 900, 'x', 'xy', 5000, true, 1, 'z'];
+      expect(trip(node, value)).toEqual(value);
+      expect(node._marker(900)).toBe(STRUCT.HINT);
+      expect(node._marker('xy')).toBe(STRUCT.STR);
+    });
+
+    it('takes hinted values inside nested containers', () => {
+      const point = p.object({ x: small, y: small });
+      const node = p.any([point]).adaptive();
+      const value = {
+        list: [
+          { x: 1, y: 2 },
+          { x: 9, y: 0 },
+        ],
+        deep: new Map<AnyValue, AnyValue>([[{ x: 0, y: 0 }, new Set<AnyValue>([{ x: 3, y: 3 }])]]),
+      };
+      expect(trip(node, value)).toEqual(value);
+    });
+
+    it('codes a hint holding p.any', () => {
+      const node = p.any([p.array(p.any())]).adaptive();
+      const value = { a: [1, 'x', [true]] };
+      expect(trip(node, value)).toEqual(value);
+    });
+  });
+
+  describe('in a schema', () => {
+    const value = { data: { a: [1, 'x'], b: null }, n: 3 };
+
+    it('is reached by an adaptive object, which codes its first symbol', () => {
+      const node = p.object({ data: p.any(), n: p.int() }).adaptive();
+      expect(trip(node, value)).toEqual(value);
+      expect(trip(node, { data: 'text', n: 1 })).toEqual({ data: 'text', n: 1 });
+      expect(trip(node, { data: [new Date(3)], n: 1 })).toEqual({ data: [new Date(3)], n: 1 });
+    });
+
+    it('keeps its own options under an adaptive object', () => {
+      const node = p.object({ data: p.any().adaptive({ window: 8 }), n: p.int() }).adaptive();
+      expect(trip(node, value)).toEqual(value);
+    });
+
+    it('codes its own first symbol as a plain object field', () => {
+      const node = p.object({ data: p.any().adaptive(), n: p.int() });
+      expect(trip(node, value)).toEqual(value);
+    });
+
+    it('codes a hint under an adaptive array', () => {
+      const node = p.array(p.any([small])).adaptive();
+      const items = [1, 'x', 2, [3]];
+      expect(trip(node, items)).toEqual(items);
+    });
   });
 });

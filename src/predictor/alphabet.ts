@@ -65,7 +65,8 @@ export class Ids {
   constructor(prior: LoadedPrior | null) {
     for (let id = 0; id < BYTE_BASE; id++) this.cps.push(-1);
     for (let b = 0; b < 256; b++) this.cps.push(b);
-    if (prior !== null) for (const cp of prior.builtinSymbols) this.idOf(cp);
+    // Structure ids in the prior (negative) have fixed ids already.
+    if (prior !== null) for (const cp of prior.builtinSymbols) if (cp >= 0) this.idOf(cp);
     for (let d = 0; d < 10; d++) this.digits[d] = this.idOf(DIGIT_0 + d);
     this.boundary[0] = END;
     this.boundary[1] = this.idOf(NEWLINE);

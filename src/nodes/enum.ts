@@ -58,7 +58,7 @@ export class PEnum<T> extends MethodNode<T> {
     if (this._adaptive === undefined) {
       this._radix = this._members.radix;
     } else {
-      this._resolved = resolve(this._adaptive, Priors.text, 'p.enum');
+      this._resolved = resolve(this._adaptive, Priors.json, 'p.enum');
     }
   }
 

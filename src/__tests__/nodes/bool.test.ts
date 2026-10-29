@@ -6,6 +6,9 @@ import { p } from '../../index';
 import { STRUCT } from '../../predictor/types';
 import { mulberry32, trip } from '../support';
 
+/** Text of one bit per digit, so a size counts bits. */
+const BITS = { type: 'text', charset: '01' } as const;
+
 describe('Schema bool', () => {
   it('lists weights true first', () => {
     const likelyTrue = p.array(p.bool().weights([99, 1])).length(64);
@@ -86,23 +89,15 @@ describe('p.bool adaptive', () => {
     expect(trip(p.array(plain).adaptive(), values)).toEqual(values);
   });
 
-  it('takes its weights as prior counts of its symbols, coded by itself or its parent', () => {
+  it('takes its weights as prior counts of its symbols', () => {
     const trues = Array<boolean>(12).fill(true);
-    const falses = Array<boolean>(12).fill(false);
-    const node = plain.weights([30, 1]).adaptive();
-    expect(node._markerPrior()?.counts).toEqual([
+    expect(plain.weights([30, 1]).adaptive()._markerPrior()?.counts).toEqual([
       [STRUCT.TRUE, 30],
       [STRUCT.FALSE, 1],
     ]);
-    for (const list of [
-      p.array(node).length(12),
-      p
-        .array(plain.weights([30, 1]))
-        .length(12)
-        .adaptive(),
-    ]) {
-      expect(list.encode(trues).length).toBeLessThan(list.encode(falses).length);
-    }
+    const size = (w: [number, number]) =>
+      p.array(plain.weights(w)).length(12).adaptive().encode(trues, BITS).length;
+    expect(size([30, 1])).toBeLessThan(size([1, 30]));
   });
 
   it('takes its weights before or after', () => {

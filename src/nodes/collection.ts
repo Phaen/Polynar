@@ -148,7 +148,7 @@ export class PCollection<T> extends MethodNode<T> {
           `${layout.who} adaptive cannot weigh the count: an adaptive collection ends with a symbol`
         );
       }
-      this._resolved = resolve(this._adaptive, Priors.text, layout.who);
+      this._resolved = resolve(this._adaptive, Priors.json, layout.who);
     }
     this._holds =
       this._adaptive !== undefined ||

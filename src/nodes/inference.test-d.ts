@@ -294,7 +294,6 @@ p.string().adaptive({ separate: true });
 p.binary(Uint16Array).adaptive({ separate: true, window: 64 });
 p.int().adaptive({ separate: true });
 p.optional(p.bool()).adaptive({ separate: true });
-// @ts-expect-error — p.any().adaptive() takes no options yet
 p.any().adaptive({ separate: true });
 
 // An adaptive object keeps its shape and passes its options to its fields.

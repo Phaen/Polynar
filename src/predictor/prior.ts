@@ -4,8 +4,9 @@
  * shared by every session that uses it.
  */
 import { HB, ONE, PB, POW2, RB, SB, TABLES_DIGEST, clampi, div, exp2Fix, shl } from './arith';
+import { json } from './shipped/json';
 import { text } from './shipped/text';
-import { APM_B, HF, NSRC, levels } from './types';
+import { APM_B, DIGIT, HF, NSRC, levels } from './types';
 import type { LoadedPrior, Prior, PriorTable } from './types';
 
 /** Probability bounds of the confidence maps in PB bits (the prototype's 1e−4 floor). */
@@ -117,7 +118,11 @@ function checkBuiltin(b: unknown): Prior['builtin'] {
   check(Array.isArray(symbols), 'builtin.symbols', 'must be an array');
   const known = new Set<number>([-1]);
   for (const s of symbols) {
-    check(isInt(s) && s >= 0 && s <= MAX_CP, 'builtin.symbols', 'must hold code points');
+    check(
+      isInt(s) && s >= -1 - (DIGIT - 1) && s <= MAX_CP && s !== -1,
+      'builtin.symbols',
+      'must hold code points, or structure ids s as -1 - s'
+    );
     check(!known.has(s), 'builtin.symbols', `lists ${s} twice`);
     known.add(s);
   }
@@ -128,8 +133,8 @@ function checkBuiltin(b: unknown): Prior['builtin'] {
   );
   for (const c of counts0) check(isInt(c) && c >= 1, 'builtin.counts0', 'must hold integers >= 1');
   check(Array.isArray(contexts1), 'builtin.contexts1', 'must be an array');
-  let prev = -2;
-  let next = -2;
+  let prev = -Infinity;
+  let next = -Infinity;
   for (const e of contexts1) {
     check(Array.isArray(e) && e.length === 3, 'builtin.contexts1', 'must hold triples');
     const [p, n, c] = e;
@@ -213,5 +218,8 @@ export function priorOf(p: Prior): LoadedPrior {
 export const Priors = {
   get text(): LoadedPrior {
     return priorOf(text);
+  },
+  get json(): LoadedPrior {
+    return priorOf(json);
   },
 };

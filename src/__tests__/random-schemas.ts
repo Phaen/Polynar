@@ -843,8 +843,27 @@ const dateCase = (): Case => {
   }
 };
 
+/** A UUID: lowercase hex, mostly v4 under RFC 4122's variant, now and then any version and variant. */
+const randUuid = (): string => {
+  const hex = (n: number): string =>
+    Array.from({ length: n }, () => '0123456789abcdef'.charAt(randInt(0, 15))).join('');
+  const version = rand() < 0.8 ? '4' : hex(1);
+  const variant = rand() < 0.8 ? '89ab'.charAt(randInt(0, 3)) : hex(1);
+  return `${hex(8)}-${hex(4)}-${version}${hex(3)}-${variant}${hex(3)}-${hex(12)}`;
+};
+
+// Plain, learning its two tables, or adaptive.
+const uuidCase = (): Case => {
+  const c: Case = { build: (m) => m.p.uuid(), gen: hotGen(randUuid), src: 'p.uuid()' };
+  if (rand() < 0.3) {
+    const a = randAdaptive(16);
+    return { build: (m) => a.apply(c.build(m)), gen: c.gen, src: `${c.src}${a.src}` };
+  }
+  return withMethods(c, ['learn']);
+};
+
 export const scalarCase = (): Case => {
-  switch (randInt(0, 10)) {
+  switch (randInt(0, 11)) {
     case 0:
       return intCase();
     case 1:
@@ -865,6 +884,8 @@ export const scalarCase = (): Case => {
       return unionCase();
     case 9:
       return binaryCase();
+    case 10:
+      return uuidCase();
     default:
       return dateCase();
   }
@@ -1035,6 +1056,7 @@ export const anyValue = (depth: number, top = false): unknown => {
  */
 const ANY_HINTS: readonly Case[] = [
   { build: (m) => m.p.string().max(3), gen: () => randString(3), src: 'p.string().max(3)' },
+  { build: (m) => m.p.uuid(), gen: randUuid, src: 'p.uuid()' },
   {
     build: (m) => m.p.string().charset(m.CharSets.hex),
     gen: () => pick(['c0ffee', 'beef', '']),
@@ -1065,11 +1087,14 @@ const ANY_HINTS: readonly Case[] = [
   },
 ];
 
-// With hints now and then.
+// Plain or adaptive, with hints now and then.
 const anyCase = (): Case => {
   const hints = rand() < 0.3 ? ANY_HINTS.filter(() => rand() < 0.4) : [];
-  const any = (m: Lib): Node =>
+  const options =
+    rand() < 0.3 ? pick([{}, { separate: true }, { history: randInt(1, 32) }]) : undefined;
+  const plain = (m: Lib): Node =>
     hints.length === 0 ? m.p.any() : m.p.any(hints.map((h) => h.build(m)));
+  const any = (m: Lib): Node => (options === undefined ? plain(m) : plain(m).adaptive(options));
   return {
     build: any,
     // Most values nest two levels, some up to six; a container holds fewer
@@ -1079,7 +1104,7 @@ const anyCase = (): Case => {
       hints.length > 0 && rand() < 0.3
         ? pick(hints).gen()
         : anyValue(rand() < 0.2 ? randInt(3, 6) : 2, true),
-    src: `p.any(${hints.length === 0 ? '' : `[${hints.map((h) => h.src).join(', ')}]`})`,
+    src: `p.any(${hints.length === 0 ? '' : `[${hints.map((h) => h.src).join(', ')}]`})${options === undefined ? '' : `.adaptive(${json(options)})`}`,
   };
 };
 

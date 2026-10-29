@@ -10,10 +10,18 @@ import { PEnum } from './enum';
 import { PNull } from './null';
 import { PArray } from './array';
 import { PCollection, MAP, RECORD, SET } from './collection';
-import { unlocated } from './path';
+import { atPath, unlocated } from './path';
 import { members, type Members } from './members';
+import { IndexRange } from './lattice';
+import { applyAdaptive, checkAdaptive, resolve } from '../predictor/options';
+import { Priors } from '../predictor/prior';
+import { session } from '../predictor/session';
+import { readAny, walkAny, type AnyBody, type AnyCoding } from '../predictor/any';
+import { STRUCT, type AdaptiveOptions } from '../predictor/types';
 
-export { kindMarker } from './markers';
+import { kindMarker } from './markers';
+
+export { kindMarker };
 
 /**
  * Every value `p.any` encodes: the JSON-like scalars plus `undefined`,
@@ -93,6 +101,27 @@ const COMMON_TAGS: ReadonlySet<number> = new Set([
 
 /** The declared weight of a common tag, and of every hint's: a hint is declared, so it is common. */
 const COMMON_TIER = 100;
+
+/** The first structure symbol of each built-in tag's value under `.adaptive()`, in tag order. */
+const TAG_SYMBOLS: readonly number[] = [
+  STRUCT.UNDEFINED,
+  STRUCT.NULL,
+  STRUCT.FALSE,
+  STRUCT.TRUE,
+  STRUCT.INT,
+  STRUCT.NUM,
+  STRUCT.BIGINT,
+  STRUCT.STR,
+  STRUCT.DATE,
+  STRUCT.REGEXP,
+  STRUCT.ARR_START,
+  STRUCT.OBJ_START,
+  STRUCT.MAP_START,
+  STRUCT.SET_START,
+  STRUCT.BUFFER,
+  STRUCT.DATAVIEW,
+  ...Array.from({ length: 12 }, (_, i) => STRUCT.TYPED_0 + i),
+];
 
 /** The declared weight of a rare tag. */
 const RARE_TIER = 1;
@@ -290,6 +319,8 @@ const ANY_BINARY = [
 const ANY_BYTES = new PBinary(Uint8Array);
 const ANY_ARRAY_BUFFER = new AnyArrayBuffer();
 const ANY_DATA_VIEW = new AnyDataView();
+/** The plain spelling of an integer past the number predictor's classes under `.adaptive()`. */
+const ANY_PLAIN_INT = new IndexRange('p.any').plain;
 
 /** The tag of each kind that has exactly one; booleans and numbers split by value. */
 const TAG_BY_KIND = new Map<Kind, number>([
@@ -464,8 +495,11 @@ export class PAny extends PNode<AnyValue> {
   private readonly _byKind = new Map<Kind, number[]>();
   /** The one codec every value goes through. */
   private readonly _codec: AnyCodec;
+  readonly _adaptive?: AdaptiveOptions;
+  /** Under `.adaptive()`: what the predictor's stream codes through. */
+  private readonly _coding?: AnyCoding;
 
-  constructor(hints: readonly PNode<any>[] = []) {
+  constructor(hints: readonly PNode<any>[] = [], adaptive?: AdaptiveOptions) {
     super();
     this._forms = [...hints];
     this._forms.forEach((hint, i) => {
@@ -491,11 +525,92 @@ export class PAny extends PNode<AnyValue> {
         this._forms
       )
     );
+    this._adaptive = adaptive;
+    if (adaptive !== undefined) {
+      this._coding = this._codingOf(adaptive);
+    }
   }
 
-  /** The values through the similarity predictor, which lands in the next stage. */
-  adaptive(): PAny {
-    throw new Error('p.any().adaptive() lands in stage 2');
+  /** What the stream codes through under `adaptive`, the hints adapted under the same options. */
+  private _codingOf(adaptive: AdaptiveOptions): AnyCoding {
+    const filled = { ...adaptive, prior: adaptive.prior ?? Priors.json.source };
+    const o = resolve(filled, Priors.json, 'p.any');
+    const hints = this._forms.map((hint) => applyAdaptive(hint, filled, Priors.json.source));
+    const body = (node: PNode<any>): AnyBody => ({
+      write: (enc, value) => node._write(enc, value),
+      read: (dec) => node._read(dec),
+    });
+    const bodies = new Map<number, AnyBody>([
+      [STRUCT.BIGINT, body(ANY_BIGINT)],
+      [STRUCT.REGEXP, body(ANY_REGEXP)],
+      [STRUCT.BUFFER, body(ANY_ARRAY_BUFFER)],
+      [STRUCT.DATAVIEW, body(ANY_DATA_VIEW)],
+      ...ANY_BINARY.map((node, i): [number, AnyBody] => [STRUCT.TYPED_0 + i, body(node)]),
+    ]);
+    let last: { value: unknown; tag: number } | undefined;
+    // `hint` follows `symbol` on the same value, which tried the hints once.
+    const tagOf = (value: unknown): number => {
+      if (last === undefined || !Object.is(last.value, value)) {
+        last = { value, tag: this._classify(value, true) };
+      }
+      return last.tag;
+    };
+    return {
+      node: this,
+      o,
+      int: ANY_PLAIN_INT,
+      bodies,
+      hints: hints.length,
+      symbol: (_enc, value) => {
+        const tag = tagOf(value);
+        return tag >= TAG_COUNT ? STRUCT.HINT : TAG_SYMBOLS[tag];
+      },
+      hint: (_enc, value) => tagOf(value) - TAG_COUNT,
+      writeHint: (enc, i, value) => this._apart(enc, () => hints[i]._write(enc, value)),
+      readHint: (dec, i) => this._apart(dec, () => hints[i]._read(dec)),
+      nest: (side, code) => this._deeper(side, code),
+      at: atPath,
+    };
+  }
+
+  /** Runs `code`, a hint's own coding, outside every marker scope, as the root of its stream. */
+  private _apart<T>(side: Encoder | Decoder, code: () => T): T {
+    const s = session(side);
+    s.enterPlain();
+    try {
+      return code();
+    } finally {
+      s.leaveScope();
+    }
+  }
+
+  /**
+   * Code the values through the similarity predictor as one stream: every
+   * value's kind as a structure symbol, an object's keys as key text, its
+   * strings, integers and dates predicted at their key path from the values
+   * before them, other numbers as their shortest text, and the rest as
+   * without; hints under their own `.adaptive(options)` where they take it.
+   * Set once.
+   */
+  adaptive(options?: AdaptiveOptions): PAny {
+    if (this._adaptive !== undefined) {
+      throw new TypeError('p.any adaptive is already set');
+    }
+    return new PAny(this._forms, checkAdaptive(options, 'p.any'));
+  }
+
+  _adapted(options: AdaptiveOptions): PAny {
+    return this._adaptive !== undefined ? this : this.adaptive(options);
+  }
+
+  /** The first structure symbol of `value` under `.adaptive()`: HINT where a hint takes it. */
+  _marker(value: unknown): number {
+    try {
+      const tag = this._classify(value, true);
+      return tag >= TAG_COUNT ? STRUCT.HINT : TAG_SYMBOLS[tag];
+    } catch {
+      return kindMarker(value);
+    }
   }
 
   /** This message's state on `side`. */
@@ -508,9 +623,11 @@ export class PAny extends PNode<AnyValue> {
    * the tag's value may hold `p.any`.
    */
   _nest<T>(side: Encoder | Decoder, tag: number, code: () => T): T {
-    if (!nests(tag)) {
-      return code();
-    }
+    return nests(tag) ? this._deeper(side, code) : code();
+  }
+
+  /** Runs `code` one level deeper, refusing past `MAX_DEPTH`. */
+  private _deeper<T>(side: Encoder | Decoder, code: () => T): T {
     const message = this._message(side);
     // A value that contains itself is infinitely deep, so this also stops cycles.
     if (message.depth === MAX_DEPTH) {
@@ -530,11 +647,18 @@ export class PAny extends PNode<AnyValue> {
   }
 
   _write(enc: Encoder, value: AnyValue): void {
-    this._codec._write(enc, value);
+    if (this._coding === undefined) {
+      this._codec._write(enc, value);
+    } else {
+      walkAny(session(enc), enc, this._coding, value);
+    }
   }
 
   _read(dec: Decoder): AnyValue {
-    return this._codec._read(dec);
+    if (this._coding === undefined) {
+      return this._codec._read(dec);
+    }
+    return readAny(session(dec), dec, this._coding) as AnyValue;
   }
 
   /**
@@ -542,11 +666,16 @@ export class PAny extends PNode<AnyValue> {
    * else its built-in tag; on an encoder trying a hint, its built-in tag.
    */
   _tagOf(enc: Encoder, value: unknown): number {
+    return this._classify(value, !trials.has(enc));
+  }
+
+  /** The tag of `value`, the first hint that takes it where `hinted`; throws for a value `p.any` cannot encode. */
+  private _classify(value: unknown, hinted: boolean): number {
     const kind = kindOf(value);
     if (kind === 'date' && isNaN((value as Date).getTime())) {
       throw new TypeError('p.any expected a valid Date, got Invalid Date');
     }
-    for (const i of trials.has(enc) ? [] : (this._byKind.get(kind) ?? [])) {
+    for (const i of hinted ? (this._byKind.get(kind) ?? []) : []) {
       if (this._takes(i, value)) {
         return TAG_COUNT + i;
       }

@@ -92,6 +92,11 @@ describe('assignment order', () => {
     expect(ids.size()).toBe(307);
   });
 
+  it('leaves the structure ids of a prior to their fixed ids', () => {
+    const ids = new Ids(priorWith([-2, 97]));
+    expect(ids.idOf(97)).toBe(CP_BASE);
+  });
+
   it('reuses a prior symbol that is also a digit, newline or space', () => {
     const ids = new Ids(priorWith([32, 0x35, 10]));
     expect(ids.boundaryIds()[2]).toBe(293);

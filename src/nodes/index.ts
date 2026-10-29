@@ -17,6 +17,7 @@ export { PLazy } from './lazy';
 export { PBool } from './bool';
 export { PEnum } from './enum';
 export { PNull } from './null';
+export { PUuid } from './uuid';
 export { PUnion } from './union';
 export { PNullable } from './nullable';
 export type { Kind } from './guards';

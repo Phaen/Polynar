@@ -53,7 +53,7 @@ export class PInt extends MethodNode<number> {
       String,
       adaptive === undefined
         ? undefined
-        : { path: this, options: resolve(adaptive, Priors.text, 'p.int') }
+        : { path: this, options: resolve(adaptive, Priors.json, 'p.int') }
     );
     this._methods = methods;
     this._radix = this._range.radix;

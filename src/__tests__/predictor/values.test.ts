@@ -1,4 +1,5 @@
 import { ONE } from '../../predictor/arith';
+import { Session } from '../../predictor/session';
 import { ESCAPE } from '../../predictor/types';
 import type { PriorConstants } from '../../predictor/types';
 import {
@@ -475,5 +476,69 @@ describe('MemberStep', () => {
     const g = step(1);
     expect(g.get(0)! + g.get(1)!).toBe(65536);
     expect(ms.distinct).toBe(2);
+  });
+});
+
+describe('record agreement', () => {
+  const seq = new Int32Array(64);
+
+  /** The odds of value 0 over value 1 in `b`'s next step, with the session's records or without. */
+  const odds = (b: ValueStep, records?: Session): number => {
+    const d = b.distribution(seq, 20, -1, initialVstep(), null, records) as NonNullable<
+      ReturnType<ValueStep['distribution']>
+    >;
+    return d.freq(d.indexOf(0)) / d.freq(d.indexOf(1));
+  };
+
+  /** Records `a` then `b` (where given) in one record each. */
+  const fill = (s: Session, a: ValueStep, b: ValueStep, rows: [string, string?][]): void => {
+    rows.forEach(([x, y], i) => {
+      s.enterRecord();
+      a.record(x, 2 * i + 1, -1, s);
+      if (y !== undefined) b.record(y, 2 * i + 2, -1, s);
+      s.leaveRecord();
+    });
+  };
+
+  it('raises an occurrence whose record held a rare pair the current record holds', () => {
+    const s = new Session();
+    const a = new ValueStep(64, 65536);
+    const b = new ValueStep(64, 65536);
+    fill(s, a, b, [['rare', 'x'], ['often', 'y'], ['often'], ['often'], ['often']]);
+    s.enterRecord();
+    a.record('rare', 11, -1, s);
+    expect(odds(b, s)).toBeGreaterThan(odds(b));
+    s.leaveRecord();
+  });
+
+  it('adds nothing for a pair every record holds, or outside every record', () => {
+    const s = new Session();
+    const a = new ValueStep(64, 65536);
+    const b = new ValueStep(64, 65536);
+    fill(s, a, b, [
+      ['same', 'x'],
+      ['same', 'y'],
+    ]);
+    expect(odds(b, s)).toBe(odds(b));
+    s.enterRecord();
+    a.record('same', 5, -1, s);
+    expect(odds(b, s)).toBe(odds(b));
+    s.leaveRecord();
+  });
+
+  it('counts a nested record apart, the innermost open', () => {
+    const s = new Session();
+    const a = new ValueStep(64, 65536);
+    expect(s.current).toBe(-1);
+    expect(s.pair(a, 0)).toEqual([-1, 0]);
+    s.enterRecord();
+    s.enterRecord();
+    expect(s.current).toBe(1);
+    a.record('x', 1, -1, s);
+    expect(s.pair(a, 0)).toEqual([1, 1]);
+    s.leaveRecord();
+    expect(s.current).toBe(0);
+    expect(s.pair(a, 0)).toEqual([0, 0]);
+    s.leaveRecord();
   });
 });

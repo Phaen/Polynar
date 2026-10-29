@@ -195,7 +195,7 @@ export class PDate extends MethodNode<Date> {
       (b) => iso(this._calendar.start(b)),
       adaptive === undefined
         ? undefined
-        : { path: this, options: resolve(adaptive, Priors.text, 'p.date') }
+        : { path: this, options: resolve(adaptive, Priors.json, 'p.date') }
     );
     this._methods = methods;
     // Bucket starts rise with the index and none starts after its bound,

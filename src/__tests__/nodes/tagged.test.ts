@@ -127,9 +127,9 @@ describe('p.tagged adaptive', () => {
 
   it('adapts its members, which take their start from the tag', () => {
     const node = plain.adaptive({ window: 64 });
-    expect(node._adaptive).toEqual({ window: 64, prior: Priors.text.source });
-    expect(members(node).a._adaptive).toEqual({ window: 64, prior: Priors.text.source });
-    expect(members(node).b._adaptive).toEqual({ window: 64, prior: Priors.text.source });
+    expect(node._adaptive).toEqual({ window: 64, prior: Priors.json.source });
+    expect(members(node).a._adaptive).toEqual({ window: 64, prior: Priors.json.source });
+    expect(members(node).b._adaptive).toEqual({ window: 64, prior: Priors.json.source });
     expect(trip(node, { kind: 'b', n: 3 })).toEqual({ kind: 'b', n: 3 });
   });
 

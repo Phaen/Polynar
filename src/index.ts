@@ -30,6 +30,7 @@ export {
   PNullable,
   PTagged,
   PVersioned,
+  PUuid,
 } from './nodes';
 export { ProseModels, buildProseModel, members } from './nodes';
 export type {

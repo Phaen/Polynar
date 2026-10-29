@@ -46,7 +46,7 @@ export class PNullable<T> extends MethodNode<T | null> {
     this._members = members(2, { ...prior, learn: learningOf(_methods) }, 'p.nullable');
     this._adaptive = _methods.adaptive;
     if (this._adaptive !== undefined) {
-      this._resolved = resolve(this._adaptive, Priors.text, 'p.nullable');
+      this._resolved = resolve(this._adaptive, Priors.json, 'p.nullable');
     }
   }
 

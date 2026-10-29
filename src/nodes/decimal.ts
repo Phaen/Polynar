@@ -105,7 +105,7 @@ export class PDecimal extends MethodNode<number> {
       (k) => String(this._valueAt(k)),
       adaptive === undefined
         ? undefined
-        : { path: this, options: resolve(adaptive, Priors.text, 'p.decimal') }
+        : { path: this, options: resolve(adaptive, Priors.json, 'p.decimal') }
     );
     this._methods = methods;
     this._radix = this._range.radix;

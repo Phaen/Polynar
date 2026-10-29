@@ -764,6 +764,18 @@ describe('frozen', () => {
     expect(f.tab.count(f.E[1], 292)).toBe(1);
   });
 
+  it('takes -1 - s as structure id s', () => {
+    const f = frozen(
+      { builtinSymbols: [97, -2], builtinCounts0: [1, 2, 3], builtinContexts1: [[-2, 97, 3]] },
+      fake
+    );
+    expect(col(f.tab, 0, 'syms', 3)).toEqual([END, 292, 1]);
+    const h = new Float64Array(3);
+    hashes(Int32Array.from([END, 1]), 2, 1, h);
+    expect(f.lookup(h, 1)).toBe(1);
+    expect(f.tab.count(f.E[1], 292)).toBe(3);
+  });
+
   it('shares the population of a prior while the ids agree, and rebuilds when they differ', () => {
     const f = frozen(prior, fake);
     expect(frozen(prior, fake)).toBe(f);

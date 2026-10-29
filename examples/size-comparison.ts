@@ -368,18 +368,6 @@ const ROWS: Row[] = [
   },
 ];
 
-// `p.any().adaptive()` moves onto the predictor in the next stage; until then the cells keep
-// the sizes the earlier engine measured, per sample, as url-safe, ascii-safe and binary.
-const ANY_ADAPTIVE: Record<string, readonly [number, number, number]> = {
-  'User profile': [41.9, 38.5, 31.7],
-  'GPS position': [20.2, 18.6, 15.4],
-  'Chat message': [58.9, 54.3, 44.6],
-  'Sensor reading': [34.1, 31.3, 25.7],
-  'Shopping cart': [37.9, 34.9, 28.7],
-  'Status feed': [26.1, 24.1, 19.9],
-  'Lorem ipsum': [711, 654, 537],
-};
-
 const KEYS = [
   'json',
   'msgpack',
@@ -399,7 +387,6 @@ const urlSafe = { type: 'text', charset: CharSets.urlSafe } as const;
 const asciiSafe = { type: 'text', charset: CharSets.asciiSafe } as const;
 
 function measure({
-  label,
   node,
   tuned,
   proto,
@@ -410,6 +397,7 @@ function measure({
   const Message = protobuf.parse(proto).root.lookupType(/message (\w+)/.exec(proto)![1]);
   const AvroType = avro.Type.forSchema(avroSchema);
   const any = p.any();
+  const anyAdaptive = p.any().adaptive();
   const sums = Object.fromEntries(KEYS.map((k) => [k, 0])) as Record<Key, number>;
   const second = Object.fromEntries(KEYS.map((k) => [k, 0])) as Record<Key, number>;
   const brotli = Object.fromEntries(KEYS.map((k) => [k, 0])) as Record<Key, number>;
@@ -436,15 +424,14 @@ function measure({
         brotli[key] += brotliCompressSync(cells[key]).length;
       }
     }
+    second.anyUrlSafe += anyAdaptive.encode(value, urlSafe).length;
+    second.anyAsciiSafe += anyAdaptive.encode(value, asciiSafe).length;
+    second.anyBinary += anyAdaptive.encode(value).length;
     const precise = tuned ?? node;
     second.urlSafe += precise.encode(value, urlSafe).length;
     second.asciiSafe += precise.encode(value, asciiSafe).length;
     second.binary += precise.encode(value).length;
   }
-
-  [second.anyUrlSafe, second.anyAsciiSafe, second.anyBinary] = ANY_ADAPTIVE[label].map(
-    (cell) => cell * samples
-  );
 
   // A single sample is an exact size, not a mean.
   const size = (total: number): string =>

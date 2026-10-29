@@ -45,7 +45,7 @@ export class POptional<TOut> extends MethodNode<TOut | undefined> {
     this._members = members(2, { ...prior, learn: learningOf(_methods) }, 'p.optional');
     this._adaptive = _methods.adaptive;
     if (this._adaptive !== undefined) {
-      this._resolved = resolve(this._adaptive, Priors.text, 'p.optional');
+      this._resolved = resolve(this._adaptive, Priors.json, 'p.optional');
     }
   }
 

@@ -6,6 +6,9 @@ import { p, PNode, Encoder, Decoder, CorruptInputError } from '../../index';
 import { STRUCT } from '../../predictor/types';
 import { mulberry32, trip } from '../support';
 
+/** Text of one bit per digit, so a size counts bits. */
+const BITS = { type: 'text', charset: '01' } as const;
+
 describe('Schema union', () => {
   it('routes a value to the member that owns its kind', () => {
     const Node = p.union([p.enum(['a', 'b']), p.int(), p.date()]);
@@ -254,7 +257,7 @@ describe('p.union adaptive', () => {
       const list = parent
         ? p.array(node).length(12).adaptive()
         : p.array(node.adaptive()).length(12);
-      return list.encode(ints).length;
+      return list.encode(ints, BITS).length;
     };
     for (const parent of [false, true]) {
       expect(size([30, 1], parent)).toBeLessThan(size([1, 30], parent));

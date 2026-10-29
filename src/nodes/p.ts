@@ -22,6 +22,7 @@ import {
   PTagged,
   PVersioned,
   PCollection,
+  PUuid,
 } from './';
 import { MAP, RECORD, SET } from './collection';
 import type { Infer } from './infer';
@@ -102,6 +103,14 @@ export const p = {
    */
   binary<A extends TypedArray = Uint8Array>(type?: TypedArrayClass<A>): PBinary<A> {
     return new PBinary((type ?? Uint8Array) as TypedArrayClass<A>);
+  },
+  /**
+   * A UUID: lowercase 8-4-4-4-12 hex, anything else throwing. The version and
+   * variant go through tables that favour v4 and RFC 4122, the other 122 bits
+   * as they are.
+   */
+  uuid(): PUuid {
+    return new PUuid();
   },
   /** Null; zero bits. Mostly a `p.union` member; `p.nullable` covers the usual case. */
   null(): PNull {

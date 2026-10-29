@@ -7,6 +7,9 @@ import { Priors } from '../../predictor/prior';
 import { STRUCT } from '../../predictor/types';
 import { mulberry32, trip } from '../support';
 
+/** Text of one bit per digit, so a size counts bits. */
+const BITS = { type: 'text', charset: '01' } as const;
+
 describe('Schema optional', () => {
   it('hands a present value to its inner node whole', () => {
     // An optional `any` keeps an array whole instead of losing all but the
@@ -115,7 +118,7 @@ describe('p.optional adaptive', () => {
   });
 
   it('adapts its inner node unless that one learns or adapts already', () => {
-    expect(p.optional(p.bool()).adaptive().inner._adaptive).toEqual({ prior: Priors.text.source });
+    expect(p.optional(p.bool()).adaptive().inner._adaptive).toEqual({ prior: Priors.json.source });
     const learning = p.bool().learn();
     expect(p.optional(learning).adaptive().inner).toBe(learning);
     const values = [true, undefined, false, true, undefined];
@@ -137,7 +140,7 @@ describe('p.optional adaptive', () => {
       const list = parent
         ? p.array(node).length(12).adaptive()
         : p.array(node.adaptive()).length(12);
-      return list.encode(absent).length;
+      return list.encode(absent, BITS).length;
     };
     for (const parent of [false, true]) {
       expect(size([1, 30], parent)).toBeLessThan(size([30, 1], parent));

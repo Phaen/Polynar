@@ -63,7 +63,7 @@ export abstract class MethodNode<TOut> extends PNode<TOut> {
       throw new TypeError(`${who} learn and adaptive cannot both be set`);
     }
     // The default prior of every node that is not a string or a binary.
-    return applyAdaptive(this, checkAdaptive(options, who), Priors.text.source);
+    return applyAdaptive(this, checkAdaptive(options, who), Priors.json.source);
   }
 
   /**

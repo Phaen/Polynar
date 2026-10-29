@@ -635,7 +635,7 @@ export class PFloat extends PNode<number> {
     if (adaptive !== undefined) {
       this._predicted = new AdaptiveFloat(
         this,
-        resolve(adaptive, Priors.text, 'p.float'),
+        resolve(adaptive, Priors.json, 'p.float'),
         resolved,
         this._formWeights
       );
