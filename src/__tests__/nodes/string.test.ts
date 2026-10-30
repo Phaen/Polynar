@@ -497,7 +497,7 @@ describe('p.string().compress()', () => {
       // escape exists only for the members dropped to fit the total.
       const count = 2060;
       const chars = Array.from({ length: count }, (_, i) => String.fromCharCode(0x100 + i));
-      const value = chars.join('') + chars.reverse().join('');
+      const value = chars.join('') + chars.slice(0, 200).reverse().join('');
       const node = p
         .string()
         .charset([0x100, 0x100 + count - 1])
