@@ -433,6 +433,20 @@ class PNoNine extends PNode<number> {
 }
 
 describe('Compressed collections', () => {
+  it('round-trips an empty collection whose keys carry weights', () => {
+    const flag = p.bool().weights([19, 1]);
+    const cases: [PNode<unknown>, unknown][] = [
+      [p.map(flag, p.int()).compress(), new Map()],
+      [p.set(flag).compress(), new Set()],
+      [p.record(flag).compress(), {}],
+    ];
+    for (const [node, empty] of cases) {
+      const bytes = node.encode(empty);
+      expect(node.decode(bytes)).toEqual(empty);
+      expect(node.encode(node.decode(bytes))).toEqual(bytes);
+    }
+  });
+
   const digit = p.int().min(0).max(9);
 
   it('round-trip maps with keys of several kinds', () => {

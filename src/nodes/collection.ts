@@ -386,7 +386,9 @@ export class PCollection<T> extends MethodNode<T> {
       }
     }
     if (size !== hi) {
-      s.marker(this, o).write(enc, end, undefined, { end, allow: true });
+      // The reader loads the key node's declared weights before every symbol, the end included.
+      const prior = this._layout.learnedKey === undefined ? this._keys._markerPrior() : undefined;
+      s.marker(this, o).write(enc, end, undefined, { end, allow: true }, prior);
     }
   }
 

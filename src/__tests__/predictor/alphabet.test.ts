@@ -304,7 +304,7 @@ describe('unicode tables', () => {
     }
   });
 
-  it('agree on every cased code point', () => {
+  onPinnedUnicode('agree on every cased code point', () => {
     for (let i = 0; i < CASE_PAIRS.length; i++) {
       const c = CASE_PAIRS[i];
       expect(referencePartner(c)).toBe(casePartnerCp(c));

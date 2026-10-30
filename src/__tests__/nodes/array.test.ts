@@ -410,6 +410,19 @@ class PNoNine extends PNode<number> {
 }
 
 describe('p.array compress', () => {
+  it('round-trips an empty array whose items carry weights', () => {
+    const union = p.union([p.string().max(6), p.null(), p.bool()]).weights([977, 371, 27]);
+    for (const node of [
+      p.array(union).compress(),
+      p.array(p.bool().weights([19, 1])).compress(),
+      p.array(p.nullable(p.string()).weights([1, 4])).compress(),
+    ]) {
+      const bytes = node.encode([]);
+      expect(node.decode(bytes)).toEqual([]);
+      expect(node.encode(node.decode(bytes))).toEqual(bytes);
+    }
+  });
+
   const digit = p.int().min(0).max(9);
   const words = ['alpha', 'beta', 'alphabet', '', 'gamma', 'beta'];
 
