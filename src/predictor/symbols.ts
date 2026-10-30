@@ -179,6 +179,8 @@ export interface MessageCore {
   valueId: number;
   valuePop: Population | null;
   valuesStarted: boolean;
+  /** Training: told every symbol a predictor learns (session.ts `SessionOptions.trace`). */
+  readonly trace: ((id: number, alphabet: AlphabetKind) => void) | null;
 }
 
 /**
@@ -1178,6 +1180,7 @@ export class SymbolPredictor {
   /** Learns from coded symbol `a` and moves every population past it (spec §4.4 step 8). */
   learn(a: number): void {
     const core = this.core;
+    if (core.trace !== null) core.trace(a, this.alphabet);
     const f = core.features;
     const ids = core.ids;
     const log = this.log;

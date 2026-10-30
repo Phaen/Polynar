@@ -1,7 +1,9 @@
-alice 7fc7423b
-prose cf8c2e9c
-chat 2dfcf592
-names 1bf9c1dc
-ints 4fa7e54b
-ints-records 1adefa9f
-dates 54459059
+alice 32d1c398
+prose ead2b493
+chat 31141093
+names 80cff1db
+ints 10179006
+ints-records 2dd89bd4
+dates e960f257
+fixture-strings 1a092fee
+fixture-json 8fdecfa1

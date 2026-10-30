@@ -1,6 +1,8 @@
 import { ONE, PB, POW2, TABLES_DIGEST } from '../../predictor/arith';
 import { P16_MAX, P16_MIN, Priors, loadPrior, logitToP16, priorOf } from '../../predictor/prior';
+import { json } from '../../predictor/shipped/json';
 import { text } from '../../predictor/shipped/text';
+import { MAX_CONTEXTS } from '../../predictor/train';
 import { APM_B, HF, NSRC, levels } from '../../predictor/types';
 import type { Prior, PriorTable } from '../../predictor/types';
 
@@ -93,11 +95,22 @@ describe('the shipped text prior', () => {
       expect(v).toBeGreaterThanOrEqual(P16_MIN);
       expect(v).toBeLessThanOrEqual(P16_MAX);
     }
-    // The node block equals the message block after the converter's adjustment.
-    for (let i = 0; i < levels(8) * HF; i++) expect(p.hybrid[i]).toBe(p.hybrid[levels(8) * HF + i]);
+    // Trained by train(): the built-in within the cap, alice.txt held out.
+    expect(p.builtinContexts1.length).toBeLessThanOrEqual(MAX_CONTEXTS);
+    expect(text.trainedOn).toContain('alice.txt stays a held-out gate set');
     // ν = ln 0.3 in bits, within the Int8 step.
     const nu = p.numberStart[137] / ONE;
     expect(Math.abs(nu - Math.log2(0.3))).toBeLessThan(0.05);
+  });
+});
+
+describe('the shipped JSON prior', () => {
+  it('was trained by train() on the corpus, its built-in within the cap', () => {
+    const p = Priors.json;
+    expect(p.source).toBe(json);
+    expect(p.builtinContexts1.length).toBeLessThanOrEqual(MAX_CONTEXTS);
+    expect(p.builtinSymbols.some((s) => s < 0)).toBe(true);
+    expect(json.trainedOn).toContain('research corpus');
   });
 });
 

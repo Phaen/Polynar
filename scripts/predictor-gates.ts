@@ -19,6 +19,9 @@
  * - schema: every corpus file under the schema inferred from it (the research ledger's
  *   `build()`, dates at second precision where every one is a whole second, as the prototype's
  *   schema stream had them), `.adaptive()` on the root only.
+ * - schemaHeldOut: the schema set, each file under a JSON prior trained with `train()` on the other
+ *   half of the corpus (the files sorted by name, even and odd), so no file is priced under a prior
+ *   that saw it; reported, not gated.
  * - corpusPlain: every corpus file as one plain `p.any()` message; its gate is its bytes exactly.
  *
  *   npx tsx scripts/predictor-gates.ts <rawfiles dir> <corpus dir>
@@ -30,6 +33,8 @@ import { join } from 'path';
 import { Decoder, Encoder } from '../src/packer';
 import { p } from '../src/nodes';
 import type { PNode, PObject } from '../src/nodes';
+import { Priors } from '../src/predictor/prior';
+import { train } from '../src/predictor/train';
 import type { AdaptiveOptions } from '../src/predictor/types';
 import { numberMessages, readNumbers, writeNumbers } from './predictor-sets';
 import type { NumberSetName } from './predictor-sets';
@@ -46,6 +51,7 @@ const SETS = [
   'dates',
   'corpus',
   'schema',
+  'schemaHeldOut',
   'corpusPlain',
 ] as const;
 type SetName = (typeof SETS)[number];
@@ -65,14 +71,21 @@ const GATES: Record<SetName, number> = {
   // The prototype's 84,610 included companion cells, which the research closed; the formula's
   // remaining gap sits in events, slack and npm-pkg.
   schema: 86000,
+  schemaHeldOut: Infinity,
   corpusPlain: 757000,
 };
+
+/** The sets that are reported, not gated. */
+const REPORTED: ReadonlySet<SetName> = new Set(['schemaHeldOut']);
 
 /** The sets whose gate is their bytes exactly. */
 const EXACT: ReadonlySet<SetName> = new Set(['corpusPlain']);
 
 const RAW: Record<
-  Exclude<SetName, 'strings' | 'corpus' | 'schema' | 'corpusPlain' | NumberSetName>,
+  Exclude<
+    SetName,
+    'strings' | 'corpus' | 'schema' | 'schemaHeldOut' | 'corpusPlain' | NumberSetName
+  >,
   string
 > = {
   alice: 'alice.txt',
@@ -244,7 +257,30 @@ function buildKind(k: string, vs: any[]): Built {
 
 const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
+/** The schema set's bytes with each half of the corpus under a prior trained on the other half. */
+function schemaHeldOut(corpus: string, o: AdaptiveOptions): number {
+  const files = readdirSync(corpus)
+    .filter((name) => name.endsWith('.json'))
+    .sort();
+  const values = files.map((f) => JSON.parse(readFileSync(join(corpus, f), 'utf8')));
+  const halves = [0, 1].map((h) => values.filter((_, i) => i % 2 === h));
+  let bytes = 0;
+  for (const h of [0, 1]) {
+    const prior = train(p.any().adaptive(), halves[1 - h], {
+      holdOut: 0,
+      from: Priors.json.source,
+      epochs: 3,
+    });
+    for (const v of halves[h]) {
+      const b = build([v]);
+      bytes += trip([(b.node as PObject<any>).adaptive({ ...o, prior })], [b.conv(v)], sameJson);
+    }
+  }
+  return bytes;
+}
+
 function measure(set: SetName, raw: string, corpus: string, o: AdaptiveOptions): number {
+  if (set === 'schemaHeldOut') return schemaHeldOut(corpus, o);
   if (set === 'corpus' || set === 'schema' || set === 'corpusPlain') {
     let bytes = 0;
     for (const f of readdirSync(corpus)
@@ -356,9 +392,13 @@ function main(): number {
   for (const set of sets) {
     const t0 = performance.now();
     const bytes = measure(set, positional[0], positional[1], options);
+    const s = ((performance.now() - t0) / 1000).toFixed(1);
+    if (REPORTED.has(set)) {
+      say(`${set} bytes=${bytes} ${s}s`);
+      continue;
+    }
     const pass = EXACT.has(set) ? bytes === GATES[set] : bytes <= GATES[set];
     failed ||= !pass;
-    const s = ((performance.now() - t0) / 1000).toFixed(1);
     say(`${set} bytes=${bytes} gate=${GATES[set]} ${pass ? 'PASS' : 'FAIL'} ${s}s`);
   }
   return failed ? 1 : 0;

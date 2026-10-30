@@ -34,13 +34,13 @@ The first table is self-describing: keys and types travel with the data. Polynar
 
 | Payload        |         JSON |  MessagePack |     url-safe |   ascii-safe |           binary |
 | -------------- | -----------: | -----------: | -----------: | -----------: | ---------------: |
-| User profile   |  62.8 (64.3) |  44.6 (48.4) |  53.7 (36.0) |  49.5 (33.2) |  40.7 (**27.4**) |
-| GPS position   |  32.0 (36.0) |  27.0 (31.0) |  26.8 (24.8) |  24.7 (22.9) |  20.4 (**18.9**) |
-| Chat message   |  95.5 (89.3) |  69.1 (71.1) |  79.2 (55.2) |  72.8 (50.9) |  59.9 (**42.0**) |
-| Sensor reading |  53.8 (55.9) |  39.9 (43.7) |  42.9 (31.0) |  39.5 (28.6) |  32.6 (**23.6**) |
-| Shopping cart  | 124.4 (67.0) |  85.1 (61.9) | 100.6 (37.6) |  92.6 (34.6) |  76.1 (**28.5**) |
-| Status feed    | 521.8 (63.4) | 323.8 (60.4) | 385.0 (29.8) | 354.2 (27.4) | 290.8 (**22.6**) |
-| Lorem ipsum    |   1375 (641) |   1372 (631) |   1596 (695) |   1469 (639) |   1206 (**525**) |
+| User profile   |  62.8 (64.3) |  44.6 (48.4) |  53.7 (35.1) |  49.5 (32.4) |  40.7 (**26.7**) |
+| GPS position   |  32.0 (36.0) |  27.0 (31.0) |  26.8 (23.1) |  24.7 (21.3) |  20.4 (**17.6**) |
+| Chat message   |  95.5 (89.3) |  69.1 (71.1) |  79.2 (55.3) |  72.8 (50.8) |  59.9 (**41.8**) |
+| Sensor reading |  53.8 (55.9) |  39.9 (43.7) |  42.9 (29.7) |  39.5 (27.4) |  32.6 (**22.6**) |
+| Shopping cart  | 124.4 (67.0) |  85.1 (61.9) | 100.6 (35.5) |  92.6 (32.7) |  76.1 (**27.0**) |
+| Status feed    | 521.8 (63.4) | 323.8 (60.4) | 385.0 (28.2) | 354.2 (25.9) | 290.8 (**21.4**) |
+| Lorem ipsum    |   1375 (641) |   1372 (631) |   1596 (700) |   1469 (644) |   1206 (**529**) |
 
 In the second table both sides share a schema and only the values are written. Protobuf and Avro get the same decimal steps as scaled integers, but only Polynar can use the bounds. Protobuf tags every field and rounds it up to whole bytes, Avro drops the tags but keeps the bytes, and Polynar spends fractional bits.
 
@@ -52,7 +52,7 @@ In the second table both sides share a schema and only the values are written. P
 | Sensor reading |  10.6 (14.6) |   7.2 (11.2) |   5.9 (5.9) |   5.3 (5.3) |   **4.6** (4.6) |
 | Shopping cart  |  37.2 (40.8) |  20.8 (24.8) | 18.5 (15.8) | 17.0 (14.6) | 14.1 (**12.1**) |
 | Status feed    | 102.0 (27.8) | 103.0 (28.1) |  24.0 (8.5) |  22.1 (7.9) |  18.3 (**6.6**) |
-| Lorem ipsum    |   1372 (629) |   1371 (632) |   968 (711) |   891 (654) |   732 (**537**) |
+| Lorem ipsum    |   1372 (629) |   1371 (632) |   968 (699) |   891 (643) |   732 (**528**) |
 
 Polynar's binary output is smaller than every binary format's on every row, plain or compressed, and its url-safe text is smaller than JSON on every row and rivals the binary formats.
 
@@ -434,7 +434,7 @@ Every value one node writes in a message goes through one table, so array items,
 `.adaptive()` on `p.string` and `p.binary` hands the characters or bytes to the similarity predictor. Each one is predicted from the positions in the message whose context looks like the current one, in the same field, in every other field of the message and in a prior that ships with the package, and it learns as it goes, so text, ids, URLs and keys that resemble what came before cost little. A value the node already wrote costs a few bits, and the end of a value is one more symbol instead of a length. Strings start from a prior trained on English text and binaries from nothing; every other node, and every node under one `.adaptive()` on a container or `p.any`, starts from a prior trained on JSON documents.
 
 ```typescript
-p.string().adaptive(); // alice.txt: 43,572 bytes, against 44,298 under the old learned prose model
+p.string().adaptive(); // alice.txt: 43,364 bytes, against 44,298 under the old learned prose model
 p.array(p.string().adaptive()); // the string values of a JSON file, each key its own node: 16% smaller than before
 p.binary().adaptive(); // bytes, a closed alphabet of 256
 ```
@@ -459,6 +459,22 @@ On objects, arrays, maps, records, sets and the nodes that choose, the predictor
 | `quantisation?: number` | The total every coded distribution is scaled to, a power of two from 2^12 to 2^24, 2^16 when left out.                |
 
 The options are part of the schema, as everything else is.
+
+#### Priors
+
+Two priors ship with the package. The text prior is trained on the `man bash` page, the string values of thirteen JSON documents (the first 12,000 characters of each) and a list of first names; strings start from it, and binaries take its learned weights without its characters. The JSON prior is trained on those thirteen documents whole, and every other node starts from it. Each holds the weights the predictor learned and how often each character follows another, the 2,500 most frequent pairs.
+
+`train(node, samples, options?)` makes one from your own data. Each sample is one message of `node`, which needs `.adaptive()` on itself or somewhere below it, and the result is plain JSON you can store and pass as `.adaptive({ prior })`; the same samples give the same prior on every engine.
+
+| Option                                                      | Description                                                                                                                                   |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `holdOut?: number`                                          | The share of samples held out to pick the learning rates on, 0.5 when left out; 0 keeps those of `from`.                                      |
+| `from?: Prior`                                              | The prior training starts from; the shipped one the node would use when left out.                                                             |
+| `epochs?: number`                                           | How many times training goes over the samples, 3 when left out.                                                                               |
+| `seed?: number`                                             | The order of the samples and which ones are held out, 1 when left out.                                                                        |
+| `grid?: { eta?: number[]; rho0?: number[]; n0?: number[] }` | The learning rates `holdOut` tries, in the units of the prior's `constants`; every combination of three, four and three values when left out. |
+
+It is an offline tool: it codes every sample `epochs` times, and with `holdOut` does that for each of 36 combinations of learning rates first; the text prior's half a megabyte of samples took under an hour. The full grid takes minutes per combination for strings but hours in all for whole messages, so a prior of whole messages narrows it: the shipped JSON prior keeps its `rho0` and `n0` and tries `eta` alone.
 
 ## Encoding and decoding
 
@@ -524,7 +540,8 @@ A value that can't be encoded throws with its path in front and the limit it bro
 - `Cdf` — `(v: number) => number`, the function `.cdf()` takes.
 - `LearningOptions` — `{ window?: number; separate?: boolean }`, what `.learn()` takes.
 - `AdaptiveOptions` — what `.adaptive()` takes; see [The predictor](#the-predictor-adaptive).
-- `Prior` — a prior the predictor starts from, as `AdaptiveOptions.prior` takes it; the package ships one trained on English text and one on JSON documents.
+- `Prior` — a prior the predictor starts from, as `AdaptiveOptions.prior` takes it and `train` returns; the package ships one trained on English text and one on JSON documents.
+- `TrainOptions` — what `train` takes; see [Priors](#priors).
 - `MemberPrior` — `{ weights?: readonly number[]; rows?: readonly (readonly number[])[]; learn?: LearningOptions }`, the prior `members` takes.
 - `Members` — what `members` returns: its `count`, its `radix` when every member is equally likely, `write(enc, pos, row?)` and `read(dec, row?)`.
 - `Bucket` — `[cum, freq, total]`, one coding's range for a symbol, as `composeAlternatives` takes it.
@@ -537,7 +554,7 @@ A value that can't be encoded throws with its path in front and the limit it bro
 - `OutputType` — `'binary' | 'text'`.
 - `CodecOptions` — the options of `encode` and `decode`. Without a type argument it has no `type`, so one options object works for both forms; `CodecOptions<'text'>` requires `type: 'text'`, so `encode` with it returns a string, and `CodecOptions<'binary'>` and `CodecOptions<OutputType>` take it optionally.
 
-The node classes are exported too (`PNode`, `PInt`, `PString`, `PObject`, …), along with `ProseModels`, `buildProseModel`, `members` and `MessageState`.
+The node classes are exported too (`PNode`, `PInt`, `PString`, `PObject`, …), along with `ProseModels`, `buildProseModel`, `train`, `members` and `MessageState`.
 
 ## Custom nodes
 
@@ -712,6 +729,18 @@ const Comment = p.string().max(500).prose(model);
 ```
 
 Both sides need the same model, like any other part of the schema.
+
+### A prior trained on your data
+
+```typescript
+import { p, train } from 'polynar';
+
+const Event = p.object({ type: p.string(), at: p.date(), user: p.string() });
+const prior = train(p.array(Event).adaptive(), batches); // batches: arrays of events from your logs; plain JSON you can store
+const Batch = p.array(Event).adaptive({ prior });
+```
+
+Both sides need the same prior, like any other part of the schema.
 
 ## Contributing
 

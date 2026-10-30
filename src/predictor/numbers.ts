@@ -128,9 +128,13 @@ export class NumberState {
   /** Values in a row that were the top candidate. */
   run = 0;
 
-  constructor(readonly o: Resolved) {
+  /** `start`: the number-start table of the prior the path's space codes under. */
+  constructor(
+    readonly o: Resolved,
+    start: Float64Array
+  ) {
     this.hist = new Float64Array(o.history);
-    this.params = o.prior.numberStart.slice();
+    this.params = start.slice();
   }
 }
 

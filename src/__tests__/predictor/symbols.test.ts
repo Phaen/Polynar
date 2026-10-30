@@ -386,6 +386,9 @@ describe('SymbolPredictor tables', () => {
   });
 
   it('breaks top ties toward the lowest id', () => {
+    // Either order leaves the two bytes tied before the confidence map, which rescales the top
+    // alone: the same top, the lower id, gives the same difference.
+    const diffs: number[] = [];
     for (const order of [
       [2, 1],
       [1, 2],
@@ -396,11 +399,11 @@ describe('SymbolPredictor tables', () => {
       for (const b of order) pred.code(enc, BYTE_BASE + b);
       pred.distribution();
       const d = pred.dist;
-      expect(d.freq(d.indexOf(BYTE_BASE + 1))).toBeGreaterThanOrEqual(
-        d.freq(d.indexOf(BYTE_BASE + 2))
-      );
+      diffs.push(d.freq(d.indexOf(BYTE_BASE + 1)) - d.freq(d.indexOf(BYTE_BASE + 2)));
       pred.learn(BYTE_BASE + 1);
     }
+    expect(diffs[0]).not.toBe(0);
+    expect(diffs[1]).toBe(diffs[0]);
   });
 });
 

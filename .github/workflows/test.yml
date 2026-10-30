@@ -45,6 +45,9 @@ jobs:
     - name: Run tests with coverage (fails below 100%)
       run: npm run test:coverage
 
+    - name: Check the predictor's coded calls against the committed digests
+      run: npx tsx scripts/lockstep.ts --fixtures --check
+
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v5
       if: matrix.node-version == '20.x'

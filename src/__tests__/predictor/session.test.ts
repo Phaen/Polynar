@@ -374,6 +374,10 @@ describe('cost', () => {
     const bits = s.cost('p', opts(), 'text', v, OPEN);
     expect(bits).toBeGreaterThan(0);
     expect(Number.isInteger(bits)).toBe(true);
+    // A code point new to the message and the prior adds its escape body's digits.
+    const novel = s.cost('q', opts(), 'text', cps('abc\u{2f800}'), OPEN);
+    expect(novel).toBeGreaterThan(bits);
+    expect(Number.isInteger(novel)).toBe(true);
   });
 });
 

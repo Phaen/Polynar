@@ -2,19 +2,23 @@
  * The cross-engine check of the predictor's integer arithmetic (spec §5.9): encodes the string and
  * number sets of scripts/predictor-sets.ts and prints, per set, the FNV-1a 32 digest of every
  * coded call in order (a weighted symbol as (cum, freq, total), a plain digit as (value, 0, radix),
- * a mixture as its weights before its spellings, each word as its 4 little-endian bytes). With
- * --check the digests are compared with scripts/lockstep.digest (exit code 1 on a difference); with
- * --write that file is written.
+ * a mixture as its weights before its spellings, each word as its 4 little-endian bytes), and the
+ * same for the fixtures below, which need no research files and are what CI checks. With --check
+ * the digests are compared with scripts/lockstep.digest (exit code 1 on a difference); with
+ * --write that file is written. --fixtures computes, checks or writes the fixture lines alone.
  *
  *   npx tsx scripts/lockstep.ts <alice.txt> <corpus dir> [--check | --write]
+ *   npx tsx scripts/lockstep.ts --fixtures [--check | --write]
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { p } from '../src/nodes';
 import { Encoder } from '../src/packer';
 import type { Sink } from '../src/predictor/session';
 import {
   NUMBER_SETS,
+  codePoints,
   SET_NAMES,
   messages,
   numberMessages,
@@ -80,23 +84,73 @@ function digest(set: SetName | NumberSetName, alice: string, corpus: string): st
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
+/** Three short strings, each one message under the text prior. */
+const FIXTURE_STRINGS = [
+  'The quick brown fox jumps over the lazy dog.',
+  'https://example.com/users/1024?tab=profile',
+  'Ünïcödé, emoji 👍 and digits 0123456789',
+];
+
+/** A small JSON value as one `p.any().adaptive()` message under the JSON prior. */
+const FIXTURE_JSON = {
+  id: 1024,
+  name: 'Ada Lovelace',
+  tags: ['math', 'engine', 'math'],
+  active: true,
+  score: 98.5,
+  manager: null,
+  visits: [
+    { at: '2024-05-01T10:00:00Z', n: 3 },
+    { at: '2024-05-02T10:00:00Z', n: 4 },
+  ],
+};
+
+/** The fixture lines: their sets need nothing outside the repository. */
+function fixtures(): string[] {
+  let h = 0x811c9dc5;
+  for (const s of FIXTURE_STRINGS) {
+    const enc = new DigestEncoder();
+    enc.h = h;
+    writeMessage(enc, enc, { strings: [codePoints(s)], list: false }, {});
+    h = enc.h;
+  }
+  const strings = (h >>> 0).toString(16).padStart(8, '0');
+  const enc = new DigestEncoder();
+  p.any().adaptive()._write(enc, FIXTURE_JSON);
+  const json = (enc.h >>> 0).toString(16).padStart(8, '0');
+  return [`fixture-strings ${strings}`, `fixture-json ${json}`];
+}
+
 function main(): number {
   const argv = process.argv.slice(2);
   const positional = argv.filter((a) => !a.startsWith('--'));
-  if (positional.length !== 2) {
-    console.error('usage: tsx scripts/lockstep.ts <alice.txt> <corpus dir> [--check | --write]');
+  const only = argv.includes('--fixtures');
+  if (positional.length !== (only ? 0 : 2)) {
+    console.error(
+      'usage: tsx scripts/lockstep.ts <alice.txt> <corpus dir> [--check | --write]\n' +
+        '       tsx scripts/lockstep.ts --fixtures [--check | --write]'
+    );
     return 2;
   }
   const lines: string[] = [];
-  for (const set of [...SET_NAMES, ...NUMBER_SETS]) {
-    lines.push(`${set} ${digest(set, positional[0], positional[1])}`);
+  if (!only) {
+    for (const set of [...SET_NAMES, ...NUMBER_SETS]) {
+      lines.push(`${set} ${digest(set, positional[0], positional[1])}`);
+    }
   }
-  const text = `${lines.join('\n')}\n`;
-  process.stdout.write(text);
+  lines.push(...fixtures());
+  process.stdout.write(`${lines.join('\n')}\n`);
+  const committed = existsSync(DIGEST_FILE) ? readFileSync(DIGEST_FILE, 'utf8').split('\n') : [];
+  const name = (line: string): string => line.split(' ')[0];
+  // The fixture lines alone replace or match their own lines of the file; the other lines stay.
+  const merged = only
+    ? [...committed.filter((l) => l !== '' && !lines.some((x) => name(x) === name(l))), ...lines]
+    : lines;
+  const text = `${merged.join('\n')}\n`;
   if (argv.includes('--write')) {
     writeFileSync(DIGEST_FILE, text);
-  } else if (argv.includes('--check') && existsSync(DIGEST_FILE)) {
-    if (readFileSync(DIGEST_FILE, 'utf8') !== text) {
+  } else if (argv.includes('--check')) {
+    if (committed.join('\n') !== text) {
       console.error('lockstep: digests differ from scripts/lockstep.digest');
       return 1;
     }

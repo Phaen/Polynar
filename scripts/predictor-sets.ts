@@ -39,7 +39,7 @@ const mulberry32 = (seed: number) => (): number => {
 };
 
 // From examples/size-comparison.ts.
-const NAMES = [
+export const NAMES = [
   'Ada Lovelace',
   'Alan Turing',
   'Grace Hopper',

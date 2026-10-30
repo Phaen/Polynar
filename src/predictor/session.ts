@@ -40,7 +40,18 @@ export interface SessionOptions {
   readonly features?: Partial<Features>;
   /** D2's fallback: the value population exists only from the message's second value on. */
   readonly valueFromSecond?: boolean;
+  /**
+   * Training (train.ts): every predictor of the message codes in one space under `carry.loaded`,
+   * whatever prior its node names, and learns into `carry` itself, so the next message that
+   * carries it continues from this one's end state.
+   */
+  readonly carry?: RunPrior;
+  /** Training: called with every symbol a predictor learns, coded or implied, in order. */
+  readonly trace?: Trace;
 }
+
+/** A symbol id a predictor learned and the alphabet it belongs to. */
+export type Trace = (id: number, alphabet: AlphabetKind) => void;
 
 /** Codes one value of an alphabet's symbols at a path, with END by the value's `Ends`. */
 export interface TextCoder {
@@ -177,10 +188,12 @@ export class Space implements MessageCore {
   constructor(
     prior: LoadedPrior,
     readonly features: Features,
-    readonly valueFromSecond: boolean
+    readonly valueFromSecond: boolean,
+    carry: RunPrior | undefined,
+    readonly trace: Trace | null
   ) {
     this.ids = new Ids(prior);
-    this.run = newRunPrior(prior);
+    this.run = carry ?? newRunPrior(prior);
     this.builtin = frozen(prior, this.ids);
   }
 
@@ -196,7 +209,7 @@ export class Space implements MessageCore {
   /** The number state of a path and its coder, made with the range and spelling of first use. */
   number(key: PathKey, o: Resolved, range: NumberRange, plain: PlainNumber): NumberPath {
     return this.numbers.get(key, () => {
-      const state = new NumberState(o);
+      const state = new NumberState(o, this.run.loaded.numberStart);
       return { state, coder: new NumberCoder(state, this.run, o, range, plain) };
     });
   }
@@ -301,6 +314,8 @@ export class Session implements RecordView {
   private pendingFor: object | null = null;
   /** The choice nodes whose weights each structure population holds. */
   private readonly loaded = new Map<Population, Set<object>>();
+  private readonly carry: RunPrior | undefined;
+  private readonly trace: Trace | null;
 
   constructor(
     options: SessionOptions = {},
@@ -308,14 +323,18 @@ export class Session implements RecordView {
   ) {
     this.features = { ...defaultFeatures(), ...options.features };
     this.valueFromSecond = options.valueFromSecond === true;
+    this.carry = options.carry;
+    this.trace = options.trace ?? null;
   }
 
-  /** The space of `prior`, made on first use. */
+  /** The space of `prior` (of `carry.loaded` when the session carries a run prior), made on first use. */
   space(prior: LoadedPrior): Space {
-    let space = this.spaces.get(prior);
+    const carry = this.carry;
+    const p = carry === undefined ? prior : carry.loaded;
+    let space = this.spaces.get(p);
     if (space === undefined) {
-      space = new Space(prior, this.features, this.valueFromSecond);
-      this.spaces.set(prior, space);
+      space = new Space(p, this.features, this.valueFromSecond, carry, this.trace);
+      this.spaces.set(p, space);
       this.first ??= space;
     }
     return space;
