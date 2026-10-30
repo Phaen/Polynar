@@ -6,7 +6,7 @@ import type { Cdf, Prior } from './weights';
 import type { LearningOptions } from './adaptive';
 import { learningOf, learns, MethodNode, type MethodSet } from './methods';
 import { checkAdaptive, resolve } from '../predictor/options';
-import { Priors } from '../predictor/prior';
+import { loadedPriors } from '../predictor/prior';
 import { STRUCT, type AdaptiveOptions } from '../predictor/types';
 
 const DATE_MARKERS: ReadonlySet<number> = new Set([STRUCT.DATE]);
@@ -195,7 +195,7 @@ export class PDate extends MethodNode<Date> {
       (b) => iso(this._calendar.start(b)),
       adaptive === undefined
         ? undefined
-        : { path: this, options: resolve(adaptive, Priors.json, 'p.date') }
+        : { path: this, options: resolve(adaptive, loadedPriors.json, 'p.date') }
     );
     this._methods = methods;
     // Bucket starts rise with the index and none starts after its bound,

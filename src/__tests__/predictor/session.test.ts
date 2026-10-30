@@ -1,8 +1,7 @@
 import { CorruptInputError, Decoder, Encoder } from '../../packer';
-import { ONE } from '../../predictor/arith';
 import { loadPrior } from '../../predictor/prior';
 import { resolve } from '../../predictor/options';
-import { Priors } from '../../predictor/prior';
+import { loadedPriors } from '../../predictor/prior';
 import { text as shippedText } from '../../predictor/shipped/text';
 import { Session, session } from '../../predictor/session';
 import type {
@@ -17,7 +16,7 @@ import { END, STRUCT } from '../../predictor/types';
 import type { AdaptiveOptions, AlphabetKind, Ends, PathKey, Resolved } from '../../predictor/types';
 
 const OPEN: Ends = { min: 0, max: undefined, fixed: false };
-const opts = (o: AdaptiveOptions = {}): Resolved => resolve(o, Priors.text, 'test');
+const opts = (o: AdaptiveOptions = {}): Resolved => resolve(o, loadedPriors.text, 'test');
 const cps = (s: string): Int32Array => Int32Array.from(s, (ch) => ch.codePointAt(0)!);
 const str = (a: Int32Array): string => String.fromCodePoint(...a);
 
@@ -84,26 +83,6 @@ const textAt =
   (s) =>
     s.text(path, o, alphabet);
 
-const ENGLISH =
-  'It was a bright cold day in April, and the clocks were striking thirteen. The hallway ' +
-  'smelt of boiled cabbage and old rag mats. At one end of it a coloured poster, too large ' +
-  'for indoor display, had been tacked to the wall. It depicted simply an enormous face, more ' +
-  'than a metre wide: the face of a man of about forty-five, with a heavy black moustache and ' +
-  'ruggedly handsome features. The flat was seven flights up, and he was thirty-nine and had ' +
-  'a varicose ulcer above his right ankle, so he went slowly, resting several times on the ' +
-  'way. On each landing, opposite the lift-shaft, the poster with the enormous face gazed from ' +
-  'the wall. It was one of those pictures which are so contrived that the eyes follow you ' +
-  'about when you move. Outside, even through the shut window-pane, the world looked cold. ' +
-  'Down in the street little eddies of wind were whirling dust and torn paper into spirals, ' +
-  'and though the sun was shining and the sky a harsh blue, there seemed to be no colour in ' +
-  'anything, except the posters that were plastered everywhere. The black-moustachio’d face ' +
-  'gazed down from every commanding corner. There was one on the house-front immediately ' +
-  'opposite. Behind him the voice from the telescreen was still babbling away about pig-iron ' +
-  'and the overfulfilment of the Ninth Three-Year Plan. The telescreen received and ' +
-  'transmitted simultaneously. Any sound that he made, above the level of a very low ' +
-  'whisper, would be picked up by it; moreover, so long as he remained within the field of ' +
-  'vision which the metal plaque commanded, he could be seen as well as heard.';
-
 describe('session', () => {
   it('is one per side and takes its options on first use', () => {
     const enc = new Encoder();
@@ -115,13 +94,11 @@ describe('session', () => {
     expect(new Session().valueFromSecond).toBe(false);
   });
 
-  it('has no id table or prior before its first predictor', () => {
+  it('has no id table before its first predictor', () => {
     const s = new Session();
     expect(() => s.ids).toThrow(TypeError);
-    expect(() => s.run).toThrow(TypeError);
     s.symbols('p', opts(), 'text');
     expect(s.ids.idOf(0x61)).toBeGreaterThan(0);
-    expect(s.run.loaded).toBe(Priors.text);
   });
 
   it('keeps a space of its own for each prior', () => {
@@ -131,9 +108,8 @@ describe('session', () => {
     const o = resolve({}, other, 'test');
     const b = s.symbols('p', o, 'text');
     expect(b).not.toBe(a);
-    expect(s.space(other)).not.toBe(s.space(Priors.text));
-    expect(s.ids).toBe(s.space(Priors.text).ids);
-    expect(s.run).toBe(s.space(Priors.text).run);
+    expect(s.space(other)).not.toBe(s.space(loadedPriors.text));
+    expect(s.ids).toBe(s.space(loadedPriors.text).ids);
     expect(
       trip([
         { coder: strAt('p'), value: cps('hello') },
@@ -357,30 +333,6 @@ describe('string coders without deltas', () => {
   });
 });
 
-describe('cost', () => {
-  it('prices English text under 4 bits per character and a repeat far lower', () => {
-    const s = new Session();
-    const o = opts();
-    const v = cps(ENGLISH.slice(0, 2000));
-    const first = s.cost('p', o, 'text', v, OPEN) / ONE;
-    expect(first / v.length).toBeLessThan(4);
-    const second = s.cost('p', o, 'text', v, OPEN) / ONE;
-    expect(second).toBeLessThan(first / 50);
-  });
-
-  it('agrees with the bits of the coded table', () => {
-    const s = new Session();
-    const v = cps('abc');
-    const bits = s.cost('p', opts(), 'text', v, OPEN);
-    expect(bits).toBeGreaterThan(0);
-    expect(Number.isInteger(bits)).toBe(true);
-    // A code point new to the message and the prior adds its escape body's digits.
-    const novel = s.cost('q', opts(), 'text', cps('abc\u{2f800}'), OPEN);
-    expect(novel).toBeGreaterThan(bits);
-    expect(Number.isInteger(novel)).toBe(true);
-  });
-});
-
 describe('Session.step', () => {
   it('round-trips declared members with weights and learns their frequencies', () => {
     const o = opts();
@@ -514,21 +466,6 @@ describe('Session markers', () => {
   }
 
   const SYMS = [STRUCT.OBJ_START, STRUCT.KEY, STRUCT.STR, STRUCT.KEY, STRUCT.INT, STRUCT.OBJ_END];
-
-  it('tracks which open container is the innermost one on the predictor', () => {
-    const s = new Session();
-    expect(s.inScope()).toBe(false);
-    s.enterScope('a', o);
-    expect(s.inScope()).toBe(true);
-    s.enterPlain();
-    expect(s.inScope()).toBe(false);
-    s.leaveScope();
-    expect(s.inScope()).toBe(true);
-    s.leaveScope();
-    expect(s.inScope()).toBe(false);
-    s.leaveScope();
-    expect(s.inScope()).toBe(false);
-  });
 
   it('codes at its own path outside every container', () => {
     readsAt('self', SYMS, (s, enc, sym) => s.marker('self', o).write(enc, sym));

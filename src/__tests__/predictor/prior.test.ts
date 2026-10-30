@@ -1,5 +1,13 @@
 import { ONE, PB, POW2, TABLES_DIGEST } from '../../predictor/arith';
-import { P16_MAX, P16_MIN, Priors, loadPrior, logitToP16, priorOf } from '../../predictor/prior';
+import {
+  P16_MAX,
+  P16_MIN,
+  loadedPriors,
+  loadPrior,
+  logitToP16,
+  priorOf,
+  Priors,
+} from '../../predictor/prior';
 import { json } from '../../predictor/shipped/json';
 import { text } from '../../predictor/shipped/text';
 import { MAX_CONTEXTS } from '../../predictor/train';
@@ -54,6 +62,15 @@ function rejects(edit: (p: any) => void, field: string): void {
   expect(() => loadPrior(p)).toThrow(`invalid prior: ${field}`);
 }
 
+describe('Priors', () => {
+  it('are the shipped JSON priors, loaded as the nodes load them', () => {
+    expect(Priors.text).toBe(text);
+    expect(Priors.json).toBe(json);
+    expect(priorOf(Priors.text)).toBe(loadedPriors.text);
+    expect(priorOf(Priors.json)).toBe(loadedPriors.json);
+  });
+});
+
 describe('logitToP16', () => {
   it('maps 0 to one half and saturates at the clamps', () => {
     expect(logitToP16(0)).toBe(32768);
@@ -79,8 +96,8 @@ describe('logitToP16', () => {
 
 describe('the shipped text prior', () => {
   it('loads with the tables the spec names', () => {
-    const p = Priors.text;
-    expect(p).toBe(Priors.text);
+    const p = loadedPriors.text;
+    expect(p).toBe(loadedPriors.text);
     expect(p.source).toBe(text);
     expect(p.order).toBe(8);
     expect(p.hybrid.length).toBe(624);
@@ -106,7 +123,7 @@ describe('the shipped text prior', () => {
 
 describe('the shipped JSON prior', () => {
   it('was trained by train() on the corpus, its built-in within the cap', () => {
-    const p = Priors.json;
+    const p = loadedPriors.json;
     expect(p.source).toBe(json);
     expect(p.builtinContexts1.length).toBeLessThanOrEqual(MAX_CONTEXTS);
     expect(p.builtinSymbols.some((s) => s < 0)).toBe(true);

@@ -852,44 +852,6 @@ export class Encoder {
     this.rollback(mark);
   }
 
-  /**
-   * A choice a node makes on its own inside a spelling `decide` tries, such
-   * as which match to take, as numbers `compute` works out. A spelling
-   * written again takes the numbers its try noted instead of working them
-   * out again.
-   */
-  note(compute: () => readonly number[]): readonly number[] {
-    const replay = this.replay;
-    if (replay === undefined) {
-      const values = compute();
-      const tape = this.tape;
-      if (tape !== undefined) {
-        tape.push(values.length);
-        for (const value of values) {
-          tape.push(value);
-        }
-      }
-      return values;
-    }
-    const { tape, at } = replay;
-    const count = tape[at];
-    const values = tape.slice(at + 1, at + 1 + count);
-    replay.at = at + 1 + count;
-    if (this.checkDecisions) {
-      this.replay = undefined;
-      let fresh: readonly number[];
-      try {
-        fresh = compute();
-      } finally {
-        this.replay = replay;
-      }
-      if (fresh.length !== count || fresh.some((value, i) => value !== values[i])) {
-        throw new Error('A choice written again differs from the one its try made');
-      }
-    }
-    return values;
-  }
-
   /** Writes `choice` again, taking the choices of `tape`, the ones its try made. */
   private rewrite(tape: readonly number[], choice: number, write: (choice: number) => void): void {
     const replay = { tape, at: 0 };

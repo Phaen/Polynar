@@ -1,26 +1,20 @@
 /**
- * Adaptive priors: the adaptation's checks, the live-table helpers, the
- * table that learns a message's values on top of its fixed weights, and the
+ * Adaptive priors: the adaptation's checks, the live-table helpers, and the
  * user-facing prior that picks the cheapest of its static spelling and the
- * ladder's adaptive ones per message, and its estimate of a bucket.
+ * ladder's adaptive ones per message.
  */
 
 import { Encoder, Decoder } from '../../packer';
 import {
   AdaptivePrior,
-  AdaptiveTable,
   DEFAULT_ADAPTIVE_WINDOW,
   kinOf,
-  LiveCounts,
   LADDER,
   MAX_ADAPTIVE_MEMBERS,
   checkAdaptation,
   checkAdaptiveMembers,
-  readLive,
-  writeLive,
 } from '../../nodes/adaptive';
-import { Exclusion, excludedBucket } from '../../nodes/excluded';
-import { Fenwick } from '../../nodes/fenwick';
+import { Exclusion } from '../../nodes/excluded';
 import { buildWeights, readTable, writeTable } from '../../nodes/weights';
 import { mulberry32 } from '../support';
 
@@ -61,11 +55,6 @@ class Model {
   }
 }
 
-const learned = (table: AdaptiveTable, side: Encoder | Decoder): number[] => {
-  const counts = table.live(side).learned;
-  return Array.from({ length: counts.size }, (_, i) => counts.count(i));
-};
-
 /** A seeded sequence of `length` members below `members`, member 0 drawn with probability `skew`. */
 const sequence = (seed: number, length: number, members: number, skew = 0): number[] => {
   const random = mulberry32(seed);
@@ -102,269 +91,6 @@ describe('checkAdaptiveMembers', () => {
     expect(() => checkAdaptiveMembers(MAX_ADAPTIVE_MEMBERS + 1, 'w')).toThrow(
       new RangeError('w learned prior spans 65537 values, above the limit 65536')
     );
-  });
-});
-
-describe('writeLive and readLive', () => {
-  it('round-trip members of a Fenwick, empty buckets included', () => {
-    const table = new Fenwick([3, 0, 1, 0, 5]);
-    const positions = [4, 0, 2, 4, 4, 0];
-    const enc = new Encoder();
-    for (const pos of positions) {
-      writeLive(enc, table, pos);
-    }
-    const dec = new Decoder(enc.output());
-    expect(positions.map(() => readLive(dec, table))).toEqual(positions);
-    dec.finalize();
-    expect(() => writeLive(new Encoder(), table, 1)).toThrow(RangeError);
-  });
-
-  it('write and read nothing for a lone member', () => {
-    const table = new Fenwick([7]);
-    const enc = new Encoder();
-    writeLive(enc, table, 0);
-    expect(enc.output()).toEqual(new Encoder().output());
-    const dec = new Decoder(new Encoder().output());
-    expect(readLive(dec, table)).toBe(0);
-    dec.finalize();
-  });
-});
-
-describe('AdaptiveTable', () => {
-  const W = DEFAULT_ADAPTIVE_WINDOW;
-
-  it('refuses weights buildWeights refuses, too many members, a bad prior or window, a small window, and an overflowing total', () => {
-    expect(() => new AdaptiveTable([], 0, 1, W, 'w')).toThrow(
-      new RangeError('w weights need at least one value, got 0')
-    );
-    expect(() => new AdaptiveTable([1, 0], 2, 2, W, 'w')).toThrow(
-      new TypeError('w weights must be positive integers, got 0')
-    );
-    expect(() => new AdaptiveTable([1, 1], 3, 3, W, 'w')).toThrow(
-      new TypeError('w weights must list one weight per value: expected 3, got 2')
-    );
-    expect(() => new AdaptiveTable([1, 1], 2, 0, W, 'w')).toThrow(
-      new RangeError('w learning prior must be a positive integer, got 0')
-    );
-    expect(() => new AdaptiveTable([1, 1], 2, 1.5, W, 'w')).toThrow(
-      new TypeError('w learning prior must be a positive integer, got 1.5')
-    );
-    expect(() => new AdaptiveTable([1, 1], 2, 2, NaN, 'w')).toThrow(
-      new TypeError('w learning window must be a positive integer, got NaN')
-    );
-    expect(
-      () =>
-        new AdaptiveTable(
-          ones(MAX_ADAPTIVE_MEMBERS + 1),
-          MAX_ADAPTIVE_MEMBERS + 1,
-          1,
-          MAX_ADAPTIVE_MEMBERS + 1,
-          'w'
-        )
-    ).toThrow(new RangeError('w learned prior spans 65537 values, above the limit 65536'));
-    expect(() => new AdaptiveTable([2 ** 43, 1], 2, 2, W, 'w')).toThrow(
-      new RangeError(
-        `w adaptive prior 2 and window 1024 overflow with weights totalling ${2 ** 43 + 1}`
-      )
-    );
-    expect(() => new AdaptiveTable([1, 1], 2, MAX_SAFE, 2, 'w')).toThrow(
-      `w adaptive prior ${MAX_SAFE} and window 2 overflow with weights totalling 2`
-    );
-  });
-
-  it('builds a table whose largest bucket total is exactly the largest safe integer', () => {
-    // 2^53 - 1 = 6361 · 69431 · 20394401.
-    const total = 69431 * 20394401;
-    const table = new AdaptiveTable([total - 1, 1], 2, 2, 6359, 'w');
-    expect(table.base.total).toBe(total);
-    expect(() => new AdaptiveTable([total - 1, 1], 2, 2, 6360, 'w')).toThrow(
-      'overflow with weights totalling'
-    );
-  });
-
-  it('halves past its window', () => {
-    const table = new AdaptiveTable(ones(3), 3, 3, 8, 'w');
-    const live = table.live(new Encoder());
-    for (let i = 0; i < 8; i++) {
-      live.learn(1);
-    }
-    expect([live.learned.count(1), live.learned.total]).toEqual([8, 8]);
-    live.learn(1);
-    expect([live.learned.count(1), live.learned.total]).toEqual([4, 4]);
-  });
-
-  it('shares the learned counts of another live table when given them', () => {
-    const base = buildWeights([2, 1, 5], 3, 'w');
-    const slow = new LiveCounts(base, 6, 8);
-    const fast = new LiveCounts(base, 1, 8, undefined, slow.learned);
-    expect(fast.learned).toBe(slow.learned);
-    for (const pos of [2, 2, 0, 2, 1, 2, 2, 0, 2]) {
-      fast.learn(pos);
-    }
-    expect(slow.learned.total).toBe(4);
-    for (let pos = 0; pos < 3; pos++) {
-      const counts = slow.learned.count(pos);
-      expect(slow.bucket(pos)).toEqual([
-        base.cums[pos] * 6 + slow.learned.cum(pos) * 8,
-        base.freqs[pos] * 6 + counts * 8,
-        8 * (6 + 4),
-      ]);
-      expect(fast.bucket(pos)).toEqual([
-        base.cums[pos] + slow.learned.cum(pos) * 8,
-        base.freqs[pos] + counts * 8,
-        8 * (1 + 4),
-      ]);
-    }
-  });
-
-  it('gives each member of its live table its bucket', () => {
-    const table = new AdaptiveTable([2, 1, 5], 3, 3, 100, 'w');
-    const live = table.live(new Encoder());
-    live.learn(2);
-    for (let i = 0; i < 3; i++) {
-      expect(live.bucket(i)).toEqual([live.cum(i), live.freq(i), live.total]);
-    }
-  });
-
-  it('keeps the static table of its weights as declared as base', () => {
-    const table = new AdaptiveTable([2, 1, 5], 3, 3, W, 'w');
-    expect(table.base.cums).toEqual([0, 2, 3]);
-    expect(table.base.total).toBe(8);
-    expect(new AdaptiveTable([9000, 1000], 2, 2, W, 'w').base.freqs).toEqual([9000, 1000]);
-  });
-
-  it('locates every residual in the bucket that holds it', () => {
-    const table = new AdaptiveTable([2, 1, 5], 3, 3, 100, 'w');
-    const enc = new Encoder();
-    const live = table.live(enc);
-    live.learn(1);
-    live.learn(1);
-    live.learn(2);
-    expect(live.size).toBe(3);
-    for (let r = 0; r < live.total; r++) {
-      const pos = live.locate(r);
-      expect(live.cum(pos)).toBeLessThanOrEqual(r);
-      expect(r).toBeLessThan(live.cum(pos) + live.freq(pos));
-    }
-  });
-
-  it('gives the states each node of its learned tree spans', () => {
-    const live = new AdaptiveTable([2, 1, 5, 1, 3, 1, 4], 7, 3, 100, 'w').live(new Encoder());
-    for (const pos of [1, 6, 1, 3, 0, 6]) {
-      live.learn(pos);
-    }
-    const start = (j: number): number => (j === live.size ? live.total : live.cum(j));
-    for (let j = 1; j <= live.size; j++) {
-      expect(live.spanned(j)).toBe(start(j) - start(j - (j & -j)));
-    }
-  });
-
-  it.each([
-    ['uniform weights, a prior of the member count', ones(5), 5, 1024],
-    ['skewed weights, a light prior', [9, 1, 1, 4], 1, 40],
-    ['a window that halves often', [1, 2, 3], 6, 16],
-    ['a window of the member count', [2, 3], 2, 2],
-    ['a heavy prior', [5, 1, 1], 1000, 64],
-  ])(
-    'round-trips a seeded sequence under %s, tracking the model across halvings',
-    (_name, weights, prior, window) => {
-      const table = new AdaptiveTable(weights, weights.length, prior, window, 'w');
-      const symbols = sequence(weights.length, 400, weights.length, 0.6);
-      const model = new Model(weights, prior, window);
-      const enc = new Encoder();
-      for (const symbol of symbols) {
-        expect(table.bucket(enc, symbol)).toEqual(model.bucket(symbol));
-        table.write(enc, symbol);
-        model.bump(symbol);
-        expect(learned(table, enc)).toEqual(model.learned);
-      }
-      const dec = new Decoder(enc.output());
-      expect(symbols.map(() => table.read(dec))).toEqual(symbols);
-      dec.finalize();
-      expect(learned(table, dec)).toEqual(model.learned);
-    }
-  );
-
-  it('writes nothing for a lone member but still learns it', () => {
-    const table = new AdaptiveTable([5], 1, 1, 2, 'w');
-    const enc = new Encoder();
-    for (let i = 0; i < 3; i++) {
-      table.write(enc, 0);
-    }
-    // 1, 2, then 3 passes the window and halves to 1.
-    expect(learned(table, enc)).toEqual([1]);
-    expect(enc.output()).toEqual(new Encoder().output());
-    const dec = new Decoder(new Encoder().output());
-    expect([table.read(dec), table.read(dec), table.read(dec)]).toEqual([0, 0, 0]);
-    dec.finalize();
-    expect(learned(table, dec)).toEqual([1]);
-  });
-
-  it('refuses a position outside its members', () => {
-    expect(() => new AdaptiveTable([1, 1], 2, 2, W, 'w').write(new Encoder(), 2)).toThrow(
-      RangeError
-    );
-    expect(() => new AdaptiveTable([1], 1, 1, W, 'w').write(new Encoder(), 1)).toThrow(RangeError);
-    expect(() => new AdaptiveTable([1, 1], 2, 2, W, 'w').bucket(new Encoder(), -1)).toThrow(
-      RangeError
-    );
-  });
-
-  it('keeps separate counts per table and shared counts per message', () => {
-    const a = new AdaptiveTable([1, 1, 1], 3, 3, W, 'w');
-    const b = new AdaptiveTable([1, 1, 1], 3, 3, W, 'w');
-    const enc = new Encoder();
-    a.write(enc, 0);
-    a.write(enc, 0);
-    b.write(enc, 2);
-    expect(learned(a, enc)).toEqual([2, 0, 0]);
-    expect(learned(b, enc)).toEqual([0, 0, 1]);
-    const bytes = enc.output();
-    expect(learned(a, new Encoder())).toEqual([0, 0, 0]);
-    const dec = new Decoder(bytes);
-    expect([a.read(dec), a.read(dec), b.read(dec)]).toEqual([0, 0, 2]);
-    dec.finalize();
-    expect(learned(a, dec)).toEqual([2, 0, 0]);
-    expect(learned(a, new Decoder(bytes))).toEqual([0, 0, 0]);
-  });
-
-  it('learns the same under weights scaled by a constant', () => {
-    const symbols = sequence(5, 1000, 2, 0.3);
-    const run = (weights: number[]) => {
-      const table = new AdaptiveTable(weights, weights.length, 4, 64, 'w');
-      const model = new Model(weights, 4, 64);
-      const enc = new Encoder();
-      const buckets: number[][] = [];
-      for (const symbol of symbols) {
-        expect(table.bucket(enc, symbol)).toEqual(model.bucket(symbol));
-        buckets.push(model.bucket(symbol));
-        table.write(enc, symbol);
-        model.bump(symbol);
-      }
-      const bytes = enc.output();
-      const dec = new Decoder(bytes);
-      expect(symbols.map(() => table.read(dec))).toEqual(symbols);
-      dec.finalize();
-      return { bytes, buckets, learned: learned(table, enc) };
-    };
-    const small = run([9, 1]);
-    const large = run([9000, 1000]);
-    // The symbols cost the same bits; wider totals only change how the
-    // message ends, which costs a byte or two either way.
-    expect(Math.abs(large.bytes.length - small.bytes.length)).toBeLessThanOrEqual(2);
-    expect(large.learned).toEqual(small.learned);
-    // Every bucket is the same fraction of its total: scaled by 1000 throughout.
-    expect(large.buckets).toEqual(small.buckets.map((b) => b.map((x) => x * 1000)));
-  });
-
-  it('spells a recurring member cheaper as it is learned', () => {
-    const table = new AdaptiveTable(ones(16), 16, 16, W, 'w');
-    const enc = new Encoder();
-    for (let i = 0; i < 200; i++) {
-      table.write(enc, 3);
-    }
-    // 200 uniform symbols in 16 would cost 100 bytes.
-    expect(enc.output().length).toBeLessThan(15);
   });
 });
 
@@ -901,71 +627,6 @@ describe('AdaptivePrior default row', () => {
         return pos;
       })
     ).toEqual(symbols);
-  });
-});
-
-describe('AdaptivePrior estimate', () => {
-  const weights = [[5, 3, 2, 1, 1], ones(5)];
-  const symbols = [0, 1, 0, 2, 0, 0, 3, 1];
-
-  /** The second rung's live table of row 0 after `symbols`, built by hand. */
-  const handLive = (prior: AdaptivePrior): LiveCounts => {
-    const live = new LiveCounts(
-      buildWeights(weights[0], 5, 'w'),
-      prior.rungs[1],
-      DEFAULT_ADAPTIVE_WINDOW
-    );
-    symbols.forEach((symbol) => live.learn(symbol));
-    return live;
-  };
-
-  it("gives a member's bucket in the second rung's live table, excluded members ruled out", () => {
-    const prior = new AdaptivePrior(weights, 5, undefined, 'w');
-    const enc = new Encoder();
-    symbols.forEach((symbol, i) =>
-      i % 2 === 0 ? put(prior, enc, symbol) : prior.learn(enc, symbol)
-    );
-    const live = handLive(prior);
-    for (let pos = 0; pos < 5; pos++) {
-      expect(prior.estimate(enc, pos)).toEqual(live.bucket(pos));
-    }
-    const excluded = new Exclusion(5);
-    excluded.add(0);
-    excluded.add(3);
-    expect(prior.estimate(enc, 4, 0, excluded)).toEqual(excludedBucket(live, excluded, 4));
-    // Row 1 has learned nothing: its weights at the rung's prior.
-    expect(prior.estimate(enc, 2, 1)).toEqual([
-      2 * prior.rungs[1],
-      prior.rungs[1],
-      5 * prior.rungs[1],
-    ]);
-  });
-
-  it('learns nothing, so writing after an estimate writes the same', () => {
-    const plain = new AdaptivePrior(weights, 5, undefined, 'w');
-    const estimated = new AdaptivePrior(weights, 5, undefined, 'w');
-    const a = new Encoder();
-    const b = new Encoder();
-    symbols.forEach((symbol) => {
-      put(plain, a, symbol);
-      estimated.estimate(b, symbol);
-      estimated.estimate(b, symbol, 1);
-      put(estimated, b, symbol);
-    });
-    expect(b.output()).toEqual(a.output());
-  });
-
-  it('estimates a lone member as its whole table', () => {
-    const prior = new AdaptivePrior([[3]], 1, undefined, 'w');
-    expect(prior.estimate(new Encoder(), 0)).toEqual([0, 3 * prior.rungs[1], 3 * prior.rungs[1]]);
-  });
-
-  it('refuses a position outside its members and a row outside its rows', () => {
-    const prior = new AdaptivePrior(weights, 5, undefined, 'w');
-    const enc = new Encoder();
-    expect(() => prior.estimate(enc, 5)).toThrow(new RangeError('Position 5 is outside [0, 5)'));
-    expect(() => prior.estimate(enc, 0.5)).toThrow(new TypeError('Position 0.5 is not an integer'));
-    expect(() => prior.estimate(enc, 0, 2)).toThrow(new RangeError('Row 2 is outside [0, 2)'));
   });
 });
 

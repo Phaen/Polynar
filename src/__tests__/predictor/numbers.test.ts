@@ -1,13 +1,13 @@
 import { CorruptInputError, Decoder, Encoder } from '../../packer';
 import type { MemberTable } from '../../packer';
 import { resolve } from '../../predictor/options';
-import { Priors } from '../../predictor/prior';
+import { loadedPriors } from '../../predictor/prior';
 import { Session, session } from '../../predictor/session';
 import type { NumberRange, PlainNumber } from '../../predictor/session';
 import type { AdaptiveOptions, PathKey, RangeBuckets } from '../../predictor/types';
 
 const MAX = Number.MAX_SAFE_INTEGER;
-const opts = (o: AdaptiveOptions = {}) => resolve(o, Priors.text, 'test');
+const opts = (o: AdaptiveOptions = {}) => resolve(o, loadedPriors.text, 'test');
 
 /** The plain spelling of an unbounded integer: a sign and a term (any magnitude). */
 const PLAIN: PlainNumber = {

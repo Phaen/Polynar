@@ -4,7 +4,7 @@
  */
 
 import { inspect } from 'node:util';
-import { Priors } from '../../predictor/prior';
+import { loadedPriors } from '../../predictor/prior';
 import { p, Decoder, Encoder, PNode, UnknownVersionError, type PObject } from '../../index';
 import { STRUCT } from '../../predictor/types';
 import { mulberry32, trip } from '../support';
@@ -198,8 +198,8 @@ describe('p.object().adaptive()', () => {
     expect(fields.own).toBe(own);
     expect(fields.inner).toBe(inner);
     expect(fields.kept).toBe(kept);
-    expect(fields.fresh._adaptive).toEqual({ prior: Priors.json.source });
-    expect(node._adaptive).toEqual({ prior: Priors.json.source });
+    expect(fields.fresh._adaptive).toEqual({ prior: loadedPriors.json.source });
+    expect(node._adaptive).toEqual({ prior: loadedPriors.json.source });
     const value = { learned: true, own: 'a', inner: { x: 1 }, kept: [true, false], fresh: 2 };
     expect(trip(node, value)).toEqual(value);
   });
@@ -210,7 +210,7 @@ describe('p.object().adaptive()', () => {
     const digit = new Digit();
     const fields = shape(p.object({ nothing, anything, digit }).adaptive());
     expect(fields.nothing).toBe(nothing);
-    expect(fields.anything._adaptive).toEqual({ prior: Priors.json.source });
+    expect(fields.anything._adaptive).toEqual({ prior: loadedPriors.json.source });
     expect(fields.digit).toBe(digit);
   });
 
@@ -220,7 +220,7 @@ describe('p.object().adaptive()', () => {
     const fields = shape(node);
     expect(fields.from).toBe(fields.to);
     expect(fields.from).not.toBe(point);
-    expect(fields.from._adaptive).toEqual({ window: 32, prior: Priors.json.source });
+    expect(fields.from._adaptive).toEqual({ window: 32, prior: loadedPriors.json.source });
     const memo = new Map<PNode<any>, PNode<any>>();
     const outer = p.object({ a: point, b: p.array(point) });
     const adapted = outer._adapted({}, memo);

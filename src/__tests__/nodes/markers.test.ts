@@ -14,7 +14,7 @@ import {
 } from '../../nodes/markers';
 import { kindMarker as anyKindMarker } from '../../nodes/any';
 import { resolve } from '../../predictor/options';
-import { Priors } from '../../predictor/prior';
+import { loadedPriors } from '../../predictor/prior';
 import { STRUCT } from '../../predictor/types';
 
 describe('kindMarker', () => {
@@ -158,7 +158,7 @@ describe('markerPrior', () => {
 });
 
 describe('ownMarker', () => {
-  const o = resolve({}, Priors.text, 'test');
+  const o = resolve({}, loadedPriors.text, 'test');
 
   it('codes the symbol at the node when no parent coded one, and reads it back', () => {
     const node = p.bool();

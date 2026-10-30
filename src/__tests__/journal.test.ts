@@ -31,7 +31,7 @@ describe('Journal', () => {
     const journal = new Journal();
     const order: string[] = [];
     const items = [1];
-    const state = { n: 1, on: false };
+    const state = { n: 1 };
     const map = new Map([['a', 1]]);
     const own = new Logged();
     const mark = journal.mark();
@@ -42,14 +42,6 @@ describe('Journal', () => {
     state.n = 5;
     journal.set(items, 0, items[0]);
     items[0] = 9;
-    journal.flag(state, 'on', state.on);
-    state.on = true;
-    journal.flag(state, 'on', state.on);
-    state.on = false;
-    const cell = [4, 2];
-    journal.pair(cell, cell[0], cell[1]);
-    cell[0] = 7;
-    cell[1] = 1;
     map.set('b', 2);
     journal.drop(map, 'b');
     journal.call(() => order.push('call'));
@@ -58,8 +50,7 @@ describe('Journal', () => {
 
     journal.rollback(mark);
     expect(items).toEqual([1]);
-    expect(state).toEqual({ n: 1, on: false });
-    expect(cell).toEqual([4, 2]);
+    expect(state).toEqual({ n: 1 });
     expect([...map]).toEqual([['a', 1]]);
     expect(order).toEqual(['call']);
     expect(own.undone).toEqual([

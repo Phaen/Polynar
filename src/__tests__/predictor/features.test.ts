@@ -9,7 +9,6 @@ import {
   levBucket,
   longBucket,
   lognTerm,
-  recBucket,
   shadowCost,
   shadowCostOf,
   valueAdvance,
@@ -35,23 +34,7 @@ function entryOf(counts: readonly number[], order0 = false): { tab: Entries; x: 
 }
 
 describe('buckets', () => {
-  it('recBucket takes four bits of age per bucket up to 4', () => {
-    const cases: [number, number][] = [
-      [1, 0],
-      [15, 0],
-      [16, 1],
-      [255, 1],
-      [256, 2],
-      [4095, 2],
-      [4096, 3],
-      [65535, 3],
-      [65536, 4],
-      [2 ** 40, 4],
-    ];
-    for (const [age, bucket] of cases) {
-      expect(recBucket(age)).toBe(bucket);
-      expect(recBucket(age)).toBe(Math.min(4, (31 - Math.clz32(Math.min(age, 2 ** 31))) >> 2));
-    }
+  it('puts frozen votes past every recency bucket', () => {
     expect(FROZEN_REC).toBe(5);
   });
 

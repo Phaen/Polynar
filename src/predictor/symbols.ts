@@ -243,7 +243,7 @@ function grownF(a: Float64Array, n: number): Float64Array {
   return b;
 }
 
-/** `recBucket(age)` for age >= 1, by comparison: 4 bits of age per bucket, 0..4. */
+/** The recency bucket of a follower last seen `age` ≥ 1 positions ago: 4 bits of age per bucket, 0..4. */
 export function recOf(age: number): number {
   return age < 16 ? 0 : age < 256 ? 1 : age < 4096 ? 2 : age < 65536 ? 3 : 4;
 }

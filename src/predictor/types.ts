@@ -229,14 +229,6 @@ export interface Ends {
   readonly step?: number;
 }
 
-/** The position of the symbol being coded, as the stream knows it (prototype `x`). */
-export interface Position {
-  /** Offset within the value's text; END gets the value's length. */
-  off: number;
-  /** Symbols since the innermost record opened; Infinity outside a record. */
-  roff: number;
-}
-
 /** A symbol predictor's distribution for one step, as the coder consumes it (spec §6.1). */
 export interface MemberLike {
   readonly total: number;

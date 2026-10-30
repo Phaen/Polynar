@@ -7,7 +7,7 @@ import { members, type MemberPrior, type Members } from './members';
 import { MethodNode, learningOf, type MethodSet } from './methods';
 import { kindMarker } from './markers';
 import { resolve } from '../predictor/options';
-import { Priors } from '../predictor/prior';
+import { loadedPriors } from '../predictor/prior';
 import { session } from '../predictor/session';
 import type { AdaptiveOptions, Resolved } from '../predictor/types';
 
@@ -58,7 +58,7 @@ export class PEnum<T> extends MethodNode<T> {
     if (this._adaptive === undefined) {
       this._radix = this._members.radix;
     } else {
-      this._resolved = resolve(this._adaptive, Priors.json, 'p.enum');
+      this._resolved = resolve(this._adaptive, loadedPriors.json, 'p.enum');
     }
   }
 

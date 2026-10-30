@@ -33,7 +33,7 @@ import { join } from 'path';
 import { Decoder, Encoder } from '../src/packer';
 import { p } from '../src/nodes';
 import type { PNode, PObject } from '../src/nodes';
-import { Priors } from '../src/predictor/prior';
+import { loadedPriors } from '../src/predictor/prior';
 import { train } from '../src/predictor/train';
 import type { AdaptiveOptions } from '../src/predictor/types';
 import { numberMessages, readNumbers, writeNumbers } from './predictor-sets';
@@ -268,7 +268,7 @@ function schemaHeldOut(corpus: string, o: AdaptiveOptions): number {
   for (const h of [0, 1]) {
     const prior = train(p.any().adaptive(), halves[1 - h], {
       holdOut: 0,
-      from: Priors.json.source,
+      from: loadedPriors.json.source,
       epochs: 3,
     });
     for (const v of halves[h]) {

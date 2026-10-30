@@ -1,6 +1,6 @@
 import { Encoder, Decoder } from '../packer';
 import { resolve } from '../predictor/options';
-import { Priors } from '../predictor/prior';
+import { loadedPriors } from '../predictor/prior';
 import { session, type Session } from '../predictor/session';
 import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
 import type { InferShape } from './infer';
@@ -36,7 +36,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<In
     this._methods = methods;
     this._adaptive = methods.adaptive;
     if (this._adaptive !== undefined) {
-      this._resolved = resolve(this._adaptive, Priors.json, 'p.object');
+      this._resolved = resolve(this._adaptive, loadedPriors.json, 'p.object');
     }
     this._holds =
       this._adaptive !== undefined || this._keys.some((key) => this._shape[key]._holdsAdaptive);

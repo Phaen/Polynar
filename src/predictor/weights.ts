@@ -73,11 +73,6 @@ export function smul(a: number, b: number, k: number): number {
   return neg ? 0 - r : r;
 }
 
-/** a / b truncated toward zero, for |a| < 2^53 and 0 < b. */
-export function sdiv(a: number, b: number): number {
-  return a < 0 ? 0 - div(0 - a, b) : div(a, b);
-}
-
 /** The hybrid block of a source at a level (0..order exact, order + 1..order + 4 long). */
 export function blockOf(src: number, level: number, order: number): number {
   return src * levels(order) + level;
@@ -85,33 +80,6 @@ export function blockOf(src: number, level: number, order: number): number {
 
 /** A path's sparse per-block deltas over the hybrid parameters (HF per block). */
 export type PathDeltas = Map<number, Float64Array>;
-
-/** The path's delta of a block, if the path has learned one. */
-export function deltaOf(deltas: PathDeltas, block: number): Float64Array | undefined {
-  return deltas.get(block);
-}
-
-/** theta_b . x (+ delta_b . x) in RB bits; x holds HF features in RB, all non-negative. */
-export function exponent(
-  run: RunPrior,
-  block: number,
-  x: ArrayLike<number>,
-  delta?: Float64Array
-): number {
-  const h = run.hybrid;
-  const o = block * HF;
-  let e = 0;
-  for (let f = 0; f < HF; f++) {
-    const xf = x[f];
-    if (xf !== 0) {
-      e += smul(h[o + f], xf, RB);
-      if (delta) {
-        e += smul(delta[f], xf, RB);
-      }
-    }
-  }
-  return e;
-}
 
 function grownInt(a: Int32Array, cap: number): Int32Array {
   const b = new Int32Array(cap);

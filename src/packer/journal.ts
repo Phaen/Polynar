@@ -11,9 +11,8 @@
  * An undo is a record of an op code, the object it applies to, a key and
  * two numbers, kept in arrays that grow and are reused, so recording one
  * allocates nothing: a length to cut an array back to, a field or entry to
- * set back, the two entries of a pair to set back, a Map entry to drop, or
- * an op of the object's own through `Undoable`. A change rare enough not to
- * matter records a function instead.
+ * set back, a Map entry to drop, or an op of the object's own through
+ * `Undoable`. A change rare enough not to matter records a function instead.
  */
 
 /** An object that takes back changes of its own: `undo(op, a, b)` reverses the change recorded as `op` with `a` and `b`. */
@@ -24,11 +23,9 @@ export interface Undoable {
 /** Op codes of the records `Journal` applies itself; an object's own ops go through `Undoable`. */
 const TRUNCATE = 0;
 const SET = 1;
-const FLAG = 2;
-const DROP = 3;
-const CALL = 4;
-const OWN = 5;
-const PAIR = 6;
+const DROP = 2;
+const CALL = 3;
+const OWN = 4;
 
 export class Journal {
   private ops = new Int32Array(256);
@@ -78,16 +75,6 @@ export class Journal {
     this.push(SET, obj, key, value, 0);
   }
 
-  /** Records that `obj[key]` held the boolean `value`. */
-  flag(obj: object, key: string, value: boolean): void {
-    this.push(FLAG, obj, key, value ? 1 : 0, 0);
-  }
-
-  /** Records that `pair[0]` and `pair[1]` held the numbers `a` and `b`. */
-  pair(pair: number[], a: number, b: number): void {
-    this.push(PAIR, pair, undefined, a, b);
-  }
-
   /** Records that `key` was added to `map`, a Map, Set or WeakMap, to drop it again. */
   drop(map: { delete(key: never): boolean }, key: unknown): void {
     this.push(DROP, map, key, 0, 0);
@@ -130,18 +117,11 @@ export class Journal {
         case SET:
           obj[key] = a;
           break;
-        case FLAG:
-          obj[key] = a === 1;
-          break;
         case DROP:
           (obj as unknown as Map<unknown, unknown>).delete(key);
           break;
         case CALL:
           (obj as unknown as () => void)();
-          break;
-        case PAIR:
-          obj[0] = a;
-          obj[1] = nums[2 * at + 1];
           break;
         default:
           (obj as unknown as Undoable).undo(key as unknown as number, a, nums[2 * at + 1]);

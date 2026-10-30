@@ -7,7 +7,7 @@
 import { checkAdaptation, type LearningOptions } from './adaptive';
 import { PNode } from './base';
 import { applyAdaptive, checkAdaptive } from '../predictor/options';
-import { Priors } from '../predictor/prior';
+import { loadedPriors } from '../predictor/prior';
 import type { AdaptiveOptions } from '../predictor/types';
 
 /** How a node learns, carried through every rebuild so a later `.min()` or `.weights()` keeps it. */
@@ -63,7 +63,7 @@ export abstract class MethodNode<TOut> extends PNode<TOut> {
       throw new TypeError(`${who} learn and adaptive cannot both be set`);
     }
     // The default prior of every node that is not a string or a binary.
-    return applyAdaptive(this, checkAdaptive(options, who), Priors.json.source);
+    return applyAdaptive(this, checkAdaptive(options, who), loadedPriors.json.source);
   }
 
   /**

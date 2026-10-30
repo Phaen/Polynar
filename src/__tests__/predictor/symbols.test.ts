@@ -2,16 +2,15 @@ import { Decoder, Encoder } from '../../packer';
 import { ONE, exp2Fix, log2Fix } from '../../predictor/arith';
 import { casePartnerCp } from '../../predictor/alphabet';
 import { resolve } from '../../predictor/options';
-import { Priors } from '../../predictor/prior';
+import { loadedPriors } from '../../predictor/prior';
 import { Session } from '../../predictor/session';
 import type { Features, SessionOptions, Sink, Source, Table } from '../../predictor/session';
-import { recBucket } from '../../predictor/features';
 import { APM_EDGE, SymbolPredictor, defaultFeatures, recOf } from '../../predictor/symbols';
 import { BYTE_BASE, CP_BASE, DIGIT, END, STRUCT } from '../../predictor/types';
 import type { AdaptiveOptions, AlphabetKind, Ends, Resolved } from '../../predictor/types';
 
 const OPEN: Ends = { min: 0, max: undefined, fixed: false };
-const opts = (o: AdaptiveOptions = {}): Resolved => resolve(o, Priors.text, 'test');
+const opts = (o: AdaptiveOptions = {}): Resolved => resolve(o, loadedPriors.text, 'test');
 
 /** Records every coded triple and forwards it to the encoder. */
 class RecSink implements Sink {
@@ -115,9 +114,22 @@ describe('APM_EDGE', () => {
 });
 
 describe('recOf', () => {
-  it('equals recBucket', () => {
-    for (const age of [1, 15, 16, 255, 256, 4095, 4096, 65535, 65536, 2 ** 30]) {
-      expect(recOf(age)).toBe(recBucket(age));
+  it('takes four bits of age per bucket up to 4', () => {
+    const cases: [number, number][] = [
+      [1, 0],
+      [15, 0],
+      [16, 1],
+      [255, 1],
+      [256, 2],
+      [4095, 2],
+      [4096, 3],
+      [65535, 3],
+      [65536, 4],
+      [2 ** 40, 4],
+    ];
+    for (const [age, bucket] of cases) {
+      expect(recOf(age)).toBe(bucket);
+      expect(recOf(age)).toBe(Math.min(4, (31 - Math.clz32(Math.min(age, 2 ** 31))) >> 2));
     }
   });
 });
@@ -267,8 +279,8 @@ describe('SymbolPredictor round trips', () => {
   it('codes when every mass floors to zero and the escape alone is large', () => {
     trip([cps('aab ba'), cps('ab')], {
       setup: (s) => {
-        s.run.oscale.fill(-50 * ONE);
-        s.run.hybrid.fill(-40 * ONE);
+        s.space(loadedPriors.text).run.oscale.fill(-50 * ONE);
+        s.space(loadedPriors.text).run.hybrid.fill(-40 * ONE);
       },
     });
   });
@@ -369,7 +381,7 @@ describe('SymbolPredictor tables', () => {
     expect(pred.dist.indexOf(z)).toBe(-1);
     pred.learn(z);
     expect(pred.log.novel).toBe(true);
-    expect(s.space(Priors.text).seen[z]).toBe(1);
+    expect(s.space(loadedPriors.text).seen[z]).toBe(1);
   });
 
   it('matches exp2Fix and log2Fix in the log masses of a single vote', () => {

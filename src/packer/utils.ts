@@ -164,57 +164,6 @@ export class ScaledRatio {
     }
   }
 
-  /**
-   * This ratio times `other`, as a new ratio. The mantissas multiply in one
-   * correctly rounded operation, so every engine gets the same product:
-   * both below 2^512, it is finite and below 2^1024, and one scaling by
-   * 2^-512 brings it back to [1, 2^512).
-   */
-  times(other: ScaledRatio): ScaledRatio {
-    return new ScaledRatio().product(this, other);
-  }
-
-  /** Sets this ratio to 1, and returns it. */
-  reset(): ScaledRatio {
-    this.mantissa = 1;
-    this.exponent = 0;
-    return this;
-  }
-
-  /** Sets this ratio to `a` times `b`, as `times` gives it, and returns it. */
-  product(a: ScaledRatio, b: ScaledRatio): ScaledRatio {
-    return this.set(a.mantissa * b.mantissa, a.exponent + b.exponent);
-  }
-
-  /** Sets this ratio to `a` over `b`, as `over` gives it, and returns it. */
-  quotient(a: ScaledRatio, b: ScaledRatio): ScaledRatio {
-    return this.set(a.mantissa / b.mantissa, a.exponent - b.exponent);
-  }
-
-  /**
-   * This ratio over `other`, as a new ratio. The mantissas divide in one
-   * correctly rounded operation: both in [1, 2^512), the quotient lies in
-   * (2^-512, 2^512), and one scaling by 2^512 brings it back to [1, 2^512).
-   */
-  over(other: ScaledRatio): ScaledRatio {
-    return new ScaledRatio().quotient(this, other);
-  }
-
-  /** Sets this ratio to `m · 2^exponent`, `m` in (2^-512, 2^1024), renormalised, and returns it. */
-  private set(m: number, exponent: number): ScaledRatio {
-    if (m >= TWO_512) {
-      this.mantissa = m * TWO_MINUS_512;
-      this.exponent = exponent + 512;
-    } else if (m < 1) {
-      this.mantissa = m * TWO_512;
-      this.exponent = exponent - 512;
-    } else {
-      this.mantissa = m;
-      this.exponent = exponent;
-    }
-    return this;
-  }
-
   /** Whether this ratio is strictly larger than `other`. */
   exceeds(other: ScaledRatio): boolean {
     return this.exponent !== other.exponent

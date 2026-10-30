@@ -6,7 +6,6 @@
  */
 
 import type { Journal, Undoable } from '../packer';
-import type { LiveTable } from './adaptive';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 
@@ -54,7 +53,7 @@ function checkTotal(total: number): void {
  * Every change records its undo in `journal`, an encoder's; a decoder's
  * counts have none.
  */
-export class Fenwick implements LiveTable, Undoable {
+export class Fenwick implements Undoable {
   private counts: number[] = [];
   private readonly tree: number[] = [0];
   private sum = 0;

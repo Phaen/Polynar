@@ -1,9 +1,8 @@
 import { Encoder, Decoder, SlotCache } from '../packer';
 
 /**
- * Providers: the learned knowledge nodes share within a message, such as a
- * string engine's items and contexts, the gathered tables of a prior's kin,
- * or the fields companions are predicted from.
+ * Providers: the learned knowledge nodes share within a message, such as
+ * the gathered tables of a prior's kin.
  *
  * A provider's kind says how its message state is built and what keys it
  * from its configuration. A node holds a ref to each provider it reads; the

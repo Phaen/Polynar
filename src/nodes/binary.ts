@@ -1,6 +1,6 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { checkAdaptive, resolve } from '../predictor/options';
-import { Priors } from '../predictor/prior';
+import { loadedPriors } from '../predictor/prior';
 import type { AdaptiveOptions } from '../predictor/types';
 import { PNode } from './base';
 import { typedArrayKind, type Kind, type TypedArray } from './guards';
@@ -142,7 +142,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
         'p.binary adaptive cannot weigh the length: an adaptive binary ends with a symbol'
       );
     }
-    const options = resolve(adaptive, Priors.text, 'p.binary');
+    const options = resolve(adaptive, loadedPriors.text, 'p.binary');
     this._learned = new Learned(bytes, this, options, 'bytes', bounds);
   }
 

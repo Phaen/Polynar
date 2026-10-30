@@ -4,7 +4,7 @@
  */
 
 import { Encoder, Decoder, CorruptInputError } from '../../packer';
-import { AdaptiveTable, writeLive } from '../../nodes/adaptive';
+import { LiveCounts } from '../../nodes/adaptive';
 import {
   Exclusion,
   excludedBucket,
@@ -18,6 +18,10 @@ import { buildWeights } from '../../nodes/weights';
 import { mulberry32 } from '../support';
 
 const empty = (): Uint8Array => new Encoder().output();
+
+/** The excluded members, in the order they were added. */
+const listed = (exclusion: Exclusion): number[] =>
+  Array.from({ length: exclusion.count }, (_, i) => exclusion.member(i));
 
 describe('Exclusion', () => {
   it('refuses a size that is not a non-negative integer', () => {
@@ -37,7 +41,7 @@ describe('Exclusion', () => {
     exclusion.add(0);
     exclusion.add(3);
     expect(exclusion.count).toBe(2);
-    expect(exclusion.members).toEqual([3, 0]);
+    expect(listed(exclusion)).toEqual([3, 0]);
     expect([exclusion.member(0), exclusion.member(1)]).toEqual([3, 0]);
     expect([0, 1, 2, 3, 4].map((pos) => exclusion.has(pos))).toEqual([
       true,
@@ -48,10 +52,10 @@ describe('Exclusion', () => {
     ]);
     exclusion.clear();
     expect(exclusion.count).toBe(0);
-    expect(exclusion.members).toEqual([]);
+    expect(listed(exclusion)).toEqual([]);
     expect(exclusion.has(3)).toBe(false);
     exclusion.add(4);
-    expect(exclusion.members).toEqual([4]);
+    expect(listed(exclusion)).toEqual([4]);
   });
 
   it('makes room for members far into a large table as they are added', () => {
@@ -63,7 +67,7 @@ describe('Exclusion', () => {
       exclusion.add(pos);
     }
     expect(exclusion.count).toBe(303);
-    expect(exclusion.members.slice(0, 4)).toEqual([7, 1100, 4999, 300]);
+    expect(listed(exclusion).slice(0, 4)).toEqual([7, 1100, 4999, 300]);
     expect([7, 8, 599, 600, 1100, 4999].map((pos) => exclusion.has(pos))).toEqual([
       true,
       false,
@@ -136,14 +140,13 @@ describe('excludedBucket', () => {
 });
 
 describe('writeExcluded and readExcluded', () => {
-  it('write what writeLive writes without an exclusion', () => {
-    const adaptive = new AdaptiveTable([4, 1, 2, 7], 4, 3, 64, 'w');
+  it('write each member as its bucket without an exclusion', () => {
+    const live = new LiveCounts(buildWeights([4, 1, 2, 7], 4, 'w'), 3, 64);
     const positions = [3, 0, 3, 1, 2, 3, 3, 0];
-    const live = adaptive.live(new Encoder());
     const a = new Encoder();
     const b = new Encoder();
     for (const pos of positions) {
-      writeLive(a, live, pos);
+      a.composeWeighted(live.cum(pos), live.freq(pos), live.total);
       writeExcluded(b, live, undefined, pos);
       live.learn(pos);
     }
@@ -152,7 +155,7 @@ describe('writeExcluded and readExcluded', () => {
     const c = new Encoder();
     const d = new Encoder();
     for (const pos of [4, 0, 2, 4]) {
-      writeLive(c, fenwick, pos);
+      c.composeWeighted(fenwick.cum(pos), fenwick.freq(pos), fenwick.total);
       writeExcluded(d, fenwick, undefined, pos);
     }
     expect(d.output()).toEqual(c.output());

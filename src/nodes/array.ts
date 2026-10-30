@@ -1,6 +1,6 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { resolve } from '../predictor/options';
-import { Priors } from '../predictor/prior';
+import { loadedPriors } from '../predictor/prior';
 import { session, type Session } from '../predictor/session';
 import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
 import { PNode, adapt } from './base';
@@ -76,7 +76,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
           'p.array adaptive cannot weigh the count: an adaptive array ends with a symbol'
         );
       }
-      this._resolved = resolve(this._adaptive, Priors.json, 'p.array');
+      this._resolved = resolve(this._adaptive, loadedPriors.json, 'p.array');
     }
     this._holds = this._adaptive !== undefined || item._holdsAdaptive;
     this._choice = members(2, learning === undefined ? undefined : { learn: learning }, 'p.array');

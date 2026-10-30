@@ -3,7 +3,7 @@
  */
 
 import { p, Encoder } from '../../index';
-import { Priors } from '../../predictor/prior';
+import { loadedPriors } from '../../predictor/prior';
 import { STRUCT } from '../../predictor/types';
 import { mulberry32, trip } from '../support';
 
@@ -118,7 +118,9 @@ describe('p.optional adaptive', () => {
   });
 
   it('adapts its inner node unless that one learns or adapts already', () => {
-    expect(p.optional(p.bool()).adaptive().inner._adaptive).toEqual({ prior: Priors.json.source });
+    expect(p.optional(p.bool()).adaptive().inner._adaptive).toEqual({
+      prior: loadedPriors.json.source,
+    });
     const learning = p.bool().learn();
     expect(p.optional(learning).adaptive().inner).toBe(learning);
     const values = [true, undefined, false, true, undefined];

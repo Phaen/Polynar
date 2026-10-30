@@ -4,7 +4,6 @@ import {
   Frozen,
   OffsetRing,
   Population,
-  exactCounts,
   frozen,
   STRIDE,
   hashes,
@@ -484,46 +483,6 @@ describe('hashes', () => {
     expect(a[1]).toBe(b[1]);
     expect(a[2]).not.toBe(b[2]);
     expect(a[1]).not.toBe(a[2]);
-  });
-});
-
-describe('exactCounts', () => {
-  it('clamps each level to the one below it', () => {
-    const tab = new Entries(2);
-    const e1 = tab.make(1, 1);
-    const e2 = tab.make(2, 2);
-    tab.load(0, 4, 3);
-    tab.load(0, 5, 6);
-    tab.load(e1, 4, 1);
-    tab.load(e1, 5, 6);
-    tab.load(e2, 4, 5);
-    tab.load(e2, 5, 2);
-    const E = Int32Array.from([0, e1, e2]);
-    const F = Int32Array.from([0, e2, e1]);
-    const out = new Int32Array(3);
-    expect(Array.from(exactCounts(tab, E, 2, 4, out))).toEqual([3, 1, 1]);
-    expect(Array.from(exactCounts(tab, E, 2, 5, out))).toEqual([6, 6, 2]);
-    expect(Array.from(exactCounts(tab, F, 2, 5, out))).toEqual([6, 2, 2]);
-    expect(Array.from(exactCounts(tab, E, 2, 9, out))).toEqual([0, 0, 0]);
-    out.fill(7);
-    exactCounts(tab, E, 1, 4, out);
-    expect(Array.from(out)).toEqual([3, 1, 7]);
-  });
-
-  it('gives non-negative exact-level counts on populations', () => {
-    const next = rng(7);
-    const p = new Population({ order: 3, candidates: 4, offsets: 8 });
-    const out = new Int32Array(4);
-    for (let i = 0; i < 400; i++) {
-      p.resolve();
-      for (let s = 292; s < 295; s++) {
-        exactCounts(p.tab, p.E, p.m, s, out);
-        for (let k = 0; k < p.m; k++) {
-          expect(out[k] - out[k + 1]).toBeGreaterThanOrEqual(0);
-        }
-      }
-      p.update(292 + Math.floor(next() * 3), i % 5);
-    }
   });
 });
 

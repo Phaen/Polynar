@@ -14,7 +14,7 @@ import { atPath, unlocated } from './path';
 import { members, type Members } from './members';
 import { IndexRange } from './lattice';
 import { applyAdaptive, checkAdaptive, resolve } from '../predictor/options';
-import { Priors } from '../predictor/prior';
+import { loadedPriors } from '../predictor/prior';
 import { session } from '../predictor/session';
 import { readAny, walkAny, type AnyBody, type AnyCoding } from '../predictor/any';
 import { STRUCT, type AdaptiveOptions } from '../predictor/types';
@@ -533,9 +533,9 @@ export class PAny extends PNode<AnyValue> {
 
   /** What the stream codes through under `adaptive`, the hints adapted under the same options. */
   private _codingOf(adaptive: AdaptiveOptions): AnyCoding {
-    const filled = { ...adaptive, prior: adaptive.prior ?? Priors.json.source };
-    const o = resolve(filled, Priors.json, 'p.any');
-    const hints = this._forms.map((hint) => applyAdaptive(hint, filled, Priors.json.source));
+    const filled = { ...adaptive, prior: adaptive.prior ?? loadedPriors.json.source };
+    const o = resolve(filled, loadedPriors.json, 'p.any');
+    const hints = this._forms.map((hint) => applyAdaptive(hint, filled, loadedPriors.json.source));
     const body = (node: PNode<any>): AnyBody => ({
       write: (enc, value) => node._write(enc, value),
       read: (dec) => node._read(dec),

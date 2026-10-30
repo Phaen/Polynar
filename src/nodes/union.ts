@@ -1,6 +1,6 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { resolve } from '../predictor/options';
-import { Priors } from '../predictor/prior';
+import { loadedPriors } from '../predictor/prior';
 import { session, type MarkerPrior } from '../predictor/session';
 import type { AdaptiveOptions, Resolved } from '../predictor/types';
 import { PNode, adapt } from './base';
@@ -66,7 +66,7 @@ export class PUnion<T> extends MethodNode<T> {
     );
     this._adaptive = _methods.adaptive;
     if (this._adaptive !== undefined) {
-      this._resolved = resolve(this._adaptive, Priors.json, 'p.union');
+      this._resolved = resolve(this._adaptive, loadedPriors.json, 'p.union');
     }
   }
 

@@ -5,8 +5,10 @@
  * Other formats' cells read "plain (brotli)"; Polynar's output is already
  * entropy coded, so its cells read "regular (tuned)" instead: `p.any()`
  * and `p.any().adaptive()` in the self-describing table, and in the schema
- * table the precise node without and with the priors and methods its
- * generator calls for. Prints the two tables from the README: self-describing
+ * table the precise node without and with its odds declared, learned or
+ * predicted, whichever its generator leaves room for; a row whose values are
+ * uniform over their bounds has no tuned node and no parentheses. Prints the
+ * two tables from the README: self-describing
  * formats against `p.any()`, which also writes keys and type tags and also
  * gets ascii-safe text to match JSON, and schema formats against the
  * precise Polynar node.
@@ -207,8 +209,12 @@ const ROWS: Row[] = [
       sentAt: p.date(),
       text: p.string().max(500).prose(),
     }),
-    // Even ids and timestamps, one sentence per message: nothing beyond
-    // `.prose()` applies.
+    // Even ids and timestamps, so only the text has anything to learn.
+    tuned: p.object({
+      from: p.int().min(0),
+      sentAt: p.date(),
+      text: p.string().max(500).adaptive(),
+    }),
     proto: `syntax = "proto3";
       message ChatMessage {
         uint32 from = 1;
@@ -239,13 +245,8 @@ const ROWS: Row[] = [
       battery: p.int().min(0).max(100),
       ok: p.bool(),
     }),
-    // Only `ok` is skewed; the rest is uniform over its bounds.
-    tuned: p.object({
-      id: p.int().min(0).max(65535),
-      temperature: p.decimal(0.1).min(-40).max(125),
-      battery: p.int().min(0).max(100),
-      ok: p.bool().weights([19, 1]),
-    }),
+    // Uniform over the bounds but for `ok` at 19:1, worth under a tenth of a
+    // byte, so nothing to tune.
     proto: `syntax = "proto3";
       message SensorReading {
         uint32 id = 1;
@@ -330,7 +331,8 @@ const ROWS: Row[] = [
   {
     label: 'Status feed',
     node: p.array(p.enum(['ok', 'warn', 'error'])).length(100),
-    tuned: p.array(p.enum(['ok', 'warn', 'error']).weights([90, 9, 1])).length(100),
+    // Skewed odds the schema's author need not know: the node learns them.
+    tuned: p.array(p.enum(['ok', 'warn', 'error']).learn()).length(100),
     proto: `syntax = "proto3";
       message StatusFeed {
         enum Status { OK = 0; WARN = 1; ERROR = 2; }
@@ -382,18 +384,13 @@ const KEYS = [
 ] as const;
 type Key = (typeof KEYS)[number];
 const OTHER: ReadonlySet<Key> = new Set<Key>(['json', 'msgpack', 'proto', 'avro']);
+/** The precise node's cells, which read plain alone when the row has no tuned node. */
+const SCHEMA: ReadonlySet<Key> = new Set<Key>(['urlSafe', 'asciiSafe', 'binary']);
 type Cells = Record<Key, string>;
 const urlSafe = { type: 'text', charset: CharSets.urlSafe } as const;
 const asciiSafe = { type: 'text', charset: CharSets.asciiSafe } as const;
 
-function measure({
-  node,
-  tuned,
-  proto,
-  avro: avroSchema,
-  gen,
-  samples = SAMPLES,
-}: Row): Cells {
+function measure({ node, tuned, proto, avro: avroSchema, gen, samples = SAMPLES }: Row): Cells {
   const Message = protobuf.parse(proto).root.lookupType(/message (\w+)/.exec(proto)![1]);
   const AvroType = avro.Type.forSchema(avroSchema);
   const any = p.any();
@@ -427,10 +424,11 @@ function measure({
     second.anyUrlSafe += anyAdaptive.encode(value, urlSafe).length;
     second.anyAsciiSafe += anyAdaptive.encode(value, asciiSafe).length;
     second.anyBinary += anyAdaptive.encode(value).length;
-    const precise = tuned ?? node;
-    second.urlSafe += precise.encode(value, urlSafe).length;
-    second.asciiSafe += precise.encode(value, asciiSafe).length;
-    second.binary += precise.encode(value).length;
+    if (tuned) {
+      second.urlSafe += tuned.encode(value, urlSafe).length;
+      second.asciiSafe += tuned.encode(value, asciiSafe).length;
+      second.binary += tuned.encode(value).length;
+    }
   }
 
   // A single sample is an exact size, not a mean.
@@ -439,7 +437,9 @@ function measure({
   const cell = (key: Key): string =>
     OTHER.has(key)
       ? `${size(sums[key])} (${size(brotli[key])})`
-      : `${size(sums[key])} (${size(second[key])})`;
+      : SCHEMA.has(key) && !tuned
+        ? size(sums[key])
+        : `${size(sums[key])} (${size(second[key])})`;
   return Object.fromEntries(KEYS.map((k) => [k, cell(k)])) as Cells;
 }
 

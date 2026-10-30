@@ -41,11 +41,6 @@ export class Exclusion {
     return this.added;
   }
 
-  /** The excluded members, in the order they were added. */
-  get members(): readonly number[] {
-    return Array.from(this.list.subarray(0, this.added));
-  }
-
   /** Excluded member `i`, `i` in `[0, count)`, in the order they were added. */
   member(i: number): number {
     return this.list[i];

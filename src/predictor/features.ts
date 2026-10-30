@@ -13,12 +13,6 @@ import { HF } from './types';
 /** The recency bucket of frozen (built-in) votes, which have no position. */
 export const FROZEN_REC = 5;
 
-/** The recency bucket of a follower last seen `age` positions ago: 4 bits of age per bucket, 0..4. */
-export function recBucket(age: number): number {
-  const lg = bitlen(age) - 1;
-  return lg >= 16 ? 4 : div(lg, 4);
-}
-
 /** The determinism bucket of an entry by its `n` distinct followers: 1 / 2–3 / more. */
 export function dist(n: number): number {
   return n <= 1 ? 0 : n <= 3 ? 1 : 2;

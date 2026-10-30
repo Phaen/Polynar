@@ -1,6 +1,6 @@
 import { p } from '../../nodes';
 import { Encoder } from '../../packer';
-import { Priors, loadPrior } from '../../predictor/prior';
+import { loadedPriors, loadPrior } from '../../predictor/prior';
 import { session } from '../../predictor/session';
 import { MAX_CONTEXTS, quantise, train, trainLogged } from '../../predictor/train';
 import type { Prior } from '../../predictor/types';
@@ -40,7 +40,7 @@ describe('train', () => {
   });
 
   it('keeps the constants of `from` without a held-out part and copies numberStart', () => {
-    const from = Priors.json.source;
+    const from = loadedPriors.json.source;
     const prior = train(p.string().adaptive(), SAMPLES, { holdOut: 0, from, epochs: 1 });
     expect(prior.constants).toEqual(from.constants);
     expect(prior.tables.numberStart).toEqual(from.tables.numberStart);
@@ -96,7 +96,7 @@ describe('train', () => {
       epochs: 1,
     });
     expect(prior.builtin).toEqual({ symbols: [], counts0: [1], contexts1: [] });
-    expect(prior.tables.numberStart).toEqual(Priors.text.source.tables.numberStart);
+    expect(prior.tables.numberStart).toEqual(loadedPriors.text.source.tables.numberStart);
     expect(() => loadPrior(prior)).not.toThrow();
   });
 
@@ -108,7 +108,7 @@ describe('train', () => {
     expect([4194304, 8388608, 16777216, 33554432]).toContain(prior.constants.rho0);
     expect([256, 1024, 4096]).toContain(prior.constants.n0);
     expect(prior.constants.rates.lev).toBe(prior.constants.eta);
-    expect(prior.constants.rates.number).toBe(Priors.text.source.constants.rates.number);
+    expect(prior.constants.rates.number).toBe(loadedPriors.text.source.constants.rates.number);
     expect(() => loadPrior(prior)).not.toThrow();
   });
 
@@ -166,13 +166,13 @@ describe('quantise', () => {
 
 describe('a session that carries a run prior', () => {
   it('learns into it, under its prior, for every node of the message', () => {
-    const run = newRunPrior(Priors.json);
+    const run = newRunPrior(loadedPriors.json);
     const before = run.hybrid.slice();
     const enc = new Encoder();
     const s = session(enc, { carry: run });
     p.string().adaptive()._write(enc, 'carried text');
-    expect(s.run).toBe(run);
-    expect(s.space(Priors.text)).toBe(s.space(Priors.json));
+    expect(s.space(loadedPriors.json).run).toBe(run);
+    expect(s.space(loadedPriors.text)).toBe(s.space(loadedPriors.json));
     expect(run.hybrid).not.toEqual(before);
   });
 });

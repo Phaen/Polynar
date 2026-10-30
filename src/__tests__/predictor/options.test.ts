@@ -1,5 +1,5 @@
 import { DEFAULTS, applyAdaptive, checkAdaptive, resolve } from '../../predictor/options';
-import { Priors } from '../../predictor/prior';
+import { loadedPriors } from '../../predictor/prior';
 import { text } from '../../predictor/shipped/text';
 import type { AdaptiveOptions, Prior } from '../../predictor/types';
 
@@ -35,7 +35,7 @@ describe('checkAdaptive', () => {
   it('checks window and separate', () => {
     expect(() => checkAdaptive({ window: 1.5 }, who)).toThrow(TypeError);
     expect(checkAdaptive({ window: Infinity }, who).window).toBe(Infinity);
-    expect(resolve({ window: Infinity }, Priors.text, who).window).toBe(Infinity);
+    expect(resolve({ window: Infinity }, loadedPriors.text, who).window).toBe(Infinity);
     expect(() => checkAdaptive({ window: -Infinity }, who)).toThrow(TypeError);
     expect(() => checkAdaptive({ window: NaN }, who)).toThrow(TypeError);
     expect(() => checkAdaptive({ window: 0 }, who)).toThrow(RangeError);
@@ -75,9 +75,9 @@ describe('checkAdaptive', () => {
 
 describe('resolve', () => {
   it('fills in the defaults', () => {
-    const r = resolve(undefined, Priors.text, who);
+    const r = resolve(undefined, loadedPriors.text, who);
     expect(r).toEqual({
-      prior: Priors.text,
+      prior: loadedPriors.text,
       window: Infinity,
       separate: false,
       ...DEFAULTS,
@@ -99,7 +99,7 @@ describe('resolve', () => {
       null as never,
       who
     );
-    expect(r.prior).toBe(Priors.text);
+    expect(r.prior).toBe(loadedPriors.text);
     expect([r.window, r.separate, r.order, r.candidates, r.offsets, r.history]).toEqual([
       16,
       true,
@@ -112,8 +112,8 @@ describe('resolve', () => {
   });
 
   it("rejects an order other than the prior's", () => {
-    expect(() => resolve({ order: 6 }, Priors.text, who)).toThrow(TypeError);
-    expect(() => resolve({ order: 6 }, Priors.text, who)).toThrow(
+    expect(() => resolve({ order: 6 }, loadedPriors.text, who)).toThrow(TypeError);
+    expect(() => resolve({ order: 6 }, loadedPriors.text, who)).toThrow(
       "adaptive order 6 differs from the prior's order 8"
     );
   });
@@ -122,7 +122,7 @@ describe('resolve', () => {
 describe('applyAdaptive', () => {
   it('leaves a node the sugar does not reach as it is', () => {
     const node = {};
-    expect(applyAdaptive(node, {}, Priors.text.source)).toBe(node);
+    expect(applyAdaptive(node, {}, loadedPriors.text.source)).toBe(node);
   });
 
   it('hands the options and a fresh memo to a node it reaches', () => {
@@ -134,8 +134,8 @@ describe('applyAdaptive', () => {
         return out;
       },
     };
-    expect(applyAdaptive(node, { window: 4 }, Priors.text.source)).toBe(out);
-    expect(seen).toEqual([{ window: 4, prior: Priors.text.source }, 0]);
+    expect(applyAdaptive(node, { window: 4 }, loadedPriors.text.source)).toBe(out);
+    expect(seen).toEqual([{ window: 4, prior: loadedPriors.text.source }, 0]);
   });
 
   it('keeps a prior the options name', () => {
@@ -146,8 +146,8 @@ describe('applyAdaptive', () => {
         return node;
       },
     };
-    const prior = { ...Priors.text.source };
-    applyAdaptive(node, { prior }, Priors.text.source);
+    const prior = { ...loadedPriors.text.source };
+    applyAdaptive(node, { prior }, loadedPriors.text.source);
     expect(seen).toEqual([prior]);
   });
 });

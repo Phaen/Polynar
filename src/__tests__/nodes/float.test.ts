@@ -17,7 +17,6 @@ import {
   roundingWindow,
   canonicalSignificand,
   roundToSignificand,
-  doubleFrom,
   DEFAULT_FLOAT_WEIGHTS,
   placesOf,
   digitsAt,
@@ -840,36 +839,6 @@ describe('roundToSignificand', () => {
   ])('rejects %p/%p', (num, den) => {
     expect(() => roundToSignificand(num, den)).toThrow(
       new RangeError(`roundToSignificand expected a positive fraction, got ${num}/${den}`)
-    );
-  });
-});
-
-describe('doubleFrom', () => {
-  it.each([
-    [1023, 0n, 1],
-    [1023, 1n << 51n, 1.5],
-    [0, 0n, 0],
-    [0, 1n, 5e-324],
-    [2046, ONE - 1n, Number.MAX_VALUE],
-  ])('assembles exponent %p and mantissa %p into %p', (exponent, mantissa, value) => {
-    expect(doubleFrom(exponent, mantissa)).toBe(value);
-  });
-
-  it.each([-1, 2047])('rejects the exponent %p', (exponent) => {
-    expect(() => doubleFrom(exponent, 0n)).toThrow(
-      new RangeError(`doubleFrom exponent ${exponent} is outside [0, 2046]`)
-    );
-  });
-
-  it.each([0.5, NaN, Infinity])('rejects the exponent %p', (exponent) => {
-    expect(() => doubleFrom(exponent, 0n)).toThrow(
-      new TypeError(`doubleFrom expected an integer exponent, got ${exponent}`)
-    );
-  });
-
-  it.each([-1n, ONE])('rejects the mantissa %p', (mantissa) => {
-    expect(() => doubleFrom(1023, mantissa)).toThrow(
-      new RangeError(`doubleFrom mantissa ${mantissa} is outside [0, 2^52)`)
     );
   });
 });

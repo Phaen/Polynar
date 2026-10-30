@@ -1,6 +1,6 @@
 import { Encoder, Decoder } from '../packer';
 import { resolve } from '../predictor/options';
-import { Priors } from '../predictor/prior';
+import { loadedPriors } from '../predictor/prior';
 import { session, type MarkerPrior } from '../predictor/session';
 import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
 import { PNode, adapt } from './base';
@@ -46,7 +46,7 @@ export class PNullable<T> extends MethodNode<T | null> {
     this._members = members(2, { ...prior, learn: learningOf(_methods) }, 'p.nullable');
     this._adaptive = _methods.adaptive;
     if (this._adaptive !== undefined) {
-      this._resolved = resolve(this._adaptive, Priors.json, 'p.nullable');
+      this._resolved = resolve(this._adaptive, loadedPriors.json, 'p.nullable');
     }
   }
 

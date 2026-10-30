@@ -7,14 +7,7 @@
  * and start over with the next message.
  */
 
-import {
-  Encoder,
-  SlotCache,
-  type Decoder,
-  type Bucket,
-  type Journal,
-  type Undoable,
-} from '../packer';
+import { Encoder, type Decoder, type Bucket, type Journal, type Undoable } from '../packer';
 import {
   type Exclusion,
   type Table,
@@ -30,14 +23,13 @@ import { buildWeights, readTable, type WeightTable } from './weights';
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 
 /**
- * What a node's learned tables learn under, as `.learning()` and
- * `.adaptive()` take it: `window` is how many observations the learned
- * counts hold before they halve, raised to the member count of a table
- * with more members, and `DEFAULT_ADAPTIVE_WINDOW` when undefined.
- * `separate` keeps the node learning on its own: otherwise its tables may
- * start from what its kin learned, every node of its kind and window in the
- * message (see `AdaptivePrior`), and a string's characters or a binary's
- * bytes learn with every other node of its alphabet and window.
+ * What a node's learned tables learn under, as `.learn()` takes it:
+ * `window` is how many observations the learned counts hold before they
+ * halve, raised to the member count of a table with more members, and
+ * `DEFAULT_ADAPTIVE_WINDOW` when undefined. `separate` keeps the node
+ * learning on its own: otherwise its tables may start from what its kin
+ * learned, every node of its kind and window in the message (see
+ * `AdaptivePrior`).
  */
 export interface LearningOptions {
   readonly window?: number;
@@ -96,36 +88,6 @@ export function checkAdaptiveMembers(n: number, who: string): void {
 }
 
 /**
- * A table of `size` members whose buckets change as a message goes on:
- * member `pos` owns `[cum(pos), cum(pos) + freq(pos))` of `total`, and
- * `locate` finds the member owning a residual in `[0, total)`.
- */
-export interface LiveTable {
-  readonly size: number;
-  readonly total: number;
-  cum(pos: number): number;
-  freq(pos: number): number;
-  locate(residual: number): number;
-}
-
-/** Writes member `pos` of a live table as one weighted symbol; a lone member writes nothing. */
-export function writeLive(enc: Encoder, table: LiveTable, pos: number): void {
-  if (table.size === 1) {
-    return;
-  }
-  const freq = table.freq(pos);
-  enc.composeWeighted(table.cum(pos), freq, table.total);
-}
-
-/** Reads a member written by `writeLive`. */
-export function readLive(dec: Decoder, table: LiveTable): number {
-  if (table.size === 1) {
-    return 0;
-  }
-  return dec.parseMember(table.total, table);
-}
-
-/**
  * One message's view of an adaptive table: the declared weights at `prior`
  * observations' worth, plus the observations learned so far, each worth
  * the weights' total. Integer throughout: member `pos` weighs
@@ -136,7 +98,7 @@ export function readLive(dec: Decoder, table: LiveTable): number {
  * table's learned counts, the table shares them, and learning in either
  * learns in both.
  */
-export class LiveCounts implements LiveTable {
+export class LiveCounts {
   /** The observations of each member, halved past the window. */
   readonly learned: Fenwick;
 
@@ -164,11 +126,6 @@ export class LiveCounts implements LiveTable {
 
   freq(pos: number): number {
     return this.base.freqs[pos] * this.prior + this.learned.freq(pos) * this.base.total;
-  }
-
-  /** Member `pos`'s bucket as `[cum, freq, total]`. */
-  bucket(pos: number): Bucket {
-    return [this.cum(pos), this.freq(pos), this.total];
   }
 
   /**
@@ -229,67 +186,6 @@ function checkOverflow(total: number, prior: number, window: number, who: string
     throw new RangeError(
       `${who} adaptive prior ${prior} and window ${window} overflow with weights totalling ${total}`
     );
-  }
-}
-
-/**
- * An adaptive table over a node's `count` members. The declared weights
- * count as `prior` observations and never change; the values a message
- * codes are learned on top, one observation each, and the learned counts
- * halve whenever they exceed `window` or `count`, whichever is larger (a
- * smaller window would halve on nearly every value), so the table follows
- * the message's recent values. Only ratios matter: weights scaled by a constant give
- * every symbol the same cost.
- */
-export class AdaptiveTable {
-  /** The static table of the weights. */
-  readonly base: WeightTable;
-  private readonly window: number;
-
-  constructor(
-    weights: readonly number[],
-    count: number,
-    private readonly prior: number,
-    window: number,
-    who: string
-  ) {
-    checkAdaptiveMembers(count, who);
-    checkPositive(prior, who, 'prior');
-    checkPositive(window, who, 'window');
-    this.base = buildWeights(weights, count, who);
-    this.window = Math.max(window, count);
-    checkOverflow(this.base.total, prior, this.window, who);
-  }
-
-  /** Each message's live table. */
-  private readonly lives = new SlotCache<LiveCounts, Encoder | Decoder>(
-    this,
-    (side) => new LiveCounts(this.base, this.prior, this.window, side.journal)
-  );
-
-  /** This message's live table on `side`, with nothing learned yet. */
-  live(side: Encoder | Decoder): LiveCounts {
-    return this.lives.get(side);
-  }
-
-  /** The bucket of member `pos` in this message's live table. */
-  bucket(side: Encoder | Decoder, pos: number): Bucket {
-    return this.live(side).bucket(pos);
-  }
-
-  /** Writes member `pos` from the live table, then learns it. */
-  write(enc: Encoder, pos: number): void {
-    const live = this.live(enc);
-    writeLive(enc, live, pos);
-    live.learn(pos);
-  }
-
-  /** Reads a member written by `write`, then learns it. */
-  read(dec: Decoder): number {
-    const live = this.live(dec);
-    const pos = readLive(dec, live);
-    live.learn(pos);
-    return pos;
   }
 }
 
@@ -887,20 +783,6 @@ export class AdaptivePrior {
         state.journal.set(state, 'written', state.written - 1);
       }
     }
-  }
-
-  /**
-   * An estimate, on the encoder, of the bucket `write` would give member
-   * `pos` in context `row` under `excluded`: its bucket in the live table
-   * of the second-fastest rung, a middle guess at the coding the selector
-   * will name. The checks are `write`'s; nothing is learned.
-   */
-  estimate(enc: Encoder, pos: number, row = 0, excluded?: Exclusion): Bucket {
-    this.check(pos, row);
-    // The slowest rung, twice the members, is above the fastest, at most
-    // half of them, so there are always at least two.
-    const lives = this.rowLives(this.writing(enc), row);
-    return rungBuckets(this.bases[row], [lives[1]], excluded, pos)[1];
   }
 
   /** Reads a member written by `write` in context `row` under the same exclusion. */

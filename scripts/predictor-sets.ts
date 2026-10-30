@@ -15,7 +15,7 @@ import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { Decoder, Encoder } from '../src/packer';
 import { resolve } from '../src/predictor/options';
-import { Priors } from '../src/predictor/prior';
+import { loadedPriors } from '../src/predictor/prior';
 import { session } from '../src/predictor/session';
 import type { PlainNumber, SessionOptions, Sink, Source } from '../src/predictor/session';
 import type { Ends } from '../src/predictor/types';
@@ -144,7 +144,7 @@ const PATH = {};
 /** Codes a message's strings at one path through the session of `side`. */
 export function writeMessage(enc: Encoder, sink: Sink, m: Message, options: SessionOptions): void {
   const s = session(enc, options);
-  const o = resolve({}, Priors.text, 'predictor-sets');
+  const o = resolve({}, loadedPriors.text, 'predictor-sets');
   if (m.list) s.enterList();
   for (const str of m.strings) {
     if (m.list) s.nextItem();
@@ -161,7 +161,7 @@ export function readMessage(
   options: SessionOptions
 ): void {
   const s = session(dec, options);
-  const o = resolve({}, Priors.text, 'predictor-sets');
+  const o = resolve({}, loadedPriors.text, 'predictor-sets');
   if (m.list) s.enterList();
   m.strings.forEach((str, i) => {
     if (m.list) s.nextItem();
@@ -313,7 +313,7 @@ const PLAIN: PlainNumber = {
 /** Codes a number message through the session of `enc`, with the text prior's tables. */
 export function writeNumbers(enc: Encoder, m: NumberMessage, options: SessionOptions = {}): void {
   const s = session(enc, options);
-  const o = resolve({}, Priors.text, 'predictor-sets');
+  const o = resolve({}, loadedPriors.text, 'predictor-sets');
   if (m.list) s.enterList();
   for (const op of m.ops) {
     if (op === 'enter') s.enterRecord();
@@ -329,7 +329,7 @@ export function writeNumbers(enc: Encoder, m: NumberMessage, options: SessionOpt
 /** Reads a number message back and throws unless every number equals the one written. */
 export function readNumbers(dec: Decoder, m: NumberMessage, options: SessionOptions = {}): void {
   const s = session(dec, options);
-  const o = resolve({}, Priors.text, 'predictor-sets');
+  const o = resolve({}, loadedPriors.text, 'predictor-sets');
   if (m.list) s.enterList();
   m.ops.forEach((op, i) => {
     if (op === 'enter') s.enterRecord();

@@ -1,6 +1,6 @@
 import { Encoder, Decoder } from '../packer';
 import { resolve } from '../predictor/options';
-import { Priors } from '../predictor/prior';
+import { loadedPriors } from '../predictor/prior';
 import { session, type Bound, type Session } from '../predictor/session';
 import { STRUCT, type AdaptiveOptions, type Ends, type Resolved } from '../predictor/types';
 import { PNode, adapt } from './base';
@@ -148,7 +148,7 @@ export class PCollection<T> extends MethodNode<T> {
           `${layout.who} adaptive cannot weigh the count: an adaptive collection ends with a symbol`
         );
       }
-      this._resolved = resolve(this._adaptive, Priors.json, layout.who);
+      this._resolved = resolve(this._adaptive, loadedPriors.json, layout.who);
     }
     this._holds =
       this._adaptive !== undefined ||

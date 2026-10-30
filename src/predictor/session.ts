@@ -17,7 +17,7 @@
 
 import type { Decoder, Encoder } from '../packer';
 import { CorruptInputError } from '../packer/errors';
-import { div, log2Fix } from './arith';
+import { div } from './arith';
 import { Ids } from './alphabet';
 import { NumberCoder, NumberState } from './numbers';
 import type { NumberRange, PlainNumber, RecordEntry } from './numbers';
@@ -151,19 +151,6 @@ class PathMap<T> {
       map.set(k, v);
     }
     return v;
-  }
-}
-
-/** Prices the calls a coder makes, in bits · 2^RB (`log2Fix` of total over frequency). */
-class CostSink implements Sink {
-  bits = 0;
-
-  composeWeighted(_cum: number, freq: number, total: number): void {
-    this.bits += log2Fix(total) - log2Fix(freq);
-  }
-
-  compose(_integer: number, radix: number): void {
-    this.bits += log2Fix(radix);
   }
 }
 
@@ -352,11 +339,6 @@ export class Session implements RecordView {
     return this.firstSpace().ids;
   }
 
-  /** The run-time copy of the first prior the message used. */
-  get run(): RunPrior {
-    return this.firstSpace().run;
-  }
-
   /** The symbol predictor of a path and alphabet in the space of its prior, made on first use. */
   symbols(
     path: PathKey,
@@ -540,12 +522,6 @@ export class Session implements RecordView {
     this.scopes.pop();
   }
 
-  /** Whether a container on the predictor is the innermost open one. */
-  inScope(): boolean {
-    const top = this.scopes[this.scopes.length - 1];
-    return top !== undefined && top !== null;
-  }
-
   /** The structure symbol coded last for `node`, −1 when none waits for it. */
   take(node: object): number {
     if (this.pendingFor !== node) {
@@ -634,22 +610,6 @@ export class Session implements RecordView {
   leaveList(): void {
     const prev = this.lists.pop();
     this.listIndex = prev === undefined ? -1 : prev;
-  }
-
-  /**
-   * The cost of coding a string value at a path (value step, symbols, END) under the quantised
-   * tables, in bits · 2^RB; the session learns from it as from a coded value.
-   */
-  cost(
-    path: PathKey,
-    o: Resolved,
-    alphabet: AlphabetKind,
-    syms: ArrayLike<number>,
-    ends: Ends
-  ): number {
-    const sink = new CostSink();
-    this.string(path, o, alphabet).write(sink, syms, syms.length, ends);
-    return sink.bits;
   }
 }
 

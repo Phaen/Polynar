@@ -33,6 +33,7 @@ export {
   PUuid,
 } from './nodes';
 export { ProseModels, buildProseModel, members } from './nodes';
+export { Priors } from './predictor/prior';
 export { train } from './predictor/train';
 export type { TrainOptions } from './predictor/train';
 export type {

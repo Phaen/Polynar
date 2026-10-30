@@ -12,7 +12,7 @@ import { decimalPlaces } from './decimal';
 import { IndexRange } from './lattice';
 import { PNode } from './base';
 import { checkAdaptive, resolve } from '../predictor/options';
-import { Priors } from '../predictor/prior';
+import { loadedPriors } from '../predictor/prior';
 import { session } from '../predictor/session';
 import type { PlainNumber } from '../predictor/session';
 import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
@@ -33,7 +33,6 @@ const MANTISSA_RADIX = 2 ** 52;
 // Infinity, signed by the sign bit before it, and NaN, with nothing after
 // either. Every NaN is the one NaN with sign bit 0: its payload is not kept.
 const EXPONENT_BIAS = 1023;
-const EXPONENT_FINITE_MAX = 2046;
 const EXPONENT_ZIGZAG_MAX = 2046;
 const ZIGZAG_INFINITY = EXPONENT_ZIGZAG_MAX + 1;
 const ZIGZAG_NAN = EXPONENT_ZIGZAG_MAX + 2;
@@ -436,25 +435,6 @@ export function roundToSignificand(num: bigint, den: bigint): bigint {
   }
 }
 
-/**
- * Assemble a positive finite double from IEEE fields: a biased exponent in
- * [0, 2046] and a mantissa in [0, 2^52). toString on it drives the
- * five-realm candidate, so it must carry the true exponent.
- */
-export function doubleFrom(exponent: number, mantissa: bigint): number {
-  if (!Number.isInteger(exponent)) {
-    throw new TypeError(`doubleFrom expected an integer exponent, got ${exponent}`);
-  }
-  if (exponent < 0 || exponent > EXPONENT_FINITE_MAX) {
-    throw new RangeError(`doubleFrom exponent ${exponent} is outside [0, ${EXPONENT_FINITE_MAX}]`);
-  }
-  if (mantissa < 0n || mantissa > MANTISSA_MASK) {
-    throw new RangeError(`doubleFrom mantissa ${mantissa} is outside [0, 2^52)`);
-  }
-  FLOAT_BITS[0] = (BigInt(exponent) << MANTISSA_BITS) | mantissa;
-  return FLOAT_SCRATCH[0];
-}
-
 /** The most decimal places a value is spelled at as a decimal under `.adaptive()`. */
 const MAX_PLACES = 15;
 /** The places symbol of a value spelled as a double instead of a decimal. */
@@ -635,7 +615,7 @@ export class PFloat extends PNode<number> {
     if (adaptive !== undefined) {
       this._predicted = new AdaptiveFloat(
         this,
-        resolve(adaptive, Priors.json, 'p.float'),
+        resolve(adaptive, loadedPriors.json, 'p.float'),
         resolved,
         this._formWeights
       );

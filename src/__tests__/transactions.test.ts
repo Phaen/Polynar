@@ -292,16 +292,11 @@ describe('Encoder.decide', () => {
     ).toThrow(new RangeError('no 1'));
   });
 
-  it('writes a winner again taking the choices and notes its try made', () => {
+  it('writes a winner again taking the choices its try made', () => {
     const enc = new lib.Encoder();
     const inner: number[] = [];
-    const notes: number[] = [];
     const choice = enc.decide([0, 1], [0, 1], (c) => {
       spend(enc, c === 0 ? 1 : 6);
-      enc.note(() => {
-        notes.push(c);
-        return [c, 7];
-      });
       enc.decide([0, 1], [0, 1], (d) => {
         inner.push(d);
         spend(enc, d === 0 ? 3 : 1);
@@ -311,7 +306,6 @@ describe('Encoder.decide', () => {
     // Candidate 0 tries both inner candidates; candidate 1 passes the
     // budget at once; candidate 0 is written again with its inner choice.
     expect(inner).toEqual([0, 1, 1]);
-    expect(notes).toEqual([0]);
   });
 
   it('stops tries inside a try that passes its budget', () => {
@@ -391,14 +385,6 @@ describe('Encoder.decide', () => {
         spend(checked, c === 0 ? 1 : 2);
         round++;
         checked.decide([0, 1], [0, 1], (d) => spend(checked, round <= 2 ? d + 1 : 2 - d));
-      })
-    ).toThrow(new Error('A choice written again differs from the one its try made'));
-    const noted = new lib.Encoder({ checkDecisions: true });
-    let note = 0;
-    expect(() =>
-      noted.decide([0, 1], [0, 1], (c) => {
-        spend(noted, c === 0 ? 1 : 2);
-        noted.note(() => [note++]);
       })
     ).toThrow(new Error('A choice written again differs from the one its try made'));
   });

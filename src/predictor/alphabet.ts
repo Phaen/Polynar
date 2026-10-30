@@ -93,10 +93,6 @@ export class Ids {
     return BYTE_BASE + b;
   }
 
-  has(cp: number): boolean {
-    return this.map.has(cp);
-  }
-
   /** The code point of an id, the byte value of a byte id, or -1 for END and structure ids. */
   cpOf(id: number): number {
     return id >= 0 && id < this.cps.length ? this.cps[id] : -1;

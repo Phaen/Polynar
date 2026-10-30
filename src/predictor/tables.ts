@@ -6,7 +6,7 @@
  * A population's sequence starts with `seq[0] = END`; position `t` is the next symbol's. The
  * order-k entry of a position holds what followed the k symbols before it, keyed by a 48-bit hash
  * of those symbols. Recency is not kept in buckets here: every follower carries the position it
- * last followed at, and the consumer buckets `t − last` (features.ts `recBucket`).
+ * last followed at, and the consumer buckets `t − last` (symbols.ts `recOf`).
  */
 
 import { IndexMap, hashes } from './keymap';
@@ -326,25 +326,6 @@ function grow<A extends Int32Array | Uint16Array | Uint8Array | Float64Array>(
   const b = new (a.constructor as new (size: number) => A)(size);
   b.set(a);
   return b;
-}
-
-/**
- * The exact-agreement counts of symbol `s` over the entries `E[0..m]` of `tab`: `out[k]` is its
- * count in `E[k]` clamped to `out[k − 1]`, so a context whose hash collided with another never
- * counts more than the shorter context it extends and every `out[k] − out[k + 1]` is non-negative.
- */
-export function exactCounts(
-  tab: Entries,
-  E: Int32Array,
-  m: number,
-  s: number,
-  out: Int32Array
-): Int32Array {
-  for (let k = 0; k <= m; k++) {
-    const c = tab.count(E[k], s);
-    out[k] = k > 0 && c > out[k - 1] ? out[k - 1] : c;
-  }
-  return out;
 }
 
 /** The last positions at one value offset, oldest first through `at`. */

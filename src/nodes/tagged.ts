@@ -10,7 +10,7 @@ import { MethodNode, learningOf, type MethodSet } from './methods';
 import { adapt, type PNode } from './base';
 import { ownMarker, readOwnMarker } from './markers';
 import { resolve } from '../predictor/options';
-import { Priors } from '../predictor/prior';
+import { loadedPriors } from '../predictor/prior';
 import { session } from '../predictor/session';
 import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
 
@@ -73,7 +73,7 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
     this._pick = members(this._tags.length, { ...prior, learn: learningOf(_methods) }, 'p.tagged');
     this._adaptive = _methods.adaptive;
     if (this._adaptive !== undefined) {
-      this._resolved = resolve(this._adaptive, Priors.json, 'p.tagged');
+      this._resolved = resolve(this._adaptive, loadedPriors.json, 'p.tagged');
     }
   }
 

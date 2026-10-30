@@ -1,6 +1,6 @@
 import { Encoder, Decoder } from '../packer';
 import { resolve } from '../predictor/options';
-import { Priors } from '../predictor/prior';
+import { loadedPriors } from '../predictor/prior';
 import type { MarkerPrior } from '../predictor/session';
 import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
 import type { Kind } from './guards';
@@ -36,7 +36,7 @@ export class PBool extends MethodNode<boolean> {
     if (this._adaptive === undefined) {
       this._radix = this._members.radix;
     } else {
-      this._resolved = resolve(this._adaptive, Priors.json, 'p.bool');
+      this._resolved = resolve(this._adaptive, loadedPriors.json, 'p.bool');
     }
   }
 

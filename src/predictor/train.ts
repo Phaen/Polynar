@@ -12,7 +12,7 @@ import type { PNode } from '../nodes/base';
 import { PString } from '../nodes/string';
 import { Encoder } from '../packer';
 import { PB, POW2, div, log2Fix } from './arith';
-import { Priors, priorOf } from './prior';
+import { loadedPriors, priorOf } from './prior';
 import { session } from './session';
 import type { Trace } from './session';
 import { END } from './types';
@@ -338,8 +338,8 @@ function checkOptions(n: number, options: TrainOptions): Required<Omit<TrainOpti
 /** The shipped prior a node starts from: the text prior for strings and binaries, else JSON. */
 function shippedFor(node: PNode<any>): Prior {
   return node instanceof PString || node instanceof PBinary
-    ? Priors.text.source
-    : Priors.json.source;
+    ? loadedPriors.text.source
+    : loadedPriors.json.source;
 }
 
 /**

@@ -9,12 +9,9 @@ import {
   apmShare,
   apmUpdate,
   blockOf,
-  deltaOf,
   deltaRate,
-  exponent,
   learn,
   newRunPrior,
-  sdiv,
   smul,
 } from '../../predictor/weights';
 import type { PathDeltas } from '../../predictor/weights';
@@ -140,7 +137,7 @@ describe('newRunPrior', () => {
   });
 });
 
-describe('smul and sdiv', () => {
+describe('smul', () => {
   it('rounds a * b / 2^k to nearest, odd in each argument', () => {
     const r = rnd(7);
     for (let i = 0; i < 20000; i++) {
@@ -171,48 +168,12 @@ describe('smul and sdiv', () => {
     expect(smul(5 * ONE, 40 * ONE, RB)).toBe(200 * ONE);
     expect(() => smul(2 ** 27, 2 ** 27, 27)).toThrow(RangeError);
   });
-
-  it('divides toward zero', () => {
-    expect(sdiv(7, 2)).toBe(3);
-    expect(sdiv(-7, 2)).toBe(-3);
-    expect(sdiv(0, 5)).toBe(0);
-  });
 });
 
-describe('blocks and exponents', () => {
+describe('blockOf', () => {
   it('numbers blocks by source and level', () => {
     expect(blockOf(0, 0, ORDER)).toBe(0);
     expect(blockOf(SRC.msg, 3, ORDER)).toBe(levels(ORDER) + 3);
-    const d: PathDeltas = new Map();
-    expect(deltaOf(d, 4)).toBeUndefined();
-    const a = new Float64Array(HF);
-    d.set(4, a);
-    expect(deltaOf(d, 4)).toBe(a);
-  });
-
-  it('matches a floating dot product within the per-term rounding', () => {
-    const run = newRunPrior(prior());
-    const r = rnd(3);
-    for (let i = 0; i < 2000; i++) {
-      const b = Math.floor(r() * NSRC * levels(ORDER));
-      for (let f = 0; f < HF; f++) run.hybrid[b * HF + f] = Math.round((r() * 80 - 40) * ONE);
-      const delta = new Float64Array(HF).map(() => Math.round((r() * 16 - 8) * ONE));
-      const x = X(
-        Math.floor(r() * 5),
-        r() < 0.5 ? 1 : 0,
-        Math.floor(r() * 4),
-        0,
-        Math.floor(r() * 4)
-      );
-      let ref = 0;
-      let refD = 0;
-      for (let f = 0; f < HF; f++) {
-        ref += (run.hybrid[b * HF + f] * x[f]) / ONE;
-        refD += (delta[f] * x[f]) / ONE;
-      }
-      expect(Math.abs(exponent(run, b, x) - ref)).toBeLessThanOrEqual(3);
-      expect(Math.abs(exponent(run, b, x, delta) - ref - refD)).toBeLessThanOrEqual(6);
-    }
   });
 });
 

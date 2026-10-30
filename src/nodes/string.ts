@@ -10,7 +10,7 @@
 import { Encoder, Decoder, Alphabet, CorruptInputError, costUnits } from '../packer';
 import type { Charset } from '../packer';
 import { checkAdaptive, resolve } from '../predictor/options';
-import { Priors } from '../predictor/prior';
+import { loadedPriors } from '../predictor/prior';
 import { STRUCT, type AdaptiveOptions } from '../predictor/types';
 import { PNode, type Run } from './base';
 import { describe } from './path';
@@ -599,7 +599,7 @@ export class PString extends PNode<string> {
         'p.string adaptive cannot weigh the length: an adaptive string ends with a symbol'
       );
     }
-    const options = resolve(adaptive, Priors.text, 'p.string');
+    const options = resolve(adaptive, loadedPriors.text, 'p.string');
     this._learned =
       charsetText === undefined
         ? new Learned(new Ladder(), this, options, 'text', bounds)

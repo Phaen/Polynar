@@ -5,7 +5,7 @@
  */
 
 import { p } from '../../index';
-import { Priors } from '../../predictor/prior';
+import { loadedPriors } from '../../predictor/prior';
 import { learningOf, learns } from '../../nodes/methods';
 
 describe('method set queries', () => {
@@ -83,11 +83,11 @@ describe('.adaptive() on a container', () => {
     const node = p.object({ a: p.bool(), b: own, c: learner, d: p.array(p.enum(['x', 'y'])) });
     const adapted = node.adaptive({ window: 16 });
     const { _shape: shape } = adapted as unknown as { _shape: Record<string, never> };
-    expect(leaf(adapted)).toEqual({ adaptive: { window: 16, prior: Priors.json.source } });
-    expect(leaf(shape.a)).toEqual({ adaptive: { window: 16, prior: Priors.json.source } });
+    expect(leaf(adapted)).toEqual({ adaptive: { window: 16, prior: loadedPriors.json.source } });
+    expect(leaf(shape.a)).toEqual({ adaptive: { window: 16, prior: loadedPriors.json.source } });
     expect(shape.b).toBe(own);
     expect(shape.c).toBe(learner);
-    expect(leaf(shape.d)).toEqual({ adaptive: { window: 16, prior: Priors.json.source } });
+    expect(leaf(shape.d)).toEqual({ adaptive: { window: 16, prior: loadedPriors.json.source } });
   });
 
   it('leaves a node that learns, and what is below it, as it is', () => {

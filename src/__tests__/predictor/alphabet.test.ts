@@ -61,7 +61,6 @@ describe('fixed ids', () => {
     expect(() => ids.idOf(-1)).toThrow(RangeError);
     expect(() => ids.idOf(0x110000)).toThrow(RangeError);
     expect(() => ids.idOf(0.5)).toThrow(RangeError);
-    expect(ids.has(-1)).toBe(false);
   });
 });
 
@@ -76,8 +75,6 @@ describe('assignment order', () => {
     expect(ids.idOf(cp('a'))).toBe(CP_BASE + 12);
     expect(ids.idOf(cp('b'))).toBe(CP_BASE + 13);
     expect(ids.size()).toBe(CP_BASE + 14);
-    expect(ids.has(cp('a'))).toBe(true);
-    expect(ids.has(cp('z'))).toBe(false);
     expect(ids.cpOf(CP_BASE + 13)).toBe(cp('b'));
   });
 
@@ -121,7 +118,6 @@ describe('case partners', () => {
     const ids = new Ids(null);
     const a = ids.idOf(cp('a'));
     const size = ids.size();
-    expect(ids.has(cp('A'))).toBe(false);
     const upper = ids.partner(a);
     expect(upper).toBe(size);
     expect(ids.cpOf(upper)).toBe(cp('A'));

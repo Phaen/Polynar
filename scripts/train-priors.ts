@@ -16,7 +16,7 @@
 import { appendFileSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { p } from '../src/nodes';
-import { Priors } from '../src/predictor/prior';
+import { loadedPriors } from '../src/predictor/prior';
 import { trainLogged } from '../src/predictor/train';
 import type { Prior } from '../src/predictor/types';
 import { NAMES } from './predictor-sets';
@@ -159,7 +159,7 @@ function main(): number {
       if (logFile !== undefined) appendFileSync(logFile, `${stamped}\n`);
     };
   const corpus = corpusValues(research);
-  const from = Priors.json.source.constants;
+  const from = loadedPriors.json.source.constants;
   if (only !== 'text') {
     const t0 = performance.now();
     const prior = trainLogged(

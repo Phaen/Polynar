@@ -15,7 +15,7 @@ import { PBinary, type TypedArrayClass } from '../../nodes/binary';
 import type { Float16ArrayLike } from '../../nodes/guards';
 import { members } from '../../nodes/members';
 import { DEPTH } from '../../nodes/lazy';
-import { Priors } from '../../predictor/prior';
+import { loadedPriors } from '../../predictor/prior';
 import { STRUCT } from '../../predictor/types';
 import { trip } from '../support';
 
@@ -767,7 +767,7 @@ describe('p.any().adaptive()', () => {
 
   it('takes the predictor options', () => {
     const value = { a: [1, 2, 3], b: 'text' };
-    const node = p.any().adaptive({ window: 4, separate: true, prior: Priors.json.source });
+    const node = p.any().adaptive({ window: 4, separate: true, prior: loadedPriors.json.source });
     expect(trip(node, value)).toEqual(value);
   });
 
