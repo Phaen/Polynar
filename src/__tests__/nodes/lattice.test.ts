@@ -9,7 +9,7 @@
 import { p, Encoder, Decoder, CorruptInputError } from '../../index';
 import { IndexRange, checkUnset, lengthBound, lengthRange } from '../../nodes/lattice';
 import { LearnedMagnitude } from '../../nodes/magnitude';
-import { AdaptivePrior, MAX_ADAPTIVE_MEMBERS } from '../../nodes/adaptive';
+import { AdaptivePrior, MAX_COMPRESS_MEMBERS } from '../../nodes/adaptive';
 import type { PNode } from '../../nodes/base';
 import { mulberry32, trip } from '../support';
 import { buildWeights, readTable } from '../../nodes/weights';
@@ -355,12 +355,12 @@ describe('IndexRange', () => {
     );
     expect(
       () =>
-        new IndexRange('r', 1, MAX_ADAPTIVE_MEMBERS + 1, ones(MAX_ADAPTIVE_MEMBERS + 1), adaptation)
+        new IndexRange('r', 1, MAX_COMPRESS_MEMBERS + 1, ones(MAX_COMPRESS_MEMBERS + 1), adaptation)
     ).toThrow(new RangeError('r learned prior spans 65537 values, above the limit 65536'));
-    const widest = new IndexRange('r', 1, MAX_ADAPTIVE_MEMBERS, undefined, {});
+    const widest = new IndexRange('r', 1, MAX_COMPRESS_MEMBERS, undefined, {});
     expect(widest.learning).toEqual({});
     expect(widest.prior).toBeUndefined();
-    expect(roundTrip(widest, [1, MAX_ADAPTIVE_MEMBERS])).toEqual([1, MAX_ADAPTIVE_MEMBERS]);
+    expect(roundTrip(widest, [1, MAX_COMPRESS_MEMBERS])).toEqual([1, MAX_COMPRESS_MEMBERS]);
     expect(() => new IndexRange('r', 0, 2, [1, 1], adaptation)).toThrow(
       new TypeError('r weights must list one weight per value: expected 3, got 2')
     );
@@ -425,8 +425,8 @@ describe('IndexRange', () => {
     const indices = Array.from({ length: 500 }, () =>
       random() < 0.9 ? 40000 + Math.floor(random() * 4) : Math.floor(random() * 65536)
     );
-    const range = new IndexRange('r', 0, MAX_ADAPTIVE_MEMBERS - 1, undefined, {});
-    const plain = new IndexRange('r', 0, MAX_ADAPTIVE_MEMBERS - 1);
+    const range = new IndexRange('r', 0, MAX_COMPRESS_MEMBERS - 1, undefined, {});
+    const plain = new IndexRange('r', 0, MAX_COMPRESS_MEMBERS - 1);
     const write = (into: IndexRange): Uint8Array => {
       const enc = new Encoder();
       for (const index of indices) {

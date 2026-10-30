@@ -1,7 +1,7 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
-import { checkAdaptive, resolve } from '../predictor/options';
+import { checkCompress, resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
-import type { AdaptiveOptions } from '../predictor/types';
+import type { CompressOptions } from '../predictor/types';
 import { PNode } from './base';
 import { typedArrayKind, type Kind, type TypedArray } from './guards';
 import { checkUnset, type LengthBounds } from './lattice';
@@ -120,29 +120,29 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
 
   private readonly _type: TypedArrayClass<A>;
   private readonly _bounds: LengthBounds;
-  /** The options `.adaptive()` set, which hand the bytes to the predictor. */
-  readonly _adaptive?: AdaptiveOptions;
+  /** The options `.compress()` set, which hand the bytes to the predictor. */
+  readonly _compress?: CompressOptions;
   private readonly _plain: PlainText<A>;
-  /** The bytes through the predictor, under `.adaptive()`. */
+  /** The bytes through the predictor, under `.compress()`. */
   private readonly _learned?: Learned<A>;
 
-  constructor(type: TypedArrayClass<A>, bounds: LengthBounds = {}, adaptive?: AdaptiveOptions) {
+  constructor(type: TypedArrayClass<A>, bounds: LengthBounds = {}, compress?: CompressOptions) {
     super();
     this._type = type;
     this._bounds = bounds;
-    this._adaptive = adaptive;
+    this._compress = compress;
     const bytes = new Bytes(type);
     this._plain = new PlainText(bytes, bounds);
     this._kinds = [typedArrayKind(new type(new ArrayBuffer(0)))];
-    if (adaptive === undefined) {
+    if (compress === undefined) {
       return;
     }
     if (bounds.prior !== undefined) {
       throw new TypeError(
-        'p.binary adaptive cannot weigh the length: an adaptive binary ends with a symbol'
+        'p.binary compress cannot weigh the length: a compressed binary ends with a symbol'
       );
     }
-    const options = resolve(adaptive, loadedPriors.text, 'p.binary');
+    const options = resolve(compress, loadedPriors.text, 'p.binary');
     this._learned = new Learned(bytes, this, options, 'bytes', bounds);
   }
 
@@ -170,7 +170,7 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
   /**
    * Declare a prior over the element COUNT as an integer CDF: `fn(n)` is the
    * cumulative weight of counts below `n`. Requires a max; a zero-weight
-   * count cannot encode. Not with `.adaptive()`.
+   * count cannot encode. Not with `.compress()`.
    */
   cdf(fn: Cdf): PBinary<A> {
     checkUnset(this._bounds.prior, 'p.binary', 'prior');
@@ -180,15 +180,15 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
   /**
    * Declare how likely each element count from min (or 0) to max is, lowest
    * first. Same prior as `.cdf()`, given as the histogram instead of its
-   * running total. Not with `.adaptive()`.
+   * running total. Not with `.compress()`.
    */
   weights(w: readonly number[]): PBinary<A> {
     checkUnset(this._bounds.prior, 'p.binary', 'prior');
     return this._with({ ...this._bounds, prior: w });
   }
 
-  _adapted(options: AdaptiveOptions): PBinary<A> {
-    return this._adaptive !== undefined ? this : this.adaptive(options);
+  _adapted(options: CompressOptions): PBinary<A> {
+    return this._compress !== undefined ? this : this.compress(options);
   }
 
   _marker(): number {
@@ -206,16 +206,16 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
    * element, instead of a length. An array the node already wrote costs a
    * few bits. The bounds still hold. Set once.
    */
-  adaptive(options?: AdaptiveOptions): PBinary<A> {
-    if (this._adaptive !== undefined) {
-      throw new TypeError('p.binary adaptive is already set');
+  compress(options?: CompressOptions): PBinary<A> {
+    if (this._compress !== undefined) {
+      throw new TypeError('p.binary compress is already set');
     }
-    return new PBinary(this._type, this._bounds, checkAdaptive(options, 'p.binary'));
+    return new PBinary(this._type, this._bounds, checkCompress(options, 'p.binary'));
   }
 
-  /** This node with `bounds`, of the same element type and adaptive options. */
+  /** This node with `bounds`, of the same element type and compress options. */
   private _with(bounds: LengthBounds): PBinary<A> {
-    return new PBinary(this._type, bounds, this._adaptive);
+    return new PBinary(this._type, bounds, this._compress);
   }
 
   _write(enc: Encoder, value: A): void {

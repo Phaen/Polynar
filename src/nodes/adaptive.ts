@@ -26,7 +26,7 @@ const MAX_SAFE = Number.MAX_SAFE_INTEGER;
  * What a node's learned tables learn under, as `.learn()` takes it:
  * `window` is how many observations the learned counts hold before they
  * halve, raised to the member count of a table with more members, and
- * `DEFAULT_ADAPTIVE_WINDOW` when undefined. `separate` keeps the node
+ * `DEFAULT_COMPRESS_WINDOW` when undefined. `separate` keeps the node
  * learning on its own: otherwise its tables may start from what its kin
  * learned, every node of its kind and window in the message (see
  * `AdaptivePrior`).
@@ -42,10 +42,10 @@ export function kinOf(learning: LearningOptions | undefined): boolean {
 }
 
 /** The observations an adaptive prior holds before halving, unless declared; a table with more members holds that many. */
-export const DEFAULT_ADAPTIVE_WINDOW = 1024;
+export const DEFAULT_COMPRESS_WINDOW = 1024;
 
 /** The most members an adaptive prior is declared over. */
-export const MAX_ADAPTIVE_MEMBERS = 65536;
+export const MAX_COMPRESS_MEMBERS = 65536;
 
 /**
  * The learning rates an adaptive prior tries per message, as how many
@@ -78,11 +78,11 @@ export function checkAdaptation(
   return { window };
 }
 
-/** Refuses an adaptive prior over more than `MAX_ADAPTIVE_MEMBERS` members. */
-export function checkAdaptiveMembers(n: number, who: string): void {
-  if (n > MAX_ADAPTIVE_MEMBERS) {
+/** Refuses an adaptive prior over more than `MAX_COMPRESS_MEMBERS` members. */
+export function checkCompressMembers(n: number, who: string): void {
+  if (n > MAX_COMPRESS_MEMBERS) {
     throw new RangeError(
-      `${who} learned prior spans ${n} values, above the limit ${MAX_ADAPTIVE_MEMBERS}`
+      `${who} learned prior spans ${n} values, above the limit ${MAX_COMPRESS_MEMBERS}`
     );
   }
 }
@@ -634,7 +634,7 @@ export class AdaptivePrior {
     if (rows.length === 0) {
       throw new TypeError(`${who} adaptive prior needs at least one row of weights`);
     }
-    checkAdaptiveMembers(members, who);
+    checkCompressMembers(members, who);
     if (window !== undefined) {
       checkPositive(window, who, 'window');
     }
@@ -644,7 +644,7 @@ export class AdaptivePrior {
     const { bases, statics } = rowTables(rows, members, who);
     this.bases = bases;
     this.statics = statics;
-    this.window = Math.max(window ?? DEFAULT_ADAPTIVE_WINDOW, members);
+    this.window = Math.max(window ?? DEFAULT_COMPRESS_WINDOW, members);
     const { rungs, selector, choices } = ladderOf(members);
     this.rungs = rungs;
     this.selector = selector;

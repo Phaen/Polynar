@@ -244,7 +244,7 @@ describe('Digit reads', () => {
   });
 });
 
-describe('p.date().adaptive()', () => {
+describe('p.date().compress()', () => {
   const start = Date.UTC(2024, 0, 1);
   const random = (length: number, seed: number, lo: number, hi: number) => {
     const rnd = mulberry32(seed);
@@ -255,24 +255,24 @@ describe('p.date().adaptive()', () => {
   const seconds = p.date().precision('second');
 
   it.each([
-    ['unbounded', p.date().adaptive(), random(200, 1, -1e12, 1e12)],
-    ['to the second', seconds.adaptive(), random(200, 2, -1e9, 1e9)],
+    ['unbounded', p.date().compress(), random(200, 1, -1e12, 1e12)],
+    ['to the second', seconds.compress(), random(200, 2, -1e9, 1e9)],
     [
       'bounded',
       seconds
         .min(new Date(start - 1e9))
         .max(new Date(start + 1e9))
-        .adaptive(),
+        .compress(),
       random(200, 3, start / 1000 - 1e6, start / 1000 + 1e6),
     ],
     [
       'min-only',
-      seconds.min(new Date(start - 1e9)).adaptive(),
+      seconds.min(new Date(start - 1e9)).compress(),
       random(200, 4, start / 1000 - 1e6, 1e10),
     ],
     [
       'max-only',
-      seconds.max(new Date(start + 1e9)).adaptive(),
+      seconds.max(new Date(start + 1e9)).compress(),
       random(200, 5, -1e10, start / 1000 + 1e6),
     ],
     [
@@ -281,7 +281,7 @@ describe('p.date().adaptive()', () => {
         .min(new Date(start - 1e6))
         .max(new Date(start + 1e6))
         .weights(Array.from({ length: 2001 }, (_, i) => 1 + (i % 7)))
-        .adaptive(),
+        .compress(),
       random(200, 6, start / 1000 - 1000, start / 1000 + 1000),
     ],
     [
@@ -290,7 +290,7 @@ describe('p.date().adaptive()', () => {
         .min(new Date(start - 1e6))
         .max(new Date(start + 1e6))
         .cdf((b) => (b - start / 1000 + 1000) * 2)
-        .adaptive(),
+        .compress(),
       random(200, 7, start / 1000 - 1000, start / 1000 + 1000),
     ],
   ])('round-trips a constant, a counter and random dates, %s', (_name, node, values) => {
@@ -301,23 +301,23 @@ describe('p.date().adaptive()', () => {
   });
 
   it('floors a date to its precision', () => {
-    expect(trip(seconds.adaptive(), new Date(start + 1999))).toEqual(new Date(start + 1000));
+    expect(trip(seconds.compress(), new Date(start + 1999))).toEqual(new Date(start + 1000));
   });
 
   it('learns what repeats', () => {
-    const size = (values: Date[]) => p.array(seconds.adaptive()).encode(values).length;
+    const size = (values: Date[]) => p.array(seconds.compress()).encode(values).length;
     expect(size(constant)).toBeLessThan(40);
     expect(size(counter)).toBeLessThan(size(random(200, 8, start / 1000, start / 1000 + 199)));
   });
 
   it('round-trips inside an object', () => {
-    const node = p.array(p.object({ at: seconds.adaptive(), sent: seconds.adaptive() }));
+    const node = p.array(p.object({ at: seconds.compress(), sent: seconds.compress() }));
     const values = counter.map((at, i) => ({ at, sent: new Date(at.getTime() + (i % 3) * 1000) }));
     expect(trip(node, values)).toEqual(values);
   });
 
   it('round-trips one node reused in two fields', () => {
-    const node = seconds.adaptive();
+    const node = seconds.compress();
     const values = [
       { a: new Date(start), b: new Date(start) },
       { a: new Date(start + 5000), b: new Date(0) },
@@ -326,10 +326,10 @@ describe('p.date().adaptive()', () => {
   });
 
   it('keeps its options through a rebuild', () => {
-    const declared = p.array(seconds.min(new Date(start)).adaptive({ history: 2 }));
+    const declared = p.array(seconds.min(new Date(start)).compress({ history: 2 }));
     expect(
       p
-        .array(p.date().adaptive({ history: 2 }).min(new Date(start)).precision('second'))
+        .array(p.date().compress({ history: 2 }).min(new Date(start)).precision('second'))
         .encode(counter)
     ).toEqual(declared.encode(counter));
   });
@@ -340,33 +340,33 @@ describe('p.date().adaptive()', () => {
       .min(new Date(start))
       .max(new Date(start + 2 * 86_400_000))
       .precision('day')
-      .adaptive();
+      .compress();
     expect(node._radix).toBeUndefined();
     expect(node._fromDigit).toBeUndefined();
     expect(node._toDigit).toBeUndefined();
   });
 
   it('refuses options out of range, not an object, set twice or beside learn', () => {
-    expect(() => p.date().adaptive({ history: 0 })).toThrow(
-      new RangeError('p.date: adaptive history must be in 1..4096, got 0')
+    expect(() => p.date().compress({ history: 0 })).toThrow(
+      new RangeError('p.date: compress history must be in 1..4096, got 0')
     );
-    expect(() => p.date().adaptive(null as never)).toThrow(
-      new TypeError('p.date: adaptive options must be an object')
+    expect(() => p.date().compress(null as never)).toThrow(
+      new TypeError('p.date: compress options must be an object')
     );
-    expect(() => p.date().adaptive().adaptive()).toThrow(
-      new TypeError('p.date adaptive is already set')
+    expect(() => p.date().compress().compress()).toThrow(
+      new TypeError('p.date compress is already set')
     );
-    const both = new TypeError('p.date learn and adaptive cannot both be set');
-    expect(() => p.date().learn().adaptive()).toThrow(both);
-    expect(() => p.date().adaptive().learn()).toThrow(both);
+    const both = new TypeError('p.date learn and compress cannot both be set');
+    expect(() => p.date().learn().compress()).toThrow(both);
+    expect(() => p.date().compress().learn()).toThrow(both);
   });
 
   it('refuses a date the plain node refuses, before learning from it', () => {
-    const bounded = p.date().min(new Date(0)).max(new Date(1000)).adaptive();
+    const bounded = p.date().min(new Date(0)).max(new Date(1000)).compress();
     expect(() => bounded.encode(new Date(1001))).toThrow(
       new RangeError('Date 1970-01-01T00:00:01.001Z is above the maximum 1970-01-01T00:00:01.000Z')
     );
-    expect(() => p.date().adaptive().encode(new Date(NaN))).toThrow(
+    expect(() => p.date().compress().encode(new Date(NaN))).toThrow(
       new TypeError('p.date expected a valid Date, got Invalid Date')
     );
     const day = p
@@ -375,7 +375,7 @@ describe('p.date().adaptive()', () => {
       .max(new Date('2020-01-03Z'))
       .precision('day')
       .cdf((d) => (d - 18262 <= 1 ? 0 : 10))
-      .adaptive();
+      .compress();
     expect(() => day.encode(new Date('2020-01-01T12:00:00Z'))).toThrow(
       new RangeError('Date 2020-01-01T12:00:00.000Z has zero weight under the declared cdf')
     );
@@ -383,7 +383,7 @@ describe('p.date().adaptive()', () => {
       p
         .date()
         .min(new Date(-8.6e15))
-        .adaptive()
+        .compress()
         .encode(new Date(8.6e15 + 1))
     ).toThrow(
       new RangeError(
@@ -394,7 +394,7 @@ describe('p.date().adaptive()', () => {
       p
         .date()
         .max(new Date(8.6e15))
-        .adaptive()
+        .compress()
         .encode(new Date(-8.6e15 - 1))
     ).toThrow(
       new RangeError(
@@ -479,10 +479,10 @@ describe('p.date learn', () => {
 });
 
 describe('p.date methods', () => {
-  it('refuses learn beside adaptive, either order', () => {
-    const both = new TypeError('p.date learn and adaptive cannot both be set');
-    expect(() => p.date().adaptive().learn()).toThrow(both);
-    expect(() => p.date().learn().adaptive()).toThrow(both);
+  it('refuses learn beside compress, either order', () => {
+    const both = new TypeError('p.date learn and compress cannot both be set');
+    expect(() => p.date().compress().learn()).toThrow(both);
+    expect(() => p.date().learn().compress()).toThrow(both);
   });
 
   it('sets its precision once, the millisecond default not counting', () => {
@@ -495,15 +495,15 @@ describe('p.date methods', () => {
     expect(p.date().precision('millisecond').precision('day')).toBeDefined();
   });
 
-  it('keeps a learner or an adaptive node as it is under a container sugar', () => {
+  it('keeps a learner or a compressed node as it is under a container sugar', () => {
     const learner = p.date().learn();
-    const adaptive = p.date().adaptive({ window: 8 });
+    const compress = p.date().compress({ window: 8 });
     expect(learner._adapted({})).toBe(learner);
-    expect(adaptive._adapted({ window: 16 })).toBe(adaptive);
+    expect(compress._adapted({ window: 16 })).toBe(compress);
     const plain = p.date();
     const adapted = plain._adapted({ window: 16 });
     expect(adapted).not.toBe(plain);
-    expect(adapted._adaptive).toEqual({ window: 16 });
+    expect(adapted._compress).toEqual({ window: 16 });
   });
 
   it('names the date marker, its only one', () => {

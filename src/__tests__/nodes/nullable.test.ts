@@ -66,12 +66,12 @@ describe('p.nullable structure symbols', () => {
   });
 
   it('weighs the null side against the value’s own symbols', () => {
-    expect(p.nullable(p.bool()).weights([2, 1]).adaptive()._markerPrior()?.counts).toEqual([
+    expect(p.nullable(p.bool()).weights([2, 1]).compress()._markerPrior()?.counts).toEqual([
       [STRUCT.TRUE, 16],
       [STRUCT.FALSE, 16],
       [STRUCT.NULL, 16],
     ]);
-    expect(p.nullable(p.any()).weights([2, 1]).adaptive()._markerPrior()?.counts).toEqual([
+    expect(p.nullable(p.any()).weights([2, 1]).compress()._markerPrior()?.counts).toEqual([
       [STRUCT.NULL, 16],
     ]);
   });
@@ -81,10 +81,10 @@ describe('p.nullable structure symbols', () => {
     expect(p.nullable(p.optional(p.int()))._takesUndefined()).toBe(true);
   });
 
-  it('holds adaptive coding when it or its inner node codes adaptively', () => {
-    expect(p.nullable(p.bool())._holdsAdaptive).toBe(false);
-    expect(p.nullable(p.bool().adaptive())._holdsAdaptive).toBe(true);
-    expect(p.nullable(p.bool()).adaptive()._holdsAdaptive).toBe(true);
+  it('holds compress coding when it or its inner node codes compressed', () => {
+    expect(p.nullable(p.bool())._holdsCompress).toBe(false);
+    expect(p.nullable(p.bool().compress())._holdsCompress).toBe(true);
+    expect(p.nullable(p.bool()).compress()._holdsCompress).toBe(true);
   });
 });
 
@@ -104,14 +104,14 @@ describe('p.nullable learn', () => {
 
   it('sets each method once, and not both', () => {
     expect(() => plain.learn().learn()).toThrow(new TypeError('p.nullable learn is already set'));
-    expect(() => plain.learn().adaptive()).toThrow(
-      new TypeError('p.nullable learn and adaptive cannot both be set')
+    expect(() => plain.learn().compress()).toThrow(
+      new TypeError('p.nullable learn and compress cannot both be set')
     );
-    expect(() => plain.adaptive().learn()).toThrow(
-      new TypeError('p.nullable learn and adaptive cannot both be set')
+    expect(() => plain.compress().learn()).toThrow(
+      new TypeError('p.nullable learn and compress cannot both be set')
     );
-    expect(() => plain.adaptive().adaptive()).toThrow(
-      new TypeError('p.nullable adaptive is already set')
+    expect(() => plain.compress().compress()).toThrow(
+      new TypeError('p.nullable compress is already set')
     );
   });
 
@@ -122,7 +122,7 @@ describe('p.nullable learn', () => {
   });
 });
 
-describe('p.nullable adaptive', () => {
+describe('p.nullable compress', () => {
   const plain = p.nullable(p.int().min(0).max(3));
   const weights: [number, number] = [1, 9];
   const run = (length: number, seed: number) => {
@@ -130,16 +130,16 @@ describe('p.nullable adaptive', () => {
     return Array.from({ length }, () => (rnd() < 0.7 ? null : Math.floor(rnd() * 4)));
   };
 
-  it('round-trips a run alone, in a plain array and in an adaptive object', () => {
+  it('round-trips a run alone, in a plain array and in a compressed object', () => {
     const values = run(200, 1);
-    for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 8 })]) {
+    for (const node of [plain.compress(), plain.weights(weights).compress({ window: 8 })]) {
       for (const value of values.slice(0, 20)) expect(trip(node, value)).toBe(value);
       expect(trip(p.array(node), values)).toEqual(values);
     }
     const Row = p.object({ n: plain, flag: p.nullable(p.bool()) });
     const rows = values.map((n, i) => ({ n, flag: i % 3 === 0 ? null : i % 2 === 0 }));
-    expect(trip(p.array(Row.adaptive()), rows)).toEqual(rows);
-    expect(trip(p.array(Row).adaptive(), rows)).toEqual(rows);
+    expect(trip(p.array(Row.compress()), rows)).toEqual(rows);
+    expect(trip(p.array(Row).compress(), rows)).toEqual(rows);
   });
 
   it('names the side of a NULL when its inner node may spell NULL too', () => {
@@ -150,11 +150,11 @@ describe('p.nullable adaptive', () => {
     });
     for (const inner of [p.any(), p.enum([null, 1, 2, 3, 4, 5, 6, 'x'])]) {
       const node = p.nullable(inner);
-      expect(trip(p.array(node.adaptive()), values)).toEqual(values);
-      expect(trip(p.array(node).adaptive(), values)).toEqual(values);
+      expect(trip(p.array(node.compress()), values)).toEqual(values);
+      expect(trip(p.array(node).compress(), values)).toEqual(values);
     }
     const union = p.nullable(p.union([p.null(), p.int(), p.string()]));
-    expect(trip(p.array(union).adaptive(), values)).toEqual(values);
+    expect(trip(p.array(union).compress(), values)).toEqual(values);
   });
 
   it('names the value side of a NULL its inner node spells for a value of its own', () => {
@@ -172,24 +172,24 @@ describe('p.nullable adaptive', () => {
     }
     const values = ['', null, 'a', '', null, null, '', 'b'];
     const node = p.nullable(new PBlank());
-    expect(trip(p.array(node.adaptive()), values)).toEqual(values);
-    expect(trip(p.array(node).adaptive(), values)).toEqual(values);
+    expect(trip(p.array(node.compress()), values)).toEqual(values);
+    expect(trip(p.array(node).compress(), values)).toEqual(values);
   });
 
   it('adapts its inner node unless that one learns or adapts already', () => {
-    expect(p.nullable(p.bool()).adaptive().inner._adaptive).toEqual({
+    expect(p.nullable(p.bool()).compress().inner._compress).toEqual({
       prior: loadedPriors.json.source,
     });
     const learning = p.bool().learn();
-    expect(p.nullable(learning).adaptive().inner).toBe(learning);
+    expect(p.nullable(learning).compress().inner).toBe(learning);
     const values = [true, null, false, true, null];
-    expect(trip(p.array(p.nullable(learning).adaptive()), values)).toEqual(values);
+    expect(trip(p.array(p.nullable(learning).compress()), values)).toEqual(values);
   });
 
-  it('stays as it is under an adaptive parent when it learns', () => {
+  it('stays as it is under a compressed parent when it learns', () => {
     const node = plain.learn();
     expect(node._adapted({}, new Map())).toBe(node);
-    const Row = p.object({ n: node }).adaptive();
+    const Row = p.object({ n: node }).compress();
     expect(trip(Row, { n: 2 })).toEqual({ n: 2 });
     expect(trip(Row, { n: null })).toEqual({ n: null });
   });
@@ -199,8 +199,8 @@ describe('p.nullable adaptive', () => {
     const size = (w: [number, number], parent: boolean) => {
       const node = plain.weights(w);
       const list = parent
-        ? p.array(node).length(12).adaptive()
-        : p.array(node.adaptive()).length(12);
+        ? p.array(node).length(12).compress()
+        : p.array(node.compress()).length(12);
       return list.encode(nulls, BITS).length;
     };
     expect(size([1, 30], true)).toBeLessThan(size([30, 1], true));
@@ -209,17 +209,17 @@ describe('p.nullable adaptive', () => {
 
   it('takes its weights before or after', () => {
     const values = run(200, 2);
-    expect(p.array(plain.weights(weights).adaptive({ window: 64 })).encode(values)).toEqual(
-      p.array(plain.adaptive({ window: 64 }).weights(weights)).encode(values)
+    expect(p.array(plain.weights(weights).compress({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.compress({ window: 64 }).weights(weights)).encode(values)
     );
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.nullable: adaptive window must be at least 1')
+    expect(() => plain.compress({ window: 0 })).toThrow(
+      new RangeError('p.nullable: compress window must be at least 1')
     );
-    expect(() => plain.adaptive({ window: 2.5 })).toThrow(
-      new TypeError('p.nullable: adaptive window must be an integer, got 2.5')
+    expect(() => plain.compress({ window: 2.5 })).toThrow(
+      new TypeError('p.nullable: compress window must be an integer, got 2.5')
     );
   });
 });

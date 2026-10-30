@@ -1,7 +1,7 @@
 import { Encoder, ReplayDecoder, UnknownVersionError, type Decoder } from '../packer';
 import { PNode, adapt } from './base';
 import { session } from '../predictor/session';
-import type { AdaptiveOptions } from '../predictor/types';
+import type { CompressOptions } from '../predictor/types';
 import type { Kind } from './guards';
 import { IndexRange } from './lattice';
 import { noted } from './path';
@@ -72,8 +72,8 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
     return this._nodes[this._nodes.length - 1]._takesUndefined();
   }
 
-  /** The versions under a container's `.adaptive()`, the migrations kept. */
-  _adapted(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PVersioned<T, TFirst> {
+  /** The versions under a container's `.compress()`, the migrations kept. */
+  _adapted(options: CompressOptions, memo: Map<PNode<any>, PNode<any>>): PVersioned<T, TFirst> {
     const nodes = this._nodes.map((node) => adapt(node, options, memo));
     if (nodes.every((node, i) => node === this._nodes[i])) {
       return this;
@@ -84,8 +84,8 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
     return new PVersioned<T, TFirst>(versions as unknown as Versions);
   }
 
-  get _holdsAdaptive(): boolean {
-    return this._nodes.some((node) => node._holdsAdaptive);
+  get _holdsCompress(): boolean {
+    return this._nodes.some((node) => node._holdsCompress);
   }
 
   /** The newest version's: the structure symbol a parent codes is that version's first. */
@@ -116,7 +116,7 @@ export class PVersioned<T, TFirst = T> extends PNode<T> {
 
   /** Hands the structure symbol coded for this node on to `node`, where one was. */
   private _pass(side: Encoder | Decoder, node: PNode<any>): void {
-    if (this._holdsAdaptive) {
+    if (this._holdsCompress) {
       const s = session(side);
       const sym = s.take(this);
       if (sym >= 0) s.give(sym, node);

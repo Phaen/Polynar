@@ -2,7 +2,7 @@ import { Encoder, Decoder } from '../packer';
 import { resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
 import type { MarkerPrior } from '../predictor/session';
-import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
+import { STRUCT, type CompressOptions, type Resolved } from '../predictor/types';
 import { PNode, adapt } from './base';
 import type { Kind } from './guards';
 import type { LearningOptions } from './adaptive';
@@ -28,8 +28,8 @@ export class POptional<TOut> extends MethodNode<TOut | undefined> {
   private readonly _prior?: MemberPrior;
   /** Member 0 is present, as the weights list it first. */
   private readonly _members: Members;
-  readonly _adaptive?: AdaptiveOptions;
-  /** Under `.adaptive()`: the options the presence symbol codes under. */
+  readonly _compress?: CompressOptions;
+  /** Under `.compress()`: the options the presence symbol codes under. */
   private readonly _resolved?: Resolved;
 
   constructor(
@@ -43,14 +43,14 @@ export class POptional<TOut> extends MethodNode<TOut | undefined> {
     }
     this._prior = prior;
     this._members = members(2, { ...prior, learn: learningOf(_methods) }, 'p.optional');
-    this._adaptive = _methods.adaptive;
-    if (this._adaptive !== undefined) {
-      this._resolved = resolve(this._adaptive, loadedPriors.json, 'p.optional');
+    this._compress = _methods.compress;
+    if (this._compress !== undefined) {
+      this._resolved = resolve(this._compress, loadedPriors.json, 'p.optional');
     }
   }
 
-  get _holdsAdaptive(): boolean {
-    return this._adaptive !== undefined || this.inner._holdsAdaptive;
+  get _holdsCompress(): boolean {
+    return this._compress !== undefined || this.inner._holdsCompress;
   }
 
   _takesUndefined(): boolean {
@@ -77,7 +77,7 @@ export class POptional<TOut> extends MethodNode<TOut | undefined> {
    * most (1024 when left out, and raised to the number of values counted when
    * smaller), and `separate` keeps it from starting where other nodes of its
    * kind and window got to. Part of the wire format, like the weights. Not
-   * with `.adaptive()`.
+   * with `.compress()`.
    */
   learn(options?: LearningOptions): POptional<TOut> {
     return this._declare('learn', 'p.optional', options);
@@ -86,19 +86,19 @@ export class POptional<TOut> extends MethodNode<TOut | undefined> {
   /**
    * Code whether the value is there through the similarity predictor, as a
    * symbol of the structure around it with the weights as its prior counts,
-   * and the inner node as under its own `.adaptive(options)` unless it has
-   * `.adaptive()` or `.learn()` already. Not with `.learn()`. Set once.
+   * and the inner node as under its own `.compress(options)` unless it has
+   * `.compress()` or `.learn()` already. Not with `.learn()`. Set once.
    */
-  adaptive(options?: AdaptiveOptions): POptional<TOut> {
+  compress(options?: CompressOptions): POptional<TOut> {
     return this._sugar(options, 'p.optional');
   }
 
-  _adapted(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): POptional<TOut> {
+  _adapted(options: CompressOptions, memo: Map<PNode<any>, PNode<any>>): POptional<TOut> {
     if (this._keeps()) {
       return this;
     }
     const inner = adapt(this.inner, options, memo);
-    return new POptional<TOut>(inner, this._prior, { ...this._methods, adaptive: options });
+    return new POptional<TOut>(inner, this._prior, { ...this._methods, compress: options });
   }
 
   _withMethods(methods: MethodSet): POptional<TOut> {
@@ -114,7 +114,7 @@ export class POptional<TOut> extends MethodNode<TOut | undefined> {
   }
 
   _markerPrior(): MarkerPrior | undefined {
-    return this._adaptive === undefined
+    return this._compress === undefined
       ? undefined
       : markerPrior(this, this._prior?.weights, [new Set([STRUCT.KEY]), new Set([STRUCT.NOKEY])]);
   }

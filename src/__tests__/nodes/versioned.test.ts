@@ -312,22 +312,22 @@ describe('Schema versioned', () => {
   });
 });
 
-describe('p.versioned under .adaptive()', () => {
+describe('p.versioned under .compress()', () => {
   it('stays itself when no version changes', () => {
     const node = p.versioned(p.null(), [p.bool().learn(), () => true]);
     expect(node._adapted({}, new Map())).toBe(node);
-    expect(node._holdsAdaptive).toBe(false);
-    const outer = p.object({ v: node }).adaptive() as unknown as { _shape: { v: unknown } };
+    expect(node._holdsCompress).toBe(false);
+    const outer = p.object({ v: node }).compress() as unknown as { _shape: { v: unknown } };
     expect(outer._shape.v).toBe(node);
   });
 
   it('adapts its versions and keeps the migrations', () => {
     const adapted = Current._adapted({ window: 16 }, new Map());
     expect(adapted).not.toBe(Current);
-    expect(adapted._holdsAdaptive).toBe(true);
-    expect(Current._holdsAdaptive).toBe(false);
-    const Old = p.object({ user: p.versioned(V1) }).adaptive();
-    const New = p.object({ user: Current }).adaptive();
+    expect(adapted._holdsCompress).toBe(true);
+    expect(Current._holdsCompress).toBe(false);
+    const Old = p.object({ user: p.versioned(V1) }).compress();
+    const New = p.object({ user: Current }).compress();
     expect(New.decode(Old.encode({ user: { name: 'Ada' } }))).toEqual({
       user: { name: 'Ada', age: 0 },
     });
@@ -351,7 +351,7 @@ describe('p.versioned under .adaptive()', () => {
       maybe: p.optional(p.versioned(p.int(), [p.int().min(0), (n: number) => Math.abs(n)])),
       either: p.union([p.versioned(p.bool()), p.string()]),
     });
-    const node = Doc.adaptive();
+    const node = Doc.compress();
     const values = [
       { user: { name: 'Ada', age: 3 }, either: true },
       { user: { name: 'Bo', age: 4 }, maybe: 5, either: 'x' },
@@ -360,10 +360,10 @@ describe('p.versioned under .adaptive()', () => {
       expect(trip(node, value)).toEqual(value);
     }
     expect(trip(p.array(node), values)).toEqual(values);
-    const top = p.versioned(p.object({ a: p.int() }).adaptive());
-    expect(top._holdsAdaptive).toBe(true);
+    const top = p.versioned(p.object({ a: p.int() }).compress());
+    expect(top._holdsCompress).toBe(true);
     expect(trip(top, { a: 1 })).toEqual({ a: 1 });
-    const Old = p.object({ v: p.versioned(p.object({ a: p.int() })) }).adaptive();
+    const Old = p.object({ v: p.versioned(p.object({ a: p.int() })) }).compress();
     const New = p
       .object({
         v: p.versioned(p.object({ a: p.int() }), [
@@ -371,7 +371,7 @@ describe('p.versioned under .adaptive()', () => {
           (o) => ({ ...o, b: false }),
         ]),
       })
-      .adaptive();
+      .compress();
     expect(New.decode(Old.encode({ v: { a: 1 } }))).toEqual({ v: { a: 1, b: false } });
   });
 });

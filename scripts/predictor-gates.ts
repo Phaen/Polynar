@@ -1,24 +1,24 @@
 /**
  * The phase-2 measurement gate of the similarity predictor: real bytes through the string and
- * binary nodes under `.adaptive()`, each message decoded back and compared. One line per set:
+ * binary nodes under `.compress()`, each message decoded back and compared. One line per set:
  * bytes, the gate (the prototype's ideal + 0.5%), PASS or FAIL, and the time it took. The exit
  * code is 1 when a set misses its gate.
  *
  * - strings: every corpus file is one message of its string values in document order, each at
  *   its key path (`.key` per object key, `[]` per array item), every key path its own
- *   `p.string().adaptive()`, as a declared schema would give it.
- * - alice, react, wiki, countries: the raw file as one `p.string().adaptive()`.
- * - 7zr: the raw file as one `p.binary().adaptive()`.
+ *   `p.string().compress()`, as a declared schema would give it.
+ * - alice, react, wiki, countries: the raw file as one `p.string().compress()`.
+ * - 7zr: the raw file as one `p.binary().compress()`.
  * - ints: every corpus file's integer sequences per key path (scripts/predictor-sets.ts), each as
- *   one `p.array(p.int().adaptive())` message.
+ *   one `p.array(p.int().compress())` message.
  * - ints-records: every corpus file's integers in document order through the session, every
  *   object a record, one message per file.
- * - dates: the corpus's ISO date fields, each as one `p.array(p.date().adaptive())` message, at
+ * - dates: the corpus's ISO date fields, each as one `p.array(p.date().compress())` message, at
  *   second precision when every date of the field is a whole second.
- * - corpus: every corpus file as one `p.any().adaptive()` message.
+ * - corpus: every corpus file as one `p.any().compress()` message.
  * - schema: every corpus file under the schema inferred from it (the research ledger's
  *   `build()`, dates at second precision where every one is a whole second, as the prototype's
- *   schema stream had them), `.adaptive()` on the root only.
+ *   schema stream had them), `.compress()` on the root only.
  * - schemaHeldOut: the schema set, each file under a JSON prior trained with `train()` on the other
  *   half of the corpus (the files sorted by name, even and odd), so no file is priced under a prior
  *   that saw it; reported, not gated.
@@ -35,7 +35,7 @@ import { p } from '../src/nodes';
 import type { PNode, PObject } from '../src/nodes';
 import { loadedPriors } from '../src/predictor/prior';
 import { train } from '../src/predictor/train';
-import type { AdaptiveOptions } from '../src/predictor/types';
+import type { CompressOptions } from '../src/predictor/types';
 import { numberMessages, readNumbers, writeNumbers } from './predictor-sets';
 import type { NumberSetName } from './predictor-sets';
 
@@ -258,7 +258,7 @@ function buildKind(k: string, vs: any[]): Built {
 const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 /** The schema set's bytes with each half of the corpus under a prior trained on the other half. */
-function schemaHeldOut(corpus: string, o: AdaptiveOptions): number {
+function schemaHeldOut(corpus: string, o: CompressOptions): number {
   const files = readdirSync(corpus)
     .filter((name) => name.endsWith('.json'))
     .sort();
@@ -266,20 +266,20 @@ function schemaHeldOut(corpus: string, o: AdaptiveOptions): number {
   const halves = [0, 1].map((h) => values.filter((_, i) => i % 2 === h));
   let bytes = 0;
   for (const h of [0, 1]) {
-    const prior = train(p.any().adaptive(), halves[1 - h], {
+    const prior = train(p.any().compress(), halves[1 - h], {
       holdOut: 0,
       from: loadedPriors.json.source,
       epochs: 3,
     });
     for (const v of halves[h]) {
       const b = build([v]);
-      bytes += trip([(b.node as PObject<any>).adaptive({ ...o, prior })], [b.conv(v)], sameJson);
+      bytes += trip([(b.node as PObject<any>).compress({ ...o, prior })], [b.conv(v)], sameJson);
     }
   }
   return bytes;
 }
 
-function measure(set: SetName, raw: string, corpus: string, o: AdaptiveOptions): number {
+function measure(set: SetName, raw: string, corpus: string, o: CompressOptions): number {
   if (set === 'schemaHeldOut') return schemaHeldOut(corpus, o);
   if (set === 'corpus' || set === 'schema' || set === 'corpusPlain') {
     let bytes = 0;
@@ -289,11 +289,11 @@ function measure(set: SetName, raw: string, corpus: string, o: AdaptiveOptions):
       const v = JSON.parse(readFileSync(join(corpus, f), 'utf8'));
       if (set === 'schema') {
         const b = build([v]);
-        const n = trip([(b.node as PObject<any>).adaptive(o)], [b.conv(v)], sameJson);
+        const n = trip([(b.node as PObject<any>).compress(o)], [b.conv(v)], sameJson);
         if (process.env.PER_FILE !== undefined) console.log(`  ${f} ${n}`);
         bytes += n;
       } else {
-        bytes += trip([set === 'corpus' ? p.any().adaptive(o) : p.any()], [v], sameJson);
+        bytes += trip([set === 'corpus' ? p.any().compress(o) : p.any()], [v], sameJson);
       }
     }
     return bytes;
@@ -316,12 +316,12 @@ function measure(set: SetName, raw: string, corpus: string, o: AdaptiveOptions):
     for (const m of numberMessages(set, corpus)) {
       const values = m.ops.map((op) => (op as { value: number }).value);
       if (set === 'ints') {
-        bytes += trip([p.array(p.int().adaptive(o))], [values], sameList);
+        bytes += trip([p.array(p.int().compress(o))], [values], sameList);
       } else {
         const seconds = m.seconds === true;
         const node = seconds ? p.date().precision('second') : p.date();
         const dates = values.map((v) => new Date(seconds ? v * 1000 : v));
-        bytes += trip([p.array(node.adaptive(o))], [dates], (a, b) =>
+        bytes += trip([p.array(node.compress(o))], [dates], (a, b) =>
           sameList(
             a.map((d) => d.getTime()),
             b.map((d) => d.getTime())
@@ -341,7 +341,7 @@ function measure(set: SetName, raw: string, corpus: string, o: AdaptiveOptions):
       const nodes = all.map(([path]) => {
         let node = byPath.get(path);
         if (node === undefined) {
-          node = p.string().adaptive(o);
+          node = p.string().compress(o);
           byPath.set(path, node);
         }
         return node;
@@ -356,18 +356,18 @@ function measure(set: SetName, raw: string, corpus: string, o: AdaptiveOptions):
   }
   const buf = readFileSync(join(raw, RAW[set]));
   if (set === '7zr') {
-    return trip([p.binary().adaptive(o)], [new Uint8Array(buf)], (a, b) =>
+    return trip([p.binary().compress(o)], [new Uint8Array(buf)], (a, b) =>
       Buffer.from(a).equals(Buffer.from(b))
     );
   }
-  return trip([p.string().adaptive(o)], [buf.toString('utf8')], (a, b) => a === b);
+  return trip([p.string().compress(o)], [buf.toString('utf8')], (a, b) => a === b);
 }
 
 function main(): number {
   const argv = process.argv.slice(2);
   const positional: string[] = [];
   let sets: SetName[] = [...SETS];
-  let options: AdaptiveOptions = {};
+  let options: CompressOptions = {};
   let log: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -375,7 +375,7 @@ function main(): number {
       sets = (argv[++i] ?? '').split(',').filter(Boolean) as SetName[];
       for (const s of sets) if (!SETS.includes(s)) throw new Error(`unknown set ${s}`);
     } else if (a === '--options') {
-      options = JSON.parse(argv[++i] ?? '{}') as AdaptiveOptions;
+      options = JSON.parse(argv[++i] ?? '{}') as CompressOptions;
     } else if (a === '--log') {
       log = argv[++i];
     } else {

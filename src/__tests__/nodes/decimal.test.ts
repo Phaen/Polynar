@@ -212,7 +212,7 @@ describe('Digit reads', () => {
   });
 });
 
-describe('p.decimal().adaptive()', () => {
+describe('p.decimal().compress()', () => {
   const random = (length: number, seed: number, lo: number, hi: number) => {
     const rnd = mulberry32(seed);
     return Array.from({ length }, () => (lo + Math.floor(rnd() * (hi - lo + 1))) / 100);
@@ -221,10 +221,10 @@ describe('p.decimal().adaptive()', () => {
   const counter = Array.from({ length: 200 }, (_, i) => (1000 + i) / 100);
 
   it.each([
-    ['unbounded', p.decimal(0.01).adaptive(), random(200, 1, -1e9, 1e9)],
-    ['bounded', p.decimal(0.01).min(-10).max(50).adaptive(), random(200, 2, -1000, 5000)],
-    ['min-only', p.decimal(0.01).min(-0.5).adaptive(), random(200, 3, -50, 1e7)],
-    ['max-only', p.decimal(0.01).max(50).adaptive(), random(200, 4, -1e7, 5000)],
+    ['unbounded', p.decimal(0.01).compress(), random(200, 1, -1e9, 1e9)],
+    ['bounded', p.decimal(0.01).min(-10).max(50).compress(), random(200, 2, -1000, 5000)],
+    ['min-only', p.decimal(0.01).min(-0.5).compress(), random(200, 3, -50, 1e7)],
+    ['max-only', p.decimal(0.01).max(50).compress(), random(200, 4, -1e7, 5000)],
     [
       'weighted',
       p
@@ -232,7 +232,7 @@ describe('p.decimal().adaptive()', () => {
         .min(-0.03)
         .max(15)
         .weights(Array.from({ length: 1504 }, (_, i) => 1 + (i % 7)))
-        .adaptive(),
+        .compress(),
       random(200, 5, -3, 1500),
     ],
     [
@@ -242,7 +242,7 @@ describe('p.decimal().adaptive()', () => {
         .min(-0.03)
         .max(15)
         .cdf((k) => (k + 3) * 2)
-        .adaptive(),
+        .compress(),
       random(200, 6, -3, 1500),
     ],
   ])('round-trips a constant, a counter and random values, %s', (_name, node, values) => {
@@ -253,28 +253,28 @@ describe('p.decimal().adaptive()', () => {
   });
 
   it('round-trips a weighted value written alone', () => {
-    const node = p.decimal(0.5).min(0).max(1).weights([1, 5, 1]).adaptive();
+    const node = p.decimal(0.5).min(0).max(1).weights([1, 5, 1]).compress();
     for (const value of [0, 0.5, 1]) {
       expect(trip(node, value)).toBe(value);
     }
   });
 
   it('learns what repeats', () => {
-    const size = (values: number[]) => p.array(p.decimal(0.01).adaptive()).encode(values).length;
+    const size = (values: number[]) => p.array(p.decimal(0.01).compress()).encode(values).length;
     expect(size(constant)).toBeLessThan(40);
     expect(size(counter)).toBeLessThan(size(random(200, 7, 1000, 1199)));
   });
 
   it('round-trips inside an object', () => {
     const node = p.array(
-      p.object({ price: p.decimal(0.01).min(0).adaptive(), change: p.decimal(0.25).adaptive() })
+      p.object({ price: p.decimal(0.01).min(0).compress(), change: p.decimal(0.25).compress() })
     );
     const values = counter.map((price, i) => ({ price, change: i % 2 === 0 ? -i / 4 - 1 : i }));
     expect(trip(node, values)).toEqual(values);
   });
 
   it('round-trips one node reused in two fields', () => {
-    const node = p.decimal(0.01).adaptive();
+    const node = p.decimal(0.01).compress();
     const values = [
       { a: 1.25, b: 1.25 },
       { a: -7.5, b: 900.01 },
@@ -283,7 +283,7 @@ describe('p.decimal().adaptive()', () => {
   });
 
   it('maps no digit with both bounds', () => {
-    const node = p.decimal(0.5).min(0).max(9).adaptive();
+    const node = p.decimal(0.5).min(0).max(9).compress();
     expect(node._radix).toBeUndefined();
     expect(node._fromDigit).toBeUndefined();
     expect(node._toDigit).toBeUndefined();
@@ -291,32 +291,32 @@ describe('p.decimal().adaptive()', () => {
 
   it('keeps its options through a rebuild', () => {
     const values = [1.5, 2, 1.5, 9];
-    const declared = p.array(p.decimal(0.5).min(0).max(9).adaptive({ history: 2 }));
-    expect(p.array(p.decimal(0.5).adaptive({ history: 2 }).min(0).max(9)).encode(values)).toEqual(
+    const declared = p.array(p.decimal(0.5).min(0).max(9).compress({ history: 2 }));
+    expect(p.array(p.decimal(0.5).compress({ history: 2 }).min(0).max(9)).encode(values)).toEqual(
       declared.encode(values)
     );
   });
 
   it('refuses options out of range, not an object, set twice or beside learn', () => {
-    expect(() => p.decimal(0.01).adaptive({ offsets: 1025 })).toThrow(
-      new RangeError('p.decimal: adaptive offsets must be in 0..1024, got 1025')
+    expect(() => p.decimal(0.01).compress({ offsets: 1025 })).toThrow(
+      new RangeError('p.decimal: compress offsets must be in 0..1024, got 1025')
     );
-    expect(() => p.decimal(0.01).adaptive([] as never)).toThrow(
-      new TypeError('p.decimal: adaptive options must be an object')
+    expect(() => p.decimal(0.01).compress([] as never)).toThrow(
+      new TypeError('p.decimal: compress options must be an object')
     );
-    expect(() => p.decimal(0.01).adaptive().adaptive()).toThrow(
-      new TypeError('p.decimal adaptive is already set')
+    expect(() => p.decimal(0.01).compress().compress()).toThrow(
+      new TypeError('p.decimal compress is already set')
     );
-    const both = new TypeError('p.decimal learn and adaptive cannot both be set');
-    expect(() => p.decimal(0.01).learn().adaptive()).toThrow(both);
-    expect(() => p.decimal(0.01).adaptive().learn()).toThrow(both);
+    const both = new TypeError('p.decimal learn and compress cannot both be set');
+    expect(() => p.decimal(0.01).learn().compress()).toThrow(both);
+    expect(() => p.decimal(0.01).compress().learn()).toThrow(both);
   });
 
   it('refuses a value the plain node refuses, before learning from it', () => {
-    const bounded = p.decimal(0.5).min(0).max(9).adaptive();
+    const bounded = p.decimal(0.5).min(0).max(9).compress();
     expect(() => bounded.encode(9.5)).toThrow(new RangeError('Value 9.5 is above the maximum 9'));
     expect(() => bounded.encode(-0.5)).toThrow(new RangeError('Value -0.5 is below the minimum 0'));
-    expect(() => p.decimal(0.01).adaptive().encode(1.234)).toThrow(
+    expect(() => p.decimal(0.01).compress().encode(1.234)).toThrow(
       new RangeError('Value 1.234 is not a multiple of step 0.01')
     );
     expect(() =>
@@ -325,14 +325,14 @@ describe('p.decimal().adaptive()', () => {
         .min(0)
         .max(1)
         .cdf((k) => (k <= 1 ? 0 : 10))
-        .adaptive()
+        .compress()
         .encode(0)
     ).toThrow(new RangeError('Value 0 has zero weight under the declared cdf'));
     expect(() =>
       p
         .decimal(1)
         .min(-9e15)
-        .adaptive()
+        .compress()
         .encode(9e15 + 1)
     ).toThrow(
       new RangeError(
@@ -343,7 +343,7 @@ describe('p.decimal().adaptive()', () => {
       p
         .decimal(1)
         .max(9e15)
-        .adaptive()
+        .compress()
         .encode(-9e15 - 1)
     ).toThrow(
       new RangeError(
@@ -435,21 +435,21 @@ describe('p.decimal learn', () => {
 });
 
 describe('p.decimal methods', () => {
-  it('refuses learn beside adaptive, either order', () => {
-    const both = new TypeError('p.decimal learn and adaptive cannot both be set');
-    expect(() => p.decimal(0.5).adaptive().learn()).toThrow(both);
-    expect(() => p.decimal(0.5).learn().adaptive()).toThrow(both);
+  it('refuses learn beside compress, either order', () => {
+    const both = new TypeError('p.decimal learn and compress cannot both be set');
+    expect(() => p.decimal(0.5).compress().learn()).toThrow(both);
+    expect(() => p.decimal(0.5).learn().compress()).toThrow(both);
   });
 
-  it('keeps a learner or an adaptive node as it is under a container sugar', () => {
+  it('keeps a learner or a compressed node as it is under a container sugar', () => {
     const learner = p.decimal(0.5).min(0).max(9).learn();
-    const adaptive = p.decimal(0.5).adaptive({ window: 8 });
+    const compress = p.decimal(0.5).compress({ window: 8 });
     expect(learner._adapted({})).toBe(learner);
-    expect(adaptive._adapted({ window: 16 })).toBe(adaptive);
+    expect(compress._adapted({ window: 16 })).toBe(compress);
     const plain = p.decimal(0.5).min(0).max(9);
     const adapted = plain._adapted({ window: 16 });
     expect(adapted).not.toBe(plain);
-    expect(adapted._adaptive).toEqual({ window: 16 });
+    expect(adapted._compress).toEqual({ window: 16 });
   });
 
   it('names the integer marker, its only one', () => {

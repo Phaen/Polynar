@@ -7,10 +7,10 @@ import { Session } from '../../predictor/session';
 import type { Features, SessionOptions, Sink, Source, Table } from '../../predictor/session';
 import { APM_EDGE, SymbolPredictor, defaultFeatures, recOf } from '../../predictor/symbols';
 import { BYTE_BASE, CP_BASE, DIGIT, END, STRUCT } from '../../predictor/types';
-import type { AdaptiveOptions, AlphabetKind, Ends, Resolved } from '../../predictor/types';
+import type { CompressOptions, AlphabetKind, Ends, Resolved } from '../../predictor/types';
 
 const OPEN: Ends = { min: 0, max: undefined, fixed: false };
-const opts = (o: AdaptiveOptions = {}): Resolved => resolve(o, loadedPriors.text, 'test');
+const opts = (o: CompressOptions = {}): Resolved => resolve(o, loadedPriors.text, 'test');
 
 /** Records every coded triple and forwards it to the encoder. */
 class RecSink implements Sink {

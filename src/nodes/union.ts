@@ -2,7 +2,7 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
 import { session, type MarkerPrior } from '../predictor/session';
-import type { AdaptiveOptions, Resolved } from '../predictor/types';
+import type { CompressOptions, Resolved } from '../predictor/types';
 import { PNode, adapt } from './base';
 import { kindOf, type Kind } from './guards';
 import { describe, oneOf } from './path';
@@ -28,8 +28,8 @@ export class PUnion<T> extends MethodNode<T> {
   private readonly _prior?: MemberPrior;
   /** How the member a value goes to is spelled. */
   private readonly _pick: Members;
-  readonly _adaptive?: AdaptiveOptions;
-  /** Under `.adaptive()`: the options the member's symbol codes under. */
+  readonly _compress?: CompressOptions;
+  /** Under `.compress()`: the options the member's symbol codes under. */
   private readonly _resolved?: Resolved;
 
   constructor(
@@ -64,9 +64,9 @@ export class PUnion<T> extends MethodNode<T> {
       { ...prior, learn: learningOf(_methods) },
       'p.union'
     );
-    this._adaptive = _methods.adaptive;
-    if (this._adaptive !== undefined) {
-      this._resolved = resolve(this._adaptive, loadedPriors.json, 'p.union');
+    this._compress = _methods.compress;
+    if (this._compress !== undefined) {
+      this._resolved = resolve(this._compress, loadedPriors.json, 'p.union');
     }
   }
 
@@ -90,7 +90,7 @@ export class PUnion<T> extends MethodNode<T> {
    * (1024 when left out, and raised to the number of values counted when
    * smaller), and `separate` keeps it from starting where other nodes of its
    * kind and window got to. Part of the wire format, like the weights. Not
-   * with `.adaptive()`.
+   * with `.compress()`.
    */
   learn(options?: LearningOptions): PUnion<T> {
     return this._declare('learn', 'p.union', options);
@@ -100,23 +100,23 @@ export class PUnion<T> extends MethodNode<T> {
    * Code which member takes the value through the similarity predictor, as
    * the value's first symbol in the structure around it (its kind), with the
    * weights as prior counts, and each member as under its own
-   * `.adaptive(options)` unless it has `.adaptive()` or `.learn()` already.
+   * `.compress(options)` unless it has `.compress()` or `.learn()` already.
    * Not with `.learn()`. Set once.
    */
-  adaptive(options?: AdaptiveOptions): PUnion<T> {
+  compress(options?: CompressOptions): PUnion<T> {
     return this._sugar(options, 'p.union');
   }
 
-  _adapted(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PUnion<T> {
+  _adapted(options: CompressOptions, memo: Map<PNode<any>, PNode<any>>): PUnion<T> {
     if (this._keeps()) {
       return this;
     }
     const nodes = this._members.map((member) => adapt(member, options, memo));
-    return new PUnion<T>(nodes, this._prior, { ...this._methods, adaptive: options });
+    return new PUnion<T>(nodes, this._prior, { ...this._methods, compress: options });
   }
 
-  get _holdsAdaptive(): boolean {
-    return this._adaptive !== undefined || this._members.some((member) => member._holdsAdaptive);
+  get _holdsCompress(): boolean {
+    return this._compress !== undefined || this._members.some((member) => member._holdsCompress);
   }
 
   _marker(value: unknown): number {
@@ -129,7 +129,7 @@ export class PUnion<T> extends MethodNode<T> {
   }
 
   _markerPrior(): MarkerPrior | undefined {
-    return this._adaptive === undefined
+    return this._compress === undefined
       ? undefined
       : markerPrior(
           this,

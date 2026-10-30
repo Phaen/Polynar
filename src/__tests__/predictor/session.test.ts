@@ -13,10 +13,10 @@ import type {
   TextCoder,
 } from '../../predictor/session';
 import { END, STRUCT } from '../../predictor/types';
-import type { AdaptiveOptions, AlphabetKind, Ends, PathKey, Resolved } from '../../predictor/types';
+import type { CompressOptions, AlphabetKind, Ends, PathKey, Resolved } from '../../predictor/types';
 
 const OPEN: Ends = { min: 0, max: undefined, fixed: false };
-const opts = (o: AdaptiveOptions = {}): Resolved => resolve(o, loadedPriors.text, 'test');
+const opts = (o: CompressOptions = {}): Resolved => resolve(o, loadedPriors.text, 'test');
 const cps = (s: string): Int32Array => Int32Array.from(s, (ch) => ch.codePointAt(0)!);
 const str = (a: Int32Array): string => String.fromCodePoint(...a);
 

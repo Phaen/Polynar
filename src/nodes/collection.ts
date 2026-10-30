@@ -2,7 +2,7 @@ import { Encoder, Decoder } from '../packer';
 import { resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
 import { session, type Bound, type Session } from '../predictor/session';
-import { STRUCT, type AdaptiveOptions, type Ends, type Resolved } from '../predictor/types';
+import { STRUCT, type CompressOptions, type Ends, type Resolved } from '../predictor/types';
 import { PNode, adapt } from './base';
 import { atPath } from './path';
 import type { Kind } from './guards';
@@ -22,7 +22,7 @@ import { readMarker, writeMarker } from './markers';
 import { learningOf, MethodNode, type MethodSet } from './methods';
 import { PString } from './string';
 
-/** A record key's text under `.adaptive()`: any length, ended by END. */
+/** A record key's text under `.compress()`: any length, ended by END. */
 const KEY_TEXT: Ends = { min: 0, max: undefined, fixed: false };
 
 /** The keys of an unordered collection: distinct by construction, so a set of digits. */
@@ -39,7 +39,7 @@ export interface Layout<T> {
   /** The collection, as value errors name it. */
   readonly name: string;
   readonly kind: Kind;
-  /** The structure symbols the collection starts and ends with under `.adaptive()`. */
+  /** The structure symbols the collection starts and ends with under `.compress()`. */
   readonly start: number;
   readonly end: number;
   size(value: T): number;
@@ -50,7 +50,7 @@ export interface Layout<T> {
   /**
    * The node the keys go through under `.learn()`, for a layout whose keys
    * have no node of the caller's; the declared key otherwise. A layout with
-   * one has string keys, which `.adaptive()` codes as key text.
+   * one has string keys, which `.compress()` codes as key text.
    */
   learnedKey?(): PNode<any>;
 }
@@ -90,7 +90,7 @@ export const RECORD: Layout<Record<string, any>> = {
     // instead of replacing the prototype.
     return Object.fromEntries(entries);
   },
-  learnedKey: () => new PString().adaptive(),
+  learnedKey: () => new PString().compress(),
 };
 
 /**
@@ -105,7 +105,7 @@ export class PCollection<T> extends MethodNode<T> {
   private readonly _layout: Layout<T>;
   /** The key as declared. */
   private readonly _key: PNode<any>;
-  /** The key entries are written through: the layout's learned key under `.adaptive()`, if it has one. */
+  /** The key entries are written through: the layout's learned key under `.compress()`, if it has one. */
   private readonly _keys: PNode<any>;
   /** The value node; a set has none. */
   private readonly _value?: PNode<any>;
@@ -115,8 +115,8 @@ export class PCollection<T> extends MethodNode<T> {
   private readonly _unordered?: true;
   /** How the node learns. */
   readonly _methods: MethodSet;
-  readonly _adaptive?: AdaptiveOptions;
-  /** Under `.adaptive()`: the options the collection's structure symbols code under. */
+  readonly _compress?: CompressOptions;
+  /** Under `.compress()`: the options the collection's structure symbols code under. */
   private readonly _resolved?: Resolved;
   /** Whether the node or a node of its entries codes through the predictor. */
   private readonly _holds: boolean;
@@ -141,19 +141,19 @@ export class PCollection<T> extends MethodNode<T> {
     this._kinds = [layout.kind];
     this._unordered = unordered;
     this._methods = methods;
-    this._adaptive = methods.adaptive;
-    if (this._adaptive !== undefined) {
+    this._compress = methods.compress;
+    if (this._compress !== undefined) {
       if (bounds.prior !== undefined) {
         throw new TypeError(
-          `${layout.who} adaptive cannot weigh the count: an adaptive collection ends with a symbol`
+          `${layout.who} compress cannot weigh the count: a compressed collection ends with a symbol`
         );
       }
-      this._resolved = resolve(this._adaptive, loadedPriors.json, layout.who);
+      this._resolved = resolve(this._compress, loadedPriors.json, layout.who);
     }
     this._holds =
-      this._adaptive !== undefined ||
-      key._holdsAdaptive ||
-      (value !== undefined && value._holdsAdaptive);
+      this._compress !== undefined ||
+      key._holdsCompress ||
+      (value !== undefined && value._holdsCompress);
   }
 
   /** Require at least `n` entries. A raised floor packs the count denser. */
@@ -211,9 +211,9 @@ export class PCollection<T> extends MethodNode<T> {
    * smaller), and `separate` keeps its tables from starting where other nodes
    * of its kind and window got to. Takes weights, not a cdf; part of the wire
    * format, like the weights. A record's keys learn as under
-   * `p.string().adaptive()`: keys that recur are recalled and new ones learn
+   * `p.string().compress()`: keys that recur are recalled and new ones learn
    * their characters with the message's other strings. Not with
-   * `.adaptive()`.
+   * `.compress()`.
    */
   learn(options?: LearningOptions): PCollection<T> {
     return this._declare('learn', this._layout.who, options);
@@ -225,29 +225,29 @@ export class PCollection<T> extends MethodNode<T> {
    * structure, `.min()` and `.max()` bounding where the end may come. A map's
    * key and value and a set's item each follow the symbol they start with; a
    * record's key is a key symbol and the key's characters, then its value.
-   * The nodes of the entries code as under their own `.adaptive(options)`
-   * unless they have `.adaptive()` or `.learn()` already. Unordered entries go
+   * The nodes of the entries code as under their own `.compress(options)`
+   * unless they have `.compress()` or `.learn()` already. Unordered entries go
    * ascending by key. Not with `.learn()`, `.weights()` or `.cdf()`. Set once.
    */
-  adaptive(options?: AdaptiveOptions): PCollection<T> {
+  compress(options?: CompressOptions): PCollection<T> {
     return this._sugar(options, this._layout.who);
   }
 
-  _adapted(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PCollection<T> {
+  _adapted(options: CompressOptions, memo: Map<PNode<any>, PNode<any>>): PCollection<T> {
     if (this._keeps()) {
       return this;
     }
     const { _layout, _key, _value } = this;
-    // A record's keys are key text under `.adaptive()`, whatever their node.
+    // A record's keys are key text under `.compress()`, whatever their node.
     const key = _layout.learnedKey === undefined ? adapt(_key, options, memo) : _key;
     const value = _value === undefined ? undefined : adapt(_value, options, memo);
     return new PCollection<T>(_layout, key, value, this._bounds, this._unordered, {
       ...this._methods,
-      adaptive: options,
+      compress: options,
     });
   }
 
-  get _holdsAdaptive(): boolean {
+  get _holdsCompress(): boolean {
     return this._holds;
   }
 
@@ -264,7 +264,7 @@ export class PCollection<T> extends MethodNode<T> {
    * ascending key order, by the key's value order, which saves what the
    * order would cost, as `p.array` orders its items under `.unordered()`.
    * Takes keys (a set's items) of p.string, or of bounded p.int, p.date or
-   * p.decimal, p.enum or p.bool without weights or adaptive.
+   * p.decimal, p.enum or p.bool without weights or compress.
    */
   unordered(): PCollection<T> {
     const { who } = this._layout;
@@ -347,7 +347,7 @@ export class PCollection<T> extends MethodNode<T> {
   }
 
   /**
-   * Writes the entries under `.adaptive()`, then the end unless the collection is at its max:
+   * Writes the entries under `.compress()`, then the end unless the collection is at its max:
    * in insertion order, or ascending by key when unordered.
    */
   private _entries(enc: Encoder, value: T, o: Resolved, s: Session): void {

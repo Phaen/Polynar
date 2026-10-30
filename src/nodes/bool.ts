@@ -2,7 +2,7 @@ import { Encoder, Decoder } from '../packer';
 import { resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
 import type { MarkerPrior } from '../predictor/session';
-import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
+import { STRUCT, type CompressOptions, type Resolved } from '../predictor/types';
 import type { Kind } from './guards';
 import type { LearningOptions } from './adaptive';
 import { checkUnset } from './lattice';
@@ -21,8 +21,8 @@ export class PBool extends MethodNode<boolean> {
   /** Member 0 is true, as the weights list it first. */
   private readonly _members: Members;
   declare readonly _radix?: number;
-  readonly _adaptive?: AdaptiveOptions;
-  /** Under `.adaptive()`: the options the value's symbol codes under. */
+  readonly _compress?: CompressOptions;
+  /** Under `.compress()`: the options the value's symbol codes under. */
   private readonly _resolved?: Resolved;
 
   constructor(
@@ -32,11 +32,11 @@ export class PBool extends MethodNode<boolean> {
     super();
     this._prior = prior;
     this._members = members(2, { ...prior, learn: learningOf(_methods) }, 'p.bool');
-    this._adaptive = _methods.adaptive;
-    if (this._adaptive === undefined) {
+    this._compress = _methods.compress;
+    if (this._compress === undefined) {
       this._radix = this._members.radix;
     } else {
-      this._resolved = resolve(this._adaptive, loadedPriors.json, 'p.bool');
+      this._resolved = resolve(this._compress, loadedPriors.json, 'p.bool');
     }
   }
 
@@ -59,7 +59,7 @@ export class PBool extends MethodNode<boolean> {
    * (1024 when left out, and raised to the number of values counted when
    * smaller), and `separate` keeps it from starting where other nodes of its
    * kind and window got to. Part of the wire format, like the weights. Not
-   * with `.adaptive()`.
+   * with `.compress()`.
    */
   learn(options?: LearningOptions): PBool {
     return this._declare('learn', 'p.bool', options);
@@ -70,11 +70,11 @@ export class PBool extends MethodNode<boolean> {
    * and false of the structure around them, with the weights as their prior
    * counts. Not with `.learn()`. Set once.
    */
-  adaptive(options?: AdaptiveOptions): PBool {
+  compress(options?: CompressOptions): PBool {
     return this._adapt(options, 'p.bool');
   }
 
-  _adapted(options: AdaptiveOptions): PBool {
+  _adapted(options: CompressOptions): PBool {
     return this._adaptedTo(options);
   }
 
@@ -91,7 +91,7 @@ export class PBool extends MethodNode<boolean> {
   }
 
   _markerPrior(): MarkerPrior | undefined {
-    return this._adaptive === undefined
+    return this._compress === undefined
       ? undefined
       : markerPrior(this, this._prior?.weights, [new Set([STRUCT.TRUE]), new Set([STRUCT.FALSE])]);
   }

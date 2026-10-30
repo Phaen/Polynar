@@ -71,32 +71,32 @@ describe('p.uuid', () => {
     expect(trip(node, v4s)).toEqual(v4s);
   });
 
-  it('learns both tables under .adaptive()', () => {
+  it('learns both tables under .compress()', () => {
     const plain = p.array(p.uuid()).encode(v4s).length;
-    for (const node of [p.uuid().adaptive(), p.uuid().adaptive({ separate: true })]) {
+    for (const node of [p.uuid().compress(), p.uuid().compress({ separate: true })]) {
       const list = p.array(node);
       expect(trip(list, v4s)).toEqual(v4s);
       expect(list.encode(v4s).length).toBeLessThan(plain);
     }
     // A run of RFC 4122 v7 UUIDs is cheaper once the version table learns 7.
     const v7s = Array.from({ length: 64 }, () => uuidOf(7));
-    expect(p.array(p.uuid().adaptive()).encode(v7s).length).toBeLessThan(
+    expect(p.array(p.uuid().compress()).encode(v7s).length).toBeLessThan(
       p.array(p.uuid()).encode(v7s).length
     );
   });
 
   it.each<[string, () => unknown, string]>([
     ['.learn() twice', () => p.uuid().learn().learn(), 'p.uuid learn is already set'],
-    ['.adaptive() twice', () => p.uuid().adaptive().adaptive(), 'p.uuid adaptive is already set'],
+    ['.compress() twice', () => p.uuid().compress().compress(), 'p.uuid compress is already set'],
     [
-      '.learn() then .adaptive()',
-      () => p.uuid().learn().adaptive(),
-      'p.uuid learn and adaptive cannot both be set',
+      '.learn() then .compress()',
+      () => p.uuid().learn().compress(),
+      'p.uuid learn and compress cannot both be set',
     ],
     [
-      '.adaptive() then .learn()',
-      () => p.uuid().adaptive().learn(),
-      'p.uuid learn and adaptive cannot both be set',
+      '.compress() then .learn()',
+      () => p.uuid().compress().learn(),
+      'p.uuid learn and compress cannot both be set',
     ],
   ])('refuses %s', (_name, build, message) => {
     expect(build).toThrow(new TypeError(message));
@@ -109,15 +109,15 @@ describe('p.uuid', () => {
 
   it('adapts under _adapted unless it learns or adapts already', () => {
     const adapted = p.uuid()._adapted({});
-    expect(adapted._adaptive).toEqual({});
+    expect(adapted._compress).toEqual({});
     const learned = p.uuid().learn();
     expect(learned._adapted({})).toBe(learned);
-    const own = p.uuid().adaptive({ separate: true });
+    const own = p.uuid().compress({ separate: true });
     expect(own._adapted({})).toBe(own);
   });
 
-  it('round-trips under an adaptive object', () => {
-    const node = p.object({ id: p.uuid(), n: p.int() }).adaptive();
+  it('round-trips under a compressed object', () => {
+    const node = p.object({ id: p.uuid(), n: p.int() }).compress();
     const rows = p.array(node);
     const value = v4s.slice(0, 8).map((id, n) => ({ id, n }));
     expect(trip(rows, value)).toEqual(value);
@@ -126,7 +126,7 @@ describe('p.uuid', () => {
 
   it.each([
     ['p.any', () => p.any([p.uuid()])],
-    ['p.any().adaptive()', () => p.any([p.uuid()]).adaptive()],
+    ['p.any().compress()', () => p.any([p.uuid()]).compress()],
   ])('is a hint to %s for UUID strings and not other strings', (_name, make) => {
     const node = make();
     expect(node._marker(v4s[0])).toBe(STRUCT.HINT);

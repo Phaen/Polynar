@@ -242,10 +242,10 @@ describe('checkOrder / ordinalDigits / restricts', () => {
     expect(() => checkOrder(p.string(), 'p.array', 'sorted', 'items')).not.toThrow();
     expect(() => checkOrder(p.int(), 'p.array', 'sorted', 'items')).toThrow(
       new TypeError(
-        'p.array sorted requires items of p.string, or of bounded p.int, p.date or p.decimal, p.enum or p.bool without weights or adaptive'
+        'p.array sorted requires items of p.string, or of bounded p.int, p.date or p.decimal, p.enum or p.bool without weights or compress'
       )
     );
-    expect(() => checkOrder(p.bool().adaptive(), 'p.map', 'unordered', 'keys')).toThrow(
+    expect(() => checkOrder(p.bool().compress(), 'p.map', 'unordered', 'keys')).toThrow(
       'p.map unordered requires keys of'
     );
   });

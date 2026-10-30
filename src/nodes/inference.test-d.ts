@@ -290,13 +290,13 @@ Digit.decode(digitBytes, shared);
 Digit.decode(digitText, shared);
 
 // Declared nodes learn apart from their kin on request.
-p.string().adaptive({ separate: true });
-p.binary(Uint16Array).adaptive({ separate: true, window: 64 });
-p.int().adaptive({ separate: true });
-p.optional(p.bool()).adaptive({ separate: true });
-p.any().adaptive({ separate: true });
+p.string().compress({ separate: true });
+p.binary(Uint16Array).compress({ separate: true, window: 64 });
+p.int().compress({ separate: true });
+p.optional(p.bool()).compress({ separate: true });
+p.any().compress({ separate: true });
 
-// An adaptive object keeps its shape and passes its options to its fields.
-const LearnedPoint = p.object({ x: p.int(), label: p.optional(p.string()) }).adaptive();
+// A compressed object keeps its shape and passes its options to its fields.
+const LearnedPoint = p.object({ x: p.int(), label: p.optional(p.string()) }).compress();
 const _learnedPoint: Equals<Infer<typeof LearnedPoint>, { x: number; label?: string }> = true;
-p.object({ x: p.int() }).adaptive({ window: 64 });
+p.object({ x: p.int() }).compress({ window: 64 });

@@ -9,7 +9,7 @@ import { kindMarker } from './markers';
 import { resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
 import { session } from '../predictor/session';
-import type { AdaptiveOptions, Resolved } from '../predictor/types';
+import type { CompressOptions, Resolved } from '../predictor/types';
 
 /**
  * Enum: a fixed list of values, packed as a sub-byte index. `p.enum`.
@@ -25,8 +25,8 @@ export class PEnum<T> extends MethodNode<T> {
   private readonly _prior?: MemberPrior;
   private readonly _members: Members;
   declare readonly _radix?: number;
-  readonly _adaptive?: AdaptiveOptions;
-  /** Under `.adaptive()`: the options the member step codes under. */
+  readonly _compress?: CompressOptions;
+  /** Under `.compress()`: the options the member step codes under. */
   private readonly _resolved?: Resolved;
 
   constructor(
@@ -54,11 +54,11 @@ export class PEnum<T> extends MethodNode<T> {
     this._kinds = [...new Set(this._list.map(kindOf))];
     this._prior = prior;
     this._members = members(this._list.length, { ...prior, learn: learningOf(_methods) }, 'p.enum');
-    this._adaptive = _methods.adaptive;
-    if (this._adaptive === undefined) {
+    this._compress = _methods.compress;
+    if (this._compress === undefined) {
       this._radix = this._members.radix;
     } else {
-      this._resolved = resolve(this._adaptive, loadedPriors.json, 'p.enum');
+      this._resolved = resolve(this._compress, loadedPriors.json, 'p.enum');
     }
   }
 
@@ -82,7 +82,7 @@ export class PEnum<T> extends MethodNode<T> {
    * (1024 when left out, and raised to the number of values counted when
    * smaller), and `separate` keeps it from starting where other nodes of its
    * kind and window got to. Part of the wire format, like the weights. Not
-   * with `.adaptive()`.
+   * with `.compress()`.
    */
   learn(options?: LearningOptions): PEnum<T> {
     return this._declare('learn', 'p.enum', options);
@@ -94,11 +94,11 @@ export class PEnum<T> extends MethodNode<T> {
    * company, with the weights as their prior counts. Not with `.learn()`.
    * Set once.
    */
-  adaptive(options?: AdaptiveOptions): PEnum<T> {
+  compress(options?: CompressOptions): PEnum<T> {
     return this._adapt(options, 'p.enum');
   }
 
-  _adapted(options: AdaptiveOptions): PEnum<T> {
+  _adapted(options: CompressOptions): PEnum<T> {
     return this._adaptedTo(options);
   }
 

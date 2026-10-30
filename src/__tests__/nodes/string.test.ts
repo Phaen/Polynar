@@ -176,11 +176,11 @@ describe('Schema string prose', () => {
   });
 
   it.each(['The Big Lebowski', 'McDonald', 'iPhone XR', 'Hi. "Yes!" OK?', 'ÀB_c', 'x'.repeat(30)])(
-    'round-trips %j, static and adaptive',
+    'round-trips %j, static and compressed',
     (value) => {
       expect(trip(p.string().prose(), value)).toBe(value);
       const values = [value, value.toUpperCase(), value.toLowerCase(), value];
-      expect(trip(p.array(p.string().prose().adaptive()), values)).toEqual(values);
+      expect(trip(p.array(p.string().prose().compress()), values)).toEqual(values);
     }
   );
 
@@ -337,7 +337,7 @@ describe('Schema string prose', () => {
   });
 });
 
-describe('p.string().adaptive()', () => {
+describe('p.string().compress()', () => {
   const english = LOREM_IPSUM.repeat(2);
 
   it.each([
@@ -351,27 +351,27 @@ describe('p.string().adaptive()', () => {
     'a\uDC00b',
     '\uDBFF',
   ])('round-trips %j', (value) => {
-    expect(trip(p.string().adaptive(), value)).toBe(value);
+    expect(trip(p.string().compress(), value)).toBe(value);
   });
 
   it('round-trips several values in one message', () => {
     const values = ['', 'one', 'two', 'a😀b', '\uD800', 'one', 'héllo'];
-    expect(trip(p.array(p.string().adaptive()), values)).toEqual(values);
+    expect(trip(p.array(p.string().compress()), values)).toEqual(values);
   });
 
   it('charges less for a value the node already wrote', () => {
-    const node = p.array(p.string().adaptive());
+    const node = p.array(p.string().compress());
     const repeated = node.encode(['some string value', 'some string value']);
     const other = node.encode(['some string value', 'other string valu']);
     expect(repeated.length).toBeLessThan(other.length);
   });
 
-  it('shares the message population between distinct adaptive nodes', () => {
+  it('shares the message population between distinct compressed nodes', () => {
     const value = 'a fairly long string that only needs spelling once';
-    const shared = p.object({ a: p.string().adaptive(), b: p.string().adaptive() });
+    const shared = p.object({ a: p.string().compress(), b: p.string().compress() });
     const apart = p.object({
-      a: p.string().adaptive(),
-      b: p.string().adaptive({ separate: true }),
+      a: p.string().compress(),
+      b: p.string().compress({ separate: true }),
     });
     const given = { a: value, b: value };
     expect(trip(shared, given)).toEqual(given);
@@ -380,57 +380,57 @@ describe('p.string().adaptive()', () => {
   });
 
   it('round-trips one node reused in two fields', () => {
-    const node = p.string().adaptive();
+    const node = p.string().compress();
     const value = { a: 'same text', b: 'same text' };
     expect(trip(p.object({ a: node, b: node }), value)).toEqual(value);
   });
 
   it('refuses options that conflict or are out of range', () => {
-    expect(() => p.string().adaptive({ order: 4 })).toThrow(
-      new TypeError("p.string: adaptive order 4 differs from the prior's order 8")
+    expect(() => p.string().compress({ order: 4 })).toThrow(
+      new TypeError("p.string: compress order 4 differs from the prior's order 8")
     );
-    expect(() => p.string().adaptive({ candidates: 65 })).toThrow(
-      new RangeError('p.string: adaptive candidates must be in 0..64, got 65')
+    expect(() => p.string().compress({ candidates: 65 })).toThrow(
+      new RangeError('p.string: compress candidates must be in 0..64, got 65')
     );
-    expect(() => p.string().adaptive({ history: 0 })).toThrow(
-      new RangeError('p.string: adaptive history must be in 1..4096, got 0')
+    expect(() => p.string().compress({ history: 0 })).toThrow(
+      new RangeError('p.string: compress history must be in 1..4096, got 0')
     );
-    expect(() => p.string().adaptive({ quantisation: 5000 })).toThrow(
-      new TypeError('p.string: adaptive quantisation must be a power of two, got 5000')
+    expect(() => p.string().compress({ quantisation: 5000 })).toThrow(
+      new TypeError('p.string: compress quantisation must be a power of two, got 5000')
     );
-    expect(() => p.string().adaptive({ window: 0 })).toThrow(
-      new RangeError('p.string: adaptive window must be at least 1')
+    expect(() => p.string().compress({ window: 0 })).toThrow(
+      new RangeError('p.string: compress window must be at least 1')
     );
-    expect(() => p.string().adaptive().adaptive()).toThrow(
-      new TypeError('p.string adaptive is already set')
+    expect(() => p.string().compress().compress()).toThrow(
+      new TypeError('p.string compress is already set')
     );
   });
 
   describe('beside prose and length priors', () => {
     const model = buildProseModel('some text here', { minCount: 1 });
     const own =
-      'p.string adaptive cannot take a prose model: its text model is the prior it learns from';
+      'p.string compress cannot take a prose model: its text model is the prior it learns from';
     const weighed =
-      'p.string adaptive cannot weigh the length: an adaptive string ends with a symbol';
+      'p.string compress cannot weigh the length: a compressed string ends with a symbol';
 
     it('takes the default English model', () => {
       const values = ['See you at noon', 'USER_NOT_FOUND', 'userNotFound'];
-      expect(trip(p.array(p.string().prose().adaptive()), values)).toEqual(values);
+      expect(trip(p.array(p.string().prose().compress()), values)).toEqual(values);
     });
 
     it('refuses a prose model of its own, declared before or after', () => {
-      expect(() => p.string().prose(model).adaptive()).toThrow(new TypeError(own));
-      expect(() => p.string().adaptive().prose(model)).toThrow(new TypeError(own));
+      expect(() => p.string().prose(model).compress()).toThrow(new TypeError(own));
+      expect(() => p.string().compress().prose(model)).toThrow(new TypeError(own));
     });
 
     it('refuses a prior on the length, declared before or after', () => {
-      expect(() => p.string().max(3).weights([1, 1, 1, 1]).adaptive()).toThrow(
+      expect(() => p.string().max(3).weights([1, 1, 1, 1]).compress()).toThrow(
         new TypeError(weighed)
       );
       expect(() =>
         p
           .string()
-          .adaptive()
+          .compress()
           .max(3)
           .cdf((n) => n)
       ).toThrow(new TypeError(weighed));
@@ -439,7 +439,7 @@ describe('p.string().adaptive()', () => {
 
   describe('bounds', () => {
     it('keeps a range of lengths', () => {
-      const node = p.string().min(2).max(4).adaptive();
+      const node = p.string().min(2).max(4).compress();
       for (const value of ['ab', 'abc', 'abcd']) {
         expect(trip(node, value)).toBe(value);
       }
@@ -452,7 +452,7 @@ describe('p.string().adaptive()', () => {
     });
 
     it('keeps a fixed length', () => {
-      const node = p.string().length(3).adaptive();
+      const node = p.string().length(3).compress();
       expect(trip(node, 'abc')).toBe('abc');
       expect(() => node.encode('ab')).toThrow(
         new RangeError('String length 2 is below the minimum 3')
@@ -460,7 +460,7 @@ describe('p.string().adaptive()', () => {
     });
 
     it('counts code units, so a pair fills a max of two', () => {
-      const node = p.string().max(2).adaptive();
+      const node = p.string().max(2).compress();
       expect(trip(node, '😀')).toBe('😀');
       expect(() => node.encode('😀a')).toThrow(
         new RangeError('String length 3 is above the maximum 2')
@@ -468,12 +468,12 @@ describe('p.string().adaptive()', () => {
     });
 
     it('takes the empty string under a max of zero', () => {
-      expect(trip(p.string().max(0).adaptive(), '')).toBe('');
+      expect(trip(p.string().max(0).compress(), '')).toBe('');
     });
   });
 
   describe('charset', () => {
-    const hex = p.string().charset(CharSets.hex).adaptive();
+    const hex = p.string().charset(CharSets.hex).compress();
 
     it('round-trips every member in order and a repetitive string', () => {
       expect(trip(hex, CharSets.hex)).toBe(CharSets.hex);
@@ -487,7 +487,7 @@ describe('p.string().adaptive()', () => {
     });
 
     it('round-trips a range', () => {
-      const node = p.string().charset([0x4e00, 0x4e10]).adaptive();
+      const node = p.string().charset([0x4e00, 0x4e10]).compress();
       const value = '一丐丅丅丅';
       expect(trip(node, value)).toBe(value);
     });
@@ -502,7 +502,7 @@ describe('p.string().adaptive()', () => {
         .string()
         .charset([0x100, 0x100 + count - 1])
         .length(value.length)
-        .adaptive({ quantisation: 4096 });
+        .compress({ quantisation: 4096 });
       expect(trip(node, value)).toBe(value);
     });
   });
@@ -512,23 +512,23 @@ describe('p.string().adaptive()', () => {
     const ascending = [...values].sort();
 
     it('round-trips under sorted', () => {
-      expect(trip(p.array(p.string().adaptive()).sorted(), ascending)).toEqual(ascending);
+      expect(trip(p.array(p.string().compress()).sorted(), ascending)).toEqual(ascending);
     });
 
     it('keeps the given order under unique', () => {
-      expect(trip(p.array(p.string().adaptive()).unique(), values)).toEqual(values);
+      expect(trip(p.array(p.string().compress()).unique(), values)).toEqual(values);
     });
 
     it('round-trips an unordered collection', () => {
-      const node = p.array(p.string().adaptive()).unordered();
+      const node = p.array(p.string().compress()).unordered();
       expect(trip(node, values)).toEqual(ascending);
-      expect([...trip(p.set(p.string().adaptive()).unordered(), new Set(values))]).toEqual(
+      expect([...trip(p.set(p.string().compress()).unordered(), new Set(values))]).toEqual(
         ascending
       );
     });
 
     it('refuses a descent under sorted, located', () => {
-      expect(() => p.array(p.string().adaptive()).sorted().encode(['b', 'a'])).toThrow(
+      expect(() => p.array(p.string().compress()).sorted().encode(['b', 'a'])).toThrow(
         new RangeError('[1]: Value "a" is below the one before it')
       );
     });
@@ -537,11 +537,11 @@ describe('p.string().adaptive()', () => {
   it('refuses writing inside a spelling the encoder tries', () => {
     const enc = new Encoder();
     enc.mark();
-    expect(() => p.string().adaptive()._write(enc, 'a')).toThrow(/inside a spelling/);
+    expect(() => p.string().compress()._write(enc, 'a')).toThrow(/inside a spelling/);
   });
 
   it('ends on corrupt input, with a string or an error', () => {
-    const node = p.string().max(3).adaptive();
+    const node = p.string().max(3).compress();
     const inputs = [
       new Uint8Array([]),
       new Uint8Array([0xff]),
@@ -561,12 +561,12 @@ describe('p.string().adaptive()', () => {
 
 describe('p.string methods', () => {
   it('adapts under a container sugar unless it adapts already', () => {
-    const adaptive = p.string().adaptive({ window: 8 });
-    expect(adaptive._adapted({ window: 16 })).toBe(adaptive);
+    const compress = p.string().compress({ window: 8 });
+    expect(compress._adapted({ window: 16 })).toBe(compress);
     const plain = p.string();
     const adapted = plain._adapted({ window: 16 });
     expect(adapted).not.toBe(plain);
-    expect(adapted._adaptive).toEqual({ window: 16 });
+    expect(adapted._compress).toEqual({ window: 16 });
   });
 
   it('names the string marker, its only one', () => {

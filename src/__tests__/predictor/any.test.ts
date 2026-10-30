@@ -1,5 +1,5 @@
 /**
- * The `p.any().adaptive()` stream: input the encoder never writes, forged through the stream
+ * The `p.any().compress()` stream: input the encoder never writes, forged through the stream
  * with the node's own coding.
  */
 
@@ -8,7 +8,7 @@ import { walkAny, type AnyCoding } from '../../predictor/any';
 import { session } from '../../predictor/session';
 import { STRUCT } from '../../predictor/types';
 
-/** The coding a `p.any().adaptive()` node hands its stream. */
+/** The coding a `p.any().compress()` node hands its stream. */
 const codingOf = (node: PAny): AnyCoding => (node as unknown as { _coding: AnyCoding })._coding;
 
 /** The message `walkAny` writes for `value` under `coding` with its symbols and bodies swapped. */
@@ -18,11 +18,11 @@ function forge(coding: AnyCoding, value: unknown, overrides: Partial<AnyCoding>)
   return enc.output();
 }
 
-describe('p.any().adaptive() stream', () => {
+describe('p.any().compress() stream', () => {
   it.each(['1.0', '0x10', '1e3', '+1', ' 1'])(
     'rejects number text %j, which is no number spelled shortest',
     (text) => {
-      const node = p.any().adaptive();
+      const node = p.any().compress();
       const bytes = forge(codingOf(node), text, { symbol: () => STRUCT.NUM });
       expect(() => node.decode(bytes)).toThrow(
         new CorruptInputError(`p.any read ${JSON.stringify(text)} where a number belongs`)
@@ -31,7 +31,7 @@ describe('p.any().adaptive() stream', () => {
   );
 
   it('rejects a safe integer spelled as number text, which travels as INT', () => {
-    const node = p.any().adaptive();
+    const node = p.any().compress();
     const bytes = forge(codingOf(node), '5', { symbol: () => STRUCT.NUM });
     expect(() => node.decode(bytes)).toThrow(
       new CorruptInputError('p.any read "5" where a number belongs')
@@ -39,7 +39,7 @@ describe('p.any().adaptive() stream', () => {
   });
 
   it('reads the number text of -0, NaN and Infinity forged as text', () => {
-    const node = p.any().adaptive();
+    const node = p.any().compress();
     for (const text of ['-0', 'NaN', '-Infinity', '1e+21', '0.1']) {
       const bytes = forge(codingOf(node), text, { symbol: () => STRUCT.NUM });
       expect(node.decode(bytes)).toBe(Number(text));
@@ -47,7 +47,7 @@ describe('p.any().adaptive() stream', () => {
   });
 
   it('rejects a structure symbol no value starts with', () => {
-    const node = p.any().adaptive();
+    const node = p.any().compress();
     const coding = codingOf(node);
     const bytes = forge(coding, 0, {
       symbol: () => STRUCT.KEY,
@@ -59,7 +59,7 @@ describe('p.any().adaptive() stream', () => {
   });
 
   it('rejects a structure symbol other than a key or the end inside an object', () => {
-    const node = p.any().adaptive();
+    const node = p.any().compress();
     const { o } = codingOf(node);
     const enc = new Encoder();
     const s = session(enc);
@@ -75,7 +75,7 @@ describe('p.any().adaptive() stream', () => {
   });
 
   it('locates a decode error at an object key, an array index and a map entry', () => {
-    const node = p.any().adaptive();
+    const node = p.any().compress();
     const coding = codingOf(node);
     const text = (value: unknown) => typeof value === 'string';
     const forged = (value: unknown) =>
@@ -98,7 +98,7 @@ describe('p.any().adaptive() stream', () => {
   });
 });
 
-describe('p.any().adaptive() without Float16Array', () => {
+describe('p.any().compress() without Float16Array', () => {
   it('reads a Float16Array tag as missing', () => {
     const saved = Object.getOwnPropertyDescriptor(globalThis, 'Float16Array');
     delete (globalThis as { Float16Array?: unknown }).Float16Array;
@@ -109,7 +109,7 @@ describe('p.any().adaptive() without Float16Array', () => {
         const sessions =
           require('../../predictor/session') as typeof import('../../predictor/session');
         /* eslint-enable @typescript-eslint/no-require-imports */
-        const node = index.p.any().adaptive();
+        const node = index.p.any().compress();
         const { o } = codingOf(node);
         const enc = new index.Encoder();
         sessions

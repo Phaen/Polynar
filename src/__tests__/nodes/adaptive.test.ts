@@ -7,12 +7,12 @@
 import { Encoder, Decoder } from '../../packer';
 import {
   AdaptivePrior,
-  DEFAULT_ADAPTIVE_WINDOW,
+  DEFAULT_COMPRESS_WINDOW,
   kinOf,
   LADDER,
-  MAX_ADAPTIVE_MEMBERS,
+  MAX_COMPRESS_MEMBERS,
   checkAdaptation,
-  checkAdaptiveMembers,
+  checkCompressMembers,
 } from '../../nodes/adaptive';
 import { Exclusion } from '../../nodes/excluded';
 import { buildWeights, readTable, writeTable } from '../../nodes/weights';
@@ -84,11 +84,11 @@ describe('checkAdaptation', () => {
   });
 });
 
-describe('checkAdaptiveMembers', () => {
+describe('checkCompressMembers', () => {
   it('passes up to the limit and refuses past it', () => {
-    expect(MAX_ADAPTIVE_MEMBERS).toBe(65536);
-    expect(() => checkAdaptiveMembers(MAX_ADAPTIVE_MEMBERS, 'w')).not.toThrow();
-    expect(() => checkAdaptiveMembers(MAX_ADAPTIVE_MEMBERS + 1, 'w')).toThrow(
+    expect(MAX_COMPRESS_MEMBERS).toBe(65536);
+    expect(() => checkCompressMembers(MAX_COMPRESS_MEMBERS, 'w')).not.toThrow();
+    expect(() => checkCompressMembers(MAX_COMPRESS_MEMBERS + 1, 'w')).toThrow(
       new RangeError('w learned prior spans 65537 values, above the limit 65536')
     );
   });
@@ -148,7 +148,7 @@ const forge = (
   coding: number,
   symbols: readonly number[],
   rows: readonly number[] = symbols.map(() => 0),
-  window = Math.max(DEFAULT_ADAPTIVE_WINDOW, prior.members),
+  window = Math.max(DEFAULT_COMPRESS_WINDOW, prior.members),
   excluded: readonly (readonly number[])[] = [],
   learned: readonly boolean[] = []
 ): Uint8Array => {
@@ -310,7 +310,7 @@ describe('AdaptivePrior', () => {
     );
   });
 
-  it('defaults the window to DEFAULT_ADAPTIVE_WINDOW, or the member count when that is larger', () => {
+  it('defaults the window to DEFAULT_COMPRESS_WINDOW, or the member count when that is larger', () => {
     // A window of 1024 halves once 1025 values are learned, so a forged
     // message under it decodes only if the prior holds that window.
     const symbols = zeros(1100);

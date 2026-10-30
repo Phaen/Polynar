@@ -19,36 +19,36 @@ const bytes = (prior: Prior | undefined, samples: readonly string[]): number =>
       a +
       p
         .string()
-        .adaptive(prior === undefined ? {} : { prior })
+        .compress(prior === undefined ? {} : { prior })
         .encode(s).length,
     0
   );
 
 describe('train', () => {
   it('gives the same prior for the same inputs and seed', () => {
-    const a = train(p.string().adaptive(), SAMPLES, { holdOut: 0, seed: 7 });
-    const b = train(p.string().adaptive(), SAMPLES, { holdOut: 0, seed: 7 });
+    const a = train(p.string().compress(), SAMPLES, { holdOut: 0, seed: 7 });
+    const b = train(p.string().compress(), SAMPLES, { holdOut: 0, seed: 7 });
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
-    const c = train(p.string().adaptive(), SAMPLES, { holdOut: 0, seed: -3 });
+    const c = train(p.string().compress(), SAMPLES, { holdOut: 0, seed: -3 });
     expect(() => loadPrior(c)).not.toThrow();
   });
 
   it('makes a prior that codes its own samples smaller than the shipped one', () => {
-    const prior = train(p.string().adaptive(), SAMPLES, { holdOut: 0 });
+    const prior = train(p.string().compress(), SAMPLES, { holdOut: 0 });
     expect(() => loadPrior(prior)).not.toThrow();
     expect(bytes(prior, SAMPLES)).toBeLessThan(bytes(undefined, SAMPLES));
   });
 
   it('keeps the constants of `from` without a held-out part and copies numberStart', () => {
     const from = loadedPriors.json.source;
-    const prior = train(p.string().adaptive(), SAMPLES, { holdOut: 0, from, epochs: 1 });
+    const prior = train(p.string().compress(), SAMPLES, { holdOut: 0, from, epochs: 1 });
     expect(prior.constants).toEqual(from.constants);
     expect(prior.tables.numberStart).toEqual(from.tables.numberStart);
     expect(prior.trainedOn).toBeUndefined();
   });
 
   it('counts the built-in from the samples: END after every value, structure ids as -1 - s', () => {
-    const text = train(p.string().adaptive(), ['ab', 'b'], { holdOut: 0, epochs: 1 });
+    const text = train(p.string().compress(), ['ab', 'b'], { holdOut: 0, epochs: 1 });
     expect(text.builtin).toEqual({
       symbols: [97, 98],
       counts0: [2, 1, 2],
@@ -59,7 +59,7 @@ describe('train', () => {
         [98, -1, 2],
       ],
     });
-    const json = train(p.any().adaptive(), [{ a: [1, 'x'] }], { holdOut: 0, epochs: 1 });
+    const json = train(p.any().compress(), [{ a: [1, 'x'] }], { holdOut: 0, epochs: 1 });
     expect(json.builtin.symbols).toEqual(expect.arrayContaining([97, 120, -2, -4]));
     expect(() => loadPrior(json)).not.toThrow();
   });
@@ -68,7 +68,7 @@ describe('train', () => {
     // Every pair of 51 symbols: 2,601 triples, of which the cap keeps 2,500.
     const cs = Array.from({ length: 51 }, (_, i) => String.fromCodePoint(0x4e00 + i));
     const all = cs.map((a) => cs.map((b) => a + b).join('')).join('');
-    const prior = train(p.string().adaptive(), [`${all}ab`, 'ab', 'ab'], { holdOut: 0, epochs: 1 });
+    const prior = train(p.string().compress(), [`${all}ab`, 'ab', 'ab'], { holdOut: 0, epochs: 1 });
     const c = prior.builtin.contexts1;
     expect(c).toHaveLength(MAX_CONTEXTS);
     expect(c).toContainEqual([97, 98, 3]);
@@ -82,7 +82,7 @@ describe('train', () => {
   });
 
   it('closes a message without a value end with END', () => {
-    const fixed = train(p.string().length(2).adaptive(), ['ab'], { holdOut: 0, epochs: 1 });
+    const fixed = train(p.string().length(2).compress(), ['ab'], { holdOut: 0, epochs: 1 });
     expect(fixed.builtin.contexts1).toEqual([
       [-1, 97, 1],
       [97, 98, 1],
@@ -91,7 +91,7 @@ describe('train', () => {
   });
 
   it('starts binaries from the text prior with an empty built-in', () => {
-    const prior = train(p.binary().adaptive(), [Uint8Array.of(1, 2, 3, 1, 2, 3)], {
+    const prior = train(p.binary().compress(), [Uint8Array.of(1, 2, 3, 1, 2, 3)], {
       holdOut: 0,
       epochs: 1,
     });
@@ -102,7 +102,7 @@ describe('train', () => {
 
   it('picks η, ρ0 and N0 on the held-out samples from the grid', () => {
     const lines: string[] = [];
-    const prior = trainLogged(p.string().adaptive(), SAMPLES, { epochs: 1 }, (l) => lines.push(l));
+    const prior = trainLogged(p.string().compress(), SAMPLES, { epochs: 1 }, (l) => lines.push(l));
     expect(lines.filter((l) => l.startsWith('grid'))).toHaveLength(36);
     expect([726132, 2420441, 7261322]).toContain(prior.constants.eta);
     expect([4194304, 8388608, 16777216, 33554432]).toContain(prior.constants.rho0);
@@ -115,7 +115,7 @@ describe('train', () => {
   it('narrows the grid to the axes given', () => {
     const lines: string[] = [];
     const prior = trainLogged(
-      p.string().adaptive(),
+      p.string().compress(),
       SAMPLES,
       { epochs: 1, grid: { eta: [1000000, 2000000], n0: [512] } },
       (l) => lines.push(l)
@@ -128,16 +128,16 @@ describe('train', () => {
     );
   });
 
-  it('refuses a node without .adaptive()', () => {
+  it('refuses a node without .compress()', () => {
     expect(() => train(p.string(), SAMPLES)).toThrow(TypeError);
-    expect(() => train(p.array(p.int()), [[1]])).toThrow('no .adaptive()');
+    expect(() => train(p.array(p.int()), [[1]])).toThrow('no .compress()');
   });
 
   it('refuses invalid options', () => {
     const t =
       (o: object, samples: readonly string[] = SAMPLES): (() => Prior) =>
       () =>
-        train(p.string().adaptive(), samples, o);
+        train(p.string().compress(), samples, o);
     expect(t({ holdOut: NaN })).toThrow(TypeError);
     expect(t({ holdOut: '0.5' })).toThrow(TypeError);
     expect(t({ holdOut: -0.1 })).toThrow(RangeError);
@@ -170,7 +170,7 @@ describe('a session that carries a run prior', () => {
     const before = run.hybrid.slice();
     const enc = new Encoder();
     const s = session(enc, { carry: run });
-    p.string().adaptive()._write(enc, 'carried text');
+    p.string().compress()._write(enc, 'carried text');
     expect(s.space(loadedPriors.json).run).toBe(run);
     expect(s.space(loadedPriors.text)).toBe(s.space(loadedPriors.json));
     expect(run.hybrid).not.toEqual(before);

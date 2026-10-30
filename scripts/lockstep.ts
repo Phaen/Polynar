@@ -91,7 +91,7 @@ const FIXTURE_STRINGS = [
   'Ünïcödé, emoji 👍 and digits 0123456789',
 ];
 
-/** A small JSON value as one `p.any().adaptive()` message under the JSON prior. */
+/** A small JSON value as one `p.any().compress()` message under the JSON prior. */
 const FIXTURE_JSON = {
   id: 1024,
   name: 'Ada Lovelace',
@@ -116,7 +116,7 @@ function fixtures(): string[] {
   }
   const strings = (h >>> 0).toString(16).padStart(8, '0');
   const enc = new DigestEncoder();
-  p.any().adaptive()._write(enc, FIXTURE_JSON);
+  p.any().compress()._write(enc, FIXTURE_JSON);
   const json = (enc.h >>> 0).toString(16).padStart(8, '0');
   return [`fixture-strings ${strings}`, `fixture-json ${json}`];
 }

@@ -26,7 +26,7 @@ interface Color {
 
 // A color packs each channel into one of 256 members: three bytes' worth of
 // state, regardless of output form. All three channels go through one
-// `Members`, so under `.adaptive()` they share one table and learn from each
+// `Members`, so under `.compress()` they share one table and learn from each
 // other.
 class PColor extends PNode<Color> {
   private readonly channel: Members;
@@ -36,7 +36,7 @@ class PColor extends PNode<Color> {
     this.channel = members(256, prior, 'PColor');
   }
 
-  adaptive(options?: LearningOptions): PColor {
+  compress(options?: LearningOptions): PColor {
     return new PColor({ ...this.prior, learn: options ?? {} });
   }
 
@@ -66,7 +66,7 @@ const Theme = p.object({
 
 // A palette of greys: every channel is one of a few levels, which an
 // adaptive table learns over the message.
-const Palette = p.array(color().adaptive()).max(64);
+const Palette = p.array(color().compress()).max(64);
 const greys = Array.from({ length: 64 }, (_, i) => {
   const level = [0, 128, 255][i % 3];
   return { r: level, g: level, b: level };

@@ -1,8 +1,8 @@
 /**
- * `.adaptive(options)`: validation at definition and the resolved sizes (spec §2.1).
+ * `.compress(options)`: validation at definition and the resolved sizes (spec §2.1).
  */
 import { priorOf } from './prior';
-import type { AdaptiveOptions, LoadedPrior, Prior, Resolved } from './types';
+import type { CompressOptions, LoadedPrior, Prior, Resolved } from './types';
 
 /** The structural defaults. */
 export const DEFAULTS = {
@@ -33,34 +33,34 @@ function isPowerOfTwo(x: number): boolean {
  * for a non-object, a non-integer, a non-boolean `separate`, a
  * non-power-of-two `quantisation` or an invalid prior; RangeError for a value outside its range.
  */
-export function checkAdaptive(options: AdaptiveOptions | undefined, who: string): AdaptiveOptions {
+export function checkCompress(options: CompressOptions | undefined, who: string): CompressOptions {
   if (options === undefined) return {};
   if (typeof options !== 'object' || options === null || Array.isArray(options)) {
-    throw new TypeError(`${who}: adaptive options must be an object`);
+    throw new TypeError(`${who}: compress options must be an object`);
   }
   const { window, separate, prior } = options;
   if (window !== undefined && window !== Infinity) {
     if (!Number.isSafeInteger(window)) {
-      throw new TypeError(`${who}: adaptive window must be an integer, got ${window}`);
+      throw new TypeError(`${who}: compress window must be an integer, got ${window}`);
     }
-    if (window < 1) throw new RangeError(`${who}: adaptive window must be at least 1`);
+    if (window < 1) throw new RangeError(`${who}: compress window must be at least 1`);
   }
   if (separate !== undefined && typeof separate !== 'boolean') {
-    throw new TypeError(`${who}: adaptive separate must be a boolean`);
+    throw new TypeError(`${who}: compress separate must be a boolean`);
   }
   for (const [key, lo, hi] of RANGES) {
     const v = options[key];
     if (v === undefined) continue;
     if (!Number.isSafeInteger(v)) {
-      throw new TypeError(`${who}: adaptive ${key} must be an integer, got ${v}`);
+      throw new TypeError(`${who}: compress ${key} must be an integer, got ${v}`);
     }
     if (v < lo || v > hi) {
-      throw new RangeError(`${who}: adaptive ${key} must be in ${lo}..${hi}, got ${v}`);
+      throw new RangeError(`${who}: compress ${key} must be in ${lo}..${hi}, got ${v}`);
     }
   }
   const q = options.quantisation;
   if (q !== undefined && !isPowerOfTwo(q)) {
-    throw new TypeError(`${who}: adaptive quantisation must be a power of two, got ${q}`);
+    throw new TypeError(`${who}: compress quantisation must be a power of two, got ${q}`);
   }
   if (prior !== undefined) priorOf(prior);
   return Object.freeze({ ...options });
@@ -71,16 +71,16 @@ export function checkAdaptive(options: AdaptiveOptions | undefined, who: string)
  * TypeError when the order differs from the prior's.
  */
 export function resolve(
-  options: AdaptiveOptions | undefined,
+  options: CompressOptions | undefined,
   defaultPrior: LoadedPrior,
   who: string
 ): Resolved {
-  const o = checkAdaptive(options, who);
+  const o = checkCompress(options, who);
   const prior = o.prior === undefined ? defaultPrior : priorOf(o.prior);
   const order = o.order ?? DEFAULTS.order;
   if (order !== prior.order) {
     throw new TypeError(
-      `${who}: adaptive order ${order} differs from the prior's order ${prior.order}`
+      `${who}: compress order ${order} differs from the prior's order ${prior.order}`
     );
   }
   return {
@@ -97,17 +97,17 @@ export function resolve(
 
 /** A node the container sugar reaches (spec Q4): `PNode` as this module sees it. */
 export interface Adaptable {
-  _adapted?(options: AdaptiveOptions, memo: Map<Adaptable, Adaptable>): Adaptable;
+  _adapted?(options: CompressOptions, memo: Map<Adaptable, Adaptable>): Adaptable;
 }
 
 /**
- * `node` with `.adaptive(options)` on every node below it that has neither its own nor
+ * `node` with `.compress(options)` on every node below it that has neither its own nor
  * `.learn()`, and on itself (spec Q4), all under one prior: `options.prior`, else `prior`, the
  * root's default. A node reused in the tree maps to one adapted node.
  */
-export function applyAdaptive<T extends Adaptable>(
+export function applyCompress<T extends Adaptable>(
   node: T,
-  options: AdaptiveOptions,
+  options: CompressOptions,
   prior: Prior
 ): T {
   const filled = Object.freeze({ ...options, prior: options.prior ?? prior });

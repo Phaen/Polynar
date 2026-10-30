@@ -168,7 +168,7 @@ describe('ownMarker', () => {
   });
 
   it('takes the symbol a parent coded for the node', () => {
-    const Schema = p.object({ on: p.bool(), off: p.bool() }).adaptive();
+    const Schema = p.object({ on: p.bool(), off: p.bool() }).compress();
     const value = { on: true, off: false };
     expect(Schema.decode(Schema.encode(value))).toEqual(value);
   });

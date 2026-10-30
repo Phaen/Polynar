@@ -4,14 +4,14 @@
  * string bit-exact, lone surrogates included. `.prose()` swaps the ladder
  * for the order-1 frequency model over lowercase text, its casing and
  * separators carried by a shape. An explicit charset trades generality for
- * density over a known alphabet. `.adaptive()` hands the code points to the
+ * density over a known alphabet. `.compress()` hands the code points to the
  * similarity predictor. `p.string`.
  */
 import { Encoder, Decoder, Alphabet, CorruptInputError, costUnits } from '../packer';
 import type { Charset } from '../packer';
-import { checkAdaptive, resolve } from '../predictor/options';
+import { checkCompress, resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
-import { STRUCT, type AdaptiveOptions } from '../predictor/types';
+import { STRUCT, type CompressOptions } from '../predictor/types';
 import { PNode, type Run } from './base';
 import { describe } from './path';
 import { checkUnset, type LengthBounds } from './lattice';
@@ -553,22 +553,22 @@ export class PString extends PNode<string> {
   private readonly _alphabet?: Alphabet;
   /** Prose model replacing the flat ladder, as given. */
   private readonly _prose?: ProseModel;
-  /** The options `.adaptive()` set, which hand the code points to the predictor. */
-  readonly _adaptive?: AdaptiveOptions;
+  /** The options `.compress()` set, which hand the code points to the predictor. */
+  readonly _compress?: CompressOptions;
   /** The length and the characters, in the ladder, the prose model or the charset. */
   private readonly _text: TextCodec;
-  /** The characters through the predictor, under `.adaptive()`. */
+  /** The characters through the predictor, under `.compress()`. */
   private readonly _learned?: Learned<string>;
 
   constructor(
     bounds: LengthBounds = {},
     charset?: Charset,
     prose?: ProseModel,
-    adaptive?: AdaptiveOptions
+    compress?: CompressOptions
   ) {
     super();
     this._bounds = bounds;
-    this._adaptive = adaptive;
+    this._compress = compress;
     let charsetText: CharsetText | undefined;
     if (charset !== undefined) {
       if (prose !== undefined) {
@@ -586,33 +586,33 @@ export class PString extends PNode<string> {
     } else {
       this._text = new PlainText(new Ladder(), bounds);
     }
-    if (adaptive === undefined) {
+    if (compress === undefined) {
       return;
     }
     if (prose !== undefined && prose !== ProseModels.english) {
       throw new TypeError(
-        'p.string adaptive cannot take a prose model: its text model is the prior it learns from'
+        'p.string compress cannot take a prose model: its text model is the prior it learns from'
       );
     }
     if (bounds.prior !== undefined) {
       throw new TypeError(
-        'p.string adaptive cannot weigh the length: an adaptive string ends with a symbol'
+        'p.string compress cannot weigh the length: a compressed string ends with a symbol'
       );
     }
-    const options = resolve(adaptive, loadedPriors.text, 'p.string');
+    const options = resolve(compress, loadedPriors.text, 'p.string');
     this._learned =
       charsetText === undefined
         ? new Learned(new Ladder(), this, options, 'text', bounds)
         : new Learned(charsetText, this, options, 'text', bounds, charsetText.codes());
   }
 
-  /** This node with `bounds`, `charset` and `prose`, keeping its adaptive options. */
+  /** This node with `bounds`, `charset` and `prose`, keeping its compressed options. */
   private _with(
     bounds: LengthBounds,
     charset = this._alphabet?.charset,
     prose = this._prose
   ): PString {
-    return new PString(bounds, charset, prose, this._adaptive);
+    return new PString(bounds, charset, prose, this._compress);
   }
 
   /** A floor on the length; the prefix then counts up from it. */
@@ -639,7 +639,7 @@ export class PString extends PNode<string> {
   /**
    * Declare a prior over the LENGTH as an integer CDF: `fn(n)` is the
    * cumulative weight of lengths below `n`. Requires a max; a zero-weight
-   * length cannot encode. Not with `.adaptive()`.
+   * length cannot encode. Not with `.compress()`.
    */
   cdf(fn: Cdf): PString {
     checkUnset(this._bounds.prior, 'p.string', 'prior');
@@ -649,15 +649,15 @@ export class PString extends PNode<string> {
   /**
    * Declare how likely each length from min (or 0) to max is, lowest first.
    * Same prior as `.cdf()`, given as the histogram instead of its running
-   * total. Not with `.adaptive()`.
+   * total. Not with `.compress()`.
    */
   weights(w: readonly number[]): PString {
     checkUnset(this._bounds.prior, 'p.string', 'prior');
     return this._with({ ...this._bounds, prior: w });
   }
 
-  _adapted(options: AdaptiveOptions): PString {
-    return this._adaptive !== undefined ? this : this.adaptive(options);
+  _adapted(options: CompressOptions): PString {
+    return this._compress !== undefined ? this : this.compress(options);
   }
 
   _marker(): number {
@@ -677,15 +677,15 @@ export class PString extends PNode<string> {
    * `.prose()` adds nothing, and a prose model of its own is refused. Set
    * once.
    */
-  adaptive(options?: AdaptiveOptions): PString {
-    if (this._adaptive !== undefined) {
-      throw new TypeError('p.string adaptive is already set');
+  compress(options?: CompressOptions): PString {
+    if (this._compress !== undefined) {
+      throw new TypeError('p.string compress is already set');
     }
     return new PString(
       this._bounds,
       this._alphabet?.charset,
       this._prose,
-      checkAdaptive(options, 'p.string')
+      checkCompress(options, 'p.string')
     );
   }
 
@@ -723,7 +723,7 @@ export class PString extends PNode<string> {
   /**
    * A run of strings ascending by UTF-16 code units: each value after the
    * start it shares with the one before it, spelled as the node spells its
-   * strings. Never asked of an adaptive node, whose runs `./runs` codes one
+   * strings. Never asked of a compressed node, whose runs `./runs` codes one
    * value at a time.
    */
   _run(unique: boolean): Run<string> {

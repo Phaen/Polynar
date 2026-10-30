@@ -2,7 +2,7 @@ import { Encoder, Decoder } from '../packer';
 import { resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
 import { session, type Session } from '../predictor/session';
-import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
+import { STRUCT, type CompressOptions, type Resolved } from '../predictor/types';
 import type { InferShape } from './infer';
 import { adapt, type PNode } from './base';
 import { atPath } from './path';
@@ -23,8 +23,8 @@ export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<In
   private readonly _keys: readonly string[];
   /** How the node learns. */
   readonly _methods: MethodSet;
-  readonly _adaptive?: AdaptiveOptions;
-  /** Under `.adaptive()`: the options the object's structure symbols code under. */
+  readonly _compress?: CompressOptions;
+  /** Under `.compress()`: the options the object's structure symbols code under. */
   private readonly _resolved?: Resolved;
   /** Whether a field codes through the predictor, so the object is a record of the message. */
   private readonly _holds: boolean;
@@ -34,12 +34,12 @@ export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<In
     this._shape = { ...shape }; // copy so later caller mutation can't change the node
     this._keys = Object.keys(this._shape);
     this._methods = methods;
-    this._adaptive = methods.adaptive;
-    if (this._adaptive !== undefined) {
-      this._resolved = resolve(this._adaptive, loadedPriors.json, 'p.object');
+    this._compress = methods.compress;
+    if (this._compress !== undefined) {
+      this._resolved = resolve(this._compress, loadedPriors.json, 'p.object');
     }
     this._holds =
-      this._adaptive !== undefined || this._keys.some((key) => this._shape[key]._holdsAdaptive);
+      this._compress !== undefined || this._keys.some((key) => this._shape[key]._holdsCompress);
   }
 
   /**
@@ -47,15 +47,15 @@ export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<In
    * fields in shape order with their keys implied, each after the symbol
    * its value starts with (its kind, or whether an optional field is
    * there), and its end, as symbols of the message's structure; and every
-   * field as under its own `.adaptive(options)` unless it has `.adaptive()`
+   * field as under its own `.compress(options)` unless it has `.compress()`
    * or `.learn()` already, its nested objects, arrays and choices included.
    * Set once.
    */
-  adaptive(options?: AdaptiveOptions): PObject<S> {
+  compress(options?: CompressOptions): PObject<S> {
     return this._sugar(options, 'p.object');
   }
 
-  _adapted(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PObject<S> {
+  _adapted(options: CompressOptions, memo: Map<PNode<any>, PNode<any>>): PObject<S> {
     if (this._keeps()) {
       return this;
     }
@@ -63,7 +63,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<In
     const shape = Object.fromEntries(
       this._keys.map((key) => [key, adapt(this._shape[key], options, memo)])
     );
-    return new PObject<S>(shape as S, { ...this._methods, adaptive: options });
+    return new PObject<S>(shape as S, { ...this._methods, compress: options });
   }
 
   /** This node with `methods` in place of its own. */
@@ -71,7 +71,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<In
     return new PObject<S>(this._shape, methods);
   }
 
-  get _holdsAdaptive(): boolean {
+  get _holdsCompress(): boolean {
     return this._holds;
   }
 
@@ -124,7 +124,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<In
 
   /**
    * Opens the object's record and its marker scope on the session of `side`, under
-   * `.adaptive()` after `start` codes its start where its parent has not.
+   * `.compress()` after `start` codes its start where its parent has not.
    */
   private _open(side: Encoder | Decoder, start: (s: Session, o: Resolved) => void): Session {
     const s = session(side);
@@ -144,7 +144,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<In
     s.leaveScope();
   }
 
-  /** Writes the fields in shape order, each after its first structure symbol under `.adaptive()`. */
+  /** Writes the fields in shape order, each after its first structure symbol under `.compress()`. */
   private _fields(enc: Encoder, value: InferShape<S>): void {
     const record = value as Record<string, unknown>;
     const keys = this._keys;

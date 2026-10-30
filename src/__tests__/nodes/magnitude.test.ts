@@ -253,7 +253,7 @@ describe('learned magnitude', () => {
     );
   });
 
-  it('refuses invalid adaptive options', () => {
+  it('refuses invalid compress options', () => {
     expect(() => new LearnedMagnitude(true, { window: 0 }, 'test')).toThrow(RangeError);
   });
 });

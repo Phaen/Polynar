@@ -117,12 +117,12 @@ describe('Schema lazy', () => {
   });
 });
 
-describe('p.lazy under .adaptive()', () => {
-  it('holds adaptive, its target unknown, and speaks for its target', () => {
-    const target = p.optional(p.int()).weights([1, 3]).adaptive();
+describe('p.lazy under .compress()', () => {
+  it('holds compress, its target unknown, and speaks for its target', () => {
+    const target = p.optional(p.int()).weights([1, 3]).compress();
     const node = p.lazy(() => target);
-    expect(node._holdsAdaptive).toBe(true);
-    expect(p.lazy(() => p.int())._holdsAdaptive).toBe(true);
+    expect(node._holdsCompress).toBe(true);
+    expect(p.lazy(() => p.int())._holdsCompress).toBe(true);
     expect(node._marker(undefined)).toBe(target._marker(undefined));
     expect(node._marker(2)).toBe(target._marker(2));
     expect(node._markers()).toEqual(target._markers());
@@ -141,7 +141,7 @@ describe('p.lazy under .adaptive()', () => {
     const out = ref._adapted({}, memo);
     expect(out).not.toBe(ref);
     expect(memo.get(ref)).toBe(out);
-    expect(out._target._adaptive).toEqual({});
+    expect(out._target._compress).toEqual({});
     const value: Chain = { next: { next: { next: {} } } };
     expect(trip(out, value)).toEqual(value);
     expect(memo.get(Chain)).toBe(out._target);
@@ -157,7 +157,7 @@ describe('p.lazy under .adaptive()', () => {
       list: p.array(p.lazy(() => p.bool())),
       flag: p.lazy(() => p.bool()),
     });
-    const node = Doc.adaptive();
+    const node = Doc.compress();
     const values = [
       { inner: { a: 1 }, nullable: null, list: [], flag: true },
       {

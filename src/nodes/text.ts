@@ -3,7 +3,7 @@
  * prefix, then one symbol per item from a fixed table, each priced uniformly
  * or by a static prior per row, and followed by whatever the symbol does not
  * carry. The alphabet decides what the items are and how they map to
- * symbols. Under `.adaptive()` the items go to the similarity predictor
+ * symbols. Under `.compress()` the items go to the similarity predictor
  * (`../predictor`) instead, the value's end one more symbol after them.
  */
 import { Encoder, Decoder, CorruptInputError, COST_UNITS } from '../packer';
@@ -443,7 +443,7 @@ export class PlainText<T> {
 const NONE: readonly number[] = [];
 
 /**
- * A value of an alphabet under `.adaptive()`: its items as symbols of the
+ * A value of an alphabet under `.compress()`: its items as symbols of the
  * predictor at the node's path, the value step first, then each item and the
  * end. `members`, for a charset, are the code units of its digits, the
  * alphabet the predictor closes. The bounds count the units of the items: a

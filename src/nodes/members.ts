@@ -7,7 +7,7 @@ import type { Encoder, Decoder } from '../packer';
 import {
   AdaptivePrior,
   checkAdaptation,
-  checkAdaptiveMembers,
+  checkCompressMembers,
   kinOf,
   type LearningOptions,
 } from './adaptive';
@@ -87,7 +87,7 @@ class WeightedMembers implements Members {
 }
 
 /** Members under an adaptive prior, starting at the rows. */
-class AdaptiveMembers implements Members {
+class CompressMembers implements Members {
   private readonly prior: AdaptivePrior;
 
   constructor(
@@ -135,9 +135,9 @@ export function members(count: number, prior: MemberPrior | undefined, who: stri
   const rows = given ?? (weights === undefined ? undefined : [weights]);
   if (prior?.learn !== undefined) {
     checkAdaptation(prior.learn, who);
-    checkAdaptiveMembers(count, who);
+    checkCompressMembers(count, who);
     const ones = [new Array<number>(count).fill(1)];
-    return new AdaptiveMembers(count, rows ?? ones, prior.learn, who);
+    return new CompressMembers(count, rows ?? ones, prior.learn, who);
   }
   if (rows !== undefined) {
     return new WeightedMembers(count, rows, who);

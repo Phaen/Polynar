@@ -2740,5 +2740,5 @@ export const json: Prior = {
       [128578, 32, 10],
     ],
   },
-  trainedOn: 'The 13 files of the research corpus, each one p.any().adaptive() message.',
+  trainedOn: 'The 13 files of the research corpus, each one p.any().compress() message.',
 };

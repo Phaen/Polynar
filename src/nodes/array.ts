@@ -2,7 +2,7 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
 import { session, type Session } from '../predictor/session';
-import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
+import { STRUCT, type CompressOptions, type Resolved } from '../predictor/types';
 import { PNode, adapt } from './base';
 import { atPath } from './path';
 import type { Kind } from './guards';
@@ -42,14 +42,14 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
   private readonly _order: Order;
   /** How the node learns. */
   readonly _methods: MethodSet;
-  readonly _adaptive?: AdaptiveOptions;
-  /** Under `.adaptive()`: the options the array's structure symbols code under. */
+  readonly _compress?: CompressOptions;
+  /** Under `.compress()`: the options the array's structure symbols code under. */
   private readonly _resolved?: Resolved;
   /** Whether the node or its item codes through the predictor. */
   private readonly _holds: boolean;
   /**
    * How distinct strings in their own order are spelled, see `./runs`:
-   * learned when the count is adaptive.
+   * learned when the count is compressed.
    */
   private readonly _choice: Members;
 
@@ -69,16 +69,16 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     }
     this._order = order;
     this._methods = methods;
-    this._adaptive = methods.adaptive;
-    if (this._adaptive !== undefined) {
+    this._compress = methods.compress;
+    if (this._compress !== undefined) {
       if (bounds.prior !== undefined) {
         throw new TypeError(
-          'p.array adaptive cannot weigh the count: an adaptive array ends with a symbol'
+          'p.array compress cannot weigh the count: a compressed array ends with a symbol'
         );
       }
-      this._resolved = resolve(this._adaptive, loadedPriors.json, 'p.array');
+      this._resolved = resolve(this._compress, loadedPriors.json, 'p.array');
     }
-    this._holds = this._adaptive !== undefined || item._holdsAdaptive;
+    this._holds = this._compress !== undefined || item._holdsCompress;
     this._choice = members(2, learning === undefined ? undefined : { learn: learning }, 'p.array');
   }
 
@@ -136,7 +136,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
    * out, and raised to the number of values counted when smaller), and
    * `separate` keeps its tables from starting where other nodes of its kind and
    * window got to. Takes weights, not a cdf; part of the wire format, like the
-   * weights. Not with `.adaptive()`.
+   * weights. Not with `.compress()`.
    */
   learn(options?: LearningOptions): PArray<TItem> {
     return this._declare('learn', 'p.array', options);
@@ -146,27 +146,27 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
    * Code the array through the similarity predictor: its start, each item
    * after the symbol it starts with, and its end in place of a count, as
    * symbols of the message's structure, `.min()` and `.max()` bounding where
-   * the end may come; and the item as under its own `.adaptive(options)`
-   * unless it has `.adaptive()` or `.learn()` already. A restricted order
+   * the end may come; and the item as under its own `.compress(options)`
+   * unless it has `.compress()` or `.learn()` already. A restricted order
    * still holds: the items go one by one, ascending unless they keep their
    * own order. Not with `.learn()`, `.weights()` or `.cdf()`. Set once.
    */
-  adaptive(options?: AdaptiveOptions): PArray<TItem> {
+  compress(options?: CompressOptions): PArray<TItem> {
     return this._sugar(options, 'p.array');
   }
 
-  _adapted(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PArray<TItem> {
+  _adapted(options: CompressOptions, memo: Map<PNode<any>, PNode<any>>): PArray<TItem> {
     if (this._keeps()) {
       return this;
     }
     const item = adapt(this._item, options, memo);
     return new PArray<TItem>(item, this._bounds, this._order, {
       ...this._methods,
-      adaptive: options,
+      compress: options,
     });
   }
 
-  get _holdsAdaptive(): boolean {
+  get _holdsCompress(): boolean {
     return this._holds;
   }
 
@@ -186,7 +186,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
    * n! fewer possible values, and each string is written after the start it
    * shares with the one before. Takes items of p.string, or of bounded
    * p.int, p.date or p.decimal, p.enum or p.bool without weights or
-   * adaptive.
+   * compress.
    */
   sorted(): PArray<TItem> {
     checkUnset(this._order.sorted, 'p.array', 'sorted');
@@ -199,7 +199,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
    * used, so a shuffled deck costs log2 52! bits instead of 52 · log2 52;
    * strings are written as they stand or ascending, as `.sorted()` writes
    * them, and then their order, whichever is shorter, after a choice that
-   * learns when the count is adaptive. Takes the same items as `.sorted()`.
+   * learns when the count is compressed. Takes the same items as `.sorted()`.
    */
   unique(): PArray<TItem> {
     checkUnset(this._order.unique, 'p.array', 'unique');
@@ -279,7 +279,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
   }
 
   /**
-   * Writes the items under `.adaptive()`, each after its first structure symbol, then the end
+   * Writes the items under `.compress()`, each after its first structure symbol, then the end
    * unless the array is at its max: in order, or ascending where the order is let go.
    */
   private _items(enc: Encoder, value: TItem[], o: Resolved, s: Session): void {

@@ -4,10 +4,10 @@ import { resolve } from '../../predictor/options';
 import { loadedPriors } from '../../predictor/prior';
 import { Session, session } from '../../predictor/session';
 import type { NumberRange, PlainNumber } from '../../predictor/session';
-import type { AdaptiveOptions, PathKey, RangeBuckets } from '../../predictor/types';
+import type { CompressOptions, PathKey, RangeBuckets } from '../../predictor/types';
 
 const MAX = Number.MAX_SAFE_INTEGER;
-const opts = (o: AdaptiveOptions = {}) => resolve(o, loadedPriors.text, 'test');
+const opts = (o: CompressOptions = {}) => resolve(o, loadedPriors.text, 'test');
 
 /** The plain spelling of an unbounded integer: a sign and a term (any magnitude). */
 const PLAIN: PlainNumber = {
@@ -59,7 +59,7 @@ type Op =
 function run(
   s: Session,
   ops: readonly Op[],
-  o: AdaptiveOptions,
+  o: CompressOptions,
   each: (op: Exclude<Op, string>) => void
 ): void {
   void s;
@@ -72,7 +72,7 @@ function run(
 }
 
 /** Encodes the ops through one session, decodes them through another, and returns the bytes. */
-function tripOps(ops: readonly Op[], o: AdaptiveOptions = {}): Uint8Array {
+function tripOps(ops: readonly Op[], o: CompressOptions = {}): Uint8Array {
   const r = opts(o);
   const enc = new Encoder();
   const se = session(enc);
@@ -100,7 +100,7 @@ function trip(
   values: readonly number[],
   range: NumberRange = {},
   plain: PlainNumber = PLAIN,
-  o: AdaptiveOptions = {}
+  o: CompressOptions = {}
 ): Uint8Array {
   const path = {};
   return tripOps(

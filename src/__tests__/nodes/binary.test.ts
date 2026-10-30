@@ -131,7 +131,7 @@ describe('Schema binary', () => {
   });
 });
 
-describe('p.binary().adaptive()', () => {
+describe('p.binary().compress()', () => {
   const raw = (a: ArrayBufferView) => new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
   const noise = (length: number, seed: number) => {
     const rnd = mulberry32(seed);
@@ -139,22 +139,22 @@ describe('p.binary().adaptive()', () => {
   };
 
   it('round-trips an empty array', () => {
-    expect(trip(p.binary().adaptive(), new Uint8Array(0))).toEqual(new Uint8Array(0));
+    expect(trip(p.binary().compress(), new Uint8Array(0))).toEqual(new Uint8Array(0));
   });
 
   it('round-trips every byte value', () => {
     const value = Uint8Array.from({ length: 256 }, (_, i) => i);
-    expect(trip(p.binary().adaptive(), value)).toEqual(value);
+    expect(trip(p.binary().compress(), value)).toEqual(value);
   });
 
   it('round-trips a repetitive 4 kB buffer', () => {
     const value = Uint8Array.from({ length: 4096 }, (_, i) => (i * 7) % 13);
-    expect(trip(p.binary().adaptive(), value)).toEqual(value);
+    expect(trip(p.binary().compress(), value)).toEqual(value);
   });
 
   it('round-trips negative Int16Array elements', () => {
     const value = Int16Array.of(-1, 0, 32767, -32768, -300, 5);
-    expect(trip(p.binary(Int16Array).adaptive(), value)).toEqual(value);
+    expect(trip(p.binary(Int16Array).compress(), value)).toEqual(value);
   });
 
   it('round-trips a NaN payload and negative zero bit-exact', () => {
@@ -162,17 +162,17 @@ describe('p.binary().adaptive()', () => {
     new DataView(value.buffer).setBigUint64(0, 0x7ff8_0000_dead_beefn);
     value[1] = -0;
     value[2] = 1.5;
-    const out = trip(p.binary(Float64Array).adaptive(), value);
+    const out = trip(p.binary(Float64Array).compress(), value);
     expect(raw(out)).toEqual(raw(value));
   });
 
   it('round-trips BigUint64Array elements', () => {
     const value = BigUint64Array.of(0n, 2n ** 64n - 1n, 123456789n);
-    expect(trip(p.binary(BigUint64Array).adaptive(), value)).toEqual(value);
+    expect(trip(p.binary(BigUint64Array).compress(), value)).toEqual(value);
   });
 
   it('spends less on a buffer the node already wrote', () => {
-    const node = p.array(p.binary().adaptive());
+    const node = p.array(p.binary().compress());
     const x = noise(64, 1);
     const y = noise(64, 2);
     expect(node.encode([x, x]).length).toBeLessThan(node.encode([x, y]).length - 30);
@@ -182,18 +182,18 @@ describe('p.binary().adaptive()', () => {
   it('encodes a repeated pattern in far fewer bytes than it holds', () => {
     const pattern = noise(16, 3);
     const value = Uint8Array.from({ length: 4096 }, (_, i) => pattern[i % 16]);
-    const node = p.binary().adaptive();
+    const node = p.binary().compress();
     expect(trip(node, value)).toEqual(value);
     expect(node.encode(value).length).toBeLessThan(200);
   });
 
   it('round-trips with separate learning', () => {
     const values = [noise(40, 4), noise(40, 4), noise(7, 5)];
-    expect(trip(p.array(p.binary().adaptive({ separate: true })), values)).toEqual(values);
+    expect(trip(p.array(p.binary().compress({ separate: true })), values)).toEqual(values);
   });
 
   it('bounds the length in elements', () => {
-    const node = p.binary(Int16Array).min(1).max(3).adaptive();
+    const node = p.binary(Int16Array).min(1).max(3).compress();
     for (let n = 1; n <= 3; n++) {
       const value = Int16Array.from({ length: n }, (_, i) => i - 2);
       const out = trip(node, value);
@@ -205,34 +205,34 @@ describe('p.binary().adaptive()', () => {
   });
 
   it('round-trips a fixed length', () => {
-    const node = p.binary(Int16Array).length(2).adaptive();
+    const node = p.binary(Int16Array).length(2).compress();
     const value = Int16Array.of(-7, 300);
     expect(trip(node, value)).toEqual(value);
   });
 
-  it('refuses a second adaptive', () => {
-    expect(() => p.binary().adaptive().adaptive()).toThrow(
-      new TypeError('p.binary adaptive is already set')
+  it('refuses a second compress', () => {
+    expect(() => p.binary().compress().compress()).toThrow(
+      new TypeError('p.binary compress is already set')
     );
   });
 
   it('refuses a prior on the length', () => {
-    expect(() => p.binary().max(2).weights([1, 1, 1]).adaptive()).toThrow(TypeError);
+    expect(() => p.binary().max(2).weights([1, 1, 1]).compress()).toThrow(TypeError);
     expect(() =>
       p
         .binary()
         .max(2)
-        .adaptive()
+        .compress()
         .cdf((v) => v)
     ).toThrow(TypeError);
   });
 
   it('refuses an invalid option', () => {
-    expect(() => p.binary().adaptive({ offsets: 2000 })).toThrow(RangeError);
+    expect(() => p.binary().compress({ offsets: 2000 })).toThrow(RangeError);
   });
 
   it('throws or decodes on corrupt input, never hangs', () => {
-    const node = p.binary().max(4).adaptive();
+    const node = p.binary().max(4).compress();
     const rnd = mulberry32(0xc0de);
     for (let i = 0; i < 20; i++) {
       const input = Uint8Array.from({ length: 1 + (i % 6) }, () => Math.floor(rnd() * 256));
@@ -259,12 +259,12 @@ describe('Bytes', () => {
 
 describe('p.binary methods', () => {
   it('adapts under a container sugar unless it adapts already', () => {
-    const adaptive = p.binary().adaptive({ window: 8 });
-    expect(adaptive._adapted({ window: 16 })).toBe(adaptive);
+    const compress = p.binary().compress({ window: 8 });
+    expect(compress._adapted({ window: 16 })).toBe(compress);
     const plain = p.binary();
     const adapted = plain._adapted({ window: 16 });
     expect(adapted).not.toBe(plain);
-    expect(adapted._adaptive).toEqual({ window: 16 });
+    expect(adapted._compress).toEqual({ window: 16 });
   });
 
   it.each([

@@ -11,11 +11,11 @@ import { buildWeights, writeTable, readTable, type WeightTable } from './weights
 import { decimalPlaces } from './decimal';
 import { IndexRange } from './lattice';
 import { PNode } from './base';
-import { checkAdaptive, resolve } from '../predictor/options';
+import { checkCompress, resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
 import { session } from '../predictor/session';
 import type { PlainNumber } from '../predictor/session';
-import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
+import { STRUCT, type CompressOptions, type Resolved } from '../predictor/types';
 
 // Scratch views for splitting a double into its IEEE-754 fields and back.
 // Both views share one buffer, so platform endianness cancels out; the wire
@@ -435,7 +435,7 @@ export function roundToSignificand(num: bigint, den: bigint): bigint {
   }
 }
 
-/** The most decimal places a value is spelled at as a decimal under `.adaptive()`. */
+/** The most decimal places a value is spelled at as a decimal under `.compress()`. */
 const MAX_PLACES = 15;
 /** The places symbol of a value spelled as a double instead of a decimal. */
 const AS_DOUBLE = MAX_PLACES + 1;
@@ -463,7 +463,7 @@ export function placesOf(value: number): number {
 
 const NUM_MARKERS: ReadonlySet<number> = new Set([STRUCT.NUM]);
 
-/** The kinds of number `.adaptive()` names first, in member order. */
+/** The kinds of number `.compress()` names first, in member order. */
 const KIND_ZERO = 0;
 const KIND_INTEGER = 1;
 const KIND_DECIMAL = 2;
@@ -507,14 +507,14 @@ function kindOf(value: number, forms: readonly number[]): number {
 }
 
 /**
- * The spelling `.adaptive()` gives a float, through the predictor: the kind
+ * The spelling `.compress()` gives a float, through the predictor: the kind
  * through the value step restricted to the five kinds, the node's weights
  * its prior counts; for an integer or a decimal its places through the
  * value step (a decimal only) and its digits through the number predictor
  * at the node's path for those places; a zero its sign; a fraction or other
  * the double.
  */
-class AdaptiveFloat {
+class PredictedFloat {
   private readonly kinds: readonly number[];
 
   constructor(
@@ -585,18 +585,18 @@ export class PFloat extends PNode<number> {
   private readonly _forms: WeightTable;
   /** The selector at exponent code 0, where the zero state lives. */
   private readonly _formsAtBias: WeightTable;
-  /** The options `.adaptive()` set, which hand the values to the predictor. */
-  readonly _adaptive?: AdaptiveOptions;
-  /** Set under `.adaptive()`: the predictor's spelling, which falls back on the double's. */
-  private readonly _predicted?: AdaptiveFloat;
+  /** The options `.compress()` set, which hand the values to the predictor. */
+  readonly _compress?: CompressOptions;
+  /** Set under `.compress()`: the predictor's spelling, which falls back on the double's. */
+  private readonly _predicted?: PredictedFloat;
 
   constructor(
     weights?: Partial<FloatWeights>,
     base: Readonly<FloatWeights> = DEFAULT_FLOAT_WEIGHTS,
-    adaptive?: AdaptiveOptions
+    compress?: CompressOptions
   ) {
     super();
-    this._adaptive = adaptive;
+    this._compress = compress;
     const resolved = { ...base };
     for (const key of FLOAT_WEIGHT_KEYS) {
       const weight = weights?.[key];
@@ -612,10 +612,10 @@ export class PFloat extends PNode<number> {
       SIG_FORMS + 1,
       'p.float'
     );
-    if (adaptive !== undefined) {
-      this._predicted = new AdaptiveFloat(
+    if (compress !== undefined) {
+      this._predicted = new PredictedFloat(
         this,
-        resolve(adaptive, loadedPriors.json, 'p.float'),
+        resolve(compress, loadedPriors.json, 'p.float'),
         resolved,
         this._formWeights
       );
@@ -629,7 +629,7 @@ export class PFloat extends PNode<number> {
    * constraint, and part of the wire format.
    */
   weights(w: Partial<FloatWeights>): PFloat {
-    return new PFloat(w, this._declared, this._adaptive);
+    return new PFloat(w, this._declared, this._compress);
   }
 
   /**
@@ -642,15 +642,15 @@ export class PFloat extends PNode<number> {
    * prior over magnitudes. A zero names its sign; a fraction or other number
    * is spelled as without. Set once.
    */
-  adaptive(options?: AdaptiveOptions): PFloat {
-    if (this._adaptive !== undefined) {
-      throw new TypeError('p.float adaptive is already set');
+  compress(options?: CompressOptions): PFloat {
+    if (this._compress !== undefined) {
+      throw new TypeError('p.float compress is already set');
     }
-    return new PFloat(undefined, this._declared, checkAdaptive(options, 'p.float'));
+    return new PFloat(undefined, this._declared, checkCompress(options, 'p.float'));
   }
 
-  _adapted(options: AdaptiveOptions): PFloat {
-    return this._adaptive !== undefined ? this : this.adaptive(options);
+  _adapted(options: CompressOptions): PFloat {
+    return this._compress !== undefined ? this : this.compress(options);
   }
 
   _marker(): number {

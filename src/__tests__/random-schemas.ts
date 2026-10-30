@@ -30,14 +30,14 @@ export const rand = (): number => next();
 export const randInt = (lo: number, hi: number): number => lo + Math.floor(rand() * (hi - lo + 1));
 export const pick = <T>(xs: readonly T[]): T => xs[randInt(0, xs.length - 1)];
 
-let adaptiveNumbers = true;
+let compressNumbers = true;
 
 /**
  * Whether number cases may code through the predictor, which codes inside
  * no spelling the encoder tries; on until a caller turns it off.
  */
-export const useAdaptiveNumbers = (on: boolean): void => {
-  adaptiveNumbers = on;
+export const useCompressNumbers = (on: boolean): void => {
+  compressNumbers = on;
 };
 
 /** A schema built the same way on any copy, a value generator and its source form. */
@@ -127,32 +127,32 @@ const randCdf = (shift: number): { fn: (v: number) => number; src: string } => {
 };
 
 /**
- * `.adaptive()` over `members` values with the default options, a window
+ * `.compress()` over `members` values with the default options, a window
  * of at least `members` that is often small enough for the counts to halve
  * within a message, or apart from its kin.
  */
-const randAdaptive = (members: number): Step => {
+const randCompress = (members: number): Step => {
   const draw = rand();
   if (draw < 0.4) {
-    return { apply: (n) => n.adaptive(), src: '.adaptive()' };
+    return { apply: (n) => n.compress(), src: '.compress()' };
   }
   if (draw < 0.6) {
     return {
-      apply: (n) => n.adaptive({ separate: true }),
-      src: '.adaptive({ separate: true })',
+      apply: (n) => n.compress({ separate: true }),
+      src: '.compress({ separate: true })',
     };
   }
   const window = members + randInt(0, 64);
-  return { apply: (n) => n.adaptive({ window }), src: `.adaptive({ window: ${window} })` };
+  return { apply: (n) => n.compress({ window }), src: `.compress({ window: ${window} })` };
 };
 
 /**
- * A number's `.adaptive()` through the predictor, set now and then where
+ * A number's `.compress()` through the predictor, set now and then where
  * number cases may take it: the default options, apart from its kin, a
  * window, a short history or a coarse quantisation.
  */
-const randNumberAdaptive = (): Step | undefined => {
-  if (!adaptiveNumbers || rand() >= 0.25) {
+const randNumberCompress = (): Step | undefined => {
+  if (!compressNumbers || rand() >= 0.25) {
     return undefined;
   }
   const options = pick([
@@ -162,21 +162,21 @@ const randNumberAdaptive = (): Step | undefined => {
     { history: randInt(1, 128) },
     { quantisation: 2 ** randInt(12, 24) },
   ]);
-  return { apply: (n) => n.adaptive(options), src: `.adaptive(${json(options)})` };
+  return { apply: (n) => n.compress(options), src: `.compress(${json(options)})` };
 };
 
 /**
- * `build`'s node made adaptive over its `count` values, under random weights
+ * `build`'s node made compress over its `count` values, under random weights
  * half the time; its window covers `floor` values, for a node whose other
- * priors count more. A number's options come from `randNumberAdaptive`.
+ * priors count more. A number's options come from `randNumberCompress`.
  */
-const adaptiveCase = (
+const compressCase = (
   build: (m: Lib) => Node,
   src: string,
   gen: () => unknown,
   count: number,
   floor = count,
-  a: Step = randAdaptive(Math.max(count, floor))
+  a: Step = randCompress(Math.max(count, floor))
 ): Case => {
   const w = rand() < 0.5 ? randWeights(count, 1000) : undefined;
   return {
@@ -209,7 +209,7 @@ const withMethods = (c: Case, methods: readonly Method[]): Case => {
 };
 
 /**
- * Whether `a` takes on the node `build` makes: a container's `.adaptive()`
+ * Whether `a` takes on the node `build` makes: a container's `.compress()`
  * reaches every node below it, which a string or count with a declared
  * prior refuses.
  */
@@ -223,7 +223,7 @@ const takes = (a: Step, build: (m: Lib) => Node): boolean => {
 };
 
 /**
- * `c` under `.adaptive()` on its root a fourth of the time, which reaches
+ * `c` under `.compress()` on its root a fourth of the time, which reaches
  * every node below it, where none refuses it: the default options, apart
  * from its kin, a window, a short history or a coarse quantisation.
  */
@@ -238,7 +238,7 @@ const sugarCase = (c: Case): Case => {
     { history: randInt(1, 128) },
     { quantisation: 2 ** randInt(12, 24) },
   ]);
-  const a: Step = { apply: (n) => n.adaptive(options), src: `.adaptive(${json(options)})` };
+  const a: Step = { apply: (n) => n.compress(options), src: `.compress(${json(options)})` };
   return takes(a, c.build)
     ? { ...c, build: (m) => a.apply(c.build(m)), src: `${c.src}${a.src}` }
     : c;
@@ -257,10 +257,10 @@ const randLearn = (members: number): Step => {
   return { apply: (n) => n.learn({ window }), src: `.learn({ window: ${window} })` };
 };
 
-/** The methods of a number: its learning, which `.adaptive()` excludes. */
+/** The methods of a number: its learning, which `.compress()` excludes. */
 const NUMBER_METHODS: readonly Method[] = ['learn'];
 
-/** A number case adaptive through `a` where set, else with `methods`. */
+/** A number case compress through `a` where set, else with `methods`. */
 const numberCase = (c: Case, a: Step | undefined, methods = NUMBER_METHODS): Case =>
   a === undefined
     ? withMethods(c, methods)
@@ -292,10 +292,10 @@ const intCase = (): Case => {
         NUMBER_METHODS
       );
     case 5: {
-      const a = randNumberAdaptive();
+      const a = randNumberCompress();
       return a === undefined
         ? { build: (m) => m.p.int().min(lo).max(hi), gen: hotGen(any), src: base }
-        : adaptiveCase(
+        : compressCase(
             (m) => m.p.int().min(lo).max(hi),
             base,
             hotGen(any),
@@ -351,7 +351,7 @@ const intCase = (): Case => {
   }
 };
 
-// Adaptive now and then, through the predictor.
+// Compress now and then, through the predictor.
 const unboundedIntCase = (): Case =>
   numberCase(
     {
@@ -366,7 +366,7 @@ const unboundedIntCase = (): Case =>
       },
       src: 'p.int()',
     },
-    randNumberAdaptive()
+    randNumberCompress()
   );
 
 // One bound only: the offset rides the term encoding, counting away from the
@@ -412,7 +412,7 @@ const decimalCase = (): Case => {
           gen: () => grid(randInt(-100000, 100000)),
           src: `p.decimal(${step})`,
         },
-        randNumberAdaptive()
+        randNumberCompress()
       );
     case 1:
       return withMethods(
@@ -445,7 +445,7 @@ const decimalCase = (): Case => {
       if (r < 2 / 3) {
         // Weights take at most 65536 grid points.
         const kTop = kLo + randInt(0, 2000);
-        const a = randNumberAdaptive();
+        const a = randNumberCompress();
         const topSrc = `p.decimal(${step}).min(${grid(kLo)}).max(${grid(kTop)})`;
         return a === undefined
           ? {
@@ -453,7 +453,7 @@ const decimalCase = (): Case => {
               gen: hotGen(() => grid(randInt(kLo, kTop))),
               src: topSrc,
             }
-          : adaptiveCase(
+          : compressCase(
               (m) => m.p.decimal(step).min(grid(kLo)).max(grid(kTop)),
               topSrc,
               hotGen(() => grid(randInt(kLo, kTop))),
@@ -479,7 +479,7 @@ const learnsCharacters = (c: Case): Case => {
   if (rand() >= 0.3) {
     return c;
   }
-  const a = randAdaptive(rand() < 0.5 ? 1 : 256);
+  const a = randCompress(rand() < 0.5 ? 1 : 256);
   return { build: (m) => a.apply(c.build(m)), gen: hotGen(c.gen), src: `${c.src}${a.src}` };
 };
 
@@ -507,7 +507,7 @@ const stringCase = (): Case => {
           const s = randString(n);
           return s + 'x'.repeat(n - s.length);
         };
-        const a = randAdaptive(max - min + 1);
+        const a = randCompress(max - min + 1);
         return { build: (m) => a.apply(build(m)), gen, src: `${src}${a.src}` };
       }
       return { build, gen: () => 'x'.repeat(min) + randString(max - min), src };
@@ -559,13 +559,13 @@ const stringCase = (): Case => {
   }
 };
 
-// A prior over the kinds of number, any subset of the keys, and adaptive now
+// A prior over the kinds of number, any subset of the keys, and compress now
 // and then; the values are the same mix either way.
 const floatCase = (): Case => {
   if (rand() < 0.5) {
     return numberCase(
       { build: (m) => m.p.float(), gen: randFloat, src: 'p.float()' },
-      randNumberAdaptive(),
+      randNumberCompress(),
       []
     );
   }
@@ -579,7 +579,7 @@ const floatCase = (): Case => {
       gen: randFloat,
       src: `p.float().weights(${json(w)})`,
     },
-    randNumberAdaptive(),
+    randNumberCompress(),
     []
   );
 };
@@ -591,7 +591,7 @@ const boolCase = (): Case => {
       return { build: (m) => m.p.bool(), gen: () => rand() < 0.5, src: 'p.bool()' };
     case 3: {
       const p = rand();
-      return adaptiveCase(
+      return compressCase(
         (m) => m.p.bool(),
         'p.bool()',
         () => rand() < p,
@@ -627,7 +627,7 @@ const enumCase = (): Case => {
     return { build: (m) => m.p.enum(members), gen: () => pick(members), src };
   }
   if (r < 2 / 3) {
-    return adaptiveCase(
+    return compressCase(
       (m) => m.p.enum(members),
       src,
       () => (rand() < 0.7 ? members[0] : pick(members)),
@@ -673,7 +673,7 @@ const unionCase = (): Case => {
     return { build: (m) => m.p.union(options.map((o) => o.build(m))), gen, src };
   }
   if (r < 2 / 3) {
-    return adaptiveCase(
+    return compressCase(
       (m) => m.p.union(options.map((o) => o.build(m))),
       src,
       () => (rand() < 0.7 ? options[0] : pick(options)).gen(),
@@ -707,7 +707,7 @@ const binaryCase = (): Case => {
   switch (randInt(0, 3)) {
     case 3: {
       const length = hotGen(() => randInt(0, max));
-      const a = randAdaptive(max + 1);
+      const a = randCompress(max + 1);
       return {
         build: (m) => a.apply(m.p.binary().max(max)),
         gen: () => randBytes(length()),
@@ -759,7 +759,7 @@ const dateCase = (): Case => {
   const step = unit === 'minute' && rand() < 0.2 ? 15 : randInt(1, 4);
   const ms = step * DATE_MS[unit];
   const base = `p.date().precision('${unit}', ${step})`;
-  // Adaptive now and then; without a cdf, else the methods of a number.
+  // Compress now and then; without a cdf, else the methods of a number.
   const withNode = (
     build: (m: Lib) => Node,
     src: string,
@@ -776,7 +776,7 @@ const dateCase = (): Case => {
           return local.decode(local.encode(new Date(ts())));
         },
       },
-      methods.length === 0 ? undefined : randNumberAdaptive(),
+      methods.length === 0 ? undefined : randNumberCompress(),
       methods
     );
   };
@@ -852,11 +852,11 @@ const randUuid = (): string => {
   return `${hex(8)}-${hex(4)}-${version}${hex(3)}-${variant}${hex(3)}-${hex(12)}`;
 };
 
-// Plain, learning its two tables, or adaptive.
+// Plain, learning its two tables, or compress.
 const uuidCase = (): Case => {
   const c: Case = { build: (m) => m.p.uuid(), gen: hotGen(randUuid), src: 'p.uuid()' };
   if (rand() < 0.3) {
-    const a = randAdaptive(16);
+    const a = randCompress(16);
     return { build: (m) => a.apply(c.build(m)), gen: c.gen, src: `${c.src}${a.src}` };
   }
   return withMethods(c, ['learn']);
@@ -1087,14 +1087,14 @@ const ANY_HINTS: readonly Case[] = [
   },
 ];
 
-// Plain or adaptive, with hints now and then.
+// Plain or compress, with hints now and then.
 const anyCase = (): Case => {
   const hints = rand() < 0.3 ? ANY_HINTS.filter(() => rand() < 0.4) : [];
   const options =
     rand() < 0.3 ? pick([{}, { separate: true }, { history: randInt(1, 32) }]) : undefined;
   const plain = (m: Lib): Node =>
     hints.length === 0 ? m.p.any() : m.p.any(hints.map((h) => h.build(m)));
-  const any = (m: Lib): Node => (options === undefined ? plain(m) : plain(m).adaptive(options));
+  const any = (m: Lib): Node => (options === undefined ? plain(m) : plain(m).compress(options));
   return {
     build: any,
     // Most values nest two levels, some up to six; a container holds fewer
@@ -1104,7 +1104,7 @@ const anyCase = (): Case => {
       hints.length > 0 && rand() < 0.3
         ? pick(hints).gen()
         : anyValue(rand() < 0.2 ? randInt(3, 6) : 2, true),
-    src: `p.any(${hints.length === 0 ? '' : `[${hints.map((h) => h.src).join(', ')}]`})${options === undefined ? '' : `.adaptive(${json(options)})`}`,
+    src: `p.any(${hints.length === 0 ? '' : `[${hints.map((h) => h.src).join(', ')}]`})${options === undefined ? '' : `.compress(${json(options)})`}`,
   };
 };
 
@@ -1292,7 +1292,7 @@ interface Field {
   c: Case;
   mode: 'plain' | 'optional' | 'nullable';
   w?: [number, number];
-  adaptive?: Step;
+  compress?: Step;
 }
 
 const objectCase = (depth: number): Case => {
@@ -1305,25 +1305,25 @@ const objectCase = (depth: number): Case => {
       c: randomCase(depth - 1),
       mode,
       w: mode !== 'plain' && rand() < 0.5 ? [randInt(1, 100), randInt(1, 100)] : undefined,
-      adaptive: mode !== 'plain' && rand() < 0.3 ? randAdaptive(2) : undefined,
+      compress: mode !== 'plain' && rand() < 0.3 ? randCompress(2) : undefined,
     });
   }
   for (const f of fields) {
     const inner = f.c;
-    const a = f.adaptive;
-    if (a !== undefined && !takes(a, (m) => m.p.optional(inner.build(m)))) f.adaptive = undefined;
+    const a = f.compress;
+    if (a !== undefined && !takes(a, (m) => m.p.optional(inner.build(m)))) f.compress = undefined;
   }
   const wrap = (m: Lib, f: Field): Node => {
     const inner = f.c.build(m);
     if (f.mode === 'plain') return inner;
     const node = f.mode === 'nullable' ? m.p.nullable(inner) : m.p.optional(inner);
     const weighted = f.w ? node.weights(f.w) : node;
-    return f.adaptive ? f.adaptive.apply(weighted) : weighted;
+    return f.compress ? f.compress.apply(weighted) : weighted;
   };
   const fieldSrc = (f: Field): string =>
     f.mode === 'plain'
       ? f.c.src
-      : `p.${f.mode}(${f.c.src})${f.w ? `.weights(${json(f.w)})` : ''}${f.adaptive?.src ?? ''}`;
+      : `p.${f.mode}(${f.c.src})${f.w ? `.weights(${json(f.w)})` : ''}${f.compress?.src ?? ''}`;
   return objectOf(fields, wrap, fieldSrc);
 };
 
@@ -1357,7 +1357,7 @@ const taggedCase = (depth: number): Case => {
     const node = m.p.tagged('t', Object.fromEntries(members.map(([tag, c]) => [tag, c.build(m)])));
     return w ? node.weights(w) : node;
   };
-  const drawn = rand() < 0.3 ? randAdaptive(members.length) : undefined;
+  const drawn = rand() < 0.3 ? randCompress(members.length) : undefined;
   const a = drawn !== undefined && takes(drawn, plain) ? drawn : undefined;
   const build = (m: Lib): Node => (a ? a.apply(plain(m)) : plain(m));
   return {

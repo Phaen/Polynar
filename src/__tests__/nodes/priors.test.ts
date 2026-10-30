@@ -314,7 +314,7 @@ describe('Schema priors', () => {
     ).toThrow('cdf must return safe integers, got 151.5 at 101');
   });
 
-  it.each<[string, PNode<any> & { adaptive(): PNode<any> }, unknown]>([
+  it.each<[string, PNode<any> & { compress(): PNode<any> }, unknown]>([
     ['p.bool', p.bool(), true],
     ['p.enum', p.enum(['a', 'b']), 'b'],
     ['p.union', p.union([p.int(), p.string()]), 'x'],
@@ -330,11 +330,11 @@ describe('Schema priors', () => {
     ['p.map', p.map(p.string(), p.int()).max(3), new Map([['a', 1]])],
     ['p.record', p.record(p.int()).max(3), { a: 1 }],
     ['p.set', p.set(p.int()).max(3), new Set([1])],
-  ])('%s refines into an adaptive node of the same class', (_, node, value) => {
-    const adaptive = node.adaptive();
-    expect(adaptive).not.toBe(node);
-    expect(adaptive.constructor).toBe(node.constructor);
-    expect(trip(adaptive, value)).toEqual(value);
+  ])('%s refines into a compressed node of the same class', (_, node, value) => {
+    const compress = node.compress();
+    expect(compress).not.toBe(node);
+    expect(compress.constructor).toBe(node.constructor);
+    expect(trip(compress, value)).toEqual(value);
   });
 });
 

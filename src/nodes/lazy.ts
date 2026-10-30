@@ -1,7 +1,7 @@
 import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { PNode, adapt } from './base';
 import { session, type MarkerPrior } from '../predictor/session';
-import type { AdaptiveOptions } from '../predictor/types';
+import type { CompressOptions } from '../predictor/types';
 import { MAX_DEPTH } from './any';
 import { unlocated } from './path';
 
@@ -55,8 +55,8 @@ export class PLazy<T> extends PNode<T> {
     return this._target._takesUndefined();
   }
 
-  /** The target under a container's `.adaptive()`, resolved on first use like the target. */
-  _adapted(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PLazy<T> {
+  /** The target under a container's `.compress()`, resolved on first use like the target. */
+  _adapted(options: CompressOptions, memo: Map<PNode<any>, PNode<any>>): PLazy<T> {
     const out = new PLazy<T>(() => adapt(this._target, options, memo));
     // Filled before the target adapts, so a cycle back here ends at `out`.
     memo.set(this, out);
@@ -64,7 +64,7 @@ export class PLazy<T> extends PNode<T> {
   }
 
   /** True, as the target is not known before first use. */
-  get _holdsAdaptive(): boolean {
+  get _holdsCompress(): boolean {
     return true;
   }
 

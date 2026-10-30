@@ -37,7 +37,7 @@ export { Priors } from './predictor/prior';
 export { train } from './predictor/train';
 export type { TrainOptions } from './predictor/train';
 export type {
-  AdaptiveOptions,
+  CompressOptions,
   LearningOptions,
   AnyValue,
   Infer,

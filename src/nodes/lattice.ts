@@ -2,9 +2,9 @@ import { Encoder, Decoder, CorruptInputError } from '../packer';
 import { RangePrior, checkIndex, checkRange, priorKind, type Prior } from './weights';
 import {
   AdaptivePrior,
-  MAX_ADAPTIVE_MEMBERS,
+  MAX_COMPRESS_MEMBERS,
   checkAdaptation,
-  checkAdaptiveMembers,
+  checkCompressMembers,
   kinOf,
   type LearningOptions,
 } from './adaptive';
@@ -86,15 +86,15 @@ class LearnedOffsets implements LearnedOdds {
  * here, so their layouts can never drift apart. The range is validated once
  * here, and `write`/`read` check the bounds and pack the index, uniformly or
  * weighted. `show` spells an index as the value it stands for in an error.
- * Adaptive options turn the prior adaptive: over a range of at most
- * `MAX_ADAPTIVE_MEMBERS` values or under declared weights, an adaptive
+ * Compress options turn the prior compressed: over a range of at most
+ * `MAX_COMPRESS_MEMBERS` values or under declared weights, a compressed
  * prior over the range, the declared weights or even ones, with the values
  * a message codes learned on top; over a wider or unbounded range, the
  * learned magnitude scale from the range's origin. Coding learns nothing:
  * the range's owner teaches it each index through `learn`.
  */
-/** What an adaptive lattice node codes its indices through: the number predictor at `path`. */
-export interface AdaptiveIndex {
+/** What a compressed lattice node codes its indices through: the number predictor at `path`. */
+export interface CompressIndex {
   readonly path: object;
   readonly options: Resolved;
 }
@@ -103,7 +103,7 @@ export class IndexRange {
   readonly lo?: number;
   readonly hi?: number;
   /**
-   * The prior as given, in every mode (static, cdf or adaptive), so a node
+   * The prior as given, in every mode (static, cdf or compress), so a node
    * rebuilding the range after a bound change passes it on.
    */
   readonly declared?: Prior;
@@ -113,7 +113,7 @@ export class IndexRange {
    * in `learned`, not `prior`.
    */
   readonly learning?: LearningOptions;
-  /** The one radix an index packs in: both bounds, no prior or adaptive options, fewer than 2^53 values. */
+  /** The one radix an index packs in: both bounds, no prior or compress options, fewer than 2^53 values. */
   readonly radix?: number;
   /** Set with `radix`: the index `digit` steps above min, as a digit read in `radix` stands for. */
   readonly fromDigit?: (digit: number) => number;
@@ -134,8 +134,8 @@ export class IndexRange {
   readonly high: number;
   /** Set with `learning`: the learned odds of an index's offset, which `write` and `read` code through and `learn` teaches. */
   readonly learned?: LearnedOdds;
-  /** Set under `.adaptive()`: the predictor `write` and `read` code through. */
-  readonly adaptive?: AdaptiveIndex;
+  /** Set under `.compress()`: the predictor `write` and `read` code through. */
+  readonly compress?: CompressIndex;
   /** The range's own spelling, which the predictor falls back on. */
   readonly plain: PlainNumber;
   private readonly show: (index: number) => string;
@@ -147,7 +147,7 @@ export class IndexRange {
     prior?: Prior,
     learning?: LearningOptions,
     show: (index: number) => string = String,
-    adaptive?: AdaptiveIndex
+    compress?: CompressIndex
   ) {
     checkRange(who, lo, hi, show);
     if (prior !== undefined && (lo === undefined || hi === undefined)) {
@@ -164,10 +164,10 @@ export class IndexRange {
       if (
         lo !== undefined &&
         hi !== undefined &&
-        (prior !== undefined || hi - lo < MAX_ADAPTIVE_MEMBERS)
+        (prior !== undefined || hi - lo < MAX_COMPRESS_MEMBERS)
       ) {
         const n = hi - lo + 1;
-        checkAdaptiveMembers(n, who);
+        checkCompressMembers(n, who);
         const weights = prior ?? new Array<number>(n).fill(1);
         this.learned = new LearnedMembers(
           new AdaptivePrior([weights], n, window, who, kinOf(learning))
@@ -190,7 +190,7 @@ export class IndexRange {
       hi !== undefined &&
       prior === undefined &&
       learning === undefined &&
-      adaptive === undefined &&
+      compress === undefined &&
       hi - lo < MAX_SAFE
     ) {
       this.radix = hi - lo + 1;
@@ -201,7 +201,7 @@ export class IndexRange {
       };
     }
     this.show = show;
-    this.adaptive = adaptive;
+    this.compress = compress;
     const ranged = this.prior;
     this.plain =
       ranged === undefined
@@ -248,7 +248,7 @@ export class IndexRange {
     index: number,
     subject: () => string = () => `Value ${this.show(index)}`
   ): void {
-    if (this.adaptive !== undefined) {
+    if (this.compress !== undefined) {
       // Refused as the plain spelling would refuse it, before the predictor learns from it.
       if (this.prior !== undefined) {
         this.prior.check(index, subject);
@@ -272,7 +272,7 @@ export class IndexRange {
   }
 
   read(dec: Decoder): number {
-    if (this.adaptive !== undefined) {
+    if (this.compress !== undefined) {
       return this.predictor(dec).read(dec);
     }
     if (this.learned !== undefined) {
@@ -307,7 +307,7 @@ export class IndexRange {
 
   /** The number predictor of the node, on the session of `side`. */
   private predictor(side: Encoder | Decoder) {
-    const { path, options } = this.adaptive as AdaptiveIndex;
+    const { path, options } = this.compress as CompressIndex;
     return session(side).number(
       path,
       options,

@@ -85,8 +85,8 @@ export function writeRun(
 ): number[] {
   // A node on the predictor codes inside no try, so its values go one by one: ascending, or
   // in their own order where they keep it (spec D11).
-  const adaptive = node._adaptive !== undefined;
-  const at = runOrder(values, order, segment, adaptive);
+  const compress = node._compress !== undefined;
+  const at = runOrder(values, order, segment, compress);
   const spell = (write: (value: unknown) => void, i: number): void => {
     try {
       write(values[i]);
@@ -100,7 +100,7 @@ export function writeRun(
       spell((value) => run.write(enc, value), i);
     }
   };
-  if (adaptive) {
+  if (compress) {
     for (const i of at) {
       list?.nextItem();
       spell((value) => node._write(enc, value), i);
@@ -140,7 +140,7 @@ export function readRun(
   list?: Session
 ): unknown[] {
   const values: unknown[] = [];
-  if (node._adaptive !== undefined) {
+  if (node._compress !== undefined) {
     for (let k = 0; k < count; k++) {
       list?.nextItem();
       values.push(node._read(dec));

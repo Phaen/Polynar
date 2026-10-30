@@ -273,7 +273,7 @@ describe('Schema float', () => {
     );
   });
 
-  describe('adaptive', () => {
+  describe('compress', () => {
     /** Whether every value comes back bit-exact through `node`, in one message. */
     const exact = (node: PNode<number[]>, values: number[]): boolean => {
       const back = node.decode(node.encode(values));
@@ -301,30 +301,30 @@ describe('Schema float', () => {
       ['random doubles', doubles],
       ['every kind mixed', [0, -0, 1, -2.5, 0.1, 0.1 + 0.2, 1 / 3, NaN, Infinity, 5e-324, 1e21]],
     ])('round-trips %s bit-exact', (_name, values) => {
-      expect(exact(p.array(p.float().adaptive()), values)).toBe(true);
-      expect(exact(p.array(p.float().adaptive({ window: 16, history: 4 })), values)).toBe(true);
+      expect(exact(p.array(p.float().compress()), values)).toBe(true);
+      expect(exact(p.array(p.float().compress({ window: 16, history: 4 })), values)).toBe(true);
     });
 
     it.each([0, -0, 7, -0.25, 1 / 3, NaN])('round-trips the lone value %p', (value) => {
-      const node = p.float().adaptive();
+      const node = p.float().compress();
       expect(Object.is(node.decode(node.encode(value)), value)).toBe(true);
     });
 
     it('spells a short-decimal series in fewer bytes than without', () => {
-      expect(p.array(p.float().adaptive()).encode(prices).length).toBeLessThan(
+      expect(p.array(p.float().compress()).encode(prices).length).toBeLessThan(
         p.array(p.float()).encode(prices).length
       );
-      expect(p.array(p.float().adaptive()).encode(track).length).toBeLessThan(
+      expect(p.array(p.float().compress()).encode(track).length).toBeLessThan(
         p.array(p.float()).encode(track).length
       );
     });
 
     it('round-trips under the node weights, which it keeps through either order', () => {
       const values = [0, 1, 2.5, 1 / 3, Math.PI];
-      expect(exact(p.array(p.float().weights({ other: 9 }).adaptive()), values)).toBe(true);
-      expect(exact(p.array(p.float().adaptive().weights({ other: 9 })), values)).toBe(true);
-      expect(p.array(p.float().weights({ other: 9 }).adaptive()).encode(values)).toEqual(
-        p.array(p.float().adaptive().weights({ other: 9 })).encode(values)
+      expect(exact(p.array(p.float().weights({ other: 9 }).compress()), values)).toBe(true);
+      expect(exact(p.array(p.float().compress().weights({ other: 9 })), values)).toBe(true);
+      expect(p.array(p.float().weights({ other: 9 }).compress()).encode(values)).toEqual(
+        p.array(p.float().compress().weights({ other: 9 })).encode(values)
       );
     });
 
@@ -334,7 +334,7 @@ describe('Schema float', () => {
         expect(() =>
           p
             .float()
-            .adaptive()
+            .compress()
             .weights({ [kind]: 0 })
         ).toThrow(new TypeError('p.float weights must be positive integers, got 0'));
       }
@@ -344,17 +344,17 @@ describe('Schema float', () => {
       expect(() =>
         p
           .float()
-          .adaptive()
+          .compress()
           .encode(value as never)
       ).toThrow(/^p\.float expected a number, got /);
     });
 
     it('is set once', () => {
-      expect(() => p.float().adaptive().adaptive()).toThrow(
-        new TypeError('p.float adaptive is already set')
+      expect(() => p.float().compress().compress()).toThrow(
+        new TypeError('p.float compress is already set')
       );
-      expect(() => p.float().adaptive({}).weights({}).adaptive()).toThrow(
-        new TypeError('p.float adaptive is already set')
+      expect(() => p.float().compress({}).weights({}).compress()).toThrow(
+        new TypeError('p.float compress is already set')
       );
     });
 
@@ -366,26 +366,26 @@ describe('Schema float', () => {
       ['a history out of range', { history: 0 }, RangeError],
       ['a quantisation not a power of two', { quantisation: 5000 }, TypeError],
     ])('rejects %s as its options', (_name, options, error) => {
-      expect(() => p.float().adaptive(options as never)).toThrow(error);
+      expect(() => p.float().compress(options as never)).toThrow(error);
     });
 
     it('round-trips inside an object, beside other fields', () => {
-      const node = p.object({ id: p.int(), price: p.float().adaptive(), name: p.string() });
+      const node = p.object({ id: p.int(), price: p.float().compress(), name: p.string() });
       const values = prices.slice(0, 20).map((price, id) => ({ id, price, name: `n${id}` }));
       const array = p.array(node);
       expect(array.decode(array.encode(values))).toEqual(values);
     });
 
-    it('round-trips inside an adaptive object, where repeated values recur', () => {
+    it('round-trips inside a compressed object, where repeated values recur', () => {
       const node = p.array(
-        p.object({ low: p.float().adaptive(), high: p.float().adaptive() }).adaptive()
+        p.object({ low: p.float().compress(), high: p.float().compress() }).compress()
       );
       const values = [1.5, 2.5, 1.5, 0, 1 / 3, 2.5].map((low) => ({ low, high: low }));
       expect(node.decode(node.encode(values))).toEqual(values);
     });
 
     it('round-trips one node reused in two fields', () => {
-      const f = p.float().adaptive();
+      const f = p.float().compress();
       const node = p.array(p.object({ low: f, high: f }));
       const values = prices.slice(0, 50).map((low, i) => ({ low, high: low + track[i] }));
       expect(node.decode(node.encode(values))).toEqual(values);
@@ -845,12 +845,12 @@ describe('roundToSignificand', () => {
 
 describe('p.float methods', () => {
   it('adapts under a container sugar unless it adapts already', () => {
-    const adaptive = p.float().adaptive({ window: 8 });
-    expect(adaptive._adapted({ window: 16 })).toBe(adaptive);
+    const compress = p.float().compress({ window: 8 });
+    expect(compress._adapted({ window: 16 })).toBe(compress);
     const plain = p.float();
     const adapted = plain._adapted({ window: 16 });
     expect(adapted).not.toBe(plain);
-    expect(adapted._adaptive).toEqual({ window: 16 });
+    expect(adapted._compress).toEqual({ window: 16 });
   });
 
   it('names the number marker, its only one', () => {

@@ -22,7 +22,7 @@ describe('Schema null', () => {
   it('spells null first as the null symbol', () => {
     expect(p.null()._markers()).toEqual(new Set([STRUCT.NULL]));
     expect(p.null()._marker(null)).toBe(STRUCT.NULL);
-    const Row = p.object({ n: p.null(), v: p.union([p.null(), p.int()]) }).adaptive();
+    const Row = p.object({ n: p.null(), v: p.union([p.null(), p.int()]) }).compress();
     expect(trip(Row, { n: null, v: null })).toEqual({ n: null, v: null });
     expect(trip(Row, { n: null, v: 4 })).toEqual({ n: null, v: 4 });
   });

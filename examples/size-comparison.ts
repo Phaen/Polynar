@@ -4,7 +4,7 @@
  * seeded random payloads per row so no single lucky value flatters anyone.
  * Other formats' cells read "plain (brotli)"; Polynar's output is already
  * entropy coded, so its cells read "regular (tuned)" instead: `p.any()`
- * and `p.any().adaptive()` in the self-describing table, and in the schema
+ * and `p.any().compress()` in the self-describing table, and in the schema
  * table the precise node without and with its odds declared, learned or
  * predicted, whichever its generator leaves room for; a row whose values are
  * uniform over their bounds has no tuned node and no parentheses. Prints the
@@ -213,7 +213,7 @@ const ROWS: Row[] = [
     tuned: p.object({
       from: p.int().min(0),
       sentAt: p.date(),
-      text: p.string().max(500).adaptive(),
+      text: p.string().max(500).compress(),
     }),
     proto: `syntax = "proto3";
       message ChatMessage {
@@ -359,7 +359,7 @@ const ROWS: Row[] = [
     label: 'Lorem ipsum',
     node: p.string().prose(),
     // Free text has no distribution to declare, so it learns.
-    tuned: p.string().prose().adaptive(),
+    tuned: p.string().prose().compress(),
     proto: `syntax = "proto3";
       message LoremIpsum {
         string text = 1;
@@ -394,7 +394,7 @@ function measure({ node, tuned, proto, avro: avroSchema, gen, samples = SAMPLES 
   const Message = protobuf.parse(proto).root.lookupType(/message (\w+)/.exec(proto)![1]);
   const AvroType = avro.Type.forSchema(avroSchema);
   const any = p.any();
-  const anyAdaptive = p.any().adaptive();
+  const anyCompress = p.any().compress();
   const sums = Object.fromEntries(KEYS.map((k) => [k, 0])) as Record<Key, number>;
   const second = Object.fromEntries(KEYS.map((k) => [k, 0])) as Record<Key, number>;
   const brotli = Object.fromEntries(KEYS.map((k) => [k, 0])) as Record<Key, number>;
@@ -421,9 +421,9 @@ function measure({ node, tuned, proto, avro: avroSchema, gen, samples = SAMPLES 
         brotli[key] += brotliCompressSync(cells[key]).length;
       }
     }
-    second.anyUrlSafe += anyAdaptive.encode(value, urlSafe).length;
-    second.anyAsciiSafe += anyAdaptive.encode(value, asciiSafe).length;
-    second.anyBinary += anyAdaptive.encode(value).length;
+    second.anyUrlSafe += anyCompress.encode(value, urlSafe).length;
+    second.anyAsciiSafe += anyCompress.encode(value, asciiSafe).length;
+    second.anyBinary += anyCompress.encode(value).length;
     if (tuned) {
       second.urlSafe += tuned.encode(value, urlSafe).length;
       second.asciiSafe += tuned.encode(value, asciiSafe).length;

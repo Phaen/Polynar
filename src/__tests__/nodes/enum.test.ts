@@ -85,14 +85,14 @@ describe('p.enum learn', () => {
 
   it('sets each method once, and not both', () => {
     expect(() => plain.learn().learn()).toThrow(new TypeError('p.enum learn is already set'));
-    expect(() => plain.learn().adaptive()).toThrow(
-      new TypeError('p.enum learn and adaptive cannot both be set')
+    expect(() => plain.learn().compress()).toThrow(
+      new TypeError('p.enum learn and compress cannot both be set')
     );
-    expect(() => plain.adaptive().learn()).toThrow(
-      new TypeError('p.enum learn and adaptive cannot both be set')
+    expect(() => plain.compress().learn()).toThrow(
+      new TypeError('p.enum learn and compress cannot both be set')
     );
-    expect(() => plain.adaptive().adaptive()).toThrow(
-      new TypeError('p.enum adaptive is already set')
+    expect(() => plain.compress().compress()).toThrow(
+      new TypeError('p.enum compress is already set')
     );
   });
 
@@ -106,7 +106,7 @@ describe('p.enum learn', () => {
   });
 });
 
-describe('p.enum adaptive', () => {
+describe('p.enum compress', () => {
   const plain = p.enum(['a', 'b', 'c', 'd']);
   const weights = [17, 1, 1, 1];
   const run = (length: number, seed: number) => {
@@ -116,14 +116,14 @@ describe('p.enum adaptive', () => {
     );
   };
 
-  it('round-trips a run alone, in a plain array and in an adaptive object', () => {
+  it('round-trips a run alone, in a plain array and in a compressed object', () => {
     const values = run(200, 1);
-    for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 8 })]) {
+    for (const node of [plain.compress(), plain.weights(weights).compress({ window: 8 })]) {
       expect(node._radix).toBeUndefined();
       for (const value of values.slice(0, 20)) expect(trip(node, value)).toBe(value);
       expect(trip(p.array(node), values)).toEqual(values);
     }
-    const Row = p.object({ x: plain, y: plain.weights(weights) }).adaptive();
+    const Row = p.object({ x: plain, y: plain.weights(weights) }).compress();
     const rows = values.map((x, i) => ({ x, y: values[(i * 7) % values.length] }));
     expect(trip(p.array(Row), rows)).toEqual(rows);
   });
@@ -137,15 +137,15 @@ describe('p.enum adaptive', () => {
     );
     const rnd = mulberry32(6);
     const values = Array.from({ length: 120 }, () => members[Math.floor(rnd() * members.length)]);
-    const decoded = p.array(node).adaptive().decode(p.array(node).adaptive().encode(values));
+    const decoded = p.array(node).compress().decode(p.array(node).compress().encode(values));
     expect(decoded).toEqual(values);
     expect(decoded[values.indexOf(shared)]).toBe(shared);
-    expect(trip(p.array(node.adaptive()), values)).toEqual(values);
+    expect(trip(p.array(node.compress()), values)).toEqual(values);
   });
 
   it('takes its weights as prior counts of its members', () => {
     const node = p.enum(['a', 'b']).weights([30, 1]);
-    for (const list of [p.array(node.adaptive()).length(12), p.array(node).length(12).adaptive()]) {
+    for (const list of [p.array(node.compress()).length(12), p.array(node).length(12).compress()]) {
       const as = Array<'a' | 'b'>(12).fill('a');
       const bs = Array<'a' | 'b'>(12).fill('b');
       expect(list.encode(as).length).toBeLessThan(list.encode(bs).length);
@@ -153,29 +153,29 @@ describe('p.enum adaptive', () => {
   });
 
   it('refuses a member of zero weight where the weights are declared', () => {
-    expect(() => p.enum(['a', 'b']).weights([1, 0]).adaptive()).toThrow(
+    expect(() => p.enum(['a', 'b']).weights([1, 0]).compress()).toThrow(
       new TypeError('p.enum weights must be positive integers, got 0')
     );
-    expect(() => p.enum(['a', 'b']).adaptive().weights([1, 0])).toThrow(
+    expect(() => p.enum(['a', 'b']).compress().weights([1, 0])).toThrow(
       new TypeError('p.enum weights must be positive integers, got 0')
     );
   });
 
   it('takes its weights before or after', () => {
     const values = run(200, 2);
-    expect(p.array(plain.weights(weights).adaptive({ window: 64 })).encode(values)).toEqual(
-      p.array(plain.adaptive({ window: 64 }).weights(weights)).encode(values)
+    expect(p.array(plain.weights(weights).compress({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.compress({ window: 64 }).weights(weights)).encode(values)
     );
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.enum: adaptive window must be at least 1')
+    expect(() => plain.compress({ window: 0 })).toThrow(
+      new RangeError('p.enum: compress window must be at least 1')
     );
-    expect(() => plain.adaptive({ separate: 1 as never })).toThrow(
-      new TypeError('p.enum: adaptive separate must be a boolean')
+    expect(() => plain.compress({ separate: 1 as never })).toThrow(
+      new TypeError('p.enum: compress separate must be a boolean')
     );
-    expect(() => plain.adaptive().weights([1])).toThrow(
+    expect(() => plain.compress().weights([1])).toThrow(
       new TypeError('p.enum weights must list one weight per value: expected 4, got 1')
     );
   });

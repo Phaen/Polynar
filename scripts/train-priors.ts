@@ -2,8 +2,8 @@
  * Trains the two shipped priors with `train()` and writes them as src/predictor/shipped/text.ts
  * and json.ts, laid out the way prettier (printWidth 100) prints them.
  *
- * - json: the research corpus files, each one `p.any().adaptive()` message.
- * - text: `p.string().adaptive()` messages of the man-bash text the prototype tuned on (its
+ * - json: the research corpus files, each one `p.any().compress()` message.
+ * - text: `p.string().compress()` messages of the man-bash text the prototype tuned on (its
  *   paragraphs grouped 1, 1, 1, 1, 2, 4, 8, 16, 32 at a time, cycled, each group followed by its
  *   share of the trimmed lines of 8 to 60 characters, each line a message of its own), every
  *   corpus file's string values joined by newlines and cut to their first 12,000 characters, and
@@ -163,13 +163,13 @@ function main(): number {
   if (only !== 'text') {
     const t0 = performance.now();
     const prior = trainLogged(
-      p.any().adaptive(),
+      p.any().compress(),
       corpus,
       // A whole-message grid triple takes minutes per pass, so ρ0 and N0 stay at the converted prior's.
       { grid: { rho0: [from.rho0], n0: [from.n0] } },
       log('json')
     );
-    const trainedOn = `The ${corpus.length} files of the research corpus, each one p.any().adaptive() message.`;
+    const trainedOn = `The ${corpus.length} files of the research corpus, each one p.any().compress() message.`;
     write('json', { ...prior, trainedOn }, [
       'The shipped JSON prior, trained by scripts/train-priors.ts with train() on the research',
       'corpus. Generated; not edited by hand.',
@@ -182,7 +182,7 @@ function main(): number {
     const json = corpus.map((v) => strings(v, []).join('\n').slice(0, CORPUS_CHARS));
     const names = fairNames();
     const texts = [...bash, ...json, ...names];
-    const prior = trainLogged(p.string().adaptive(), texts, {}, log('text'));
+    const prior = trainLogged(p.string().compress(), texts, {}, log('text'));
     const trainedOn =
       `${bash.length} messages of man bash, the first ${CORPUS_CHARS} characters of the string ` +
       `values of each of the ${json.length} research corpus files, and ${names.length} names, ` +

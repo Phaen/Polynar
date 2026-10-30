@@ -5,9 +5,9 @@ import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 import type { LearningOptions } from './adaptive';
 import { learningOf, learns, MethodNode, type MethodSet } from './methods';
-import { checkAdaptive, resolve } from '../predictor/options';
+import { checkCompress, resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
-import { STRUCT, type AdaptiveOptions } from '../predictor/types';
+import { STRUCT, type CompressOptions } from '../predictor/types';
 
 const DATE_MARKERS: ReadonlySet<number> = new Set([STRUCT.DATE]);
 
@@ -146,8 +146,8 @@ export class PDate extends MethodNode<Date> {
   /** The methods the node has, declared or open. */
   readonly _methods: MethodSet;
   declare readonly _radix?: number;
-  /** The options `.adaptive()` set, which hand the bucket indices to the predictor. */
-  readonly _adaptive?: AdaptiveOptions;
+  /** The options `.compress()` set, which hand the bucket indices to the predictor. */
+  readonly _compress?: CompressOptions;
 
   constructor(
     min?: number | Date,
@@ -156,10 +156,10 @@ export class PDate extends MethodNode<Date> {
     step = 1,
     prior?: Prior,
     methods: MethodSet = {},
-    adaptive?: AdaptiveOptions
+    compress?: CompressOptions
   ) {
     super();
-    this._adaptive = adaptive;
+    this._compress = compress;
     this._min = isDate(min) ? min.getTime() : min;
     this._max = isDate(max) ? max.getTime() : max;
 
@@ -193,9 +193,9 @@ export class PDate extends MethodNode<Date> {
       prior,
       learningOf(methods),
       (b) => iso(this._calendar.start(b)),
-      adaptive === undefined
+      compress === undefined
         ? undefined
-        : { path: this, options: resolve(adaptive, loadedPriors.json, 'p.date') }
+        : { path: this, options: resolve(compress, loadedPriors.json, 'p.date') }
     );
     this._methods = methods;
     // Bucket starts rise with the index and none starts after its bound,
@@ -262,11 +262,11 @@ export class PDate extends MethodNode<Date> {
    * epoch's, by bit-length class. `window` is how many observations a
    * table's counts hold before they halve (1024 when left out), and
    * `separate` keeps its tables from starting where other nodes of its kind
-   * and window got to. Not with `.adaptive()`.
+   * and window got to. Not with `.compress()`.
    */
   learn(options?: LearningOptions): PDate {
-    if (this._adaptive !== undefined) {
-      throw new TypeError('p.date learn and adaptive cannot both be set');
+    if (this._compress !== undefined) {
+      throw new TypeError('p.date learn and compress cannot both be set');
     }
     return this._declare('learn', 'p.date', options);
   }
@@ -279,18 +279,18 @@ export class PDate extends MethodNode<Date> {
    * declared prior prices the buckets the node has not seen. Not with
    * `.learn()`. Set once.
    */
-  adaptive(options?: AdaptiveOptions): PDate {
-    if (this._adaptive !== undefined) {
-      throw new TypeError('p.date adaptive is already set');
+  compress(options?: CompressOptions): PDate {
+    if (this._compress !== undefined) {
+      throw new TypeError('p.date compress is already set');
     }
     if (learns(this._methods)) {
-      throw new TypeError('p.date learn and adaptive cannot both be set');
+      throw new TypeError('p.date learn and compress cannot both be set');
     }
-    return this._with({ adaptive: checkAdaptive(options, 'p.date') });
+    return this._with({ compress: checkCompress(options, 'p.date') });
   }
 
-  _adapted(options: AdaptiveOptions): PDate {
-    return this._adaptive !== undefined || learns(this._methods) ? this : this.adaptive(options);
+  _adapted(options: CompressOptions): PDate {
+    return this._compress !== undefined || learns(this._methods) ? this : this.compress(options);
   }
 
   _marker(): number {
@@ -350,7 +350,7 @@ export class PDate extends MethodNode<Date> {
     step?: number;
     prior?: Prior;
     methods?: MethodSet;
-    adaptive?: AdaptiveOptions;
+    compress?: CompressOptions;
   }): PDate {
     return new PDate(
       change.min ?? this._min,
@@ -359,7 +359,7 @@ export class PDate extends MethodNode<Date> {
       change.step ?? this._step,
       change.prior ?? this._range.declared,
       change.methods ?? this._methods,
-      change.adaptive ?? this._adaptive
+      change.compress ?? this._compress
     );
   }
 }

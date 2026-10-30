@@ -12,7 +12,7 @@ import { ownMarker, readOwnMarker } from './markers';
 import { resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
 import { session } from '../predictor/session';
-import { STRUCT, type AdaptiveOptions, type Resolved } from '../predictor/types';
+import { STRUCT, type CompressOptions, type Resolved } from '../predictor/types';
 
 const OBJECT_MARKERS: ReadonlySet<number> = new Set([STRUCT.OBJ_START]);
 
@@ -36,8 +36,8 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
   private readonly _prior?: MemberPrior;
   /** How the tag is spelled. */
   private readonly _pick: Members;
-  readonly _adaptive?: AdaptiveOptions;
-  /** Under `.adaptive()`: the options the tag step codes under. */
+  readonly _compress?: CompressOptions;
+  /** Under `.compress()`: the options the tag step codes under. */
   private readonly _resolved?: Resolved;
 
   constructor(
@@ -71,9 +71,9 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
     });
     this._prior = prior;
     this._pick = members(this._tags.length, { ...prior, learn: learningOf(_methods) }, 'p.tagged');
-    this._adaptive = _methods.adaptive;
-    if (this._adaptive !== undefined) {
-      this._resolved = resolve(this._adaptive, loadedPriors.json, 'p.tagged');
+    this._compress = _methods.compress;
+    if (this._compress !== undefined) {
+      this._resolved = resolve(this._compress, loadedPriors.json, 'p.tagged');
     }
   }
 
@@ -102,7 +102,7 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
    * (1024 when left out, and raised to the number of values counted when
    * smaller), and `separate` keeps it from starting where other nodes of its
    * kind and window got to. Part of the wire format, like the weights. Not
-   * with `.adaptive()`.
+   * with `.compress()`.
    */
   learn(options?: LearningOptions): PTagged<K, M> {
     return this._declare('learn', 'p.tagged', options);
@@ -112,13 +112,13 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
    * Code the tags through the similarity predictor: each is predicted from
    * the tags the node coded before, how recently and in what company, with
    * the weights as their prior counts; the members as under their own
-   * `.adaptive(options)`. Not with `.learn()`. Set once.
+   * `.compress(options)`. Not with `.learn()`. Set once.
    */
-  adaptive(options?: AdaptiveOptions): PTagged<K, M> {
+  compress(options?: CompressOptions): PTagged<K, M> {
     return this._sugar(options, 'p.tagged');
   }
 
-  _adapted(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PTagged<K, M> {
+  _adapted(options: CompressOptions, memo: Map<PNode<any>, PNode<any>>): PTagged<K, M> {
     if (this._keeps()) {
       return this;
     }
@@ -128,13 +128,13 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
     );
     return new PTagged<K, M>(this._key, shapes as M, this._prior, {
       ...this._methods,
-      adaptive: options,
+      compress: options,
     });
   }
 
-  get _holdsAdaptive(): boolean {
+  get _holdsCompress(): boolean {
     return (
-      this._adaptive !== undefined || this._tags.some((tag) => this._members[tag]._holdsAdaptive)
+      this._compress !== undefined || this._tags.some((tag) => this._members[tag]._holdsCompress)
     );
   }
 

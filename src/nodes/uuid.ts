@@ -1,5 +1,5 @@
 import { Encoder, Decoder } from '../packer';
-import { STRUCT, type AdaptiveOptions } from '../predictor/types';
+import { STRUCT, type CompressOptions } from '../predictor/types';
 import type { Kind } from './guards';
 import type { LearningOptions } from './adaptive';
 import { members, type Members } from './members';
@@ -29,17 +29,17 @@ const RADICES = SPLIT.map((bits) => 2 ** Number(bits));
  */
 export class PUuid extends MethodNode<string> {
   readonly _kinds: readonly Kind[] = ['string'];
-  readonly _adaptive?: AdaptiveOptions;
+  readonly _compress?: CompressOptions;
   private readonly _version: Members;
   private readonly _variant: Members;
 
   constructor(readonly _methods: MethodSet = {}) {
     super();
-    this._adaptive = _methods.adaptive;
-    // Under `.adaptive()` the two tables learn; the bits carry nothing to learn.
+    this._compress = _methods.compress;
+    // Under `.compress()` the two tables learn; the bits carry nothing to learn.
     const learn =
       learningOf(_methods) ??
-      (_methods.adaptive === undefined ? undefined : { separate: _methods.adaptive.separate });
+      (_methods.compress === undefined ? undefined : { separate: _methods.compress.separate });
     this._version = members(16, { weights: VERSION_WEIGHTS, learn }, 'p.uuid');
     this._variant = members(4, { weights: VARIANT_WEIGHTS, learn }, 'p.uuid');
   }
@@ -47,7 +47,7 @@ export class PUuid extends MethodNode<string> {
   /**
    * Let the version and variant tables learn from the message, starting from
    * their weights. `window` and `separate` as on every `.learn()`. Not with
-   * `.adaptive()`.
+   * `.compress()`.
    */
   learn(options?: LearningOptions): PUuid {
     return this._declare('learn', 'p.uuid', options);
@@ -57,11 +57,11 @@ export class PUuid extends MethodNode<string> {
    * The version and variant tables learn, as under `.learn()`, with the
    * option `separate`; the other bits stay as they are. Not with `.learn()`.
    */
-  adaptive(options?: AdaptiveOptions): PUuid {
+  compress(options?: CompressOptions): PUuid {
     return this._adapt(options, 'p.uuid');
   }
 
-  _adapted(options: AdaptiveOptions): PUuid {
+  _adapted(options: CompressOptions): PUuid {
     return this._adaptedTo(options);
   }
 

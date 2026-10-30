@@ -49,7 +49,7 @@ export function checkOrder(
 ): void {
   if (!ordinal(node) && node._run === undefined) {
     throw new TypeError(
-      `${who} ${which} requires ${noun} of p.string, or of bounded p.int, p.date or p.decimal, p.enum or p.bool without weights or adaptive`
+      `${who} ${which} requires ${noun} of p.string, or of bounded p.int, p.date or p.decimal, p.enum or p.bool without weights or compress`
     );
   }
 }

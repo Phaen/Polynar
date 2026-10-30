@@ -214,7 +214,7 @@ export function priorOf(p: Prior): LoadedPrior {
   return loaded;
 }
 
-/** The shipped priors, as `.adaptive({ prior })` and `train`'s `from` take them. */
+/** The shipped priors, as `.compress({ prior })` and `train`'s `from` take them. */
 export const Priors: { readonly text: Prior; readonly json: Prior } = { text, json };
 
 /** The shipped priors, each loaded on first use. */

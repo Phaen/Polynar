@@ -11,7 +11,7 @@
 import * as lib from '../index';
 import type { PNode } from '../index';
 import { mulberry32 } from './support';
-import { rand, randInt, randomCase, useAdaptiveNumbers, useRng } from './random-schemas';
+import { rand, randInt, randomCase, useCompressNumbers, useRng } from './random-schemas';
 
 const SCALE = Math.max(0, Number(process.env.FUZZ ?? 1));
 const runs = (n: number): number => Math.max(1, Math.round(n * SCALE));
@@ -118,8 +118,8 @@ function onPredictor(node: Node, gen: () => unknown): boolean {
 describe('Transactions', () => {
   it('leave a message byte-identical to the plain write, whatever is tried and rolled back', () => {
     useRng(mulberry32(0x7a11));
-    // Adaptive numbers code inside no try.
-    useAdaptiveNumbers(false);
+    // Compressed numbers code inside no try.
+    useCompressNumbers(false);
     for (let i = 0; i < runs(400); i++) {
       const c = randomCase(2);
       const node = c.build(lib) as Node;
@@ -143,7 +143,7 @@ describe('Transactions', () => {
     }
   });
 
-  it('leave long adaptive messages byte-identical too', () => {
+  it('leave long compressed messages byte-identical too', () => {
     useRng(mulberry32(0x7a12));
     for (let i = 0; i < runs(40); i++) {
       const { node, gen } = HEAVY[i % HEAVY.length]();

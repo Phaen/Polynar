@@ -1,5 +1,5 @@
 /**
- * `p.any().adaptive()` (spec §3, the `p.any` row): a value as one stream of structure symbols,
+ * `p.any().compress()` (spec §3, the `p.any` row): a value as one stream of structure symbols,
  * key text, strings and numbers through the predictor, every value at its key path within the
  * `p.any` node: `/k` for an object key, `/*` for an array or set item and a map key, `/*\/` for a
  * map value, `''` at the root. A value's first structure symbol is coded at the enclosing
@@ -66,7 +66,7 @@ function fromCodePoints(cps: ArrayLike<number>): string {
 /** A number that is no safe integer as its shortest round-trip text; -0 keeps its sign. */
 const numberText = (x: number): string => (Object.is(x, -0) ? '-0' : String(x));
 
-/** Writes `value` of `p.any().adaptive()`, its first structure symbol included. */
+/** Writes `value` of `p.any().compress()`, its first structure symbol included. */
 export function walkAny(s: Session, enc: Encoder, a: AnyCoding, value: unknown): void {
   let sym = s.take(a.node);
   if (sym < 0) {

@@ -100,7 +100,7 @@ describe('Schema tagged', () => {
   });
 });
 
-describe('p.tagged adaptive', () => {
+describe('p.tagged compress', () => {
   const plain = p.tagged('kind', { a: p.object({}), b: p.object({ n: p.int().min(0).max(3) }) });
   const weights = [9, 1];
   const run = (length: number, seed: number) => {
@@ -112,31 +112,31 @@ describe('p.tagged adaptive', () => {
   const members = (node: typeof plain) =>
     (node as unknown as { _members: Record<string, PObject<any>> })._members;
 
-  it('round-trips a run of values, alone, in an array and in an adaptive object', () => {
+  it('round-trips a run of values, alone, in an array and in a compressed object', () => {
     const values = run(300, 1);
-    for (const node of [plain.adaptive(), plain.weights(weights).adaptive({ window: 8 })]) {
+    for (const node of [plain.compress(), plain.weights(weights).compress({ window: 8 })]) {
       expect(trip(p.array(node), values)).toEqual(values);
-      expect(trip(p.array(node).adaptive(), values)).toEqual(values);
+      expect(trip(p.array(node).compress(), values)).toEqual(values);
       for (const value of values.slice(0, 20)) {
         expect(trip(node, value)).toEqual(value);
         expect(trip(p.object({ op: node }), { op: value })).toEqual({ op: value });
-        expect(trip(p.object({ op: plain }).adaptive(), { op: value })).toEqual({ op: value });
+        expect(trip(p.object({ op: plain }).compress(), { op: value })).toEqual({ op: value });
       }
     }
   });
 
   it('adapts its members, which take their start from the tag', () => {
-    const node = plain.adaptive({ window: 64 });
-    expect(node._adaptive).toEqual({ window: 64, prior: loadedPriors.json.source });
-    expect(members(node).a._adaptive).toEqual({ window: 64, prior: loadedPriors.json.source });
-    expect(members(node).b._adaptive).toEqual({ window: 64, prior: loadedPriors.json.source });
+    const node = plain.compress({ window: 64 });
+    expect(node._compress).toEqual({ window: 64, prior: loadedPriors.json.source });
+    expect(members(node).a._compress).toEqual({ window: 64, prior: loadedPriors.json.source });
+    expect(members(node).b._compress).toEqual({ window: 64, prior: loadedPriors.json.source });
     expect(trip(node, { kind: 'b', n: 3 })).toEqual({ kind: 'b', n: 3 });
   });
 
   it('takes its weights before or after', () => {
     const values = run(200, 2);
-    expect(p.array(plain.weights(weights).adaptive({ window: 64 })).encode(values)).toEqual(
-      p.array(plain.adaptive({ window: 64 }).weights(weights)).encode(values)
+    expect(p.array(plain.weights(weights).compress({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.compress({ window: 64 }).weights(weights)).encode(values)
     );
   });
 
@@ -146,30 +146,30 @@ describe('p.tagged adaptive', () => {
       expect(trip(p.array(node), values)).toEqual(values);
       return p.array(node).encode(values).length;
     };
-    expect(size(plain.adaptive())).toBeLessThan(size(plain));
+    expect(size(plain.compress())).toBeLessThan(size(plain));
     expect(size(plain.learn())).toBeLessThan(size(plain));
     expect(size(plain.learn({ window: 8 }))).toBeLessThan(size(plain));
   });
 
-  it('holds adaptive where it or a member adapts', () => {
-    expect(plain._holdsAdaptive).toBe(false);
-    expect(plain.learn()._holdsAdaptive).toBe(false);
-    expect(plain.adaptive()._holdsAdaptive).toBe(true);
-    const holding = p.tagged('kind', { a: p.object({ s: p.string().adaptive() }) });
-    expect(holding._holdsAdaptive).toBe(true);
+  it('holds compress where it or a member adapts', () => {
+    expect(plain._holdsCompress).toBe(false);
+    expect(plain.learn()._holdsCompress).toBe(false);
+    expect(plain.compress()._holdsCompress).toBe(true);
+    const holding = p.tagged('kind', { a: p.object({ s: p.string().compress() }) });
+    expect(holding._holdsCompress).toBe(true);
     expect(trip(holding, { kind: 'a', s: 'x' })).toEqual({ kind: 'a', s: 'x' });
   });
 
-  it('stays as it is under an adaptive container when it learns', () => {
+  it('stays as it is under a compressed container when it learns', () => {
     const learned = plain.learn();
-    const outer = p.object({ op: learned }).adaptive();
+    const outer = p.object({ op: learned }).compress();
     const field = (outer as unknown as { _shape: { op: typeof plain } })._shape.op;
     expect(field).toBe(learned);
     expect(trip(outer, { op: { kind: 'b', n: 1 } })).toEqual({ op: { kind: 'b', n: 1 } });
   });
 
   it('locates a missing tag at its key', () => {
-    for (const node of [plain, plain.adaptive()]) {
+    for (const node of [plain, plain.compress()]) {
       expect(() => node.encode({} as never)).toThrow(
         new TypeError('kind: Required field is missing')
       );
@@ -183,22 +183,22 @@ describe('p.tagged adaptive', () => {
 
   it('sets each method once, and not both', () => {
     expect(() => plain.learn().learn()).toThrow(new TypeError('p.tagged learn is already set'));
-    expect(() => plain.adaptive().adaptive()).toThrow(
-      new TypeError('p.tagged adaptive is already set')
+    expect(() => plain.compress().compress()).toThrow(
+      new TypeError('p.tagged compress is already set')
     );
-    expect(() => plain.learn().adaptive()).toThrow(
-      new TypeError('p.tagged learn and adaptive cannot both be set')
+    expect(() => plain.learn().compress()).toThrow(
+      new TypeError('p.tagged learn and compress cannot both be set')
     );
-    expect(() => plain.adaptive().learn()).toThrow(
-      new TypeError('p.tagged learn and adaptive cannot both be set')
+    expect(() => plain.compress().learn()).toThrow(
+      new TypeError('p.tagged learn and compress cannot both be set')
     );
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.tagged: adaptive window must be at least 1')
+    expect(() => plain.compress({ window: 0 })).toThrow(
+      new RangeError('p.tagged: compress window must be at least 1')
     );
-    expect(() => plain.adaptive().weights([1])).toThrow(
+    expect(() => plain.compress().weights([1])).toThrow(
       new TypeError('p.tagged weights must list one weight per value: expected 2, got 1')
     );
   });

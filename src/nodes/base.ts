@@ -17,7 +17,7 @@
 import { Encoder, Decoder } from '../packer';
 import type { CodecOptions, DecodeOptions, OutputType } from '../packer';
 import type { MarkerPrior } from '../predictor/session';
-import type { AdaptiveOptions } from '../predictor/types';
+import type { CompressOptions } from '../predictor/types';
 import type { Kind } from './guards';
 import { kindMarker } from './markers';
 
@@ -78,8 +78,8 @@ export abstract class PNode<TOut> {
    */
   _toDigit?(value: TOut): number;
 
-  /** The options of `.adaptive()` on a node that codes through the predictor. */
-  readonly _adaptive?: AdaptiveOptions;
+  /** The options of `.compress()` on a node that codes through the predictor. */
+  readonly _compress?: CompressOptions;
 
   /**
    * A run of the node's values, which containers code ascending by JS `<`
@@ -100,19 +100,19 @@ export abstract class PNode<TOut> {
   }
 
   /**
-   * The node under a container's `.adaptive(options)`: itself where it has
-   * `.adaptive()` or `.learn()` already, else with `options` on itself and
+   * The node under a container's `.compress(options)`: itself where it has
+   * `.compress()` or `.learn()` already, else with `options` on itself and
    * on the nodes below it. `memo` maps each node already adapted to its
    * adapted form. Present on nodes the sugar reaches.
    */
-  _adapted?(options: AdaptiveOptions, memo: Map<PNode<any>, PNode<any>>): PNode<TOut>;
+  _adapted?(options: CompressOptions, memo: Map<PNode<any>, PNode<any>>): PNode<TOut>;
 
   /**
    * Whether the node or one below it codes through the predictor, so the
    * containers around it keep record and list scopes.
    */
-  get _holdsAdaptive(): boolean {
-    return this._adaptive !== undefined;
+  get _holdsCompress(): boolean {
+    return this._compress !== undefined;
   }
 
   /**
@@ -165,10 +165,10 @@ export abstract class PNode<TOut> {
   }
 }
 
-/** `node` under a container's `.adaptive(options)`, adapted once per `memo`. */
+/** `node` under a container's `.compress(options)`, adapted once per `memo`. */
 export function adapt<T>(
   node: PNode<T>,
-  options: AdaptiveOptions,
+  options: CompressOptions,
   memo: Map<PNode<any>, PNode<any>>
 ): PNode<T> {
   const done = memo.get(node);

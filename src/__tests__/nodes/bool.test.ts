@@ -50,14 +50,14 @@ describe('p.bool learn', () => {
 
   it('sets each method once, and not both', () => {
     expect(() => plain.learn().learn()).toThrow(new TypeError('p.bool learn is already set'));
-    expect(() => plain.learn().adaptive()).toThrow(
-      new TypeError('p.bool learn and adaptive cannot both be set')
+    expect(() => plain.learn().compress()).toThrow(
+      new TypeError('p.bool learn and compress cannot both be set')
     );
-    expect(() => plain.adaptive().learn()).toThrow(
-      new TypeError('p.bool learn and adaptive cannot both be set')
+    expect(() => plain.compress().learn()).toThrow(
+      new TypeError('p.bool learn and compress cannot both be set')
     );
-    expect(() => plain.adaptive().adaptive()).toThrow(
-      new TypeError('p.bool adaptive is already set')
+    expect(() => plain.compress().compress()).toThrow(
+      new TypeError('p.bool compress is already set')
     );
   });
 
@@ -69,50 +69,50 @@ describe('p.bool learn', () => {
   });
 });
 
-describe('p.bool adaptive', () => {
+describe('p.bool compress', () => {
   const plain = p.bool();
   const run = (length: number, seed: number) => {
     const rnd = mulberry32(seed);
     return Array.from({ length }, () => rnd() < 0.8);
   };
 
-  it('round-trips a run alone, in a plain array and in an adaptive object', () => {
+  it('round-trips a run alone, in a plain array and in a compressed object', () => {
     const values = run(300, 1);
-    for (const node of [plain.adaptive(), plain.weights([9, 1]).adaptive({ window: 8 })]) {
+    for (const node of [plain.compress(), plain.weights([9, 1]).compress({ window: 8 })]) {
       expect(node._radix).toBeUndefined();
       for (const value of values.slice(0, 20)) expect(trip(node, value)).toBe(value);
       expect(trip(p.array(node), values)).toEqual(values);
     }
-    const Row = p.object({ a: plain, b: plain.weights([1, 3]) }).adaptive();
+    const Row = p.object({ a: plain, b: plain.weights([1, 3]) }).compress();
     const rows = values.map((a, i) => ({ a, b: values[(i * 7) % values.length] }));
     expect(trip(p.array(Row), rows)).toEqual(rows);
-    expect(trip(p.array(plain).adaptive(), values)).toEqual(values);
+    expect(trip(p.array(plain).compress(), values)).toEqual(values);
   });
 
   it('takes its weights as prior counts of its symbols', () => {
     const trues = Array<boolean>(12).fill(true);
-    expect(plain.weights([30, 1]).adaptive()._markerPrior()?.counts).toEqual([
+    expect(plain.weights([30, 1]).compress()._markerPrior()?.counts).toEqual([
       [STRUCT.TRUE, 30],
       [STRUCT.FALSE, 1],
     ]);
     const size = (w: [number, number]) =>
-      p.array(plain.weights(w)).length(12).adaptive().encode(trues, BITS).length;
+      p.array(plain.weights(w)).length(12).compress().encode(trues, BITS).length;
     expect(size([30, 1])).toBeLessThan(size([1, 30]));
   });
 
   it('takes its weights before or after', () => {
     const values = run(200, 2);
-    expect(p.array(plain.weights([9, 1]).adaptive({ window: 64 })).encode(values)).toEqual(
-      p.array(plain.adaptive({ window: 64 }).weights([9, 1])).encode(values)
+    expect(p.array(plain.weights([9, 1]).compress({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.compress({ window: 64 }).weights([9, 1])).encode(values)
     );
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.adaptive({ window: 0 })).toThrow(
-      new RangeError('p.bool: adaptive window must be at least 1')
+    expect(() => plain.compress({ window: 0 })).toThrow(
+      new RangeError('p.bool: compress window must be at least 1')
     );
-    expect(() => plain.adaptive({ window: 1.5 })).toThrow(
-      new TypeError('p.bool: adaptive window must be an integer, got 1.5')
+    expect(() => plain.compress({ window: 1.5 })).toThrow(
+      new TypeError('p.bool: compress window must be an integer, got 1.5')
     );
   });
 });

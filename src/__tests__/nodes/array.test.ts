@@ -314,7 +314,7 @@ describe('Schema array order restrictions', () => {
         .max(4)
         .cdf((n) => n),
       p.array(digit).unique().max(4).learn(),
-      p.array(digit).unique().max(4).adaptive(),
+      p.array(digit).unique().max(4).compress(),
     ]) {
       expect(trip(node, value)).toEqual(value);
       expect(() => node.encode([1, 1, 1])).toThrow('[1]: Value 1 repeats an earlier one');
@@ -360,7 +360,7 @@ describe('Schema array order restrictions', () => {
       p.int(),
       p.float(),
       p.enum(['a', 'b']).weights([1, 2]),
-      p.bool().adaptive(),
+      p.bool().compress(),
     ]) {
       for (const restrict of [
         (a: PArray<unknown>) => a.sorted(),
@@ -375,7 +375,7 @@ describe('Schema array order restrictions', () => {
   });
 });
 
-/** A digit 0–9 as a custom ordinal node, which `.adaptive()` leaves as it is. */
+/** A digit 0–9 as a custom ordinal node, which `.compress()` leaves as it is. */
 class PDigit extends PNode<number> {
   readonly _radix = 10;
   _toDigit(value: number): number {
@@ -409,17 +409,17 @@ class PNoNine extends PNode<number> {
   }
 }
 
-describe('p.array adaptive', () => {
+describe('p.array compress', () => {
   const digit = p.int().min(0).max(9);
   const words = ['alpha', 'beta', 'alphabet', '', 'gamma', 'beta'];
 
   it('round-trips empty, one and many items', () => {
-    expect(trip(p.array(digit).adaptive(), [])).toEqual([]);
-    expect(trip(p.array(p.string()).adaptive({ window: 64 }), [])).toEqual([]);
-    expect(trip(p.array(digit).adaptive(), [7])).toEqual([7]);
+    expect(trip(p.array(digit).compress(), [])).toEqual([]);
+    expect(trip(p.array(p.string()).compress({ window: 64 }), [])).toEqual([]);
+    expect(trip(p.array(digit).compress(), [7])).toEqual([7]);
     const many = Array.from({ length: 300 }, () => below(10));
-    expect(trip(p.array(digit).adaptive(), many)).toEqual(many);
-    expect(trip(p.array(p.string()).adaptive(), words)).toEqual(words);
+    expect(trip(p.array(digit).compress(), many)).toEqual(many);
+    expect(trip(p.array(p.string()).compress(), words)).toEqual(words);
   });
 
   it('round-trips items of every kind', () => {
@@ -471,7 +471,7 @@ describe('p.array adaptive', () => {
       [new PDigit(), [3, 0, 9]],
     ];
     for (const [item, value] of cases) {
-      const node = p.array(item).adaptive();
+      const node = p.array(item).compress();
       expect(trip(node, value)).toEqual(value);
       expect(trip(p.array(node), [value, [], value])).toEqual([value, [], value]);
     }
@@ -483,7 +483,7 @@ describe('p.array adaptive', () => {
       kids: Tree[];
     }
     const tree: PNode<Tree> = p.object({ v: digit, kids: p.array(p.lazy(() => tree)) });
-    const node = p.array(tree).adaptive();
+    const node = p.array(tree).compress();
     const value: Tree[] = [
       { v: 1, kids: [{ v: 2, kids: [] }] },
       { v: 3, kids: [] },
@@ -493,23 +493,23 @@ describe('p.array adaptive', () => {
     const inner = {
       list: [{ m: new Map([[1, ['a', 'b']]]) }, { m: new Map<number, string[]>() }],
     };
-    expect(trip(deep.adaptive(), inner)).toEqual(inner);
+    expect(trip(deep.compress(), inner)).toEqual(inner);
   });
 
   it('codes no end at its max, and none at a fixed length', () => {
     const value = Array.from({ length: 5 }, (_, i) => i);
-    const fixed = p.array(digit).length(5).adaptive();
+    const fixed = p.array(digit).length(5).compress();
     expect(trip(fixed, value)).toEqual(value);
     expect(fixed.encode(value).length).toBeLessThanOrEqual(
-      p.array(digit).adaptive().encode(value).length
+      p.array(digit).compress().encode(value).length
     );
-    const capped = p.array(digit).max(5).adaptive();
+    const capped = p.array(digit).max(5).compress();
     expect(trip(capped, value)).toEqual(value);
     expect(trip(capped, [1])).toEqual([1]);
   });
 
   it('decodes counts at and above the min, and refuses one out of range', () => {
-    const node = p.array(digit).min(2).max(4).adaptive();
+    const node = p.array(digit).min(2).max(4).compress();
     for (const value of [
       [1, 2],
       [1, 2, 3],
@@ -526,92 +526,92 @@ describe('p.array adaptive', () => {
   it('refuses weights or a cdf over the count, in either order', () => {
     const capped = p.array(digit).max(3);
     const message = new TypeError(
-      'p.array adaptive cannot weigh the count: an adaptive array ends with a symbol'
+      'p.array compress cannot weigh the count: a compressed array ends with a symbol'
     );
-    expect(() => capped.weights([1, 1, 1, 1]).adaptive()).toThrow(message);
-    expect(() => capped.adaptive().weights([1, 1, 1, 1])).toThrow(message);
-    expect(() => capped.cdf((n) => n).adaptive()).toThrow(message);
-    expect(() => capped.adaptive().cdf((n) => n)).toThrow(message);
+    expect(() => capped.weights([1, 1, 1, 1]).compress()).toThrow(message);
+    expect(() => capped.compress().weights([1, 1, 1, 1])).toThrow(message);
+    expect(() => capped.cdf((n) => n).compress()).toThrow(message);
+    expect(() => capped.compress().cdf((n) => n)).toThrow(message);
   });
 
-  it('sets adaptive once, and not with learn', () => {
+  it('sets compress once, and not with learn', () => {
     const node = p.array(digit);
-    expect(() => node.adaptive().adaptive()).toThrow(
-      new TypeError('p.array adaptive is already set')
+    expect(() => node.compress().compress()).toThrow(
+      new TypeError('p.array compress is already set')
     );
-    expect(() => node.learn().adaptive()).toThrow(
-      new TypeError('p.array learn and adaptive cannot both be set')
+    expect(() => node.learn().compress()).toThrow(
+      new TypeError('p.array learn and compress cannot both be set')
     );
-    expect(() => node.adaptive().learn()).toThrow(
-      new TypeError('p.array learn and adaptive cannot both be set')
+    expect(() => node.compress().learn()).toThrow(
+      new TypeError('p.array learn and compress cannot both be set')
     );
   });
 
   it('keeps an item that learns or adapts as it is', () => {
     const values = [3, 3, 1, 3];
-    for (const item of [digit.learn(), digit.adaptive({ window: 16 })]) {
-      expect(trip(p.array(item).adaptive(), values)).toEqual(values);
+    for (const item of [digit.learn(), digit.compress({ window: 16 })]) {
+      expect(trip(p.array(item).compress(), values)).toEqual(values);
     }
-    const learned = p.object({ a: p.array(digit).learn(), b: p.string() }).adaptive();
+    const learned = p.object({ a: p.array(digit).learn(), b: p.string() }).compress();
     expect(trip(learned, { a: values, b: 'x' })).toEqual({ a: values, b: 'x' });
   });
 
   it('keeps the order restrictions', () => {
     const shuffled = [5, 1, 5, 0];
-    expect(trip(p.array(digit).unordered().adaptive(), shuffled)).toEqual([0, 1, 5, 5]);
-    expect(trip(p.array(digit).sorted().adaptive(), [0, 1, 1, 4])).toEqual([0, 1, 1, 4]);
-    expect(trip(p.array(digit).unique().adaptive(), [7, 2, 9])).toEqual([7, 2, 9]);
-    expect(trip(p.array(p.string()).unordered().adaptive(), words)).toEqual([...words].sort());
+    expect(trip(p.array(digit).unordered().compress(), shuffled)).toEqual([0, 1, 5, 5]);
+    expect(trip(p.array(digit).sorted().compress(), [0, 1, 1, 4])).toEqual([0, 1, 1, 4]);
+    expect(trip(p.array(digit).unique().compress(), [7, 2, 9])).toEqual([7, 2, 9]);
+    expect(trip(p.array(p.string()).unordered().compress(), words)).toEqual([...words].sort());
     const distinct = [...new Set(words)];
-    expect(trip(p.array(p.string()).unique().adaptive(), distinct)).toEqual(distinct);
-    expect(() => p.array(digit).unique().adaptive().encode([7, 2, 7])).toThrow(
+    expect(trip(p.array(p.string()).unique().compress(), distinct)).toEqual(distinct);
+    expect(() => p.array(digit).unique().compress().encode([7, 2, 7])).toThrow(
       new RangeError('[2]: Value 7 repeats an earlier one')
     );
-    expect(() => p.array(digit).sorted().adaptive().encode([1, 4, 2])).toThrow(
+    expect(() => p.array(digit).sorted().compress().encode([1, 4, 2])).toThrow(
       new RangeError('[2]: Value 2 is below the one before it')
     );
-    expect(() => p.array(p.string()).sorted().adaptive().encode(['b', 'a'])).toThrow(
+    expect(() => p.array(p.string()).sorted().compress().encode(['b', 'a'])).toThrow(
       new RangeError('[1]: Value "a" is below the one before it')
     );
-    expect(() => p.array(p.string()).unique().adaptive().encode(['a', 'a'])).toThrow(
+    expect(() => p.array(p.string()).unique().compress().encode(['a', 'a'])).toThrow(
       new RangeError('[1]: Value "a" repeats an earlier one')
     );
   });
 
   it('keeps the order restrictions over an ordinal item', () => {
     const ordinal = new PDigit();
-    const bag = new PArray(ordinal, {}, { unordered: true }, { adaptive: {} });
+    const bag = new PArray(ordinal, {}, { unordered: true }, { compress: {} });
     expect(trip(bag, [9, 0, 4, 0])).toEqual([0, 0, 4, 9]);
-    expect(trip(p.array(ordinal).unique().adaptive(), [3, 1, 2])).toEqual([3, 1, 2]);
-    expect(() => p.array(ordinal).unique().adaptive().encode([3, 3])).toThrow(
+    expect(trip(p.array(ordinal).unique().compress(), [3, 1, 2])).toEqual([3, 1, 2]);
+    expect(() => p.array(ordinal).unique().compress().encode([3, 3])).toThrow(
       new RangeError('[1]: Value 3 repeats an earlier one')
     );
   });
 
   it('locates a value its item refuses', () => {
-    expect(() => p.array(digit).adaptive().encode([1, 10])).toThrow(
+    expect(() => p.array(digit).compress().encode([1, 10])).toThrow(
       new RangeError('[1]: Value 10 is above the maximum 9')
     );
     expect(() =>
       p
         .array(p.array(digit))
-        .adaptive()
+        .compress()
         .encode([[1], [2, 10]])
     ).toThrow(new RangeError('[1][1]: Value 10 is above the maximum 9'));
-    const bytes = p.array(new PNoNine()).adaptive().encode([1, 9]);
-    expect(() => p.array(new PNoNine()).adaptive().decode(bytes)).toThrow(
+    const bytes = p.array(new PNoNine()).compress().encode([1, 9]);
+    expect(() => p.array(new PNoNine()).compress().decode(bytes)).toThrow(
       new CorruptInputError('[1]: Nine')
     );
   });
 
   it('round-trips inside plain containers', () => {
-    const node = p.object({ a: p.array(digit).adaptive(), b: p.string() });
+    const node = p.object({ a: p.array(digit).compress(), b: p.string() });
     expect(trip(node, { a: [1, 2], b: 'x' })).toEqual({ a: [1, 2], b: 'x' });
   });
 });
 
-describe('Plain p.array of adaptive items', () => {
-  const word = p.string().adaptive();
+describe('Plain p.array of compressed items', () => {
+  const word = p.string().compress();
   const words = ['alpha', 'beta', 'alpha', '', 'alphabet'];
 
   it('round-trips items in order and under every restriction', () => {
@@ -624,11 +624,11 @@ describe('Plain p.array of adaptive items', () => {
       new RangeError('[1]: Value "a" is below the one before it')
     );
     expect(trip(p.array(p.array(word)), [words, [], words])).toEqual([words, [], words]);
-    expect(trip(p.array(p.int().min(0).max(9).adaptive()), [1, 2, 3])).toEqual([1, 2, 3]);
+    expect(trip(p.array(p.int().min(0).max(9).compress()), [1, 2, 3])).toEqual([1, 2, 3]);
   });
 
   it('locates a value its item refuses, written or read', () => {
-    expect(() => p.array(p.int().max(9).adaptive()).encode([1, 10])).toThrow(
+    expect(() => p.array(p.int().max(9).compress()).encode([1, 10])).toThrow(
       new RangeError('[1]: Value 10 is above the maximum 9')
     );
     const noNine = p.array(new PNoNine());

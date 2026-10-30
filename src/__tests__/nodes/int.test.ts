@@ -33,8 +33,8 @@ describe('Schema int', () => {
     ['max of -0', p.int().max(-0)],
     ['bounded', p.int().min(-5).max(5)],
     ['weighted', p.int().min(-1).max(1).weights([1, 2, 3])],
-    ['adaptive', p.int().adaptive()],
-    ['adaptive and min-only', p.int().min(-5).adaptive()],
+    ['compress', p.int().compress()],
+    ['compress and min-only', p.int().min(-5).compress()],
   ])('encodes -0 as plain zero, %s', (_name, node) => {
     expect(node.encode(-0)).toEqual(node.encode(0));
     expect(Object.is(node.decode(node.encode(-0)), 0)).toBe(true);
@@ -68,7 +68,7 @@ describe('Schema int', () => {
   });
 });
 
-describe('p.int().adaptive()', () => {
+describe('p.int().compress()', () => {
   const random = (length: number, seed: number, lo: number, hi: number) => {
     const rnd = mulberry32(seed);
     return Array.from({ length }, () => lo + Math.floor(rnd() * (hi - lo + 1)));
@@ -77,10 +77,10 @@ describe('p.int().adaptive()', () => {
   const counter = Array.from({ length: 200 }, (_, i) => 1000 + i);
 
   it.each([
-    ['unbounded', p.int().adaptive(), random(200, 1, -1e9, 1e9)],
-    ['bounded', p.int().min(-1000).max(5000).adaptive(), random(200, 2, -1000, 5000)],
-    ['min-only', p.int().min(-50).adaptive(), random(200, 3, -50, 1e7)],
-    ['max-only', p.int().max(5000).adaptive(), random(200, 4, -1e7, 5000)],
+    ['unbounded', p.int().compress(), random(200, 1, -1e9, 1e9)],
+    ['bounded', p.int().min(-1000).max(5000).compress(), random(200, 2, -1000, 5000)],
+    ['min-only', p.int().min(-50).compress(), random(200, 3, -50, 1e7)],
+    ['max-only', p.int().max(5000).compress(), random(200, 4, -1e7, 5000)],
     [
       'weighted',
       p
@@ -88,7 +88,7 @@ describe('p.int().adaptive()', () => {
         .min(-3)
         .max(1500)
         .weights(Array.from({ length: 1504 }, (_, i) => 1 + (i % 7)))
-        .adaptive(),
+        .compress(),
       random(200, 5, -3, 1500),
     ],
     [
@@ -98,7 +98,7 @@ describe('p.int().adaptive()', () => {
         .min(-3)
         .max(1500)
         .cdf((v) => (v + 3) * 2)
-        .adaptive(),
+        .compress(),
       random(200, 6, -3, 1500),
     ],
   ])('round-trips a constant, a counter and random values, %s', (_name, node, values) => {
@@ -109,7 +109,7 @@ describe('p.int().adaptive()', () => {
   });
 
   it('round-trips a weighted value written alone', () => {
-    const node = p.int().min(0).max(2).weights([1, 5, 1]).adaptive();
+    const node = p.int().min(0).max(2).weights([1, 5, 1]).compress();
     for (const value of [0, 1, 2]) {
       expect(trip(node, value)).toBe(value);
     }
@@ -117,23 +117,23 @@ describe('p.int().adaptive()', () => {
 
   it('round-trips values past 2^53 on its own spelling', () => {
     const values = [2 ** 60, 2 ** 60 + 2 ** 10, -(2 ** 70), 2 ** 60];
-    expect(trip(p.array(p.int().adaptive()), values)).toEqual(values);
+    expect(trip(p.array(p.int().compress()), values)).toEqual(values);
   });
 
   it('learns what repeats', () => {
-    const size = (values: number[]) => p.array(p.int().adaptive()).encode(values).length;
+    const size = (values: number[]) => p.array(p.int().compress()).encode(values).length;
     expect(size(Array<number>(200).fill(123456))).toBeLessThan(40);
     expect(size(counter)).toBeLessThan(size(random(200, 7, 1000, 1199)));
   });
 
   it('round-trips inside an object', () => {
-    const node = p.array(p.object({ id: p.int().min(0).adaptive(), delta: p.int().adaptive() }));
+    const node = p.array(p.object({ id: p.int().min(0).compress(), delta: p.int().compress() }));
     const values = counter.map((id, i) => ({ id, delta: i % 2 === 0 ? -i - 1 : i * 3 }));
     expect(trip(node, values)).toEqual(values);
   });
 
   it('round-trips one node reused in two fields', () => {
-    const node = p.int().adaptive();
+    const node = p.int().compress();
     const values = [
       { a: 5, b: 5 },
       { a: -7, b: 900 },
@@ -142,32 +142,32 @@ describe('p.int().adaptive()', () => {
   });
 
   it('maps no digit with both bounds', () => {
-    const node = p.int().min(0).max(9).adaptive();
+    const node = p.int().min(0).max(9).compress();
     expect(node._radix).toBeUndefined();
     expect(node._fromDigit).toBeUndefined();
     expect(node._toDigit).toBeUndefined();
   });
 
   it('refuses options out of range, not an object, set twice or beside learn', () => {
-    expect(() => p.int().adaptive({ candidates: 65 })).toThrow(
-      new RangeError('p.int: adaptive candidates must be in 0..64, got 65')
+    expect(() => p.int().compress({ candidates: 65 })).toThrow(
+      new RangeError('p.int: compress candidates must be in 0..64, got 65')
     );
-    expect(() => p.int().adaptive(5 as never)).toThrow(
-      new TypeError('p.int: adaptive options must be an object')
+    expect(() => p.int().compress(5 as never)).toThrow(
+      new TypeError('p.int: compress options must be an object')
     );
-    expect(() => p.int().adaptive().adaptive()).toThrow(
-      new TypeError('p.int adaptive is already set')
+    expect(() => p.int().compress().compress()).toThrow(
+      new TypeError('p.int compress is already set')
     );
-    const both = new TypeError('p.int learn and adaptive cannot both be set');
-    expect(() => p.int().learn().adaptive()).toThrow(both);
-    expect(() => p.int().adaptive().learn()).toThrow(both);
+    const both = new TypeError('p.int learn and compress cannot both be set');
+    expect(() => p.int().learn().compress()).toThrow(both);
+    expect(() => p.int().compress().learn()).toThrow(both);
   });
 
   it('refuses a value the plain node refuses, before learning from it', () => {
-    const bounded = p.int().min(0).max(9).adaptive();
+    const bounded = p.int().min(0).max(9).compress();
     expect(() => bounded.encode(10)).toThrow(new RangeError('Value 10 is above the maximum 9'));
     expect(() => bounded.encode(-1)).toThrow(new RangeError('Value -1 is below the minimum 0'));
-    expect(() => p.int().adaptive().encode(1.5)).toThrow(
+    expect(() => p.int().compress().encode(1.5)).toThrow(
       new TypeError('p.int expected an integer, got 1.5')
     );
     expect(() =>
@@ -176,21 +176,21 @@ describe('p.int().adaptive()', () => {
         .min(0)
         .max(4)
         .cdf((v) => Math.min(v, 2) + Math.max(v - 3, 0))
-        .adaptive()
+        .compress()
         .encode(2)
     ).toThrow(new RangeError('Value 2 has zero weight under the declared cdf'));
     expect(() =>
       p
         .int()
         .min(-(2 ** 60))
-        .adaptive()
+        .compress()
         .encode(1)
     ).toThrow(new RangeError(`Value 1 is too far from its bound ${-(2 ** 60)} to encode exactly`));
     expect(() =>
       p
         .int()
         .max(2 ** 60)
-        .adaptive()
+        .compress()
         .encode(-1)
     ).toThrow(new RangeError(`Value -1 is too far from its bound ${2 ** 60} to encode exactly`));
   });
@@ -297,21 +297,21 @@ describe('p.int learn', () => {
 });
 
 describe('p.int methods', () => {
-  it('refuses learn beside adaptive, either order', () => {
-    const both = new TypeError('p.int learn and adaptive cannot both be set');
-    expect(() => p.int().adaptive().learn()).toThrow(both);
-    expect(() => p.int().learn().adaptive()).toThrow(both);
+  it('refuses learn beside compress, either order', () => {
+    const both = new TypeError('p.int learn and compress cannot both be set');
+    expect(() => p.int().compress().learn()).toThrow(both);
+    expect(() => p.int().learn().compress()).toThrow(both);
   });
 
-  it('keeps a learner or an adaptive node as it is under a container sugar', () => {
+  it('keeps a learner or a compressed node as it is under a container sugar', () => {
     const learner = p.int().min(0).max(9).learn();
-    const adaptive = p.int().adaptive({ window: 8 });
+    const compress = p.int().compress({ window: 8 });
     expect(learner._adapted({})).toBe(learner);
-    expect(adaptive._adapted({ window: 16 })).toBe(adaptive);
+    expect(compress._adapted({ window: 16 })).toBe(compress);
     const plain = p.int().min(0).max(9);
     const adapted = plain._adapted({ window: 16 });
     expect(adapted).not.toBe(plain);
-    expect(adapted._adaptive).toEqual({ window: 16 });
+    expect(adapted._compress).toEqual({ window: 16 });
     expect(adapted._methods).toEqual({});
   });
 

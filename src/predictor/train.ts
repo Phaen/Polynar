@@ -352,8 +352,8 @@ export function trainLogged<T>(
   options: TrainOptions,
   log: (line: string) => void
 ): Prior {
-  if (!node._holdsAdaptive) {
-    throw new TypeError('train: the node has no .adaptive() anywhere in its tree');
+  if (!node._holdsCompress) {
+    throw new TypeError('train: the node has no .compress() anywhere in its tree');
   }
   const { holdOut, epochs, seed, grid } = checkOptions(samples.length, options);
   const from = options.from ?? shippedFor(node);

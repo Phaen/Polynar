@@ -34,7 +34,7 @@ describe('ReplayDecoder', () => {
   });
 
   it('reads a value back as decoding its message would', () => {
-    const node = p.array(p.string().adaptive());
+    const node = p.array(p.string().compress());
     const value = ['alpha', 'alphabet', 'alpha', 'beta', 'alphabet'];
     const enc = new Encoder();
     node._write(enc, value);

@@ -13,11 +13,11 @@ import { PCollection, MAP, RECORD, SET } from './collection';
 import { atPath, unlocated } from './path';
 import { members, type Members } from './members';
 import { IndexRange } from './lattice';
-import { applyAdaptive, checkAdaptive, resolve } from '../predictor/options';
+import { applyCompress, checkCompress, resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
 import { session } from '../predictor/session';
 import { readAny, walkAny, type AnyBody, type AnyCoding } from '../predictor/any';
-import { STRUCT, type AdaptiveOptions } from '../predictor/types';
+import { STRUCT, type CompressOptions } from '../predictor/types';
 
 import { kindMarker } from './markers';
 
@@ -102,7 +102,7 @@ const COMMON_TAGS: ReadonlySet<number> = new Set([
 /** The declared weight of a common tag, and of every hint's: a hint is declared, so it is common. */
 const COMMON_TIER = 100;
 
-/** The first structure symbol of each built-in tag's value under `.adaptive()`, in tag order. */
+/** The first structure symbol of each built-in tag's value under `.compress()`, in tag order. */
 const TAG_SYMBOLS: readonly number[] = [
   STRUCT.UNDEFINED,
   STRUCT.NULL,
@@ -319,7 +319,7 @@ const ANY_BINARY = [
 const ANY_BYTES = new PBinary(Uint8Array);
 const ANY_ARRAY_BUFFER = new AnyArrayBuffer();
 const ANY_DATA_VIEW = new AnyDataView();
-/** The plain spelling of an integer past the number predictor's classes under `.adaptive()`. */
+/** The plain spelling of an integer past the number predictor's classes under `.compress()`. */
 const ANY_PLAIN_INT = new IndexRange('p.any').plain;
 
 /** The tag of each kind that has exactly one; booleans and numbers split by value. */
@@ -495,11 +495,11 @@ export class PAny extends PNode<AnyValue> {
   private readonly _byKind = new Map<Kind, number[]>();
   /** The one codec every value goes through. */
   private readonly _codec: AnyCodec;
-  readonly _adaptive?: AdaptiveOptions;
-  /** Under `.adaptive()`: what the predictor's stream codes through. */
+  readonly _compress?: CompressOptions;
+  /** Under `.compress()`: what the predictor's stream codes through. */
   private readonly _coding?: AnyCoding;
 
-  constructor(hints: readonly PNode<any>[] = [], adaptive?: AdaptiveOptions) {
+  constructor(hints: readonly PNode<any>[] = [], compress?: CompressOptions) {
     super();
     this._forms = [...hints];
     this._forms.forEach((hint, i) => {
@@ -525,17 +525,17 @@ export class PAny extends PNode<AnyValue> {
         this._forms
       )
     );
-    this._adaptive = adaptive;
-    if (adaptive !== undefined) {
-      this._coding = this._codingOf(adaptive);
+    this._compress = compress;
+    if (compress !== undefined) {
+      this._coding = this._codingOf(compress);
     }
   }
 
-  /** What the stream codes through under `adaptive`, the hints adapted under the same options. */
-  private _codingOf(adaptive: AdaptiveOptions): AnyCoding {
-    const filled = { ...adaptive, prior: adaptive.prior ?? loadedPriors.json.source };
+  /** What the stream codes through under `compress`, the hints adapted under the same options. */
+  private _codingOf(compress: CompressOptions): AnyCoding {
+    const filled = { ...compress, prior: compress.prior ?? loadedPriors.json.source };
     const o = resolve(filled, loadedPriors.json, 'p.any');
-    const hints = this._forms.map((hint) => applyAdaptive(hint, filled, loadedPriors.json.source));
+    const hints = this._forms.map((hint) => applyCompress(hint, filled, loadedPriors.json.source));
     const body = (node: PNode<any>): AnyBody => ({
       write: (enc, value) => node._write(enc, value),
       read: (dec) => node._read(dec),
@@ -589,21 +589,21 @@ export class PAny extends PNode<AnyValue> {
    * value's kind as a structure symbol, an object's keys as key text, its
    * strings, integers and dates predicted at their key path from the values
    * before them, other numbers as their shortest text, and the rest as
-   * without; hints under their own `.adaptive(options)` where they take it.
+   * without; hints under their own `.compress(options)` where they take it.
    * Set once.
    */
-  adaptive(options?: AdaptiveOptions): PAny {
-    if (this._adaptive !== undefined) {
-      throw new TypeError('p.any adaptive is already set');
+  compress(options?: CompressOptions): PAny {
+    if (this._compress !== undefined) {
+      throw new TypeError('p.any compress is already set');
     }
-    return new PAny(this._forms, checkAdaptive(options, 'p.any'));
+    return new PAny(this._forms, checkCompress(options, 'p.any'));
   }
 
-  _adapted(options: AdaptiveOptions): PAny {
-    return this._adaptive !== undefined ? this : this.adaptive(options);
+  _adapted(options: CompressOptions): PAny {
+    return this._compress !== undefined ? this : this.compress(options);
   }
 
-  /** The first structure symbol of `value` under `.adaptive()`: HINT where a hint takes it. */
+  /** The first structure symbol of `value` under `.compress()`: HINT where a hint takes it. */
   _marker(value: unknown): number {
     try {
       const tag = this._classify(value, true);

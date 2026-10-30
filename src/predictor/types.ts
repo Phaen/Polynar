@@ -7,8 +7,8 @@
  * probabilities have PB bits; see arith.ts for the constants and the exact operations.
  */
 
-/** What `.adaptive(options)` takes (spec §2.1). */
-export interface AdaptiveOptions {
+/** What `.compress(options)` takes (spec §2.1). */
+export interface CompressOptions {
   readonly prior?: Prior;
   readonly window?: number;
   readonly separate?: boolean;

@@ -5,9 +5,9 @@ import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
 import type { LearningOptions } from './adaptive';
 import { learningOf, learns, MethodNode, type MethodSet } from './methods';
-import { checkAdaptive, resolve } from '../predictor/options';
+import { checkCompress, resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
-import { STRUCT, type AdaptiveOptions } from '../predictor/types';
+import { STRUCT, type CompressOptions } from '../predictor/types';
 
 const INT_MARKERS: ReadonlySet<number> = new Set([STRUCT.INT]);
 
@@ -32,18 +32,18 @@ export class PInt extends MethodNode<number> {
   /** The methods the node has, declared or open. */
   readonly _methods: MethodSet;
   declare readonly _radix?: number;
-  /** The options `.adaptive()` set, which hand the values to the predictor. */
-  readonly _adaptive?: AdaptiveOptions;
+  /** The options `.compress()` set, which hand the values to the predictor. */
+  readonly _compress?: CompressOptions;
 
   constructor(
     min?: number,
     max?: number,
     prior?: Prior,
     methods: MethodSet = {},
-    adaptive?: AdaptiveOptions
+    compress?: CompressOptions
   ) {
     super();
-    this._adaptive = adaptive;
+    this._compress = compress;
     this._range = new IndexRange(
       'p.int',
       min,
@@ -51,9 +51,9 @@ export class PInt extends MethodNode<number> {
       prior,
       learningOf(methods),
       String,
-      adaptive === undefined
+      compress === undefined
         ? undefined
-        : { path: this, options: resolve(adaptive, loadedPriors.json, 'p.int') }
+        : { path: this, options: resolve(compress, loadedPriors.json, 'p.int') }
     );
     this._methods = methods;
     this._radix = this._range.radix;
@@ -80,7 +80,7 @@ export class PInt extends MethodNode<number> {
    * Declare a prior over the bounded range as an integer CDF. A value's cost
    * is log2(total / weight) bits — fractional, exact. A zero-weight value
    * cannot encode; everything else just gets cheaper or dearer. Under
-   * `.adaptive()` it is the prior of values the node has not seen.
+   * `.compress()` it is the prior of values the node has not seen.
    */
   cdf(fn: Cdf): PInt {
     checkUnset(this._range.declared, 'p.int', 'prior');
@@ -108,11 +108,11 @@ export class PInt extends MethodNode<number> {
    * bit-length class. `window` is how many observations a table's counts
    * hold before they halve (1024 when left out), and `separate` keeps its
    * tables from starting where other nodes of its kind and window got to.
-   * Not with `.adaptive()`.
+   * Not with `.compress()`.
    */
   learn(options?: LearningOptions): PInt {
-    if (this._adaptive !== undefined) {
-      throw new TypeError('p.int learn and adaptive cannot both be set');
+    if (this._compress !== undefined) {
+      throw new TypeError('p.int learn and compress cannot both be set');
     }
     return this._declare('learn', 'p.int', options);
   }
@@ -124,19 +124,19 @@ export class PInt extends MethodNode<number> {
    * magnitudes. The bounds still hold, and a declared prior prices the values
    * the node has not seen. Not with `.learn()`. Set once.
    */
-  adaptive(options?: AdaptiveOptions): PInt {
-    if (this._adaptive !== undefined) {
-      throw new TypeError('p.int adaptive is already set');
+  compress(options?: CompressOptions): PInt {
+    if (this._compress !== undefined) {
+      throw new TypeError('p.int compress is already set');
     }
     if (learns(this._methods)) {
-      throw new TypeError('p.int learn and adaptive cannot both be set');
+      throw new TypeError('p.int learn and compress cannot both be set');
     }
     const { lo, hi, declared } = this._range;
-    return new PInt(lo, hi, declared, this._methods, checkAdaptive(options, 'p.int'));
+    return new PInt(lo, hi, declared, this._methods, checkCompress(options, 'p.int'));
   }
 
-  _adapted(options: AdaptiveOptions): PInt {
-    return this._adaptive !== undefined || learns(this._methods) ? this : this.adaptive(options);
+  _adapted(options: CompressOptions): PInt {
+    return this._compress !== undefined || learns(this._methods) ? this : this.compress(options);
   }
 
   _marker(): number {
@@ -150,12 +150,12 @@ export class PInt extends MethodNode<number> {
   /** This node with `methods` in place of its own. */
   _withMethods(methods: MethodSet): PInt {
     const { lo, hi, declared } = this._range;
-    return new PInt(lo, hi, declared, methods, this._adaptive);
+    return new PInt(lo, hi, declared, methods, this._compress);
   }
 
-  /** This node with these bounds and prior, keeping its methods and adaptive options. */
+  /** This node with these bounds and prior, keeping its methods and compress options. */
   private _with(lo: number | undefined, hi: number | undefined, prior: Prior | undefined): PInt {
-    return new PInt(lo, hi, prior, this._methods, this._adaptive);
+    return new PInt(lo, hi, prior, this._methods, this._compress);
   }
 
   _write(enc: Encoder, value: number): void {
