@@ -63,7 +63,7 @@ describe('p.enum digits', () => {
   });
 });
 
-describe('p.enum learn', () => {
+describe('p.enum adapt', () => {
   const plain = p.enum(['a', 'b', 'c', 'd']);
   const values = (() => {
     const rnd = mulberry32(5);
@@ -74,22 +74,22 @@ describe('p.enum learn', () => {
 
   it('round-trips a run, learning the skew under its options', () => {
     for (const node of [
-      plain.learn(),
-      plain.learn({ window: 8 }),
-      plain.weights([17, 1, 1, 1]).learn(),
+      plain.adapt(),
+      plain.adapt({ window: 8 }),
+      plain.weights([17, 1, 1, 1]).adapt(),
     ]) {
       expect(trip(p.array(node), values)).toEqual(values);
     }
-    expect(p.array(plain.learn()).encode(values)).not.toEqual(p.array(plain).encode(values));
+    expect(p.array(plain.adapt()).encode(values)).not.toEqual(p.array(plain).encode(values));
   });
 
   it('sets each method once, and not both', () => {
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.enum learn is already set'));
-    expect(() => plain.learn().compress()).toThrow(
-      new TypeError('p.enum learn and compress cannot both be set')
+    expect(() => plain.adapt().adapt()).toThrow(new TypeError('p.enum adapt is already set'));
+    expect(() => plain.adapt().compress()).toThrow(
+      new TypeError('p.enum adapt and compress cannot both be set')
     );
-    expect(() => plain.compress().learn()).toThrow(
-      new TypeError('p.enum learn and compress cannot both be set')
+    expect(() => plain.compress().adapt()).toThrow(
+      new TypeError('p.enum adapt and compress cannot both be set')
     );
     expect(() => plain.compress().compress()).toThrow(
       new TypeError('p.enum compress is already set')
@@ -97,10 +97,10 @@ describe('p.enum learn', () => {
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.learn({ window: 1.5 })).toThrow(
+    expect(() => plain.adapt({ window: 1.5 })).toThrow(
       new TypeError('p.enum learning window must be a positive integer, got 1.5')
     );
-    expect(() => plain.learn().weights([1])).toThrow(
+    expect(() => plain.adapt().weights([1])).toThrow(
       new TypeError('p.enum weights must list one weight per value: expected 4, got 1')
     );
   });

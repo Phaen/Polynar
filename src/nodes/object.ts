@@ -48,7 +48,7 @@ export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<In
    * its value starts with (its kind, or whether an optional field is
    * there), and its end, as symbols of the message's structure; and every
    * field as under its own `.compress(options)` unless it has `.compress()`
-   * or `.learn()` already, its nested objects, arrays and choices included.
+   * or `.adapt()` already, its nested objects, arrays and choices included.
    * Set once.
    */
   compress(options?: CompressOptions): PObject<S> {

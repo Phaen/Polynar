@@ -3,7 +3,7 @@ import { describe } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
-import type { LearningOptions } from './adaptive';
+import type { AdaptOptions } from './adaptive';
 import { learningOf, learns, MethodNode, type MethodSet } from './methods';
 import { checkCompress, resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
@@ -164,11 +164,11 @@ export class PDecimal extends MethodNode<number> {
    * its tables from starting where other nodes of its kind and window got to.
    * Not with `.compress()`.
    */
-  learn(options?: LearningOptions): PDecimal {
+  adapt(options?: AdaptOptions): PDecimal {
     if (this._compress !== undefined) {
-      throw new TypeError('p.decimal learn and compress cannot both be set');
+      throw new TypeError('p.decimal adapt and compress cannot both be set');
     }
-    return this._declare('learn', 'p.decimal', options);
+    return this._declare('adapt', 'p.decimal', options);
   }
 
   /**
@@ -176,14 +176,14 @@ export class PDecimal extends MethodNode<number> {
    * each is predicted from the node's past values plus a learned step, the
    * same values exactly, the numbers coded earlier in the same object, and a
    * prior over magnitudes. The bounds still hold, and a declared prior
-   * prices the values the node has not seen. Not with `.learn()`. Set once.
+   * prices the values the node has not seen. Not with `.adapt()`. Set once.
    */
   compress(options?: CompressOptions): PDecimal {
     if (this._compress !== undefined) {
       throw new TypeError('p.decimal compress is already set');
     }
     if (learns(this._methods)) {
-      throw new TypeError('p.decimal learn and compress cannot both be set');
+      throw new TypeError('p.decimal adapt and compress cannot both be set');
     }
     return this._with({ compress: checkCompress(options, 'p.decimal') });
   }

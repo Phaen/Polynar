@@ -1,7 +1,7 @@
 import { Encoder, Decoder } from '../packer';
 import { STRUCT, type CompressOptions } from '../predictor/types';
 import type { Kind } from './guards';
-import type { LearningOptions } from './adaptive';
+import type { AdaptOptions } from './adaptive';
 import { members, type Members } from './members';
 import { MethodNode, learningOf, type MethodSet } from './methods';
 import { describe } from './path';
@@ -37,25 +37,25 @@ export class PUuid extends MethodNode<string> {
     super();
     this._compress = _methods.compress;
     // Under `.compress()` the two tables learn; the bits carry nothing to learn.
-    const learn =
+    const adapt =
       learningOf(_methods) ??
       (_methods.compress === undefined ? undefined : { separate: _methods.compress.separate });
-    this._version = members(16, { weights: VERSION_WEIGHTS, learn }, 'p.uuid');
-    this._variant = members(4, { weights: VARIANT_WEIGHTS, learn }, 'p.uuid');
+    this._version = members(16, { weights: VERSION_WEIGHTS, adapt }, 'p.uuid');
+    this._variant = members(4, { weights: VARIANT_WEIGHTS, adapt }, 'p.uuid');
   }
 
   /**
    * Let the version and variant tables learn from the message, starting from
-   * their weights. `window` and `separate` as on every `.learn()`. Not with
+   * their weights. `window` and `separate` as on every `.adapt()`. Not with
    * `.compress()`.
    */
-  learn(options?: LearningOptions): PUuid {
-    return this._declare('learn', 'p.uuid', options);
+  adapt(options?: AdaptOptions): PUuid {
+    return this._declare('adapt', 'p.uuid', options);
   }
 
   /**
-   * The version and variant tables learn, as under `.learn()`, with the
-   * option `separate`; the other bits stay as they are. Not with `.learn()`.
+   * The version and variant tables learn, as under `.adapt()`, with the
+   * option `separate`; the other bits stay as they are. Not with `.adapt()`.
    */
   compress(options?: CompressOptions): PUuid {
     return this._adapt(options, 'p.uuid');

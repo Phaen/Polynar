@@ -1,7 +1,7 @@
 import { Encoder, Decoder } from '../packer';
 import { kindOf, type Kind } from './guards';
 import { oneOf, describe } from './path';
-import type { LearningOptions } from './adaptive';
+import type { AdaptOptions } from './adaptive';
 import { checkUnset } from './lattice';
 import { members, type MemberPrior, type Members } from './members';
 import { MethodNode, learningOf, type MethodSet } from './methods';
@@ -53,7 +53,7 @@ export class PEnum<T> extends MethodNode<T> {
     this._list = [...list]; // copy so later caller mutation can't change the node
     this._kinds = [...new Set(this._list.map(kindOf))];
     this._prior = prior;
-    this._members = members(this._list.length, { ...prior, learn: learningOf(_methods) }, 'p.enum');
+    this._members = members(this._list.length, { ...prior, adapt: learningOf(_methods) }, 'p.enum');
     this._compress = _methods.compress;
     if (this._compress === undefined) {
       this._radix = this._members.radix;
@@ -84,14 +84,14 @@ export class PEnum<T> extends MethodNode<T> {
    * kind and window got to. Part of the wire format, like the weights. Not
    * with `.compress()`.
    */
-  learn(options?: LearningOptions): PEnum<T> {
-    return this._declare('learn', 'p.enum', options);
+  adapt(options?: AdaptOptions): PEnum<T> {
+    return this._declare('adapt', 'p.enum', options);
   }
 
   /**
    * Code the members through the similarity predictor: each is predicted
    * from the members the node coded before, how recently and in what
-   * company, with the weights as their prior counts. Not with `.learn()`.
+   * company, with the weights as their prior counts. Not with `.adapt()`.
    * Set once.
    */
   compress(options?: CompressOptions): PEnum<T> {

@@ -102,7 +102,7 @@ export interface Adaptable {
 
 /**
  * `node` with `.compress(options)` on every node below it that has neither its own nor
- * `.learn()`, and on itself (spec Q4), all under one prior: `options.prior`, else `prior`, the
+ * `.adapt()`, and on itself (spec Q4), all under one prior: `options.prior`, else `prior`, the
  * root's default. A node reused in the tree maps to one adapted node.
  */
 export function applyCompress<T extends Adaptable>(

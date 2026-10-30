@@ -351,7 +351,7 @@ describe('IndexRange', () => {
       new TypeError('r weights requires both bounds')
     );
     expect(() => new IndexRange('r', 0, 3, (v) => v, adaptation)).toThrow(
-      new TypeError('r learn takes weights, not a cdf')
+      new TypeError('r adapt takes weights, not a cdf')
     );
     expect(
       () =>

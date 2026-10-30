@@ -332,7 +332,7 @@ const ROWS: Row[] = [
     label: 'Status feed',
     node: p.array(p.enum(['ok', 'warn', 'error'])).length(100),
     // Skewed odds the schema's author need not know: the node learns them.
-    tuned: p.array(p.enum(['ok', 'warn', 'error']).learn()).length(100),
+    tuned: p.array(p.enum(['ok', 'warn', 'error']).adapt()).length(100),
     proto: `syntax = "proto3";
       message StatusFeed {
         enum Status { OK = 0; WARN = 1; ERROR = 2; }

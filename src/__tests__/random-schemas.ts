@@ -193,7 +193,7 @@ const hotGen = <T>(draw: () => T): (() => T) => {
 };
 
 /** A method a node may declare, as its type has them: the learning of its priors. */
-type Method = 'learn';
+type Method = 'adapt';
 
 /** `c` with each of `methods` declared a third of the time, in the order listed, after its other refinements. */
 const withMethods = (c: Case, methods: readonly Method[]): Case => {
@@ -244,21 +244,21 @@ const sugarCase = (c: Case): Case => {
     : c;
 };
 
-/** `.learn()` on a count: the defaults, apart from its kin, or a window of at least `members`. */
-const randLearn = (members: number): Step => {
+/** `.adapt()` on a count: the defaults, apart from its kin, or a window of at least `members`. */
+const randAdapt = (members: number): Step => {
   const draw = rand();
   if (draw < 0.4) {
-    return { apply: (n) => n.learn(), src: '.learn()' };
+    return { apply: (n) => n.adapt(), src: '.adapt()' };
   }
   if (draw < 0.6) {
-    return { apply: (n) => n.learn({ separate: true }), src: '.learn({ separate: true })' };
+    return { apply: (n) => n.adapt({ separate: true }), src: '.adapt({ separate: true })' };
   }
   const window = members + randInt(0, 64);
-  return { apply: (n) => n.learn({ window }), src: `.learn({ window: ${window} })` };
+  return { apply: (n) => n.adapt({ window }), src: `.adapt({ window: ${window} })` };
 };
 
 /** The methods of a number: its learning, which `.compress()` excludes. */
-const NUMBER_METHODS: readonly Method[] = ['learn'];
+const NUMBER_METHODS: readonly Method[] = ['adapt'];
 
 /** A number case compress through `a` where set, else with `methods`. */
 const numberCase = (c: Case, a: Step | undefined, methods = NUMBER_METHODS): Case =>
@@ -859,7 +859,7 @@ const uuidCase = (): Case => {
     const a = randCompress(16);
     return { build: (m) => a.apply(c.build(m)), gen: c.gen, src: `${c.src}${a.src}` };
   }
-  return withMethods(c, ['learn']);
+  return withMethods(c, ['adapt']);
 };
 
 export const scalarCase = (): Case => {
@@ -1174,7 +1174,7 @@ const countSteps = (length: number): Step[] => {
   }
   // Without a max, a count learns on the magnitude scale now and then.
   if (open && rand() < 0.25) {
-    steps.push(randLearn(2));
+    steps.push(randAdapt(2));
   }
   // A count prior needs a max and a free length.
   if (free && rand() < 0.5) {
@@ -1189,7 +1189,7 @@ const countSteps = (length: number): Step[] => {
       add(`.weights(${json(w)})`, (n) => n.weights(w));
     }
     if (r >= 2) {
-      steps.push(randLearn(hi - lo + 1));
+      steps.push(randAdapt(hi - lo + 1));
     }
   }
   return steps;

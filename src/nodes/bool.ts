@@ -4,7 +4,7 @@ import { loadedPriors } from '../predictor/prior';
 import type { MarkerPrior } from '../predictor/session';
 import { STRUCT, type CompressOptions, type Resolved } from '../predictor/types';
 import type { Kind } from './guards';
-import type { LearningOptions } from './adaptive';
+import type { AdaptOptions } from './adaptive';
 import { checkUnset } from './lattice';
 import { markerPrior, ownMarker, readOwnMarker } from './markers';
 import { members, type MemberPrior, type Members } from './members';
@@ -31,7 +31,7 @@ export class PBool extends MethodNode<boolean> {
   ) {
     super();
     this._prior = prior;
-    this._members = members(2, { ...prior, learn: learningOf(_methods) }, 'p.bool');
+    this._members = members(2, { ...prior, adapt: learningOf(_methods) }, 'p.bool');
     this._compress = _methods.compress;
     if (this._compress === undefined) {
       this._radix = this._members.radix;
@@ -61,14 +61,14 @@ export class PBool extends MethodNode<boolean> {
    * kind and window got to. Part of the wire format, like the weights. Not
    * with `.compress()`.
    */
-  learn(options?: LearningOptions): PBool {
-    return this._declare('learn', 'p.bool', options);
+  adapt(options?: AdaptOptions): PBool {
+    return this._declare('adapt', 'p.bool', options);
   }
 
   /**
    * Code the values through the similarity predictor, as the symbols true
    * and false of the structure around them, with the weights as their prior
-   * counts. Not with `.learn()`. Set once.
+   * counts. Not with `.adapt()`. Set once.
    */
   compress(options?: CompressOptions): PBool {
     return this._adapt(options, 'p.bool');

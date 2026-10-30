@@ -186,12 +186,12 @@ describe('p.object().compress()', () => {
     expect(size(p.array(Row).compress())).toBeLessThan(size(p.array(Row)));
   });
 
-  it('leaves a field with .learn() or its own .compress() as it is', () => {
-    const learned = p.bool().learn();
+  it('leaves a field with .adapt() or its own .compress() as it is', () => {
+    const learned = p.bool().adapt();
     const own = p.string().compress({ window: 8 });
     const inner = p.object({ x: p.int() }).compress({ window: 16 });
     const below = p.bool();
-    const kept = p.array(below).learn();
+    const kept = p.array(below).adapt();
     const node = p.object({ learned, own, inner, kept, fresh: p.int() }).compress();
     const fields = shape(node);
     expect(fields.learned).toBe(learned);

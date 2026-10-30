@@ -164,7 +164,7 @@ describe('p.union structure symbols', () => {
   });
 });
 
-describe('p.union learn', () => {
+describe('p.union adapt', () => {
   const plain = p.union([p.int().min(0).max(3), p.string().max(3)]);
   const values = (() => {
     const rnd = mulberry32(5);
@@ -172,19 +172,19 @@ describe('p.union learn', () => {
   })();
 
   it('round-trips a run, learning the skew under its options', () => {
-    for (const node of [plain.learn(), plain.learn({ window: 8 }), plain.weights([9, 1]).learn()]) {
+    for (const node of [plain.adapt(), plain.adapt({ window: 8 }), plain.weights([9, 1]).adapt()]) {
       expect(trip(p.array(node), values)).toEqual(values);
     }
-    expect(p.array(plain.learn()).encode(values)).not.toEqual(p.array(plain).encode(values));
+    expect(p.array(plain.adapt()).encode(values)).not.toEqual(p.array(plain).encode(values));
   });
 
   it('sets each method once, and not both', () => {
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.union learn is already set'));
-    expect(() => plain.learn().compress()).toThrow(
-      new TypeError('p.union learn and compress cannot both be set')
+    expect(() => plain.adapt().adapt()).toThrow(new TypeError('p.union adapt is already set'));
+    expect(() => plain.adapt().compress()).toThrow(
+      new TypeError('p.union adapt and compress cannot both be set')
     );
-    expect(() => plain.compress().learn()).toThrow(
-      new TypeError('p.union learn and compress cannot both be set')
+    expect(() => plain.compress().adapt()).toThrow(
+      new TypeError('p.union adapt and compress cannot both be set')
     );
     expect(() => plain.compress().compress()).toThrow(
       new TypeError('p.union compress is already set')
@@ -192,7 +192,7 @@ describe('p.union learn', () => {
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.learn({ window: 0 })).toThrow(
+    expect(() => plain.adapt({ window: 0 })).toThrow(
       new RangeError('p.union learning window must be a positive integer, got 0')
     );
   });
@@ -240,12 +240,12 @@ describe('p.union compress', () => {
     );
   });
 
-  it('adapts its members unless they learn or adapt already', () => {
-    const learning = p.bool().learn();
+  it('adapts its members unless they adapt already', () => {
+    const learning = p.bool().adapt();
     const node = p.union([p.int(), learning]).compress();
     const values = [1, true, 2, false, true];
     expect(trip(p.array(node), values)).toEqual(values);
-    const kept = p.union([p.int(), p.bool()]).learn();
+    const kept = p.union([p.int(), p.bool()]).adapt();
     expect(kept._adapted({}, new Map())).toBe(kept);
     expect(trip(p.object({ v: kept }).compress(), { v: true })).toEqual({ v: true });
   });

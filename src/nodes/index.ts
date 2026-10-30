@@ -37,7 +37,7 @@ export type { Infer, InferShape, InferTagged } from './infer';
 export type { Cdf } from './weights';
 export { members } from './members';
 export type { Members, MemberPrior } from './members';
-export type { LearningOptions } from './adaptive';
+export type { AdaptOptions } from './adaptive';
 export type { CompressOptions, Prior } from '../predictor/types';
 export { ProseModels, buildProseModel } from './prose';
 export type { ProseModel, ProseModelOptions } from './prose';

@@ -122,7 +122,7 @@ Each `p.*` factory creates a node for one type, and the node's methods narrow wh
 - [Priors: `.weights()`](#priors-weights)
 - [Priors as a function: `.cdf()`](#priors-as-a-function-cdf)
 - [Methods](#methods)
-- [Priors that learn: `.learn()`](#priors-that-learn-learn)
+- [Priors that adapt: `.adapt()`](#priors-that-adapt-adapt)
 - [The predictor: `.compress()`](#the-predictor-compress)
 
 ### `p.int()`
@@ -135,7 +135,7 @@ An integer. Infers `number`. Non-integers, NaN and Infinity throw; `-0` is store
 | `.max(n: number)`                      | Upper bound, an integer; larger values throw. With both bounds the value takes exactly log2(max − min + 1) bits. The range can't span more than 2^53 values, and an empty range throws.                                                                                                                                                                               |
 | `.cdf(fn: (v: number) => number)`      | Prior over the values from `min` to `max`, called with the value itself; needs both bounds.                                                                                                                                                                                                                                                                           |
 | `.weights(w: number[])`                | Prior: one weight per value from `min` to `max`, lowest first; needs both bounds.                                                                                                                                                                                                                                                                                     |
-| `.learn(options?: LearningOptions)`    | Prior that learns from the message; see [Priors that learn](#priors-that-learn-learn).                                                                                                                                                                                                                                                                                |
+| `.adapt(options?: AdaptOptions)`       | Prior that adapts to the message; see [Priors that adapt](#priors-that-adapt-adapt).                                                                                                                                                                                                                                                                                  |
 | `.compress(options?: CompressOptions)` | Predicts each value from the node's past values, the step it learns between them and the numbers before it in the same object, so counters, timestamps and ids that recur cost a few bits. With both bounds a value the node hasn't seen yet costs what the range takes, and `.weights()` or `.cdf()` price it instead; see [The predictor](#the-predictor-compress). |
 
 ### `p.decimal(step: number)`
@@ -148,7 +148,7 @@ A number on a fixed decimal step, like `p.decimal(0.01)` for cents. Infers `numb
 | `.max(n: number)`                      | Upper bound; larger values throw. With both bounds the value takes a fixed number of bits: `p.decimal(0.01).min(0).max(100)` fits a price in 2 bytes. The range can't span more than 2^53 values, and an empty range throws. |
 | `.cdf(fn: (k: number) => number)`      | Prior over the grid, called with `k` for the k-th multiple of the step (`value / step`); needs both bounds.                                                                                                                  |
 | `.weights(w: number[])`                | Prior: one weight per grid point from `min` to `max`, lowest first; needs both bounds.                                                                                                                                       |
-| `.learn(options?: LearningOptions)`    | Prior that learns from the message; see [Priors that learn](#priors-that-learn-learn).                                                                                                                                       |
+| `.adapt(options?: AdaptOptions)`       | Prior that adapts to the message; see [Priors that adapt](#priors-that-adapt-adapt).                                                                                                                                         |
 | `.compress(options?: CompressOptions)` | As on `p.int`, on the value's multiple of the step; see [The predictor](#the-predictor-compress).                                                                                                                            |
 
 ### `p.float()`
@@ -203,7 +203,7 @@ A boolean, one bit. Infers `boolean`.
 | Method                                 | Description                                                                                                                                           |
 | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.weights(w: [number, number])`        | Prior: one weight per value, as `[true, false]`.                                                                                                      |
-| `.learn(options?: LearningOptions)`    | Prior that learns from the message; see [Priors that learn](#priors-that-learn-learn).                                                                |
+| `.adapt(options?: AdaptOptions)`       | Prior that adapts to the message; see [Priors that adapt](#priors-that-adapt-adapt).                                                                  |
 | `.compress(options?: CompressOptions)` | Codes each value as a symbol predicted from the structure around it, with `.weights()` as prior counts; see [The predictor](#the-predictor-compress). |
 
 ### `p.enum(list: readonly unknown[])`
@@ -213,7 +213,7 @@ One value out of a fixed list: `p.enum(['red', 'green', 'blue'])` costs log2(3) 
 | Method                                 | Description                                                                                                                                                                             |
 | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.weights(w: number[])`                | Prior: one weight per member, in list order.                                                                                                                                            |
-| `.learn(options?: LearningOptions)`    | Prior that learns from the message; see [Priors that learn](#priors-that-learn-learn).                                                                                                  |
+| `.adapt(options?: AdaptOptions)`       | Prior that adapts to the message; see [Priors that adapt](#priors-that-adapt-adapt).                                                                                                    |
 | `.compress(options?: CompressOptions)` | Predicts each member as a whole from the members the node wrote before, how recently and next to what, with `.weights()` as prior counts; see [The predictor](#the-predictor-compress). |
 
 ### `p.date()`
@@ -227,7 +227,7 @@ A `Date`, lossless to the millisecond by default. Infers `Date`. An invalid date
 | `.precision(unit: DateUnit, step = 1)` | Rounds each date down to the start of its UTC bucket: smaller, but lossy. Weeks start on Monday, months and years follow the calendar, and `step` groups units, so `('month', 3)` is quarters. Steps of months and years count from year 0, smaller units from 1970-01-01, so `('day', 7)` starts on a Thursday where `'week'` starts on Monday. |
 | `.cdf(fn: (b: number) => number)`      | Prior over the buckets, called with the bucket number, counting from the bucket that holds 1970-01-01 as 0; needs both bounds.                                                                                                                                                                                                                   |
 | `.weights(w: number[])`                | Prior: one weight per bucket from `min` to `max`, earliest first; needs both bounds.                                                                                                                                                                                                                                                             |
-| `.learn(options?: LearningOptions)`    | Prior that learns from the message; see [Priors that learn](#priors-that-learn-learn).                                                                                                                                                                                                                                                           |
+| `.adapt(options?: AdaptOptions)`       | Prior that adapts to the message; see [Priors that adapt](#priors-that-adapt-adapt).                                                                                                                                                                                                                                                             |
 | `.compress(options?: CompressOptions)` | As on `p.int`, on the date's bucket at the node's precision; see [The predictor](#the-predictor-compress).                                                                                                                                                                                                                                       |
 
 `DateUnit` is `'millisecond' | 'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'`. Bounds compare buckets, so a `min` in the middle of a bucket allows that whole bucket, and a date can decode to a time before `min`.
@@ -236,10 +236,10 @@ A `Date`, lossless to the millisecond by default. Infers `Date`. An invalid date
 
 A UUID string: lowercase `8-4-4-4-12` hex, as `crypto.randomUUID()` gives it; anything else throws a `RangeError`. Infers `string`. The version digit and the variant bits are coded under weights that favour version 4, then 1 and 7, and RFC 4122's variant, and the other 122 bits as they are, so a v4 UUID takes about 16 bytes against 36 as text. In `p.any([p.uuid()])` it takes every string that is a UUID.
 
-| Method                                 | Description                                                                                        |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `.learn(options?: LearningOptions)`    | The version and variant learn from the message; see [Priors that learn](#priors-that-learn-learn). |
-| `.compress(options?: CompressOptions)` | The version and variant learn, as under `.learn()`; the other bits carry nothing to predict.       |
+| Method                                 | Description                                                                                      |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `.adapt(options?: AdaptOptions)`       | The version and variant adapt to the message; see [Priors that adapt](#priors-that-adapt-adapt). |
+| `.compress(options?: CompressOptions)` | The version and variant learn, as under `.adapt()`; the other bits carry nothing to predict.     |
 
 ### `p.null()`
 
@@ -264,13 +264,13 @@ An array of one item type, stored with its length. Infers an array of the item's
 | `.length(n: number)`                   | Fixed item count, the same as `.min(n).max(n)`; costs zero bits.                                                                                                                                              |
 | `.cdf(fn: (n: number) => number)`      | Prior over the item count, called with the count; needs `.max`.                                                                                                                                               |
 | `.weights(w: number[])`                | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                                                                                                                           |
-| `.learn(options?: LearningOptions)`    | Prior over the item count that learns from the message; see [Priors that learn](#priors-that-learn-learn).                                                                                                    |
+| `.adapt(options?: AdaptOptions)`       | Prior over the item count that adapts to the message; see [Priors that adapt](#priors-that-adapt-adapt).                                                                                                      |
 | `.compress(options?: CompressOptions)` | Codes where the array starts and ends as symbols instead of its count, which `.min()` and `.max()` still bound, and the items as under their own `.compress()`; see [The predictor](#the-predictor-compress). |
 | `.sorted()`                            | Items must be in ascending order; a smaller item after a larger one throws. Can't be combined with `.unordered()`.                                                                                            |
 | `.unique()`                            | Items must be distinct; a repeat throws.                                                                                                                                                                      |
 | `.unordered()`                         | Items are written in any order and decode in ascending order.                                                                                                                                                 |
 
-The last three need items of `p.string`, or with a fixed set of values: bounded `p.int`, `p.date` or `p.decimal`, `p.enum` or `p.bool`, without `.weights()`, `.learn()` or `.compress()` of their own. Ascending means by value, enum members in list order, `true` before `false`, and strings by UTF-16 code units, as JS sorts them. Each restriction leaves fewer possible arrays, and the encoding drops exactly what it rules out: 1000 distinct sorted `u32` ids take about 2950 bytes instead of 4000, and a shuffled 52-card deck with `.unique()` 29 bytes instead of 38. `p.map`, `p.record` and `p.set` keys are distinct already, so there `.unordered()` alone does the same.
+The last three need items of `p.string`, or with a fixed set of values: bounded `p.int`, `p.date` or `p.decimal`, `p.enum` or `p.bool`, without `.weights()`, `.adapt()` or `.compress()` of their own. Ascending means by value, enum members in list order, `true` before `false`, and strings by UTF-16 code units, as JS sorts them. Each restriction leaves fewer possible arrays, and the encoding drops exactly what it rules out: 1000 distinct sorted `u32` ids take about 2950 bytes instead of 4000, and a shuffled 52-card deck with `.unique()` 29 bytes instead of 38. `p.map`, `p.record` and `p.set` keys are distinct already, so there `.unordered()` alone does the same.
 
 Strings are written ascending, each as how many leading characters it shares with the one before, then the rest in the string node's own spelling, so `.charset()`, `.prose()` and `.compress()` still apply. With `.unique()` alone an array takes the shorter of that followed by their order and the strings as they stand, at the cost of a bit to say which. 1000 distinct English words with `.unordered()` take about 4350 bytes instead of 6240, and 1000 URLs about 13 KB instead of 57 KB.
 
@@ -287,13 +287,13 @@ A `Map` from one key type to one value type: `p.map(p.string(), p.int())` is `Ma
 | `.length(n: number)`                   | Fixed entry count, the same as `.min(n).max(n)`; costs zero bits.                                                                                                            |
 | `.cdf(fn: (n: number) => number)`      | Prior over the entry count, called with the count; needs `.max`.                                                                                                             |
 | `.weights(w: number[])`                | Prior: one weight per count from `min` (or 0) to `max`, lowest first; needs `.max`.                                                                                          |
-| `.learn(options?: LearningOptions)`    | Prior over the entry count that learns from the message; see [Priors that learn](#priors-that-learn-learn).                                                                  |
+| `.adapt(options?: AdaptOptions)`       | Prior over the entry count that adapts to the message; see [Priors that adapt](#priors-that-adapt-adapt).                                                                    |
 | `.compress(options?: CompressOptions)` | Codes where the map starts and ends as symbols instead of its count, and the keys and values as under their own `.compress()`; see [The predictor](#the-predictor-compress). |
 | `.unordered()`                         | Entries are written in any order and decode in ascending key order, so insertion order is lost; see [`p.array`](#parrayitem-pnode).                                          |
 
 ### `p.record(value: PNode)`
 
-A plain object with any string keys and one value type: `p.record(p.int())` is `{ [key: string]: number }`. It's stored like `p.map(p.string(), value)`, or `p.map(p.string().compress(), value)` under `.learn()`, and decodes to a plain object; under `.compress()` each key is a key symbol and its characters. Unlike `p.object`, every key is written, so it suits dictionaries whose keys aren't known up front. A record counts as an object, so it can't sit next to `p.object` or `p.tagged` in a `p.union`. Same methods as `p.map`; with `.unordered()` the keys decode in ascending order, as `p.array` sorts strings.
+A plain object with any string keys and one value type: `p.record(p.int())` is `{ [key: string]: number }`. It's stored like `p.map(p.string(), value)`, or `p.map(p.string().compress(), value)` under `.adapt()`, and decodes to a plain object; under `.compress()` each key is a key symbol and its characters. Unlike `p.object`, every key is written, so it suits dictionaries whose keys aren't known up front. A record counts as an object, so it can't sit next to `p.object` or `p.tagged` in a `p.union`. Same methods as `p.map`; with `.unordered()` the keys decode in ascending order, as `p.array` sorts strings.
 
 ### `p.set(item: PNode)`
 
@@ -306,7 +306,7 @@ A value or `undefined`, at the cost of one bit: `p.optional(p.int())` is `number
 | Method                                 | Description                                                                                                                                                                                                              |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `.weights(w: [number, number])`        | Prior on presence, as `[present, absent]`.                                                                                                                                                                               |
-| `.learn(options?: LearningOptions)`    | Prior on presence that learns from the message; see [Priors that learn](#priors-that-learn-learn).                                                                                                                       |
+| `.adapt(options?: AdaptOptions)`       | Prior on presence that adapts to the message; see [Priors that adapt](#priors-that-adapt-adapt).                                                                                                                         |
 | `.compress(options?: CompressOptions)` | Codes whether the value is there as a symbol predicted from the structure around it, with `.weights()` as prior counts, and the inner node as under its own `.compress()`; see [The predictor](#the-predictor-compress). |
 
 ### `p.nullable(node: PNode)`
@@ -316,7 +316,7 @@ A value or `null`: `p.nullable(p.string())` is `string | null`, written the same
 | Method                                 | Description                                                                                                                                                                                                                                   |
 | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.weights(w: [number, number])`        | Prior: one weight per side, as `[value, null]`.                                                                                                                                                                                               |
-| `.learn(options?: LearningOptions)`    | Prior that learns from the message; see [Priors that learn](#priors-that-learn-learn).                                                                                                                                                        |
+| `.adapt(options?: AdaptOptions)`       | Prior that adapts to the message; see [Priors that adapt](#priors-that-adapt-adapt).                                                                                                                                                          |
 | `.compress(options?: CompressOptions)` | Codes a null as a symbol of its own in place of the value's kind, predicted from the structure around it, with `.weights()` as prior counts, and the inner node as under its own `.compress()`; see [The predictor](#the-predictor-compress). |
 
 ### `p.union(members: PNode[])`
@@ -326,7 +326,7 @@ One of several members: `p.union([p.string(), p.int(), p.array(p.string())])` is
 | Method                                 | Description                                                                                                                                                                                                                                                                 |
 | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.weights(w: number[])`                | Prior: one weight per member, in list order.                                                                                                                                                                                                                                |
-| `.learn(options?: LearningOptions)`    | Prior that learns from the message; see [Priors that learn](#priors-that-learn-learn).                                                                                                                                                                                      |
+| `.adapt(options?: AdaptOptions)`       | Prior that adapts to the message; see [Priors that adapt](#priors-that-adapt-adapt).                                                                                                                                                                                        |
 | `.compress(options?: CompressOptions)` | Codes the member as the symbol of the value's kind (a string, an integer, a number, true, false…), predicted from the structure around it, with `.weights()` as prior counts, and each member as under its own `.compress()`; see [The predictor](#the-predictor-compress). |
 
 ### `p.tagged(key: string, members: Record<string, PObject>)`
@@ -345,7 +345,7 @@ The tag costs log2(members) bits and is never written as text. The order of the 
 | Method                                 | Description                                                                                                                            |
 | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `.weights(w: number[])`                | Prior: one weight per member, in key order.                                                                                            |
-| `.learn(options?: LearningOptions)`    | Prior that learns from the message; see [Priors that learn](#priors-that-learn-learn).                                                 |
+| `.adapt(options?: AdaptOptions)`       | Prior that adapts to the message; see [Priors that adapt](#priors-that-adapt-adapt).                                                   |
 | `.compress(options?: CompressOptions)` | Predicts the tag as `p.enum` does its members, and codes each member as `p.object` does; see [The predictor](#the-predictor-compress). |
 
 ### `p.lazy(resolve: () => PNode)`
@@ -402,28 +402,28 @@ What `i` is depends on the node: the value itself on `p.int`, the step count (`v
 
 ### Methods
 
-A node writes each value by its plain spelling unless a method says otherwise: `.weights()` and `.cdf()` set the odds a value is coded under, `.sorted()`, `.unique()` and `.unordered()` drop what a restricted order rules out, and `.learn()` and `.compress()` learn from the message as it goes, as the next two sections describe.
+A node writes each value by its plain spelling unless a method says otherwise: `.weights()` and `.cdf()` set the odds a value is coded under, `.sorted()`, `.unique()` and `.unordered()` drop what a restricted order rules out, and `.adapt()` and `.compress()` learn from the message as it goes, as the next two sections describe.
 
-### Priors that learn: `.learn()`
+### Priors that adapt: `.adapt()`
 
-`.learn()` makes a node's own prior learn from the message. The weights, or one per value when none are given, are where it starts; every value the node then writes counts as one observation, so values that keep recurring get cheaper as the message goes on. The encoder tries a few learning rates per message and says which one it used, so there is nothing to tune.
+`.adapt()` makes a node's own prior learn from the message. The weights, or one per value when none are given, are where it starts; every value the node then writes counts as one observation, so values that keep recurring get cheaper as the message goes on. The encoder tries a few learning rates per message and says which one it used, so there is nothing to tune.
 
 ```typescript
-p.array(p.enum(['ok', 'warn', 'error']).learn()).length(100); // a feed that is mostly 'ok': about 9 bytes instead of 20
-p.array(p.int().min(0).max(1000).learn()).max(500); // readings that keep coming back
-p.array(p.object({ id: p.int(), note: p.optional(p.string()).learn() })); // notes that are mostly absent
+p.array(p.enum(['ok', 'warn', 'error']).adapt()).length(100); // a feed that is mostly 'ok': about 9 bytes instead of 20
+p.array(p.int().min(0).max(1000).adapt()).max(500); // readings that keep coming back
+p.array(p.object({ id: p.int(), note: p.optional(p.string()).adapt() })); // notes that are mostly absent
 ```
 
 The prior is what `.weights()` sets: the value of a `p.bool`, `p.enum`, `p.int`, `p.decimal` or `p.date`, the side of a `p.optional` or `p.nullable`, the member of a `p.union` or `p.tagged`, the count of an array, map, record or set. It works with weights but not with `.cdf()`, since a function can't count. A range without bounds or wider than 65536 values, and a length or count without a max, learns by the bit-length class of its distance from the min, else the max, else 0.
 
-`.learn({ window, separate })` sets what the prior learns by:
+`.adapt({ window, separate })` sets what the prior learns by:
 
 - `window` is how many observations the counts hold before they halve, so the newest weigh most. It is 1024 when left out, and a node with more values than the window raises it to that number.
 - `separate` keeps the node apart, as the rest of this section describes.
 
 Every value one node writes in a message goes through one table, so array items, record values and recursion learn from each other. The same node placed in two fields shares its table; two separate nodes don't, but a node can start from what its kind learned: once another node of the same kind and window has learned in the message, its fastest learning rate is replaced by a blend of what they learned, which its own values soon outweigh. The fields of an API response that all hold URLs, ids or counts then learn sooner, and a field unlike the others keeps its own rates, so it loses next to nothing. `separate` keeps a node apart. From its second value on, a table spends one bit to stay static, a few more to pick a learning rate, so a message too short to learn from costs about one bit more, and a node written once per message costs nothing extra. It pays when many values go through one node in one message; one value per message gains nothing.
 
-If your values simply repeat, `.learn()` is enough: it notices what keeps coming back and costs almost nothing. If each value tends to follow from the ones around it, like a counter, a timestamp, a string that looks like the last one, or any kind of text, `.compress()` sees that and pays for it in time and memory. The two don't go together on one node.
+If your values simply repeat, `.adapt()` is enough: it notices what keeps coming back and costs almost nothing. If each value tends to follow from the ones around it, like a counter, a timestamp, a string that looks like the last one, or any kind of text, `.compress()` sees that and pays for it in time and memory. The two don't go together on one node.
 
 ### The predictor: `.compress()`
 
@@ -435,7 +435,7 @@ On `p.object`, `p.array`, `p.map`, `p.record`, `p.set`, `p.optional`, `p.nullabl
 p.array(p.object({ id: p.int(), name: p.string(), tags: p.array(p.enum(['a', 'b'])) })).compress();
 ```
 
-A node below with a `.compress(options)` of its own keeps its options, a node with `.learn()` keeps its learned prior and the nodes below it stay as they are, and a node used in two places stays one node.
+A node below with a `.compress(options)` of its own keeps its options, a node with `.adapt()` keeps its learned prior and the nodes below it stay as they are, and a node used in two places stays one node.
 
 ```typescript
 p.string().compress(); // alice.txt: 43,364 bytes, where brotli takes 51,615
@@ -539,11 +539,11 @@ A value that can't be encoded throws with its path in front and the limit it bro
 - `AnyValue` — the values `p.any` encodes and decodes.
 - `Cdf` — `(v: number) => number`, the function `.cdf()` takes.
 - `FloatWeights` — `{ zero, integer, decimal, fraction, other }`, what `p.float().weights()` takes.
-- `LearningOptions` — `{ window?: number; separate?: boolean }`, what `.learn()` takes.
+- `AdaptOptions` — `{ window?: number; separate?: boolean }`, what `.adapt()` takes.
 - `CompressOptions` — what `.compress()` takes; see [The predictor](#the-predictor-compress).
 - `Prior` — a prior the predictor starts from, as `CompressOptions.prior` takes it and `train` returns; `Priors.text` and `Priors.json` are the shipped ones.
 - `TrainOptions` — what `train` takes; see [Priors](#priors).
-- `MemberPrior` — `{ weights?: readonly number[]; rows?: readonly (readonly number[])[]; learn?: LearningOptions }`, the prior `members` takes.
+- `MemberPrior` — `{ weights?: readonly number[]; rows?: readonly (readonly number[])[]; adapt?: AdaptOptions }`, the prior `members` takes.
 - `Members` — what `members` returns: its `count`, its `radix` when every member is equally likely, `write(enc, pos, row?)` and `read(dec, row?)`.
 - `Bucket` — `[cum, freq, total]`, one coding's range for a symbol, as `composeAlternatives` takes it.
 - `DateUnit` — the units `.precision()` takes.
@@ -601,11 +601,11 @@ const Theme = p.object({ name: p.string().max(20), accent: new PColor() });
 | `dec.charge(count: number)`                                                                                 | Call right after reading a length, before reading its `count` items: items that only the end of the input would supply count against `limit` at once.                                                                                                                                                                                     |
 | `dec.digits`                                                                                                | The input's length in digits.                                                                                                                                                                                                                                                                                                             |
 
-A node that picks one of a fixed number of members can spell it through `members(count: number, prior: MemberPrior | undefined, who: string)`, which returns a `Members`: the same object every built-in uses for its enums, booleans and tags. Its `write(enc, pos)` and `read(dec)` are uniform without a prior, weighted like `.weights()` with `{ weights }`, and learning like `.learn()` with `{ learn: options }`; `who` names the node in errors, and its kind: tables of the same `who`, count, weights and window learn as one kind. `{ rows }` gives one weight list per context in place of `weights`, and `write` and `read` then take the row as a third argument. One `Members` is one table, so the three channels below learn from each other, and three separate ones would each keep their own, starting from what the others learned.
+A node that picks one of a fixed number of members can spell it through `members(count: number, prior: MemberPrior | undefined, who: string)`, which returns a `Members`: the same object every built-in uses for its enums, booleans and tags. Its `write(enc, pos)` and `read(dec)` are uniform without a prior, weighted like `.weights()` with `{ weights }`, and learning like `.adapt()` with `{ adapt: options }`; `who` names the node in errors, and its kind: tables of the same `who`, count, weights and window learn as one kind. `{ rows }` gives one weight list per context in place of `weights`, and `write` and `read` then take the row as a third argument. One `Members` is one table, so the three channels below learn from each other, and three separate ones would each keep their own, starting from what the others learned.
 
 ```typescript
 import { p, PNode, Encoder, Decoder, members } from 'polynar';
-import type { LearningOptions, MemberPrior, Members } from 'polynar';
+import type { AdaptOptions, MemberPrior, Members } from 'polynar';
 
 class PColor extends PNode<{ r: number; g: number; b: number }> {
   private readonly channel: Members;
@@ -615,8 +615,8 @@ class PColor extends PNode<{ r: number; g: number; b: number }> {
     this.channel = members(256, prior, 'PColor');
   }
 
-  learn(options?: LearningOptions): PColor {
-    return new PColor({ ...this.prior, learn: options ?? {} });
+  adapt(options?: AdaptOptions): PColor {
+    return new PColor({ ...this.prior, adapt: options ?? {} });
   }
 
   _write(enc: Encoder, c: { r: number; g: number; b: number }): void {
@@ -629,7 +629,7 @@ class PColor extends PNode<{ r: number; g: number; b: number }> {
   }
 }
 
-const Palette = p.array(new PColor().learn()).max(64);
+const Palette = p.array(new PColor().adapt()).max(64);
 ```
 
 ## Examples

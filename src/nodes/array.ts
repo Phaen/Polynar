@@ -8,7 +8,7 @@ import { atPath } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
 import { checkIndex, type Cdf } from './weights';
-import type { LearningOptions } from './adaptive';
+import type { AdaptOptions } from './adaptive';
 import {
   checkOrder,
   ordinal,
@@ -79,7 +79,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
       this._resolved = resolve(this._compress, loadedPriors.json, 'p.array');
     }
     this._holds = this._compress !== undefined || item._holdsCompress;
-    this._choice = members(2, learning === undefined ? undefined : { learn: learning }, 'p.array');
+    this._choice = members(2, learning === undefined ? undefined : { adapt: learning }, 'p.array');
   }
 
   /** Require at least `n` items. A raised floor packs the count denser. */
@@ -138,8 +138,8 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
    * window got to. Takes weights, not a cdf; part of the wire format, like the
    * weights. Not with `.compress()`.
    */
-  learn(options?: LearningOptions): PArray<TItem> {
-    return this._declare('learn', 'p.array', options);
+  adapt(options?: AdaptOptions): PArray<TItem> {
+    return this._declare('adapt', 'p.array', options);
   }
 
   /**
@@ -147,9 +147,9 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
    * after the symbol it starts with, and its end in place of a count, as
    * symbols of the message's structure, `.min()` and `.max()` bounding where
    * the end may come; and the item as under its own `.compress(options)`
-   * unless it has `.compress()` or `.learn()` already. A restricted order
+   * unless it has `.compress()` or `.adapt()` already. A restricted order
    * still holds: the items go one by one, ascending unless they keep their
-   * own order. Not with `.learn()`, `.weights()` or `.cdf()`. Set once.
+   * own order. Not with `.adapt()`, `.weights()` or `.cdf()`. Set once.
    */
   compress(options?: CompressOptions): PArray<TItem> {
     return this._sugar(options, 'p.array');

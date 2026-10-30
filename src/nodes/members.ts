@@ -9,19 +9,19 @@ import {
   checkAdaptation,
   checkCompressMembers,
   kinOf,
-  type LearningOptions,
+  type AdaptOptions,
 } from './adaptive';
 import { buildWeights, readTable, writeTable, type WeightTable } from './weights';
 
 /**
  * A node's declared prior over its members: weights, or `rows` of weights
  * with one list per context the members are spelled in, whose odds learn
- * under the `learn` options when set, `{}` for the defaults.
+ * under the `adapt` options when set, `{}` for the defaults.
  */
 export interface MemberPrior {
   readonly weights?: readonly number[];
   readonly rows?: readonly (readonly number[])[];
-  readonly learn?: LearningOptions;
+  readonly adapt?: AdaptOptions;
 }
 
 /**
@@ -93,7 +93,7 @@ class CompressMembers implements Members {
   constructor(
     readonly count: number,
     rows: readonly (readonly number[])[],
-    adaptation: LearningOptions,
+    adaptation: AdaptOptions,
     who: string
   ) {
     this.prior = new AdaptivePrior(rows, count, adaptation.window, who, kinOf(adaptation));
@@ -133,11 +133,11 @@ export function members(count: number, prior: MemberPrior | undefined, who: stri
     throw new TypeError(`${who} rows need at least one row`);
   }
   const rows = given ?? (weights === undefined ? undefined : [weights]);
-  if (prior?.learn !== undefined) {
-    checkAdaptation(prior.learn, who);
+  if (prior?.adapt !== undefined) {
+    checkAdaptation(prior.adapt, who);
     checkCompressMembers(count, who);
     const ones = [new Array<number>(count).fill(1)];
-    return new CompressMembers(count, rows ?? ones, prior.learn, who);
+    return new CompressMembers(count, rows ?? ones, prior.adapt, who);
   }
   if (rows !== undefined) {
     return new WeightedMembers(count, rows, who);

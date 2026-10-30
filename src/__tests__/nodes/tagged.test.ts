@@ -147,13 +147,13 @@ describe('p.tagged compress', () => {
       return p.array(node).encode(values).length;
     };
     expect(size(plain.compress())).toBeLessThan(size(plain));
-    expect(size(plain.learn())).toBeLessThan(size(plain));
-    expect(size(plain.learn({ window: 8 }))).toBeLessThan(size(plain));
+    expect(size(plain.adapt())).toBeLessThan(size(plain));
+    expect(size(plain.adapt({ window: 8 }))).toBeLessThan(size(plain));
   });
 
   it('holds compress where it or a member adapts', () => {
     expect(plain._holdsCompress).toBe(false);
-    expect(plain.learn()._holdsCompress).toBe(false);
+    expect(plain.adapt()._holdsCompress).toBe(false);
     expect(plain.compress()._holdsCompress).toBe(true);
     const holding = p.tagged('kind', { a: p.object({ s: p.string().compress() }) });
     expect(holding._holdsCompress).toBe(true);
@@ -161,7 +161,7 @@ describe('p.tagged compress', () => {
   });
 
   it('stays as it is under a compressed container when it learns', () => {
-    const learned = plain.learn();
+    const learned = plain.adapt();
     const outer = p.object({ op: learned }).compress();
     const field = (outer as unknown as { _shape: { op: typeof plain } })._shape.op;
     expect(field).toBe(learned);
@@ -182,15 +182,15 @@ describe('p.tagged compress', () => {
   });
 
   it('sets each method once, and not both', () => {
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.tagged learn is already set'));
+    expect(() => plain.adapt().adapt()).toThrow(new TypeError('p.tagged adapt is already set'));
     expect(() => plain.compress().compress()).toThrow(
       new TypeError('p.tagged compress is already set')
     );
-    expect(() => plain.learn().compress()).toThrow(
-      new TypeError('p.tagged learn and compress cannot both be set')
+    expect(() => plain.adapt().compress()).toThrow(
+      new TypeError('p.tagged adapt and compress cannot both be set')
     );
-    expect(() => plain.compress().learn()).toThrow(
-      new TypeError('p.tagged learn and compress cannot both be set')
+    expect(() => plain.compress().adapt()).toThrow(
+      new TypeError('p.tagged adapt and compress cannot both be set')
     );
   });
 

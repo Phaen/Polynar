@@ -6,7 +6,7 @@ import type { CompressOptions, Resolved } from '../predictor/types';
 import { PNode, adapt } from './base';
 import { kindOf, type Kind } from './guards';
 import { describe, oneOf } from './path';
-import type { LearningOptions } from './adaptive';
+import type { AdaptOptions } from './adaptive';
 import { checkUnset } from './lattice';
 import { members, type MemberPrior, type Members } from './members';
 import { kindMarker, markerPrior, ownMarker, readOwnMarker, unionOf } from './markers';
@@ -61,7 +61,7 @@ export class PUnion<T> extends MethodNode<T> {
     this._prior = prior;
     this._pick = members(
       this._members.length,
-      { ...prior, learn: learningOf(_methods) },
+      { ...prior, adapt: learningOf(_methods) },
       'p.union'
     );
     this._compress = _methods.compress;
@@ -92,16 +92,16 @@ export class PUnion<T> extends MethodNode<T> {
    * kind and window got to. Part of the wire format, like the weights. Not
    * with `.compress()`.
    */
-  learn(options?: LearningOptions): PUnion<T> {
-    return this._declare('learn', 'p.union', options);
+  adapt(options?: AdaptOptions): PUnion<T> {
+    return this._declare('adapt', 'p.union', options);
   }
 
   /**
    * Code which member takes the value through the similarity predictor, as
    * the value's first symbol in the structure around it (its kind), with the
    * weights as prior counts, and each member as under its own
-   * `.compress(options)` unless it has `.compress()` or `.learn()` already.
-   * Not with `.learn()`. Set once.
+   * `.compress(options)` unless it has `.compress()` or `.adapt()` already.
+   * Not with `.adapt()`. Set once.
    */
   compress(options?: CompressOptions): PUnion<T> {
     return this._sugar(options, 'p.union');

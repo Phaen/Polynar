@@ -314,7 +314,7 @@ describe('Schema versioned', () => {
 
 describe('p.versioned under .compress()', () => {
   it('stays itself when no version changes', () => {
-    const node = p.versioned(p.null(), [p.bool().learn(), () => true]);
+    const node = p.versioned(p.null(), [p.bool().adapt(), () => true]);
     expect(node._adapted({}, new Map())).toBe(node);
     expect(node._holdsCompress).toBe(false);
     const outer = p.object({ v: node }).compress() as unknown as { _shape: { v: unknown } };

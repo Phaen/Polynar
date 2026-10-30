@@ -297,7 +297,7 @@ describe('p.decimal().compress()', () => {
     );
   });
 
-  it('refuses options out of range, not an object, set twice or beside learn', () => {
+  it('refuses options out of range, not an object, set twice or beside adapt', () => {
     expect(() => p.decimal(0.01).compress({ offsets: 1025 })).toThrow(
       new RangeError('p.decimal: compress offsets must be in 0..1024, got 1025')
     );
@@ -307,9 +307,9 @@ describe('p.decimal().compress()', () => {
     expect(() => p.decimal(0.01).compress().compress()).toThrow(
       new TypeError('p.decimal compress is already set')
     );
-    const both = new TypeError('p.decimal learn and compress cannot both be set');
-    expect(() => p.decimal(0.01).learn().compress()).toThrow(both);
-    expect(() => p.decimal(0.01).compress().learn()).toThrow(both);
+    const both = new TypeError('p.decimal adapt and compress cannot both be set');
+    expect(() => p.decimal(0.01).adapt().compress()).toThrow(both);
+    expect(() => p.decimal(0.01).compress().adapt()).toThrow(both);
   });
 
   it('refuses a value the plain node refuses, before learning from it', () => {
@@ -353,7 +353,7 @@ describe('p.decimal().compress()', () => {
   });
 });
 
-describe('p.decimal learn', () => {
+describe('p.decimal adapt', () => {
   const plain = p.decimal(0.5).min(0).max(7.5);
   const weights = Array.from({ length: 16 }, (_, i) => (i === 3 ? 61 : 1));
   const run = (length: number, seed: number) => {
@@ -363,7 +363,7 @@ describe('p.decimal learn', () => {
 
   it('round-trips a run of values, inside an array too', () => {
     const values = run(300, 1);
-    for (const node of [plain.learn(), plain.weights(weights).learn({ window: 16 })]) {
+    for (const node of [plain.adapt(), plain.weights(weights).adapt({ window: 16 })]) {
       expect(node._radix).toBeUndefined();
       expect(trip(p.array(node), values)).toEqual(values);
       expect(trip(node, values[0])).toEqual(values[0]);
@@ -372,77 +372,77 @@ describe('p.decimal learn', () => {
 
   it('takes its weights before or after', () => {
     const values = run(200, 2);
-    expect(p.array(plain.weights(weights).learn({ window: 64 })).encode(values)).toEqual(
-      p.array(plain.learn({ window: 64 }).weights(weights)).encode(values)
+    expect(p.array(plain.weights(weights).adapt({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.adapt({ window: 64 }).weights(weights)).encode(values)
     );
   });
 
   it('learns a skew, staying near the static prior of it', () => {
     const values = run(2000, 3);
     const size = (node: typeof plain) => p.array(node).encode(values).length;
-    expect(size(plain.learn())).toBeLessThan(size(plain));
-    expect(size(plain.weights(weights).learn())).toBeLessThanOrEqual(
+    expect(size(plain.adapt())).toBeLessThan(size(plain));
+    expect(size(plain.weights(weights).adapt())).toBeLessThanOrEqual(
       Math.ceil(size(plain.weights(weights)) * 1.05)
     );
   });
 
   it('takes its learning options, once', () => {
     const values = run(200, 4);
-    expect(p.array(plain.learn({ window: 8 })).encode(values)).not.toEqual(
-      p.array(plain.learn()).encode(values)
+    expect(p.array(plain.adapt({ window: 8 })).encode(values)).not.toEqual(
+      p.array(plain.adapt()).encode(values)
     );
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.decimal learn is already set'));
+    expect(() => plain.adapt().adapt()).toThrow(new TypeError('p.decimal adapt is already set'));
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.learn({ window: 0 })).toThrow(
+    expect(() => plain.adapt({ window: 0 })).toThrow(
       new RangeError('p.decimal learning window must be a positive integer, got 0')
     );
-    expect(() => plain.learn({ window: 1.5 })).toThrow(
+    expect(() => plain.adapt({ window: 1.5 })).toThrow(
       new TypeError('p.decimal learning window must be a positive integer, got 1.5')
     );
-    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)]).learn()).toThrow(
+    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)]).adapt()).toThrow(
       new RangeError(
         'p.decimal adaptive prior 32 and window 1024 overflow with weights totalling 35184372088847'
       )
     );
-    const cdf = new TypeError('p.decimal learn takes weights, not a cdf');
-    expect(() => plain.cdf((v) => v).learn()).toThrow(cdf);
-    expect(() => plain.learn().cdf((v) => v)).toThrow(cdf);
+    const cdf = new TypeError('p.decimal adapt takes weights, not a cdf');
+    expect(() => plain.cdf((v) => v).adapt()).toThrow(cdf);
+    expect(() => plain.adapt().cdf((v) => v)).toThrow(cdf);
   });
 
   it('learns on the magnitude scale over an unbounded grid', () => {
     const values = [0.25, -3, 1000.5, 0.25, 7];
-    expect(trip(p.array(p.decimal(0.25).learn()), values)).toEqual(values);
-    expect(trip(p.array(p.decimal(0.25).min(-3).learn()), values)).toEqual(values);
-    expect(trip(p.array(p.decimal(0.25).max(1000.5).learn()), values)).toEqual(values);
-    expect(trip(p.array(p.decimal(5).learn()), [10, -15, 0, 10])).toEqual([10, -15, 0, 10]);
+    expect(trip(p.array(p.decimal(0.25).adapt()), values)).toEqual(values);
+    expect(trip(p.array(p.decimal(0.25).min(-3).adapt()), values)).toEqual(values);
+    expect(trip(p.array(p.decimal(0.25).max(1000.5).adapt()), values)).toEqual(values);
+    expect(trip(p.array(p.decimal(5).adapt()), [10, -15, 0, 10])).toEqual([10, -15, 0, 10]);
   });
 
   it('refuses a value off the grid before learning from it', () => {
-    expect(() => plain.learn().encode(0.25)).toThrow(
+    expect(() => plain.adapt().encode(0.25)).toThrow(
       new RangeError('Value 0.25 is not a multiple of step 0.5')
     );
   });
 
   it('reads a step multiple whose product rounds as corrupt', () => {
     const bytes = p
-      .array(p.int().learn())
+      .array(p.int().adapt())
       .length(2)
       .encode([0, 2 ** 52 + 1]);
-    expect(() => p.array(p.decimal(3).learn()).length(2).decode(bytes)).toThrow(CorruptInputError);
+    expect(() => p.array(p.decimal(3).adapt()).length(2).decode(bytes)).toThrow(CorruptInputError);
   });
 });
 
 describe('p.decimal methods', () => {
-  it('refuses learn beside compress, either order', () => {
-    const both = new TypeError('p.decimal learn and compress cannot both be set');
-    expect(() => p.decimal(0.5).compress().learn()).toThrow(both);
-    expect(() => p.decimal(0.5).learn().compress()).toThrow(both);
+  it('refuses adapt beside compress, either order', () => {
+    const both = new TypeError('p.decimal adapt and compress cannot both be set');
+    expect(() => p.decimal(0.5).compress().adapt()).toThrow(both);
+    expect(() => p.decimal(0.5).adapt().compress()).toThrow(both);
   });
 
   it('keeps a learner or a compressed node as it is under a container sugar', () => {
-    const learner = p.decimal(0.5).min(0).max(9).learn();
+    const learner = p.decimal(0.5).min(0).max(9).adapt();
     const compress = p.decimal(0.5).compress({ window: 8 });
     expect(learner._adapted({})).toBe(learner);
     expect(compress._adapted({ window: 16 })).toBe(compress);

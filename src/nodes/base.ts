@@ -101,7 +101,7 @@ export abstract class PNode<TOut> {
 
   /**
    * The node under a container's `.compress(options)`: itself where it has
-   * `.compress()` or `.learn()` already, else with `options` on itself and
+   * `.compress()` or `.adapt()` already, else with `options` on itself and
    * on the nodes below it. `memo` maps each node already adapted to its
    * adapted form. Present on nodes the sugar reaches.
    */

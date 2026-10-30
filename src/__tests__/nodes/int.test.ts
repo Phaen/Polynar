@@ -148,7 +148,7 @@ describe('p.int().compress()', () => {
     expect(node._toDigit).toBeUndefined();
   });
 
-  it('refuses options out of range, not an object, set twice or beside learn', () => {
+  it('refuses options out of range, not an object, set twice or beside adapt', () => {
     expect(() => p.int().compress({ candidates: 65 })).toThrow(
       new RangeError('p.int: compress candidates must be in 0..64, got 65')
     );
@@ -158,9 +158,9 @@ describe('p.int().compress()', () => {
     expect(() => p.int().compress().compress()).toThrow(
       new TypeError('p.int compress is already set')
     );
-    const both = new TypeError('p.int learn and compress cannot both be set');
-    expect(() => p.int().learn().compress()).toThrow(both);
-    expect(() => p.int().compress().learn()).toThrow(both);
+    const both = new TypeError('p.int adapt and compress cannot both be set');
+    expect(() => p.int().adapt().compress()).toThrow(both);
+    expect(() => p.int().compress().adapt()).toThrow(both);
   });
 
   it('refuses a value the plain node refuses, before learning from it', () => {
@@ -196,7 +196,7 @@ describe('p.int().compress()', () => {
   });
 });
 
-describe('p.int learn', () => {
+describe('p.int adapt', () => {
   const plain = p.int().min(0).max(15);
   const weights = Array.from({ length: 16 }, (_, i) => (i === 3 ? 61 : 1));
   const run = (length: number, seed: number) => {
@@ -206,7 +206,7 @@ describe('p.int learn', () => {
 
   it('round-trips a run of values, inside an array too', () => {
     const values = run(300, 1);
-    for (const node of [plain.learn(), plain.weights(weights).learn({ window: 16 })]) {
+    for (const node of [plain.adapt(), plain.weights(weights).adapt({ window: 16 })]) {
       expect(node._radix).toBeUndefined();
       expect(trip(p.array(node), values)).toEqual(values);
       expect(trip(node, values[0])).toEqual(values[0]);
@@ -215,96 +215,96 @@ describe('p.int learn', () => {
 
   it('takes its weights before or after', () => {
     const values = run(200, 2);
-    expect(p.array(plain.weights(weights).learn({ window: 64 })).encode(values)).toEqual(
-      p.array(plain.learn({ window: 64 }).weights(weights)).encode(values)
+    expect(p.array(plain.weights(weights).adapt({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.adapt({ window: 64 }).weights(weights)).encode(values)
     );
   });
 
   it('keeps learning through a bound set after it', () => {
     const values = run(200, 3);
-    expect(p.array(p.int().learn().min(0).max(15)).encode(values)).toEqual(
-      p.array(plain.learn()).encode(values)
+    expect(p.array(p.int().adapt().min(0).max(15)).encode(values)).toEqual(
+      p.array(plain.adapt()).encode(values)
     );
   });
 
   it('learns a skew, staying near the static prior of it', () => {
     const values = run(2000, 4);
     const size = (node: typeof plain) => p.array(node).encode(values).length;
-    expect(size(plain.learn())).toBeLessThan(size(plain));
-    expect(size(plain.weights(weights).learn())).toBeLessThanOrEqual(
+    expect(size(plain.adapt())).toBeLessThan(size(plain));
+    expect(size(plain.weights(weights).adapt())).toBeLessThanOrEqual(
       Math.ceil(size(plain.weights(weights)) * 1.05)
     );
   });
 
   it('takes its learning options, once', () => {
     const values = run(200, 5);
-    expect(p.array(plain.learn({ window: 8 })).encode(values)).not.toEqual(
-      p.array(plain.learn()).encode(values)
+    expect(p.array(plain.adapt({ window: 8 })).encode(values)).not.toEqual(
+      p.array(plain.adapt()).encode(values)
     );
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.int learn is already set'));
-    expect(() => plain.learn({ window: 8 }).learn({ window: 8 })).toThrow(
-      new TypeError('p.int learn is already set')
+    expect(() => plain.adapt().adapt()).toThrow(new TypeError('p.int adapt is already set'));
+    expect(() => plain.adapt({ window: 8 }).adapt({ window: 8 })).toThrow(
+      new TypeError('p.int adapt is already set')
     );
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.learn({ window: 0 })).toThrow(
+    expect(() => plain.adapt({ window: 0 })).toThrow(
       new RangeError('p.int learning window must be a positive integer, got 0')
     );
-    expect(() => plain.learn({ window: 1.5 })).toThrow(
+    expect(() => plain.adapt({ window: 1.5 })).toThrow(
       new TypeError('p.int learning window must be a positive integer, got 1.5')
     );
-    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)]).learn()).toThrow(
+    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)]).adapt()).toThrow(
       new RangeError(
         'p.int adaptive prior 32 and window 1024 overflow with weights totalling 35184372088847'
       )
     );
-    const cdf = new TypeError('p.int learn takes weights, not a cdf');
-    expect(() => plain.cdf((v) => v).learn()).toThrow(cdf);
-    expect(() => plain.learn().cdf((v) => v)).toThrow(cdf);
+    const cdf = new TypeError('p.int adapt takes weights, not a cdf');
+    expect(() => plain.cdf((v) => v).adapt()).toThrow(cdf);
+    expect(() => plain.adapt().cdf((v) => v)).toThrow(cdf);
   });
 
   it('learns ids on any range', () => {
     const ids = Array.from({ length: 1000 }, (_, i) => i + 1);
     for (const node of [p.int(), p.int().min(1), p.int().min(1).max(65535), p.int().max(2000)]) {
-      expect(trip(p.array(node.learn()), ids)).toEqual(ids);
+      expect(trip(p.array(node.adapt()), ids)).toEqual(ids);
     }
   });
 
   it('spells unbounded values on the learned magnitude scale', () => {
     const values = [0, -3, 2 ** 40, -(2 ** 52), 17, -(2 ** 52)];
-    expect(trip(p.array(p.int().learn()), values)).toEqual(values);
+    expect(trip(p.array(p.int().adapt()), values)).toEqual(values);
     const wide = p
       .int()
       .min(-(2 ** 60))
       .max(-(2 ** 60) + 2 ** 30)
-      .learn();
+      .adapt();
     expect(trip(p.array(wide), [-(2 ** 60)])).toEqual([-(2 ** 60)]);
-    expect(trip(p.array(p.int().max(5).learn()), [5, -9, 5])).toEqual([5, -9, 5]);
+    expect(trip(p.array(p.int().max(5).adapt()), [5, -9, 5])).toEqual([5, -9, 5]);
     expect(() =>
       p
         .int()
-        .learn()
+        .adapt()
         .encode(2 ** 53)
     ).toThrow(new RangeError(`Value ${2 ** 53} is too far from 0 to encode exactly`));
   });
 
   it('refuses a value outside the bounds before learning from it', () => {
-    expect(() => p.array(plain.learn()).encode([1, 16])).toThrow(
+    expect(() => p.array(plain.adapt()).encode([1, 16])).toThrow(
       new RangeError('[1]: Value 16 is above the maximum 15')
     );
   });
 });
 
 describe('p.int methods', () => {
-  it('refuses learn beside compress, either order', () => {
-    const both = new TypeError('p.int learn and compress cannot both be set');
-    expect(() => p.int().compress().learn()).toThrow(both);
-    expect(() => p.int().learn().compress()).toThrow(both);
+  it('refuses adapt beside compress, either order', () => {
+    const both = new TypeError('p.int adapt and compress cannot both be set');
+    expect(() => p.int().compress().adapt()).toThrow(both);
+    expect(() => p.int().adapt().compress()).toThrow(both);
   });
 
   it('keeps a learner or a compressed node as it is under a container sugar', () => {
-    const learner = p.int().min(0).max(9).learn();
+    const learner = p.int().min(0).max(9).adapt();
     const compress = p.int().compress({ window: 8 });
     expect(learner._adapted({})).toBe(learner);
     expect(compress._adapted({ window: 16 })).toBe(compress);

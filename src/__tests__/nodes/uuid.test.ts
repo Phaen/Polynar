@@ -60,14 +60,14 @@ describe('p.uuid', () => {
     );
   });
 
-  it('codes a run of v4 UUIDs in fewer bytes under .learn()', () => {
-    const learned = p.array(p.uuid().learn());
+  it('codes a run of v4 UUIDs in fewer bytes under .adapt()', () => {
+    const learned = p.array(p.uuid().adapt());
     expect(trip(learned, v4s)).toEqual(v4s);
     expect(learned.encode(v4s).length).toBeLessThan(p.array(p.uuid()).encode(v4s).length);
   });
 
   it('takes the learning options', () => {
-    const node = p.array(p.uuid().learn({ window: 4, separate: true }));
+    const node = p.array(p.uuid().adapt({ window: 4, separate: true }));
     expect(trip(node, v4s)).toEqual(v4s);
   });
 
@@ -86,17 +86,17 @@ describe('p.uuid', () => {
   });
 
   it.each<[string, () => unknown, string]>([
-    ['.learn() twice', () => p.uuid().learn().learn(), 'p.uuid learn is already set'],
+    ['.adapt() twice', () => p.uuid().adapt().adapt(), 'p.uuid adapt is already set'],
     ['.compress() twice', () => p.uuid().compress().compress(), 'p.uuid compress is already set'],
     [
-      '.learn() then .compress()',
-      () => p.uuid().learn().compress(),
-      'p.uuid learn and compress cannot both be set',
+      '.adapt() then .compress()',
+      () => p.uuid().adapt().compress(),
+      'p.uuid adapt and compress cannot both be set',
     ],
     [
-      '.compress() then .learn()',
-      () => p.uuid().compress().learn(),
-      'p.uuid learn and compress cannot both be set',
+      '.compress() then .adapt()',
+      () => p.uuid().compress().adapt(),
+      'p.uuid adapt and compress cannot both be set',
     ],
   ])('refuses %s', (_name, build, message) => {
     expect(build).toThrow(new TypeError(message));
@@ -110,7 +110,7 @@ describe('p.uuid', () => {
   it('adapts under _adapted unless it learns or adapts already', () => {
     const adapted = p.uuid()._adapted({});
     expect(adapted._compress).toEqual({});
-    const learned = p.uuid().learn();
+    const learned = p.uuid().adapt();
     expect(learned._adapted({})).toBe(learned);
     const own = p.uuid().compress({ separate: true });
     expect(own._adapted({})).toBe(own);

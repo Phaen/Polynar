@@ -3,7 +3,7 @@ import type { Kind } from './guards';
 import type { InferTagged } from './infer';
 import type { PObject } from './object';
 import { atPath, oneOf, describe } from './path';
-import type { LearningOptions } from './adaptive';
+import type { AdaptOptions } from './adaptive';
 import { checkUnset } from './lattice';
 import { members, type MemberPrior, type Members } from './members';
 import { MethodNode, learningOf, type MethodSet } from './methods';
@@ -70,7 +70,7 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
       this._index.set(tag, i);
     });
     this._prior = prior;
-    this._pick = members(this._tags.length, { ...prior, learn: learningOf(_methods) }, 'p.tagged');
+    this._pick = members(this._tags.length, { ...prior, adapt: learningOf(_methods) }, 'p.tagged');
     this._compress = _methods.compress;
     if (this._compress !== undefined) {
       this._resolved = resolve(this._compress, loadedPriors.json, 'p.tagged');
@@ -104,15 +104,15 @@ export class PTagged<K extends string, M extends Record<string, PObject<any>>> e
    * kind and window got to. Part of the wire format, like the weights. Not
    * with `.compress()`.
    */
-  learn(options?: LearningOptions): PTagged<K, M> {
-    return this._declare('learn', 'p.tagged', options);
+  adapt(options?: AdaptOptions): PTagged<K, M> {
+    return this._declare('adapt', 'p.tagged', options);
   }
 
   /**
    * Code the tags through the similarity predictor: each is predicted from
    * the tags the node coded before, how recently and in what company, with
    * the weights as their prior counts; the members as under their own
-   * `.compress(options)`. Not with `.learn()`. Set once.
+   * `.compress(options)`. Not with `.adapt()`. Set once.
    */
   compress(options?: CompressOptions): PTagged<K, M> {
     return this._sugar(options, 'p.tagged');

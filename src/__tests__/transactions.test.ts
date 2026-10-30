@@ -83,18 +83,18 @@ interface Heavy {
  */
 const HEAVY: readonly (() => Heavy)[] = [
   () => ({
-    node: lib.p.array(lib.p.array(lib.p.int().min(0).max(9)).max(2).learn()) as Node,
+    node: lib.p.array(lib.p.array(lib.p.int().min(0).max(9)).max(2).adapt()) as Node,
     gen: () =>
       Array.from({ length: randInt(1, 40) }, () =>
         Array.from({ length: randInt(0, 2) }, () => randInt(0, 1) * randInt(0, 9))
       ),
   }),
   () => ({
-    node: lib.p.array(lib.p.int().min(0).max(9).learn({ window: 4 })) as Node,
+    node: lib.p.array(lib.p.int().min(0).max(9).adapt({ window: 4 })) as Node,
     gen: () => Array.from({ length: randInt(1, 80) }, () => randInt(0, 3) * randInt(0, 3)),
   }),
   () => ({
-    node: lib.p.array(lib.p.int().learn()) as Node,
+    node: lib.p.array(lib.p.int().adapt()) as Node,
     gen: () => Array.from({ length: randInt(1, 60) }, () => randInt(-3, 3) * 1000 + randInt(0, 5)),
   }),
 ];

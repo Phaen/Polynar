@@ -1,5 +1,5 @@
 /**
- * Methods: how a node learns, `.learn(options?)` or `.compress(options?)`,
+ * Methods: how a node learns, `.adapt(options?)` or `.compress(options?)`,
  * set once and not both, as carried through rebuilds and as a container's
  * `.compress()` reaches the nodes below it.
  */
@@ -9,55 +9,55 @@ import { loadedPriors } from '../../predictor/prior';
 import { learningOf, learns } from '../../nodes/methods';
 
 describe('method set queries', () => {
-  it('learns only with learn set', () => {
+  it('adapts only with adapt set', () => {
     expect(learns({})).toBe(false);
     expect(learns({ compress: {} })).toBe(false);
-    expect(learns({ learn: true })).toBe(true);
-    expect(learns({ learn: { window: 8 } })).toBe(true);
+    expect(learns({ adapt: true })).toBe(true);
+    expect(learns({ adapt: { window: 8 } })).toBe(true);
   });
 
   it('learns under the options given, the defaults for true, none unless it learns', () => {
     expect(learningOf({})).toBeUndefined();
     expect(learningOf({ compress: {} })).toBeUndefined();
-    expect(learningOf({ learn: true })).toEqual({});
-    expect(learningOf({ learn: { window: 8 } })).toEqual({ window: 8 });
+    expect(learningOf({ adapt: true })).toEqual({});
+    expect(learningOf({ adapt: { window: 8 } })).toEqual({ window: 8 });
   });
 });
 
-describe('.learn()', () => {
+describe('.adapt()', () => {
   it('sets the defaults, or a copy of the options given', () => {
-    expect(p.bool().learn()._methods).toEqual({ learn: true });
+    expect(p.bool().adapt()._methods).toEqual({ adapt: true });
     const options = { window: 8 };
-    const node = p.bool().learn(options);
-    expect(node._methods).toEqual({ learn: { window: 8 } });
-    expect(node._methods.learn).not.toBe(options);
+    const node = p.bool().adapt(options);
+    expect(node._methods).toEqual({ adapt: { window: 8 } });
+    expect(node._methods.adapt).not.toBe(options);
   });
 
   it('is set once', () => {
-    expect(() => p.bool().learn().learn()).toThrow(new TypeError('p.bool learn is already set'));
-    expect(() => p.array(p.bool()).learn({ window: 8 }).learn()).toThrow(
-      new TypeError('p.array learn is already set')
+    expect(() => p.bool().adapt().adapt()).toThrow(new TypeError('p.bool adapt is already set'));
+    expect(() => p.array(p.bool()).adapt({ window: 8 }).adapt()).toThrow(
+      new TypeError('p.array adapt is already set')
     );
   });
 
   it('refuses options out of range', () => {
-    expect(() => p.bool().learn({ window: 0 })).toThrow(
+    expect(() => p.bool().adapt({ window: 0 })).toThrow(
       new RangeError('p.bool learning window must be a positive integer, got 0')
     );
   });
 
   it('refuses a node that adapts already, in either order', () => {
-    const both = new TypeError('p.bool learn and compress cannot both be set');
-    expect(() => p.bool().compress().learn()).toThrow(both);
-    expect(() => p.bool().learn().compress()).toThrow(both);
-    expect(() => p.array(p.bool()).compress().learn()).toThrow(
-      new TypeError('p.array learn and compress cannot both be set')
+    const both = new TypeError('p.bool adapt and compress cannot both be set');
+    expect(() => p.bool().compress().adapt()).toThrow(both);
+    expect(() => p.bool().adapt().compress()).toThrow(both);
+    expect(() => p.array(p.bool()).compress().adapt()).toThrow(
+      new TypeError('p.array adapt and compress cannot both be set')
     );
   });
 
   it('survives the rebuild a later setting makes', () => {
-    const node = p.array(p.bool()).learn({ window: 8 }).max(5);
-    expect(node._methods).toEqual({ learn: { window: 8 } });
+    const node = p.array(p.bool()).adapt({ window: 8 }).max(5);
+    expect(node._methods).toEqual({ adapt: { window: 8 } });
   });
 });
 
@@ -79,7 +79,7 @@ describe('.compress() on a container', () => {
 
   it('adapts the node and every node below it that neither learns nor adapts', () => {
     const own = p.bool().compress({ window: 8 });
-    const learner = p.bool().learn();
+    const learner = p.bool().adapt();
     const node = p.object({ a: p.bool(), b: own, c: learner, d: p.array(p.enum(['x', 'y'])) });
     const adapted = node.compress({ window: 16 });
     const { _shape: shape } = adapted as unknown as { _shape: Record<string, never> };
@@ -91,7 +91,7 @@ describe('.compress() on a container', () => {
   });
 
   it('leaves a node that learns, and what is below it, as it is', () => {
-    const inner = p.array(p.bool()).learn();
+    const inner = p.array(p.bool()).adapt();
     const outer = p.array(inner).compress();
     const { _item: item } = outer as unknown as { _item: unknown };
     expect(item).toBe(inner);
@@ -99,7 +99,7 @@ describe('.compress() on a container', () => {
 
   it('keeps a node that adapts or learns under a choice node', () => {
     const compress = p.optional(p.bool()).compress({ window: 8 });
-    const learner = p.nullable(p.bool()).learn();
+    const learner = p.nullable(p.bool()).adapt();
     expect(p.array(compress).compress()).toBeDefined();
     const list = p.array(learner).compress();
     expect((list as unknown as { _item: unknown })._item).toBe(learner);
@@ -107,15 +107,15 @@ describe('.compress() on a container', () => {
     expect((again as unknown as { _item: unknown })._item).toBe(compress);
   });
 
-  it('is set once, and not beside learn', () => {
+  it('is set once, and not beside adapt', () => {
     expect(() => p.array(p.bool()).compress().compress()).toThrow(
       new TypeError('p.array compress is already set')
     );
     expect(() => p.object({ a: p.bool() }).compress().compress()).toThrow(
       new TypeError('p.object compress is already set')
     );
-    expect(() => p.array(p.bool()).learn().compress()).toThrow(
-      new TypeError('p.array learn and compress cannot both be set')
+    expect(() => p.array(p.bool()).adapt().compress()).toThrow(
+      new TypeError('p.array adapt and compress cannot both be set')
     );
   });
 

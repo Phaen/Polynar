@@ -16,7 +16,7 @@
  */
 
 import type { Encoder, Decoder } from '../packer';
-import { AdaptivePrior, checkAdaptation, kinOf, type LearningOptions } from './adaptive';
+import { AdaptivePrior, checkAdaptation, kinOf, type AdaptOptions } from './adaptive';
 import { Exclusion } from './excluded';
 
 const TWO_32 = 2 ** 32;
@@ -287,7 +287,7 @@ export class LearnedMagnitude implements Magnitude {
 
   constructor(
     readonly signed: boolean,
-    learning: LearningOptions,
+    learning: AdaptOptions,
     private readonly who: string,
     prices: Prices = 'term'
   ) {

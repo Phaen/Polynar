@@ -5,7 +5,7 @@ import { session, type MarkerPrior } from '../predictor/session';
 import { STRUCT, type CompressOptions, type Resolved } from '../predictor/types';
 import { PNode, adapt } from './base';
 import type { Kind } from './guards';
-import type { LearningOptions } from './adaptive';
+import type { AdaptOptions } from './adaptive';
 import { checkUnset } from './lattice';
 import { markerPrior, ownMarker, readOwnMarker } from './markers';
 import { members, type MemberPrior, type Members } from './members';
@@ -43,7 +43,7 @@ export class PNullable<T> extends MethodNode<T | null> {
       this._kinds = [...new Set<Kind>([...inner._kinds, 'null'])];
     }
     this._prior = prior;
-    this._members = members(2, { ...prior, learn: learningOf(_methods) }, 'p.nullable');
+    this._members = members(2, { ...prior, adapt: learningOf(_methods) }, 'p.nullable');
     this._compress = _methods.compress;
     if (this._compress !== undefined) {
       this._resolved = resolve(this._compress, loadedPriors.json, 'p.nullable');
@@ -79,16 +79,16 @@ export class PNullable<T> extends MethodNode<T | null> {
    * kind and window got to. Part of the wire format, like the weights. Not
    * with `.compress()`.
    */
-  learn(options?: LearningOptions): PNullable<T> {
-    return this._declare('learn', 'p.nullable', options);
+  adapt(options?: AdaptOptions): PNullable<T> {
+    return this._declare('adapt', 'p.nullable', options);
   }
 
   /**
    * Code whether the value is null through the similarity predictor, as the
    * null symbol against the value's own first symbol in the structure around
    * it, with the weights as their prior counts, and the inner node as under
-   * its own `.compress(options)` unless it has `.compress()` or `.learn()`
-   * already. Not with `.learn()`. Set once.
+   * its own `.compress(options)` unless it has `.compress()` or `.adapt()`
+   * already. Not with `.adapt()`. Set once.
    */
   compress(options?: CompressOptions): PNullable<T> {
     return this._sugar(options, 'p.nullable');

@@ -88,7 +88,7 @@ describe('p.nullable structure symbols', () => {
   });
 });
 
-describe('p.nullable learn', () => {
+describe('p.nullable adapt', () => {
   const plain = p.nullable(p.int().min(0).max(3));
   const values = (() => {
     const rnd = mulberry32(5);
@@ -96,19 +96,19 @@ describe('p.nullable learn', () => {
   })();
 
   it('round-trips a run, learning the skew under its options', () => {
-    for (const node of [plain.learn(), plain.learn({ window: 8 }), plain.weights([1, 9]).learn()]) {
+    for (const node of [plain.adapt(), plain.adapt({ window: 8 }), plain.weights([1, 9]).adapt()]) {
       expect(trip(p.array(node), values)).toEqual(values);
     }
-    expect(p.array(plain.learn()).encode(values)).not.toEqual(p.array(plain).encode(values));
+    expect(p.array(plain.adapt()).encode(values)).not.toEqual(p.array(plain).encode(values));
   });
 
   it('sets each method once, and not both', () => {
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.nullable learn is already set'));
-    expect(() => plain.learn().compress()).toThrow(
-      new TypeError('p.nullable learn and compress cannot both be set')
+    expect(() => plain.adapt().adapt()).toThrow(new TypeError('p.nullable adapt is already set'));
+    expect(() => plain.adapt().compress()).toThrow(
+      new TypeError('p.nullable adapt and compress cannot both be set')
     );
-    expect(() => plain.compress().learn()).toThrow(
-      new TypeError('p.nullable learn and compress cannot both be set')
+    expect(() => plain.compress().adapt()).toThrow(
+      new TypeError('p.nullable adapt and compress cannot both be set')
     );
     expect(() => plain.compress().compress()).toThrow(
       new TypeError('p.nullable compress is already set')
@@ -116,7 +116,7 @@ describe('p.nullable learn', () => {
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.learn({ window: 0 })).toThrow(
+    expect(() => plain.adapt({ window: 0 })).toThrow(
       new RangeError('p.nullable learning window must be a positive integer, got 0')
     );
   });
@@ -180,14 +180,14 @@ describe('p.nullable compress', () => {
     expect(p.nullable(p.bool()).compress().inner._compress).toEqual({
       prior: loadedPriors.json.source,
     });
-    const learning = p.bool().learn();
+    const learning = p.bool().adapt();
     expect(p.nullable(learning).compress().inner).toBe(learning);
     const values = [true, null, false, true, null];
     expect(trip(p.array(p.nullable(learning).compress()), values)).toEqual(values);
   });
 
   it('stays as it is under a compressed parent when it learns', () => {
-    const node = plain.learn();
+    const node = plain.adapt();
     expect(node._adapted({}, new Map())).toBe(node);
     const Row = p.object({ n: node }).compress();
     expect(trip(Row, { n: 2 })).toEqual({ n: 2 });

@@ -57,7 +57,7 @@ describe('p.optional structure symbols', () => {
   });
 });
 
-describe('p.optional learn', () => {
+describe('p.optional adapt', () => {
   const plain = p.optional(p.int().min(0).max(3));
   const values = (() => {
     const rnd = mulberry32(5);
@@ -65,19 +65,19 @@ describe('p.optional learn', () => {
   })();
 
   it('round-trips a run, learning the skew under its options', () => {
-    for (const node of [plain.learn(), plain.learn({ window: 8 }), plain.weights([1, 9]).learn()]) {
+    for (const node of [plain.adapt(), plain.adapt({ window: 8 }), plain.weights([1, 9]).adapt()]) {
       expect(trip(p.array(node), values)).toEqual(values);
     }
-    expect(p.array(plain.learn()).encode(values)).not.toEqual(p.array(plain).encode(values));
+    expect(p.array(plain.adapt()).encode(values)).not.toEqual(p.array(plain).encode(values));
   });
 
   it('sets each method once, and not both', () => {
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.optional learn is already set'));
-    expect(() => plain.learn().compress()).toThrow(
-      new TypeError('p.optional learn and compress cannot both be set')
+    expect(() => plain.adapt().adapt()).toThrow(new TypeError('p.optional adapt is already set'));
+    expect(() => plain.adapt().compress()).toThrow(
+      new TypeError('p.optional adapt and compress cannot both be set')
     );
-    expect(() => plain.compress().learn()).toThrow(
-      new TypeError('p.optional learn and compress cannot both be set')
+    expect(() => plain.compress().adapt()).toThrow(
+      new TypeError('p.optional adapt and compress cannot both be set')
     );
     expect(() => plain.compress().compress()).toThrow(
       new TypeError('p.optional compress is already set')
@@ -85,7 +85,7 @@ describe('p.optional learn', () => {
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.learn({ window: 0 })).toThrow(
+    expect(() => plain.adapt({ window: 0 })).toThrow(
       new RangeError('p.optional learning window must be a positive integer, got 0')
     );
   });
@@ -121,14 +121,14 @@ describe('p.optional compress', () => {
     expect(p.optional(p.bool()).compress().inner._compress).toEqual({
       prior: loadedPriors.json.source,
     });
-    const learning = p.bool().learn();
+    const learning = p.bool().adapt();
     expect(p.optional(learning).compress().inner).toBe(learning);
     const values = [true, undefined, false, true, undefined];
     expect(trip(p.array(p.optional(learning).compress()), values)).toEqual(values);
   });
 
   it('stays as it is under a compressed parent when it learns', () => {
-    const node = plain.learn();
+    const node = plain.adapt();
     expect(node._adapted({}, new Map())).toBe(node);
     const Row = p.object({ n: node }).compress();
     expect(trip(Row, { n: 2 })).toEqual({ n: 2 });

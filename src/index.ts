@@ -38,7 +38,7 @@ export { train } from './predictor/train';
 export type { TrainOptions } from './predictor/train';
 export type {
   CompressOptions,
-  LearningOptions,
+  AdaptOptions,
   AnyValue,
   Infer,
   InferShape,

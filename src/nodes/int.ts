@@ -3,7 +3,7 @@ import { describe } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
-import type { LearningOptions } from './adaptive';
+import type { AdaptOptions } from './adaptive';
 import { learningOf, learns, MethodNode, type MethodSet } from './methods';
 import { checkCompress, resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
@@ -110,11 +110,11 @@ export class PInt extends MethodNode<number> {
    * tables from starting where other nodes of its kind and window got to.
    * Not with `.compress()`.
    */
-  learn(options?: LearningOptions): PInt {
+  adapt(options?: AdaptOptions): PInt {
     if (this._compress !== undefined) {
-      throw new TypeError('p.int learn and compress cannot both be set');
+      throw new TypeError('p.int adapt and compress cannot both be set');
     }
-    return this._declare('learn', 'p.int', options);
+    return this._declare('adapt', 'p.int', options);
   }
 
   /**
@@ -122,14 +122,14 @@ export class PInt extends MethodNode<number> {
    * the node's past values plus a learned step, the same values exactly,
    * the numbers coded earlier in the same object, and a prior over
    * magnitudes. The bounds still hold, and a declared prior prices the values
-   * the node has not seen. Not with `.learn()`. Set once.
+   * the node has not seen. Not with `.adapt()`. Set once.
    */
   compress(options?: CompressOptions): PInt {
     if (this._compress !== undefined) {
       throw new TypeError('p.int compress is already set');
     }
     if (learns(this._methods)) {
-      throw new TypeError('p.int learn and compress cannot both be set');
+      throw new TypeError('p.int adapt and compress cannot both be set');
     }
     const { lo, hi, declared } = this._range;
     return new PInt(lo, hi, declared, this._methods, checkCompress(options, 'p.int'));

@@ -8,7 +8,7 @@ import { atPath } from './path';
 import type { Kind } from './guards';
 import { IndexRange, checkUnset, lengthRange, type LengthBounds } from './lattice';
 import { checkIndex, type Cdf } from './weights';
-import type { LearningOptions } from './adaptive';
+import type { AdaptOptions } from './adaptive';
 import {
   checkOrder,
   ordinal,
@@ -48,7 +48,7 @@ export interface Layout<T> {
   /** The collection of `entries`, whose keys are distinct and never -0. */
   build(entries: Map<unknown, unknown>): T;
   /**
-   * The node the keys go through under `.learn()`, for a layout whose keys
+   * The node the keys go through under `.adapt()`, for a layout whose keys
    * have no node of the caller's; the declared key otherwise. A layout with
    * one has string keys, which `.compress()` codes as key text.
    */
@@ -215,8 +215,8 @@ export class PCollection<T> extends MethodNode<T> {
    * their characters with the message's other strings. Not with
    * `.compress()`.
    */
-  learn(options?: LearningOptions): PCollection<T> {
-    return this._declare('learn', this._layout.who, options);
+  adapt(options?: AdaptOptions): PCollection<T> {
+    return this._declare('adapt', this._layout.who, options);
   }
 
   /**
@@ -226,8 +226,8 @@ export class PCollection<T> extends MethodNode<T> {
    * key and value and a set's item each follow the symbol they start with; a
    * record's key is a key symbol and the key's characters, then its value.
    * The nodes of the entries code as under their own `.compress(options)`
-   * unless they have `.compress()` or `.learn()` already. Unordered entries go
-   * ascending by key. Not with `.learn()`, `.weights()` or `.cdf()`. Set once.
+   * unless they have `.compress()` or `.adapt()` already. Unordered entries go
+   * ascending by key. Not with `.adapt()`, `.weights()` or `.cdf()`. Set once.
    */
   compress(options?: CompressOptions): PCollection<T> {
     return this._sugar(options, this._layout.who);

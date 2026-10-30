@@ -6,7 +6,7 @@ import {
   checkAdaptation,
   checkCompressMembers,
   kinOf,
-  type LearningOptions,
+  type AdaptOptions,
 } from './adaptive';
 import { LearnedMagnitude, type Magnitude } from './magnitude';
 import { session } from '../predictor/session';
@@ -112,7 +112,7 @@ export class IndexRange {
    * What the prior learns under, set when it adapts; the weights then live
    * in `learned`, not `prior`.
    */
-  readonly learning?: LearningOptions;
+  readonly learning?: AdaptOptions;
   /** The one radix an index packs in: both bounds, no prior or compress options, fewer than 2^53 values. */
   readonly radix?: number;
   /** Set with `radix`: the index `digit` steps above min, as a digit read in `radix` stands for. */
@@ -145,7 +145,7 @@ export class IndexRange {
     lo?: number,
     hi?: number,
     prior?: Prior,
-    learning?: LearningOptions,
+    learning?: AdaptOptions,
     show: (index: number) => string = String,
     compress?: CompressIndex
   ) {
@@ -159,7 +159,7 @@ export class IndexRange {
     if (learning !== undefined) {
       const { window } = checkAdaptation(learning, who);
       if (typeof prior === 'function') {
-        throw new TypeError(`${who} learn takes weights, not a cdf`);
+        throw new TypeError(`${who} adapt takes weights, not a cdf`);
       }
       if (
         lo !== undefined &&
@@ -428,7 +428,7 @@ export function lengthRange(
   bounds: LengthBounds,
   who: string,
   noun: string,
-  learning?: LearningOptions
+  learning?: AdaptOptions
 ): IndexRange {
   const min = lengthBound(bounds.min, who, 'min');
   const max = lengthBound(bounds.max, who, 'max');

@@ -216,7 +216,7 @@ describe('Schema set', () => {
   });
 });
 
-describe('p.set learn', () => {
+describe('p.set adapt', () => {
   const plain = p.set(p.int().min(0).max(9)).max(7);
   const weights = Array.from({ length: 8 }, (_, i) => (i === 3 ? 29 : 1));
   const run = (length: number, seed: number) => {
@@ -229,15 +229,15 @@ describe('p.set learn', () => {
 
   it("learns a record's keys with its count, in any order", () => {
     const values: Record<string, number>[] = [{ a: 1, b: 2 }, { b: 3, a: 4 }, {}, { c: 5 }];
-    const record = p.record(p.int()).learn();
+    const record = p.record(p.int()).adapt();
     expect(trip(p.array(record), values)).toEqual(values);
-    const unordered = p.record(p.int()).unordered().learn();
+    const unordered = p.record(p.int()).unordered().adapt();
     expect(Object.keys(trip(unordered, { b: 1, '': 2, a: 3 }))).toEqual(['', 'a', 'b']);
   });
 
   it('round-trips a run of values, inside an array too', () => {
     const values = run(300, 1);
-    for (const node of [plain.learn(), plain.weights(weights).learn({ window: 8 })]) {
+    for (const node of [plain.adapt(), plain.weights(weights).adapt({ window: 8 })]) {
       expect(trip(p.array(node), values)).toEqual(values);
       expect(trip(node, values[0])).toEqual(values[0]);
     }
@@ -245,24 +245,24 @@ describe('p.set learn', () => {
 
   it('takes its weights before or after', () => {
     const values = run(200, 2);
-    expect(p.array(plain.weights(weights).learn({ window: 64 })).encode(values)).toEqual(
-      p.array(plain.learn({ window: 64 }).weights(weights)).encode(values)
+    expect(p.array(plain.weights(weights).adapt({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.adapt({ window: 64 }).weights(weights)).encode(values)
     );
   });
 
   it('learns a skew, at most a byte over the static prior of it', () => {
     const values = run(2000, 3);
     const size = (node: typeof plain) => p.array(node).encode(values).length;
-    expect(size(plain.learn())).toBeLessThan(size(plain));
-    expect(size(plain.weights(weights).learn())).toBeLessThanOrEqual(
+    expect(size(plain.adapt())).toBeLessThan(size(plain));
+    expect(size(plain.weights(weights).adapt())).toBeLessThanOrEqual(
       size(plain.weights(weights)) + 1
     );
   });
 
   it('written once, spends the bytes of its static form', () => {
     for (const value of run(20, 4)) {
-      expect(plain.learn().encode(value)).toEqual(plain.encode(value));
-      expect(plain.weights(weights).learn().encode(value)).toEqual(
+      expect(plain.adapt().encode(value)).toEqual(plain.encode(value));
+      expect(plain.weights(weights).adapt().encode(value)).toEqual(
         plain.weights(weights).encode(value)
       );
     }
@@ -271,28 +271,28 @@ describe('p.set learn', () => {
   it('learns a count without a max on the magnitude scale', () => {
     const values = run(300, 5);
     const open = p.set(p.int().min(0).max(9));
-    expect(trip(p.array(open.learn()), values)).toEqual(values);
-    expect(p.array(open.learn()).encode(values).length).toBeLessThan(
+    expect(trip(p.array(open.adapt()), values)).toEqual(values);
+    expect(p.array(open.adapt()).encode(values).length).toBeLessThan(
       p.array(open).encode(values).length
     );
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.learn({ window: 0 })).toThrow(
+    expect(() => plain.adapt({ window: 0 })).toThrow(
       new RangeError('p.set learning window must be a positive integer, got 0')
     );
-    expect(() => plain.learn({ window: 1.5 })).toThrow(
+    expect(() => plain.adapt({ window: 1.5 })).toThrow(
       new TypeError('p.set learning window must be a positive integer, got 1.5')
     );
-    expect(() => plain.weights([2 ** 45, ...Array<number>(7).fill(1)]).learn()).toThrow(
+    expect(() => plain.weights([2 ** 45, ...Array<number>(7).fill(1)]).adapt()).toThrow(
       new RangeError(
         'p.set adaptive prior 16 and window 1024 overflow with weights totalling 35184372088839'
       )
     );
-    const cdf = new TypeError('p.set learn takes weights, not a cdf');
-    expect(() => plain.cdf((v) => v).learn()).toThrow(cdf);
-    expect(() => plain.learn().cdf((v) => v)).toThrow(cdf);
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.set learn is already set'));
+    const cdf = new TypeError('p.set adapt takes weights, not a cdf');
+    expect(() => plain.cdf((v) => v).adapt()).toThrow(cdf);
+    expect(() => plain.adapt().cdf((v) => v)).toThrow(cdf);
+    expect(() => plain.adapt().adapt()).toThrow(new TypeError('p.set adapt is already set'));
   });
 });
 
@@ -369,7 +369,7 @@ describe('Unordered collections', () => {
         .unordered()
         .max(3)
         .cdf((n) => n * 2),
-      p.set(p.int().min(0).max(9)).unordered().max(3).learn(),
+      p.set(p.int().min(0).max(9)).unordered().max(3).adapt(),
       p.set(p.int().min(0).max(9)).unordered().max(3).compress(),
     ]) {
       expect([...trip(node, value)]).toEqual([1, 4]);
@@ -591,22 +591,22 @@ describe('Compressed collections', () => {
     }
   });
 
-  it('set compress once, and not with learn', () => {
+  it('set compress once, and not with adapt', () => {
     const node = p.map(p.string(), digit);
     expect(() => node.compress().compress()).toThrow(
       new TypeError('p.map compress is already set')
     );
-    expect(() => node.learn().compress()).toThrow(
-      new TypeError('p.map learn and compress cannot both be set')
+    expect(() => node.adapt().compress()).toThrow(
+      new TypeError('p.map adapt and compress cannot both be set')
     );
-    expect(() => p.record(digit).compress().learn()).toThrow(
-      new TypeError('p.record learn and compress cannot both be set')
+    expect(() => p.record(digit).compress().adapt()).toThrow(
+      new TypeError('p.record adapt and compress cannot both be set')
     );
   });
 
   it('keep a collection that learns as it is, beside compressed ones', () => {
     const node = p
-      .object({ m: p.map(p.string(), digit).learn(), s: p.set(digit), r: p.record(p.string()) })
+      .object({ m: p.map(p.string(), digit).adapt(), s: p.set(digit), r: p.record(p.string()) })
       .compress();
     const value = { m: new Map([['a', 1]]), s: new Set([2]), r: { k: 'v' } };
     expect(trip(node, value)).toEqual(value);

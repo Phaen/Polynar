@@ -346,7 +346,7 @@ describe('p.date().compress()', () => {
     expect(node._toDigit).toBeUndefined();
   });
 
-  it('refuses options out of range, not an object, set twice or beside learn', () => {
+  it('refuses options out of range, not an object, set twice or beside adapt', () => {
     expect(() => p.date().compress({ history: 0 })).toThrow(
       new RangeError('p.date: compress history must be in 1..4096, got 0')
     );
@@ -356,9 +356,9 @@ describe('p.date().compress()', () => {
     expect(() => p.date().compress().compress()).toThrow(
       new TypeError('p.date compress is already set')
     );
-    const both = new TypeError('p.date learn and compress cannot both be set');
-    expect(() => p.date().learn().compress()).toThrow(both);
-    expect(() => p.date().compress().learn()).toThrow(both);
+    const both = new TypeError('p.date adapt and compress cannot both be set');
+    expect(() => p.date().adapt().compress()).toThrow(both);
+    expect(() => p.date().compress().adapt()).toThrow(both);
   });
 
   it('refuses a date the plain node refuses, before learning from it', () => {
@@ -404,7 +404,7 @@ describe('p.date().compress()', () => {
   });
 });
 
-describe('p.date learn', () => {
+describe('p.date adapt', () => {
   const DAY = 86_400_000;
   const plain = p
     .date()
@@ -419,7 +419,7 @@ describe('p.date learn', () => {
 
   it('round-trips a run of values, inside an array too', () => {
     const values = run(300, 1);
-    for (const node of [plain.learn(), plain.weights(weights).learn({ window: 16 })]) {
+    for (const node of [plain.adapt(), plain.weights(weights).adapt({ window: 16 })]) {
       expect(node._radix).toBeUndefined();
       expect(trip(p.array(node), values)).toEqual(values);
       expect(trip(node, values[0])).toEqual(values[0]);
@@ -428,61 +428,61 @@ describe('p.date learn', () => {
 
   it('takes its weights before or after', () => {
     const values = run(200, 2);
-    expect(p.array(plain.weights(weights).learn({ window: 64 })).encode(values)).toEqual(
-      p.array(plain.learn({ window: 64 }).weights(weights)).encode(values)
+    expect(p.array(plain.weights(weights).adapt({ window: 64 })).encode(values)).toEqual(
+      p.array(plain.adapt({ window: 64 }).weights(weights)).encode(values)
     );
   });
 
   it('learns a skew, staying near the static prior of it', () => {
     const values = run(2000, 3);
     const size = (node: typeof plain) => p.array(node).encode(values).length;
-    expect(size(plain.learn())).toBeLessThan(size(plain));
-    expect(size(plain.weights(weights).learn())).toBeLessThanOrEqual(
+    expect(size(plain.adapt())).toBeLessThan(size(plain));
+    expect(size(plain.weights(weights).adapt())).toBeLessThanOrEqual(
       Math.ceil(size(plain.weights(weights)) * 1.05)
     );
   });
 
   it('takes its learning options, once', () => {
     const values = run(200, 4);
-    expect(p.array(plain.learn({ window: 8 })).encode(values)).not.toEqual(
-      p.array(plain.learn()).encode(values)
+    expect(p.array(plain.adapt({ window: 8 })).encode(values)).not.toEqual(
+      p.array(plain.adapt()).encode(values)
     );
-    expect(() => plain.learn().learn()).toThrow(new TypeError('p.date learn is already set'));
+    expect(() => plain.adapt().adapt()).toThrow(new TypeError('p.date adapt is already set'));
   });
 
   it('refuses bad options', () => {
-    expect(() => plain.learn({ window: 0 })).toThrow(
+    expect(() => plain.adapt({ window: 0 })).toThrow(
       new RangeError('p.date learning window must be a positive integer, got 0')
     );
-    expect(() => plain.learn({ window: 1.5 })).toThrow(
+    expect(() => plain.adapt({ window: 1.5 })).toThrow(
       new TypeError('p.date learning window must be a positive integer, got 1.5')
     );
-    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)]).learn()).toThrow(
+    expect(() => plain.weights([2 ** 45, ...Array<number>(15).fill(1)]).adapt()).toThrow(
       new RangeError(
         'p.date adaptive prior 32 and window 1024 overflow with weights totalling 35184372088847'
       )
     );
-    const cdf = new TypeError('p.date learn takes weights, not a cdf');
-    expect(() => plain.cdf((v) => v).learn()).toThrow(cdf);
-    expect(() => plain.learn().cdf((v) => v)).toThrow(cdf);
+    const cdf = new TypeError('p.date adapt takes weights, not a cdf');
+    expect(() => plain.cdf((v) => v).adapt()).toThrow(cdf);
+    expect(() => plain.adapt().cdf((v) => v)).toThrow(cdf);
   });
 
   it('learns on the magnitude scale over an unbounded or wide range', () => {
     const values = [new Date(0), new Date(5 * DAY), new Date(-3 * DAY), new Date(5 * DAY)];
-    expect(trip(p.array(p.date().precision('day').learn()), values)).toEqual(values);
-    expect(trip(p.array(p.date().learn()), values)).toEqual(values);
+    expect(trip(p.array(p.date().precision('day').adapt()), values)).toEqual(values);
+    expect(trip(p.array(p.date().adapt()), values)).toEqual(values);
   });
 
   it('refuses a date outside the bounds before learning from it', () => {
-    expect(() => plain.learn().encode(new Date(16 * DAY))).toThrow(RangeError);
+    expect(() => plain.adapt().encode(new Date(16 * DAY))).toThrow(RangeError);
   });
 });
 
 describe('p.date methods', () => {
-  it('refuses learn beside compress, either order', () => {
-    const both = new TypeError('p.date learn and compress cannot both be set');
-    expect(() => p.date().compress().learn()).toThrow(both);
-    expect(() => p.date().learn().compress()).toThrow(both);
+  it('refuses adapt beside compress, either order', () => {
+    const both = new TypeError('p.date adapt and compress cannot both be set');
+    expect(() => p.date().compress().adapt()).toThrow(both);
+    expect(() => p.date().adapt().compress()).toThrow(both);
   });
 
   it('sets its precision once, the millisecond default not counting', () => {
@@ -496,7 +496,7 @@ describe('p.date methods', () => {
   });
 
   it('keeps a learner or a compressed node as it is under a container sugar', () => {
-    const learner = p.date().learn();
+    const learner = p.date().adapt();
     const compress = p.date().compress({ window: 8 });
     expect(learner._adapted({})).toBe(learner);
     expect(compress._adapted({ window: 16 })).toBe(compress);

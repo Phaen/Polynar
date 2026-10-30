@@ -23,7 +23,7 @@ import { buildWeights, readTable, type WeightTable } from './weights';
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 
 /**
- * What a node's learned tables learn under, as `.learn()` takes it:
+ * What a node's learned tables learn under, as `.adapt()` takes it:
  * `window` is how many observations the learned counts hold before they
  * halve, raised to the member count of a table with more members, and
  * `DEFAULT_COMPRESS_WINDOW` when undefined. `separate` keeps the node
@@ -31,13 +31,13 @@ const MAX_SAFE = Number.MAX_SAFE_INTEGER;
  * learned, every node of its kind and window in the message (see
  * `AdaptivePrior`).
  */
-export interface LearningOptions {
+export interface AdaptOptions {
   readonly window?: number;
   readonly separate?: boolean;
 }
 
 /** Whether the priors a node builds from `learning` learn with their kin: unless `separate`. */
-export function kinOf(learning: LearningOptions | undefined): boolean {
+export function kinOf(learning: AdaptOptions | undefined): boolean {
   return learning !== undefined && learning.separate !== true;
 }
 
@@ -66,10 +66,7 @@ function checkPositive(n: number, who: string, what: string): void {
 }
 
 /** Validates a node's adaptive options, keeping only those declared. */
-export function checkAdaptation(
-  options: LearningOptions | undefined,
-  who: string
-): LearningOptions {
+export function checkAdaptation(options: AdaptOptions | undefined, who: string): AdaptOptions {
   const window = options?.window;
   if (window === undefined) {
     return {};

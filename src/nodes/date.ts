@@ -3,7 +3,7 @@ import { isDate, type Kind } from './guards';
 import { describe } from './path';
 import { IndexRange, checkUnset } from './lattice';
 import type { Cdf, Prior } from './weights';
-import type { LearningOptions } from './adaptive';
+import type { AdaptOptions } from './adaptive';
 import { learningOf, learns, MethodNode, type MethodSet } from './methods';
 import { checkCompress, resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
@@ -264,11 +264,11 @@ export class PDate extends MethodNode<Date> {
    * `separate` keeps its tables from starting where other nodes of its kind
    * and window got to. Not with `.compress()`.
    */
-  learn(options?: LearningOptions): PDate {
+  adapt(options?: AdaptOptions): PDate {
     if (this._compress !== undefined) {
-      throw new TypeError('p.date learn and compress cannot both be set');
+      throw new TypeError('p.date adapt and compress cannot both be set');
     }
-    return this._declare('learn', 'p.date', options);
+    return this._declare('adapt', 'p.date', options);
   }
 
   /**
@@ -277,14 +277,14 @@ export class PDate extends MethodNode<Date> {
    * learned step, the same dates exactly, the numbers coded earlier in the
    * same object, and a prior over magnitudes. The bounds still hold, and a
    * declared prior prices the buckets the node has not seen. Not with
-   * `.learn()`. Set once.
+   * `.adapt()`. Set once.
    */
   compress(options?: CompressOptions): PDate {
     if (this._compress !== undefined) {
       throw new TypeError('p.date compress is already set');
     }
     if (learns(this._methods)) {
-      throw new TypeError('p.date learn and compress cannot both be set');
+      throw new TypeError('p.date adapt and compress cannot both be set');
     }
     return this._with({ compress: checkCompress(options, 'p.date') });
   }
