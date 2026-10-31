@@ -24,6 +24,9 @@ class RecSink implements Sink {
     this.calls.push(integer, -1, radix);
     this.enc.compose(integer, radix);
   }
+  open(): void {
+    this.enc.open();
+  }
 }
 
 /** Records every read triple. */
@@ -39,6 +42,9 @@ class RecSource implements Source {
     const v = this.dec.parse(radix);
     this.calls.push(v, -1, radix);
     return v;
+  }
+  get idle(): bigint {
+    return this.dec.idle;
   }
 }
 

@@ -7,6 +7,7 @@
  */
 
 import { Encoder, Decoder, CorruptInputError, p } from '../index';
+import type { PNode } from '../index';
 import * as root from '../index';
 import type { CodecOptions, OutputType } from '../index';
 import { MessageState, SlotCache } from '../packer/state';
@@ -888,6 +889,160 @@ describe('Corruption detection', () => {
   });
 });
 
+describe('Flagged symbols', () => {
+  /** Reads a message of a uniform 5 of 7 and a weighted 0 of `[0, 3)` out of 4, then finalizes. */
+  const readBack = (input: Uint8Array | string, o: Options = {}): void => {
+    const dec = new Decoder(input, o as never);
+    expect(dec.parse(7)).toBe(5);
+    expect(dec.parseWeighted(4, (r) => (r < 3 ? [0, 0, 3] : [1, 3, 1]))).toBe(0);
+    dec.finalize();
+  };
+  const write = (flag: boolean, o: Options = {}): Uint8Array | string => {
+    const enc = new Encoder();
+    enc.compose(5, 7);
+    if (flag) {
+      enc.open();
+    }
+    enc.composeWeighted(0, 3, 4);
+    return enc.output(o as never);
+  };
+
+  it('gives the decoder the state once every digit is read, and -1n before', () => {
+    const enc = new Encoder();
+    enc.compose(3, 10);
+    enc.compose(7, 10);
+    const dec = new Decoder(enc.output());
+    expect(dec.idle).toBe(-1n);
+    expect(dec.parse(10)).toBe(3);
+    expect(dec.idle).toBe(7n);
+    expect(dec.parse(10)).toBe(7);
+    expect(dec.idle).toBe(0n);
+    expect(new Decoder('').idle).toBe(0n);
+  });
+
+  it('folds from an origin where a flagged symbol would fold as nothing', () => {
+    // The weighted 0 folds onto 0 and onto 1 and 2 as nothing; 4 is the first origin it changes.
+    // The head: a 0, the origin's one digit counted, a 0, the origin 4; then 4 folds the weighted
+    // 0 to 5 and the uniform 5 to 40.
+    expect(write(false)).toEqual(Uint8Array.of(5));
+    expect(write(true)).toEqual(Uint8Array.of(0, 1, 0, 4, 40));
+    for (const o of [
+      {},
+      { type: 'text' },
+      { charset: [0, 1] },
+      { checksum: 8 },
+      { type: 'text', checksum: 16 },
+    ] as Options[]) {
+      const input = write(true, o);
+      expect(input).not.toEqual(write(false, o));
+      readBack(input, o);
+    }
+  });
+
+  it('folds from 0 where the flagged symbol changes the state or digits follow it', () => {
+    const changes = (flag: boolean): Uint8Array => {
+      const enc = new Encoder();
+      if (flag) {
+        enc.open();
+      }
+      enc.composeWeighted(3, 1, 4);
+      return enc.output();
+    };
+    expect(changes(true)).toEqual(changes(false));
+    const followed = (flag: boolean): Uint8Array => {
+      const enc = new Encoder();
+      if (flag) {
+        enc.open();
+      }
+      enc.composeWeighted(0, 3, 4);
+      for (let i = 0; i < 8; i++) {
+        enc.compose(255, 256);
+      }
+      return enc.output();
+    };
+    expect(followed(true)).toEqual(followed(false));
+  });
+
+  it('folds a message with a mixture from an origin', () => {
+    const enc = new Encoder();
+    enc.composeMixture([1, 1], (j) => enc.compose(j, 2));
+    enc.open();
+    enc.composeWeighted(0, 3, 4);
+    const bytes = enc.output();
+    expect(bytes[0]).toBe(0);
+    const dec = new Decoder(bytes);
+    const j = dec.parse(2);
+    dec.parseMixture([1, 1], j);
+    expect(dec.parseWeighted(4, (r) => (r < 3 ? [0, 0, 3] : [1, 3, 1]))).toBe(0);
+    dec.finalize();
+  });
+
+  it('drops a flag a rollback takes back', () => {
+    const enc = new Encoder();
+    enc.compose(5, 7);
+    const mark = enc.mark();
+    enc.open();
+    enc.composeWeighted(0, 3, 4);
+    enc.rollback(mark);
+    enc.composeWeighted(0, 3, 4);
+    expect(enc.output()).toEqual(write(false));
+  });
+
+  it('carries a flag past a bucket holding every state to the next slot logged', () => {
+    const enc = new Encoder();
+    enc.compose(5, 7);
+    enc.open();
+    enc.composeWeighted(0, 4, 4);
+    enc.compose(0, 1);
+    enc.compose(0, 35);
+    const bytes = enc.output();
+    expect(bytes[0]).toBe(0);
+    const dec = new Decoder(bytes);
+    expect(dec.parse(7)).toBe(5);
+    expect(dec.parse(35)).toBe(0);
+    dec.finalize();
+  });
+
+  it('reads a head the input does not close as none', () => {
+    // A lone 0, a count with no 0 after it, and a count of more digits than follow close no
+    // head: the input reads from its first digit.
+    expect(() => new Decoder(Uint8Array.of(0)).finalize()).toThrow(
+      'Input is longer than its contents'
+    );
+    for (const input of [Uint8Array.of(0, 4), Uint8Array.of(0, 2, 0, 9)]) {
+      const dec = new Decoder(input);
+      expect(dec.parse(256 ** input.length)).toBe(input.reduce((x, digit) => x * 256 + digit, 0));
+      dec.finalize();
+    }
+  });
+
+  it('keeps the head to a few digits for a large origin in two characters', () => {
+    // The weighted 0 of 2^24 - 1 folds onto many doubled origins as nothing: the origin grows large.
+    const T = 2 ** 24;
+    const write = (o: Options): Uint8Array | string => {
+      const enc = new Encoder();
+      enc.compose(3, 7);
+      enc.open();
+      enc.composeWeighted(0, T - 1, T);
+      return enc.output(o as never);
+    };
+    const o: Options = { type: 'text', charset: 'ab' };
+    const text = write(o) as string;
+    expect(text.length).toBeLessThan(100);
+    expect(text[0]).toBe('a');
+    const dec = new Decoder(text, o as never);
+    expect(dec.parse(7)).toBe(3);
+    expect(dec.parseWeighted(T, (r) => (r < T - 1 ? [0, 0, T - 1] : [1, T - 1, 1]))).toBe(0);
+    dec.finalize();
+  });
+
+  it('refuses a message whose head is damaged', () => {
+    const bytes = write(true) as Uint8Array;
+    const damaged = Uint8Array.from(bytes, (b, i) => (i === 3 ? 5 : b));
+    expect(() => readBack(damaged)).toThrow(CorruptInputError);
+  });
+});
+
 describe('Checksum', () => {
   const User = p.object({
     name: p.string().max(40),
@@ -1637,6 +1792,58 @@ describe('Decode limit', () => {
     expect(time(() => Prose.decode(bomb))).toBeLessThan(1000);
     expect(() => Prose.decode(bomb)).toThrow(CorruptInputError);
   });
+
+  it('throws at once on damaged input to a container on the predictor', () => {
+    const Ints = p.array(p.int()).compress();
+    const damaged = Uint8Array.of(200, 13, 77);
+    const reads = jest.spyOn(Decoder.prototype as unknown as { read(): void }, 'read');
+    expect(() => Ints.decode(damaged)).toThrow(CorruptInputError);
+    expect(reads.mock.calls.length).toBeLessThan(10_000);
+    reads.mockRestore();
+  });
+
+  it.each([
+    [
+      'object items',
+      p.array(p.object({ a: p.int(), b: p.string() })).compress(),
+      [{ a: 1, b: 'x' }],
+    ],
+    ['p.any()', p.any().compress(), { users: [{ id: 1, name: 'a' }], ok: true }],
+    [
+      'a .max(1e5) array',
+      p
+        .array(p.object({ a: p.int() }))
+        .max(100000)
+        .compress(),
+      [{ a: 1 }, { a: 2 }],
+    ],
+  ] as unknown as [string, PNode<unknown>, unknown][])(
+    'throws at once on damaged input to %s on the predictor',
+    (_name, node, value) => {
+      const good = node.encode(value) as Uint8Array;
+      const reads = jest.spyOn(Decoder.prototype as unknown as { read(): void }, 'read');
+      for (const damaged of [Uint8Array.of(200, 13, 77), good.slice(0, good.length >> 1)]) {
+        expect(() => node.decode(damaged)).toThrow(CorruptInputError);
+      }
+      expect(reads.mock.calls.length).toBeLessThan(10_000);
+      reads.mockRestore();
+    }
+  );
+
+  it.each([
+    ['an empty array', p.array(p.array(p.int())).compress(), [[1, 2], []]],
+    ['an empty object', p.any().compress(), { a: [1, 2], b: {} }],
+    ['an empty string', p.array(p.string()).compress(), ['ab', 'c', '']],
+    ['a container filled to its maximum', p.array(p.int()).max(3).compress(), [4, 5, 6]],
+    ['nested empties', p.any().compress(), [[], {}, [[{}]], '']],
+  ] as unknown as [string, PNode<unknown>, unknown][])(
+    'round-trips a message ending in %s on the predictor',
+    (_name, node, value) => {
+      for (const o of [{}, { type: 'text' }, { checksum: 8 }] as Options[]) {
+        expect(node.decode(node.encode(value, o as never), o as never)).toEqual(value);
+      }
+    }
+  );
 
   it('never limits values the input backs', () => {
     const rand = mulberry32(0x11417);

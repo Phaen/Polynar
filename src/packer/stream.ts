@@ -4,7 +4,7 @@
  *
  * Symbol i owns `freq` f_i of `total` T_i states and has a window
  * k_i (see `ransWindow`); A_i = k_i·T_i and B_i = k_i·f_i. The encoder folds
- * the symbols in reverse, starting from state 0. Before folding symbol i, it
+ * the symbols in reverse, starting from state 0 or a small origin. Before folding symbol i, it
  * emits the state's low digits until the state is below size·B_i; folding
  * then leaves it below size·A_i. A uniform slot folds as x·T + cum, a
  * weighted symbol as ⌊x/f⌋·T + cum + x mod f, or through the spread map
@@ -245,16 +245,19 @@ export class StreamWriter {
    * after a uniform `head` slot of that many states when it is not 0. A
    * freq of 0 marks a latent choice of `total` states, which `unmix` folds
    * along with the spelling it settles on; the spellings' symbols are not
-   * among `totals`. `size` is the digit base, from 2 to 65536; `L` is the
-   * window, `ransWindow(size)` unless a test narrows it.
+   * among `totals`. `size` is the digit base, from 2 to 65536; `origin` is
+   * the state the fold starts from, a safe integer below size·B of the last
+   * symbol; `L` is the window, `ransWindow(size)` unless a test narrows it.
    */
   constructor(
     private readonly size: number,
     totals: ArrayLike<number>,
     freqs: ArrayLike<number>,
     head: number,
+    origin: number,
     private readonly L: number = ransWindow(size)
   ) {
+    this.x = origin;
     this.limit = floorDiv(Number.MAX_SAFE_INTEGER, size);
     const windows = new Windows(L, size);
     const ks: number[] = [];
@@ -522,15 +525,17 @@ export class StreamReader {
   private readonly span = new Span();
 
   /**
-   * Reads the `length` digits `digitAt` returns, each in [0, size); `size`
-   * and `L` match the writer's.
+   * Reads the `length` digits `digitAt` returns, each in [0, size), from
+   * `start` on; `size` and `L` match the writer's.
    */
   constructor(
     private digitAt: (i: number) => number,
     private readonly length: number,
     private readonly size: number,
+    start = 0,
     L: number = ransWindow(size)
   ) {
+    this.at = start;
     this.windows = new Windows(L, size);
   }
 

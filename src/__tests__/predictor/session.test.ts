@@ -43,6 +43,7 @@ function trip(
       calls.push(v, -1, r);
       enc.compose(v, r);
     },
+    open: () => enc.open(),
   };
   const se = session(enc);
   items.forEach((it, i) => {
@@ -62,6 +63,9 @@ function trip(
       const v = dec.parse(r);
       read.push(v, -1, r);
       return v;
+    },
+    get idle() {
+      return dec.idle;
     },
   };
   const sd = session(dec);

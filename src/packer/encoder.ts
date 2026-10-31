@@ -48,6 +48,28 @@ import { Journal } from './journal';
 const ONE = 1 as Radix;
 const BIG_CHUNK_STATES = 2 ** BIG_CHUNK_BITS;
 
+/**
+ * The head of a message folded from `origin`, a positive integer, in
+ * base-`size` digits: a 0; the count of the origin's base-`size` digits in
+ * bijective base size − 1, lowest digit first, each in [1, size); a 0 that
+ * closes the count; then the origin's digits, lowest first.
+ */
+function headOf(origin: number, size: number): number[] {
+  const digits: number[] = [];
+  for (let v = origin; v > 0; v = Math.floor(v / size)) {
+    digits.push(v % size);
+  }
+  const base = size - 1;
+  const head = [0];
+  for (let n = digits.length; n > 0; ) {
+    const digit = ((n - 1) % base) + 1;
+    head.push(digit);
+    n = (n - digit) / base;
+  }
+  head.push(0);
+  return [...head, ...digits];
+}
+
 /** Rejects a bucket `[cum, cum + freq)` that does not lie in `[0, total)` or is empty. */
 function checkBucket(cum: number, freq: number, total: number): void {
   if (!Number.isInteger(total) || !Number.isInteger(freq) || !Number.isInteger(cum)) {
@@ -198,6 +220,14 @@ export class Encoder {
   private totals: Radix[] = [];
   /** Whether each symbol is weighted, read by `parseWeighted`, rather than a uniform slot. */
   private weighted: boolean[] = [];
+  /**
+   * The slots of symbols `open` flagged: a non-end at a step an end may
+   * close, which the decoder must not reach with every digit read and a
+   * state it leaves as it is.
+   */
+  private readonly opens = new Set<number>();
+  /** Whether `open` flagged the next slot logged. */
+  private opening = false;
   /** Where the message's state records its changes while a transaction is open. */
   readonly journal = new Journal();
   private readonly states = new MessageState(this.journal);
@@ -275,6 +305,9 @@ export class Encoder {
     this.freqs.push(ONE);
     this.totals.push(states);
     this.weighted.push(false);
+    if (this.opening) {
+      this.flag();
+    }
     if (this.running.length > 0) {
       this.charge(unitsOf(states, 1));
     }
@@ -320,9 +353,29 @@ export class Encoder {
     this.freqs.push(freq as Radix);
     this.totals.push(total as Radix);
     this.weighted.push(true);
+    if (this.opening) {
+      this.flag();
+    }
     if (this.running.length > 0) {
       this.charge(unitsOf(total, freq));
     }
+  }
+
+  /**
+   * Flag the next symbol as a non-end at a step an end may close: the
+   * decoder, reading it with every digit read, takes a state left as it was
+   * for damaged input, and `output` folds the message so that it never is.
+   * The flag goes to the next slot `compose` or `composeWeighted` logs: an
+   * escape's entry holding every state logs none, and its body takes it.
+   */
+  open(): void {
+    this.opening = true;
+  }
+
+  /** Flags the slot just logged, as `open` asked. */
+  private flag(): void {
+    this.opening = false;
+    this.opens.add(this.totals.length - 1);
   }
 
   /**
@@ -672,6 +725,11 @@ export class Encoder {
   rollback(mark: Mark): void {
     this.journal.rollback(mark.journal);
     const at = mark.events;
+    for (const slot of this.opens) {
+      if (slot >= at) {
+        this.opens.delete(slot);
+      }
+    }
     this.cums.length = at;
     this.freqs.length = at;
     this.totals.length = at;
@@ -979,18 +1037,45 @@ export class Encoder {
    * folds onto and every digit emitted before it, which is everything the
    * decoder reads after it; emitting for it does not depend on its value, so
    * it is taken once that emission is done.
+   *
+   * The fold starts from state 0, unless a symbol `open` flagged would
+   * fold with no digit emitted yet and leave the state as it was: the
+   * decoder would read that symbol with every digit read and the state
+   * unchanged, as it reads damaged input. Pushing never lowers the state, so
+   * a read the decoder sees leave it unchanged is one whose every symbol
+   * folded as nothing, the flagged one included. The fold then starts from
+   * an origin of 1, doubled until no flagged symbol folds that way, and the
+   * digits open with a head the decoder reads the origin from: a 0, which
+   * no message folded from 0 starts with, then the origin; see `headOf`.
    */
   private toDigits(size: number, sum: number): number[] {
-    const { cums, freqs, totals, weighted } = this;
+    for (let origin = 0; ; origin = origin === 0 ? 1 : 2 * origin) {
+      const digits = this.fold(size, sum, origin);
+      if (digits !== undefined) {
+        return origin === 0 ? digits : [...headOf(origin, size), ...digits];
+      }
+    }
+  }
+
+  /** The log folded from `origin`, or none when a flagged symbol folds as nothing. */
+  private fold(size: number, sum: number, origin: number): number[] | undefined {
+    const { cums, freqs, totals, weighted, opens } = this;
     const head = sum > 0 ? 2 ** sum : 0;
-    let writer: StreamWriter;
+    let writer: StreamWriter | undefined;
     if (this.mixtures.length === 0) {
-      writer = new StreamWriter(size, totals, freqs, head);
+      writer = new StreamWriter(size, totals, freqs, head, origin);
       for (let i = totals.length - 1; i >= 0; i--) {
+        const before = opens.has(i) ? writer.state : -1n;
         writer.push(cums[i], freqs[i], totals[i], weighted[i]);
+        if (before >= 0n && writer.count === 0 && writer.state === before) {
+          return undefined;
+        }
       }
     } else {
-      writer = this.mixedWriter(size, head);
+      writer = this.mixedWriter(size, head, origin);
+      if (writer === undefined) {
+        return undefined;
+      }
     }
     if (sum > 0) {
       const radix = 2 ** sum;
@@ -1006,9 +1091,10 @@ export class Encoder {
    * `toDigits`' writer with the log folded into it, for a log with
    * mixtures: the writer takes each mixture as a latent choice, a freq of 0,
    * in place of its span, and `unmix` folds it with the spelling it takes.
+   * None when a flagged symbol folds as nothing.
    */
-  private mixedWriter(size: number, head: number): StreamWriter {
-    const { cums, freqs, totals, weighted, mixtures } = this;
+  private mixedWriter(size: number, head: number, origin: number): StreamWriter | undefined {
+    const { cums, freqs, totals, weighted, mixtures, opens } = this;
     const symbolTotals: number[] = [];
     const symbolFreqs: number[] = [];
     /** Each symbol's slot in the log, or -1 - k for mixture k. */
@@ -1027,11 +1113,15 @@ export class Encoder {
         slots.push(i);
       }
     }
-    const writer = new StreamWriter(size, symbolTotals, symbolFreqs, head);
+    const writer = new StreamWriter(size, symbolTotals, symbolFreqs, head, origin);
     for (let e = slots.length - 1; e >= 0; e--) {
       const i = slots[e];
       if (i >= 0) {
+        const before = opens.has(i) ? writer.state : -1n;
         writer.push(cums[i], freqs[i], totals[i], weighted[i]);
+        if (before >= 0n && writer.count === 0 && writer.state === before) {
+          return undefined;
+        }
       } else {
         const { layout, spellings } = mixtures[-1 - i];
         writer.unmix(

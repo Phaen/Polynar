@@ -34,6 +34,11 @@ export class ReplayDecoder extends Decoder<string> {
   /** A log does not run dry, so no count is charged against a limit. */
   charge(): void {}
 
+  /** A log never runs out of digits. */
+  get idle(): bigint {
+    return -1n;
+  }
+
   protected parseRadix(radix: Radix): number {
     // The encoder logs nothing for a radix-1 digit.
     if (radix === 1) {

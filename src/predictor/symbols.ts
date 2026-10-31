@@ -34,6 +34,7 @@ import {
   shl,
   shr,
 } from './arith';
+import { CorruptInputError } from '../packer/errors';
 import type { Ids } from './alphabet';
 import { Distribution } from './distribution';
 import {
@@ -66,6 +67,8 @@ import type { PathDeltas } from './weights';
 export interface Sink {
   composeWeighted(cum: number, freq: number, total: number): void;
   compose(integer: number, radix: number): void;
+  /** The next symbol is a non-end at a step that an end may close. */
+  open(): void;
 }
 
 /** A frequency table the decoder reads a member of (the packer's `MemberTable`). */
@@ -79,6 +82,8 @@ export interface Table {
 export interface Source {
   parseMember(total: number, table: Table): number;
   parse(radix: number): number;
+  /** The state once every digit is read, -1n while digits remain. */
+  readonly idle: bigint;
 }
 
 /**
@@ -1293,14 +1298,21 @@ export class SymbolPredictor {
   /** One coded step: the table, the symbol and its learning. */
   code(enc: Sink, a: number, allowEnd = true, endSym = END): void {
     this.distribution(allowEnd, endSym);
+    if (allowEnd && a !== endSym) enc.open();
     this.write(enc, a);
     this.learn(a);
   }
 
   /** One read step. */
   decode(dec: Source, allowEnd = true, endSym = END): number {
+    const idle = dec.idle;
     this.distribution(allowEnd, endSym);
     const a = this.read(dec);
+    // Past the input, a read that leaves the state as it was carries nothing: a valid message
+    // never spends such a read on anything but the end here (see `Encoder.toDigits`).
+    if (allowEnd && a !== endSym && idle >= 0n && dec.idle === idle) {
+      throw new CorruptInputError('Input ran out inside a value that only its end may close');
+    }
     this.learn(a);
     return a;
   }

@@ -74,6 +74,8 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
   private readonly input: string | Uint8Array;
   private readonly alphabet: OutputAlphabet;
   private readonly reader: StreamReader;
+  /** The state the encoder's fold started from, as the input's head gives it; see `Encoder.toDigits`. */
+  private readonly origin: bigint;
   private readonly states = new MessageState();
   /** How many values may still be read past the input before the decode is refused. */
   private budget: number;
@@ -105,7 +107,33 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
     this.input = input;
     // The input's own form decides; `type` only pairs the options with it for TypeScript.
     this.alphabet = outputAlphabet(typeof input === 'string' ? 'text' : 'binary', options.charset);
-    this.reader = new StreamReader((i) => this.digitAt(i), input.length, this.alphabet.size);
+    const size = this.alphabet.size;
+    // A message folded from state 0 never starts with a 0: one that does
+    // opens with the head of its origin. A head the input does not close is
+    // none, and the input reads from its first digit.
+    let start = 0;
+    let origin = 0n;
+    if (input.length > 0 && this.digitAt(0) === 0) {
+      // The count of the origin's digits, closed by a 0, then the digits; see `headOf`.
+      let count = 0;
+      let pow = 1;
+      let i = 1;
+      while (i < input.length && this.digitAt(i) !== 0) {
+        count += this.digitAt(i++) * pow;
+        pow *= size - 1;
+      }
+      if (i + count < input.length) {
+        const radix = BigInt(size);
+        let value = 0n;
+        for (let k = count; k > 0; k--) {
+          value = value * radix + BigInt(this.digitAt(i + k));
+        }
+        start = i + count + 1;
+        origin = value;
+      }
+    }
+    this.origin = origin;
+    this.reader = new StreamReader((i) => this.digitAt(i), input.length, size, start);
     this.budget = validateLimit(options.limit);
     const sum = validateChecksum(options.checksum);
     if (sum > 0) {
@@ -183,6 +211,12 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
   /** The input's length in digits. */
   get digits(): number {
     return this.input.length;
+  }
+
+  /** The state once every digit is read, -1n while digits remain. */
+  get idle(): bigint {
+    const reader = this.reader;
+    return reader.position >= this.input.length ? reader.state : -1n;
   }
 
   /**
@@ -401,14 +435,14 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
 
   /**
    * Assert the reads ended where the encoder's fold began: every digit read,
-   * and the state back at 0. Anything else proves the input is not what the
-   * reads describe: a digit corrupted within it, padding appended to it, or
-   * values written that were never read. Reads past the last written value
-   * return 0 and leave both as they are, so they pass.
+   * and the state back at its origin. Anything else proves the input is not
+   * what the reads describe: a digit corrupted within it, padding appended
+   * to it, or values written that were never read. Reads past the last
+   * written value return 0 and leave both as they are, so they pass.
    */
   finalize(): void {
     const reader = this.reader;
-    if (reader.state !== 0n) {
+    if (reader.state !== this.origin) {
       throw new CorruptInputError('Unread or corrupted data at end of input');
     }
     if (reader.position < this.input.length) {

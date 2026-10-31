@@ -43,9 +43,10 @@ describe('ReplayDecoder', () => {
     dec.finalize();
   });
 
-  it('charges nothing and bounds no repeat by digits', () => {
+  it('charges nothing, bounds no repeat by digits and never runs out', () => {
     const dec = new ReplayDecoder(new Encoder());
     expect(dec.digits).toBe(Infinity);
+    expect(dec.idle).toBe(-1n);
     expect(() => dec.charge()).not.toThrow();
     dec.finalize();
   });

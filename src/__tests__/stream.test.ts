@@ -38,6 +38,7 @@ const writerOf = (events: readonly Event[], size: number, L?: number, head = 0):
     events.map(([, , total]) => total),
     events.map(([, freq]) => freq),
     head,
+    0,
     L
   );
 
@@ -51,7 +52,7 @@ const write = (events: readonly Event[], size: number, L?: number): number[] => 
 
 /** What reading `events` back returns, and where the reader ends. */
 const read = (digits: readonly number[], events: readonly Event[], size: number, L?: number) => {
-  const reader = new StreamReader((i) => digits[i], digits.length, size, L);
+  const reader = new StreamReader((i) => digits[i], digits.length, size, 0, L);
   const symbols = events.map((event) =>
     event[3]
       ? reader.weighted(event[2], new TupleLocator(around(event)), true)

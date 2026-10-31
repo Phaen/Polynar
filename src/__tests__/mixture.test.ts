@@ -509,7 +509,7 @@ describe('StreamWriter.unmix', () => {
       const valid = items.filter((item) => !('layout' in item) || item.layout.only < 0);
       const totals = valid.map((item) => ('event' in item ? item.event[2] : item.layout.total));
       const freqs = valid.map((item) => ('event' in item ? item.event[1] : 0));
-      const writer = new StreamWriter(size, totals, freqs, 0, L);
+      const writer = new StreamWriter(size, totals, freqs, 0, 0, L);
       const spellingOf = (events: readonly Event[]) => ({
         cums: events.map((e) => e[0]),
         freqs: events.map((e) => e[1]),
@@ -529,7 +529,7 @@ describe('StreamWriter.unmix', () => {
         }
       }
       const digits = writer.digits();
-      const reader = new StreamReader((i) => digits[i], digits.length, size, L);
+      const reader = new StreamReader((i) => digits[i], digits.length, size, 0, L);
       const readBack = (event: Event): number =>
         event[3]
           ? reader.weighted(event[2], new TupleLocator(around(event)), true)
@@ -568,7 +568,7 @@ describe('StreamWriter.unmix', () => {
       const layout = new MixtureLayout([5, 3]);
       const spellings = [0, 1].map((j): Event[] => [[j, 1, 2, false], ...ladder]);
       const after: Event = [7, 1, 9, false];
-      const writer = new StreamWriter(size, [layout.total, 9], [0, 1], 0, L);
+      const writer = new StreamWriter(size, [layout.total, 9], [0, 1], 0, 0, L);
       writer.push(...after);
       writer.unmix(
         layout.total,
@@ -581,7 +581,7 @@ describe('StreamWriter.unmix', () => {
         })
       );
       const digits = writer.digits();
-      const reader = new StreamReader((i) => digits[i], digits.length, size, L);
+      const reader = new StreamReader((i) => digits[i], digits.length, size, 0, L);
       const j = reader.uniform(2);
       for (const event of spellings[j].slice(1)) {
         expect(reader.weighted(event[2], new TupleLocator(around(event)), true)).toBe(0);
