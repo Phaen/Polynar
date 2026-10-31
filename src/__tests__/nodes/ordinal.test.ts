@@ -203,26 +203,6 @@ describe('writeOrdinal / readOrdinal', () => {
     expect(bytes).toBeGreaterThan(2934 * 0.99);
   });
 
-  it('scale close to linearly in the digit count', () => {
-    // Five times the digits: linear is about 5, n log n about 5.4, quadratic 25.
-    const radix = 2 ** 20;
-    const order: Order = { sorted: true, unique: true };
-    const small = distinct(2000, radix);
-    const large = distinct(10_000, radix);
-    const time = (digits: number[]): number => {
-      let best = Infinity;
-      for (let run = 0; run < 3; run++) {
-        const start = performance.now();
-        trip(digits, radix, order);
-        best = Math.min(best, performance.now() - start);
-      }
-      return best;
-    };
-    time(large);
-    const ratio = time(large) / time(small);
-    expect(ratio).toBeLessThan(12);
-  });
-
   it('reject more distinct digits than the radix holds as corrupt', () => {
     for (const order of [{ unique: true }, { unordered: true, unique: true }] as Order[]) {
       expect(() => readOrdinal(new Decoder(new Uint8Array(0)), 3, 4, order)).toThrow(

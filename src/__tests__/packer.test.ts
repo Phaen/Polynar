@@ -1739,14 +1739,17 @@ describe('Decode limit', () => {
   const Digits = p.array(p.int().min(0).max(9));
   /** A length of `count` and nothing after it: every item reads past the input. */
   const claim = (count: number) => p.int().min(0).encode(count);
-  const time = (fn: () => unknown): number => {
-    const start = performance.now();
+  /** The symbols `fn` reads, whether it throws or not. */
+  const reads = (fn: () => unknown): number => {
+    const spy = jest.spyOn(Decoder.prototype as unknown as { read(): void }, 'read');
     try {
       fn();
     } catch {
-      // timed either way
+      // counted either way
     }
-    return performance.now() - start;
+    const count = spy.mock.calls.length;
+    spy.mockRestore();
+    return count;
   };
 
   it('reads zeros past the input up to the limit, and no further', () => {
@@ -1783,23 +1786,21 @@ describe('Decode limit', () => {
   });
 
   it('throws at once on a length no input backs', () => {
-    expect(time(() => p.binary().decode(claim(2 ** 40)))).toBeLessThan(1000);
+    expect(reads(() => p.binary().decode(claim(2 ** 40)))).toBeLessThan(1000);
     expect(() => p.binary().decode(claim(2 ** 40))).toThrow(CorruptInputError);
     expect(() => p.array(p.null()).decode(claim(2 ** 31))).toThrow(CorruptInputError);
     // Damaged bytes whose prose text runs on past the input.
     const bomb = Uint8Array.of(171, 1, 105, 182, 128, 148, 192, 161, 132, 33, 47);
     const Prose = p.versioned(p.string().prose());
-    expect(time(() => Prose.decode(bomb))).toBeLessThan(1000);
+    expect(reads(() => Prose.decode(bomb))).toBeLessThan(1000);
     expect(() => Prose.decode(bomb)).toThrow(CorruptInputError);
   });
 
   it('throws at once on damaged input to a container on the predictor', () => {
     const Ints = p.array(p.int()).compress();
     const damaged = Uint8Array.of(200, 13, 77);
-    const reads = jest.spyOn(Decoder.prototype as unknown as { read(): void }, 'read');
+    expect(reads(() => Ints.decode(damaged))).toBeLessThan(1000);
     expect(() => Ints.decode(damaged)).toThrow(CorruptInputError);
-    expect(reads.mock.calls.length).toBeLessThan(10_000);
-    reads.mockRestore();
   });
 
   it.each([
