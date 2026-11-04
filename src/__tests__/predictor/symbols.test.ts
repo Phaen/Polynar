@@ -352,9 +352,12 @@ describe('SymbolPredictor tables', () => {
     const log = pred.log;
     const a = s.ids.idOf(0x61);
     const per = new Map<number, number>();
-    for (let i = 0; i < log.n; i++) {
-      expect(log.count[i]).toBeGreaterThanOrEqual(0);
-      if (log.sym[i] === a) per.set(log.src[i], (per.get(log.src[i]) ?? 0) + log.count[i]);
+    for (let g = 0; g < log.segs; g++) {
+      const src = log.src[g];
+      for (let i = log.start[g]; i < log.end[g]; i++) {
+        expect(log.count[i]).toBeGreaterThanOrEqual(0);
+        if (log.sym[i] === a) per.set(src, (per.get(src) ?? 0) + log.count[i]);
+      }
     }
     // msg, node and value saw 10 'a's; the folded twins as well.
     expect(per.get(1)).toBe(10);
@@ -368,8 +371,10 @@ describe('SymbolPredictor tables', () => {
     pred.distribution();
     const log = pred.log;
     let folded = 0;
-    for (let i = 0; i < log.n; i++) {
-      if ((log.src[i] === 5 || log.src[i] === 6) && log.sym[i] === DIGIT) folded++;
+    for (let g = 0; g < log.segs; g++) {
+      for (let i = log.start[g]; i < log.end[g]; i++) {
+        if ((log.src[g] === 5 || log.src[g] === 6) && log.sym[i] === DIGIT) folded++;
+      }
     }
     expect(folded).toBeGreaterThan(0);
     const one = s.ids.idOf(0x31);

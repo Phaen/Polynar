@@ -94,12 +94,15 @@ function grownFloat(a: Float64Array, cap: number): Float64Array {
 }
 
 /**
- * One step's votes, written by the vote pass and read by `learn`. The arrays are kept across steps
- * and grow by doubling; `reset(capacity)` reserves a step's worth before the pass.
+ * One step's votes, written by the vote pass and read by `learn`. Votes come in segments: the
+ * votes of one context entry, or a run of sticky votes, share their block, source, level,
+ * level-evidence cell, log-n cell, log-n feature and value-feature flag, kept once per segment;
+ * segment `g` holds votes `start[g]..end[g] − 1`, and segments cover the votes in order. The
+ * arrays are kept across steps and grow by doubling; `reset(capacity)` reserves a step's worth
+ * before the pass.
  */
 export class VoteLog {
   n = 0;
-  block: Int32Array = new Int32Array(0);
   /** The vote's feature cell (features.ts `cellOf`); its features are `CELL_X` in RB. */
   cell: Int32Array = new Int32Array(0);
   sym: Int32Array = new Int32Array(0);
@@ -109,18 +112,24 @@ export class VoteLog {
   eCode: Float64Array = new Float64Array(0);
   /** The fold share credited to the coded symbol, PB; 2^PB when the vote is not split. */
   share16: Float64Array = new Float64Array(0);
-  src: Int32Array = new Int32Array(0);
-  level: Int32Array = new Int32Array(0);
-  levIndex: Int32Array = new Int32Array(0);
-  lognIndex: Int32Array = new Int32Array(0);
-  /** min(16, log2 total) of the vote's context entry, RB. */
-  lognL: Float64Array = new Float64Array(0);
-  /** 1 when the vote counts toward the value-feature gradient. */
-  tau: Uint8Array = new Uint8Array(0);
   /** Pass B's masses at the step's block scale; the learning mass excludes the fold share. */
   massLearn: Float64Array = new Float64Array(0);
   massCode: Float64Array = new Float64Array(0);
   prev: Int32Array = new Int32Array(0);
+
+  /** Segments of the step. */
+  segs = 0;
+  start: Int32Array = new Int32Array(0);
+  end: Int32Array = new Int32Array(0);
+  block: Int32Array = new Int32Array(0);
+  src: Int32Array = new Int32Array(0);
+  level: Int32Array = new Int32Array(0);
+  levIndex: Int32Array = new Int32Array(0);
+  lognIndex: Int32Array = new Int32Array(0);
+  /** min(16, log2 total) of the segment's context entry, RB. */
+  lognL: Float64Array = new Float64Array(0);
+  /** 1 when the segment's votes count toward the value-feature gradient. */
+  tau: Uint8Array = new Uint8Array(0);
 
   /** The coded symbol as the folded populations (msgF, nodeF) see it; -1 when it equals the symbol. */
   af = -1;
@@ -149,6 +158,7 @@ export class VoteLog {
   lnT: Float64Array = new Float64Array(0);
 
   private cap = 0;
+  private segCap = 0;
 
   constructor(capacity = 64) {
     this.reserve(capacity);
@@ -163,13 +173,23 @@ export class VoteLog {
     while (c < capacity) {
       c *= 2;
     }
-    this.block = grownInt(this.block, c);
     this.cell = grownInt(this.cell, c);
     this.sym = grownInt(this.sym, c);
     this.count = grownFloat(this.count, c);
     this.eLearn = grownFloat(this.eLearn, c);
     this.eCode = grownFloat(this.eCode, c);
     this.share16 = grownFloat(this.share16, c);
+    this.massLearn = grownFloat(this.massLearn, c);
+    this.massCode = grownFloat(this.massCode, c);
+    this.prev = grownInt(this.prev, c);
+    this.cap = c;
+  }
+
+  private growSegs(): void {
+    const c = this.segCap > 0 ? this.segCap * 2 : 16;
+    this.start = grownInt(this.start, c);
+    this.end = grownInt(this.end, c);
+    this.block = grownInt(this.block, c);
     this.src = grownInt(this.src, c);
     this.level = grownInt(this.level, c);
     this.levIndex = grownInt(this.levIndex, c);
@@ -178,15 +198,13 @@ export class VoteLog {
     const tau = new Uint8Array(c);
     tau.set(this.tau);
     this.tau = tau;
-    this.massLearn = grownFloat(this.massLearn, c);
-    this.massCode = grownFloat(this.massCode, c);
-    this.prev = grownInt(this.prev, c);
-    this.cap = c;
+    this.segCap = c;
   }
 
   /** Empties the log for a new step and reserves `capacity` votes. */
   reset(capacity = 0): void {
     this.n = 0;
+    this.segs = 0;
     this.af = -1;
     this.eEsc = 0;
     this.massEsc = 0;
@@ -203,7 +221,40 @@ export class VoteLog {
     this.reserve(capacity);
   }
 
-  /** Appends a vote (masses 0 until pass B) and returns its index. */
+  /**
+   * Opens an empty segment at the end of the log and returns its index; the writer appends its
+   * votes and sets `end`.
+   */
+  open(
+    block: number,
+    src: number,
+    level: number,
+    levIndex: number,
+    lognIndex: number,
+    lognL: number,
+    tau: boolean
+  ): number {
+    const g = this.segs;
+    if (g === this.segCap) {
+      this.growSegs();
+    }
+    this.start[g] = this.n;
+    this.end[g] = this.n;
+    this.block[g] = block;
+    this.src[g] = src;
+    this.level[g] = level;
+    this.levIndex[g] = levIndex;
+    this.lognIndex[g] = lognIndex;
+    this.lognL[g] = lognL;
+    this.tau[g] = tau ? 1 : 0;
+    this.segs = g + 1;
+    return g;
+  }
+
+  /**
+   * Appends a vote (masses 0 until pass B) and returns its index: to the last segment when its
+   * constants match, else in a segment of its own.
+   */
   push(
     block: number,
     cell: number,
@@ -224,23 +275,30 @@ export class VoteLog {
     if (i >= this.cap) {
       this.reserve(i + 1);
     }
-    this.block[i] = block;
+    let g = this.segs - 1;
+    if (
+      g < 0 ||
+      this.block[g] !== block ||
+      this.src[g] !== src ||
+      this.level[g] !== level ||
+      this.levIndex[g] !== levIndex ||
+      this.lognIndex[g] !== lognIndex ||
+      this.lognL[g] !== lognL ||
+      this.tau[g] !== (tau ? 1 : 0)
+    ) {
+      g = this.open(block, src, level, levIndex, lognIndex, lognL, tau);
+    }
     this.cell[i] = cell;
     this.sym[i] = sym;
     this.count[i] = count;
     this.eLearn[i] = eLearn;
     this.eCode[i] = eCode;
     this.share16[i] = share16;
-    this.src[i] = src;
-    this.level[i] = level;
-    this.levIndex[i] = levIndex;
-    this.lognIndex[i] = lognIndex;
-    this.lognL[i] = lognL;
-    this.tau[i] = tau ? 1 : 0;
     this.massLearn[i] = 0;
     this.massCode[i] = 0;
     this.prev[i] = prev;
     this.n = i + 1;
+    this.end[g] = i + 1;
     return i;
   }
 
@@ -305,47 +363,53 @@ export function learn(
   let nt = 0;
   let tauA = 0;
   let tauT = 0;
-  for (let i = 0; i < log.n; i++) {
-    const m = log.massLearn[i];
-    if (m === 0) {
-      continue;
-    }
-    const ms = shr(m, s);
-    const src = log.src[i];
-    const hit = log.sym[i] === (src === SRC.msgF || src === SRC.nodeF ? af : a);
-    const q =
-      (hit ? rdiv(shl(mulShr(m, log.share16[i], PB + s), PB), sa) : 0) - rdiv(shl(ms, PB), z);
-    if (q !== 0) {
-      const b = log.block[i];
-      if (mark[b] === 0) {
-        mark[b] = 1;
-        touched[nt++] = b;
+  const { massLearn, share16, sym, cell } = log;
+  for (let g = 0; g < log.segs; g++) {
+    const src = log.src[g];
+    const want = src === SRC.msgF || src === SRC.nodeF ? af : a;
+    const b = log.block[g];
+    const o = b * HF;
+    const tau = log.tau[g] === 1;
+    const li = log.levIndex[g];
+    const ni = log.lognIndex[g];
+    const lognL = log.lognL[g];
+    const end = log.end[g];
+    for (let i = log.start[g]; i < end; i++) {
+      const m = massLearn[i];
+      if (m === 0) {
+        continue;
       }
-      const o = b * HF;
-      const xo = log.cell[i] * HF;
-      for (let f = 0; f < HF; f++) {
-        G[o + f] += q * CELL_X[xo + f];
+      const ms = shr(m, s);
+      const hit = sym[i] === want;
+      const q = (hit ? rdiv(shl(mulShr(m, share16[i], PB + s), PB), sa) : 0) - rdiv(shl(ms, PB), z);
+      if (q !== 0) {
+        if (mark[b] === 0) {
+          mark[b] = 1;
+          touched[nt++] = b;
+        }
+        const xo = cell[i] * HF;
+        for (let f = 0; f < HF; f++) {
+          G[o + f] += q * CELL_X[xo + f];
+        }
       }
-    }
-    if (log.tau[i] === 1) {
-      tauT += ms;
-      if (hit) {
-        tauA += ms;
+      if (tau) {
+        tauT += ms;
+        if (hit) {
+          tauA += ms;
+        }
       }
-    }
-    const li = log.levIndex[i];
-    if (li >= 0) {
-      levT[li] += ms;
-      if (hit) {
-        levA[li] += ms;
+      if (li >= 0) {
+        levT[li] += ms;
+        if (hit) {
+          levA[li] += ms;
+        }
       }
-    }
-    const ni = log.lognIndex[i];
-    if (ni >= 0) {
-      const d = smul(ms, log.lognL[i], RB);
-      lnT[ni] += d;
-      if (hit) {
-        lnA[ni] += d;
+      if (ni >= 0) {
+        const d = smul(ms, lognL, RB);
+        lnT[ni] += d;
+        if (hit) {
+          lnA[ni] += d;
+        }
       }
     }
   }

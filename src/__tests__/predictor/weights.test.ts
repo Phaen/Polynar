@@ -186,6 +186,9 @@ describe('VoteLog', () => {
       ).toBe(i);
     }
     expect(log.n).toBe(40);
+    expect(log.segs).toBe(40);
+    expect(log.start[39]).toBe(39);
+    expect(log.end[39]).toBe(40);
     expect(log.block[39]).toBe(39);
     expect(log.cell[39]).toBe(C(X(1)));
     expect(log.sym[0]).toBe(100);
@@ -201,15 +204,40 @@ describe('VoteLog', () => {
     log.vx[0] = 1;
     log.reset(1000);
     expect(log.n).toBe(0);
+    expect(log.segs).toBe(0);
     expect(log.af).toBe(-1);
     expect(log.novel).toBe(false);
     expect(log.kernelZ).toBe(0);
     expect(log.vx[0]).toBe(0);
-    expect(log.block.length).toBeGreaterThanOrEqual(1000);
-    const big = log.block;
+    expect(log.cell.length).toBeGreaterThanOrEqual(1000);
+    const big = log.cell;
     log.reset(10);
-    expect(log.block).toBe(big);
-    expect(new VoteLog(0).block.length).toBe(0);
+    expect(log.cell).toBe(big);
+    expect(new VoteLog(0).cell.length).toBe(0);
+  });
+
+  it('appends a vote to the last segment when its constants match', () => {
+    const log = new VoteLog(0);
+    log.push(3, 0, 1, 1, 0, 0, 65536, SRC.node, 1, 2, 4, ONE, true, -1);
+    log.push(3, 1, 2, 1, 0, 0, 65536, SRC.node, 1, 2, 4, ONE, true, -1);
+    expect(log.segs).toBe(1);
+    expect(log.end[0]).toBe(2);
+    const variants: [number, number, number, number, number, number, boolean][] = [
+      [4, SRC.node, 1, 2, 4, ONE, true],
+      [4, SRC.msg, 1, 2, 4, ONE, true],
+      [4, SRC.msg, 2, 2, 4, ONE, true],
+      [4, SRC.msg, 2, -1, 4, ONE, true],
+      [4, SRC.msg, 2, -1, -1, ONE, true],
+      [4, SRC.msg, 2, -1, -1, 0, true],
+      [4, SRC.msg, 2, -1, -1, 0, false],
+    ];
+    for (const [b, src, lev, li, ni, ll, tau] of variants) {
+      log.push(b, 0, 9, 1, 0, 0, 65536, src, lev, li, ni, ll, tau, -1);
+    }
+    expect(log.segs).toBe(1 + variants.length);
+    const g = log.open(5, SRC.value, 0, -1, -1, 0, false);
+    expect(log.start[g]).toBe(log.n);
+    expect(log.end[g]).toBe(log.n);
   });
 });
 

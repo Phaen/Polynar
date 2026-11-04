@@ -480,23 +480,16 @@ export class SymbolPredictor {
     const off = this.off;
     const d = tab.data(x);
     const b = tab.base[x];
-    const lBlock = log.block;
+    const g = log.open(bk, src, k, levI, li, ll, tau);
     const lCell = log.cell;
     const lSym = log.sym;
     const lCount = log.count;
     const lLearn = log.eLearn;
     const lCode = log.eCode;
     const lShare = log.share16;
-    const lSrc = log.src;
-    const lLevel = log.level;
-    const lLev = log.levIndex;
-    const lLogn = log.lognIndex;
-    const lLognL = log.lognL;
-    const lTau = log.tau;
     const lMassL = log.massLearn;
     const lMassC = log.massCode;
     const lPrev = log.prev;
-    const tauV = tau ? 1 : 0;
     let i = log.n;
     for (let j = 0; j < count; j++) {
       const o = b + j * STRIDE;
@@ -516,19 +509,12 @@ export class SymbolPredictor {
       }
       const mk = memoAt + cell;
       const eL = (memoStamp[mk] === stepNo ? memo[mk] : this.base(bk, cell)) + extra;
-      lBlock[i] = bk;
       lCell[i] = cell;
       lSym[i] = s;
       lCount[i] = n;
       lLearn[i] = eL;
       lCode[i] = osc ? eL + (s < known.length && known[s] > 0 ? oscKnown : oscUnknown) : eL;
       lShare[i] = P_ONE;
-      lSrc[i] = src;
-      lLevel[i] = k;
-      lLev[i] = levI;
-      lLogn[i] = li;
-      lLognL[i] = ll;
-      lTau[i] = tauV;
       lMassL[i] = 0;
       lMassC[i] = 0;
       lPrev[i] = prev;
@@ -537,6 +523,7 @@ export class SymbolPredictor {
       i++;
     }
     log.n = i;
+    log.end[g] = i;
   }
 
   /**
@@ -914,59 +901,66 @@ export class SymbolPredictor {
     if (this.Lv.length < log.n) this.Lv = new Float64Array(2 * log.n);
     const Lv = this.Lv;
     let M = Lesc;
-    for (let i = 0; i < log.n; i++) {
-      const c = log.count[i];
-      if (c < 1) continue;
-      const lc = c < LOG2_SMALL.length ? LOG2_SMALL[c] : log2Fix(c);
-      const el = lc + log.eLearn[i];
-      Lv[i] = el;
-      let ec = lc + log.eCode[i];
-      const s = log.sym[i];
-      if (log.src[i] === MSGF && f.outsideScale && (s === DIGIT || s === nl)) {
-        ec = el + (s === DIGIT ? this.oscDigitMax : this.oscNlMax);
+    for (let g = 0; g < log.segs; g++) {
+      const src = log.src[g];
+      const end = log.end[g];
+      for (let i = log.start[g]; i < end; i++) {
+        const c = log.count[i];
+        if (c < 1) continue;
+        const lc = c < LOG2_SMALL.length ? LOG2_SMALL[c] : log2Fix(c);
+        const el = lc + log.eLearn[i];
+        Lv[i] = el;
+        let ec = lc + log.eCode[i];
+        const s = log.sym[i];
+        if (src === MSGF && f.outsideScale && (s === DIGIT || s === nl)) {
+          ec = el + (s === DIGIT ? this.oscDigitMax : this.oscNlMax);
+        }
+        if (el > M) M = el;
+        if (ec > M) M = ec;
       }
-      if (el > M) M = el;
-      if (ec > M) M = ec;
     }
 
     // Pass B.
     const off = SB * ONE - M;
     let ZL = 0;
-    for (let i = 0; i < log.n; i++) {
-      if (log.count[i] < 1) continue;
-      const el = Lv[i];
-      const ml = exp2Fix(el + off);
-      log.massLearn[i] = ml;
-      ZL += ml;
-      const s = log.sym[i];
-      const src = log.src[i];
-      if ((src === MSGF || src === NODEF) && (s === DIGIT || s === nl)) {
-        const osc = src === MSGF && f.outsideScale;
-        let sum = 0;
-        if (s === DIGIT) {
-          for (let d = 0; d < 10; d++) {
-            const m = mulShr(
-              osc ? exp2Fix(el + this.oscDigit[d] + off) : ml,
-              this.digitShare[d],
-              PB
-            );
-            this.addV(digits[d], m, osc);
-            sum += m;
+    for (let g = 0; g < log.segs; g++) {
+      const src = log.src[g];
+      const end = log.end[g];
+      for (let i = log.start[g]; i < end; i++) {
+        if (log.count[i] < 1) continue;
+        const el = Lv[i];
+        const ml = exp2Fix(el + off);
+        log.massLearn[i] = ml;
+        ZL += ml;
+        const s = log.sym[i];
+        if ((src === MSGF || src === NODEF) && (s === DIGIT || s === nl)) {
+          const osc = src === MSGF && f.outsideScale;
+          let sum = 0;
+          if (s === DIGIT) {
+            for (let d = 0; d < 10; d++) {
+              const m = mulShr(
+                osc ? exp2Fix(el + this.oscDigit[d] + off) : ml,
+                this.digitShare[d],
+                PB
+              );
+              this.addV(digits[d], m, osc);
+              sum += m;
+            }
+          } else {
+            const mE = mulShr(osc ? exp2Fix(el + this.oscEnd + off) : ml, this.endShare, PB);
+            const mN = mulShr(osc ? exp2Fix(el + this.oscNl + off) : ml, this.nlShare, PB);
+            this.addV(END, mE, osc);
+            this.addV(nl, mN, osc);
+            sum = mE + mN;
           }
+          log.massCode[i] = sum;
         } else {
-          const mE = mulShr(osc ? exp2Fix(el + this.oscEnd + off) : ml, this.endShare, PB);
-          const mN = mulShr(osc ? exp2Fix(el + this.oscNl + off) : ml, this.nlShare, PB);
-          this.addV(END, mE, osc);
-          this.addV(nl, mN, osc);
-          sum = mE + mN;
+          const ec = log.eCode[i];
+          const el0 = log.eLearn[i];
+          const m = ec === el0 ? ml : exp2Fix(el - el0 + ec + off);
+          log.massCode[i] = m;
+          this.addV(s, m, this.oscaled(src));
         }
-        log.massCode[i] = sum;
-      } else {
-        const ec = log.eCode[i];
-        const el0 = log.eLearn[i];
-        const m = ec === el0 ? ml : exp2Fix(el - el0 + ec + off);
-        log.massCode[i] = m;
-        this.addV(s, m, this.oscaled(src));
       }
     }
     this.ZL = ZL;
@@ -1204,16 +1198,24 @@ export class SymbolPredictor {
           : a === END
             ? this.endShare
             : this.nlShare;
-      for (let i = 0; i < log.n; i++) {
-        const src = log.src[i];
-        if ((src === SRC.msgF || src === SRC.nodeF) && log.sym[i] === af) log.share16[i] = share;
+      for (let g = 0; g < log.segs; g++) {
+        const src = log.src[g];
+        if (src !== SRC.msgF && src !== SRC.nodeF) continue;
+        const end = log.end[g];
+        for (let i = log.start[g]; i < end; i++) {
+          if (log.sym[i] === af) log.share16[i] = share;
+        }
       }
     }
     let Sa = 0;
-    for (let i = 0; i < log.n; i++) {
-      const src = log.src[i];
-      if (log.sym[i] === (src === SRC.msgF || src === SRC.nodeF ? af : a)) {
-        Sa += mulShr(log.massLearn[i], log.share16[i], PB);
+    for (let g = 0; g < log.segs; g++) {
+      const src = log.src[g];
+      const want = src === SRC.msgF || src === SRC.nodeF ? af : a;
+      const end = log.end[g];
+      for (let i = log.start[g]; i < end; i++) {
+        if (log.sym[i] === want) {
+          Sa += mulShr(log.massLearn[i], log.share16[i], PB);
+        }
       }
     }
     if (novel) Sa += this.escL;
