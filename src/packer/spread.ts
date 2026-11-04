@@ -14,8 +14,12 @@
  * log2((y + 1)·total/freq) bits.
  *
  * Every count is of residuals below `total`, under 2^53, so plain doubles
- * hold them exactly.
+ * hold them exactly. Below 2^31 the bits are taken with integer operations,
+ * which give the same results as the general walks.
  */
+
+/** The widest `bits` whose values and counts fit the int32 operations. */
+const NARROW = 31;
 
 /** Bits that cover the residuals below `total`, which is at least 2. */
 function bitsFor(total: number): number {
@@ -27,7 +31,21 @@ function bitsFor(total: number): number {
 }
 
 /** The `bits`-bit reversal of `n`, which lies in [0, 2^bits). */
-function reverse(n: number, bits: number): number {
+export function reverse(n: number, bits: number): number {
+  return bits <= NARROW ? reverseNarrow(n, bits) : reverseWide(n, bits);
+}
+
+/** `reverse` for `bits` up to 31. */
+export function reverseNarrow(n: number, bits: number): number {
+  let r = 0;
+  for (let i = 0; i < bits; i++) {
+    r = (r << 1) | ((n >>> i) & 1);
+  }
+  return r;
+}
+
+/** `reverse` for any `bits` up to 53. */
+export function reverseWide(n: number, bits: number): number {
   let r = 0;
   for (let i = 0; i < bits; i++) {
     const bit = n % 2;
@@ -46,10 +64,55 @@ function reverse(n: number, bits: number): number {
  * reversal is below `limit` when its top bits, read last, decide so, or when
  * they tie and the lower ones already did.
  */
-function visitsBelow(end: number, limit: number, bits: number): number {
+export function visitsBelow(end: number, limit: number, bits: number): number {
   if (limit >= 2 ** bits) {
     return end;
   }
+  return bits <= NARROW ? visitsBelowNarrow(end, limit, bits) : visitsBelowWide(end, limit, bits);
+}
+
+/**
+ * `visitsBelow`'s walk for `bits` up to 31 and `limit` below 2^bits, the
+ * bits read in place with integer operations.
+ */
+export function visitsBelowNarrow(end: number, limit: number, bits: number): number {
+  let tightLt = 0;
+  let tightEq = 1;
+  let tightGt = 0;
+  let freeLt = 0;
+  let freeEq = 0;
+  let freeGt = 0;
+  for (let i = bits - 1; i >= 0; i--) {
+    const limitBit = (limit >>> (bits - 1 - i)) & 1;
+    const free = freeLt + freeEq + freeGt;
+    const tight = tightLt + tightEq + tightGt;
+    if (limitBit === 0) {
+      freeGt += free;
+    } else {
+      freeLt += free;
+    }
+    if (((end >>> i) & 1) === 1) {
+      if (limitBit === 0) {
+        freeLt += tightLt;
+        freeEq += tightEq;
+        freeGt += tightGt;
+        tightLt = 0;
+        tightEq = 0;
+        tightGt = tight;
+      } else {
+        freeLt += tight;
+      }
+    } else if (limitBit === 1) {
+      tightLt = tight;
+      tightEq = 0;
+      tightGt = 0;
+    }
+  }
+  return freeLt;
+}
+
+/** `visitsBelow`'s walk for any `bits` up to 53 and `limit` below 2^bits. */
+export function visitsBelowWide(end: number, limit: number, bits: number): number {
   let [tightLt, tightEq, tightGt] = [0, 1, 0];
   let [freeLt, freeEq, freeGt] = [0, 0, 0];
   const endBits: number[] = [];
@@ -100,14 +163,15 @@ function visitsBelow(end: number, limit: number, bits: number): number {
  * non-decreasing and reaching it by `hi`, which is at most 2^53. The
  * midpoint is taken from the gap, as lo + hi can pass 2^53 and round.
  */
-function firstReaching(
+export function firstReaching(
   lo: number,
   hi: number,
   target: number,
   count: (n: number) => number
 ): number {
   while (lo < hi) {
-    const mid = lo + Math.floor((hi - lo) / 2);
+    const gap = hi - lo;
+    const mid = lo + (gap < 2 ** 32 ? gap >>> 1 : Math.floor(gap / 2));
     if (count(mid) >= target) {
       hi = mid;
     } else {

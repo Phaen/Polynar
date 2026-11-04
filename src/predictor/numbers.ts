@@ -58,6 +58,8 @@ const P_M = NR + 1;
 const P_NU = P_M + 2 * NC;
 const P_MI = P_NU + 1;
 const NP = P_MI + 1;
+/** Class cells per centre: μ0 and m±. */
+const NCELL = P_NU - P_MU;
 /** Magnitude classes 0..64 and the tail, which hands the value to the node's plain spelling. */
 const TAIL = NC + 1;
 const NCLS = NC + 2;
@@ -119,7 +121,7 @@ export class NumberState {
   ncls = 0;
   readonly sign = Float64Array.of(1, 1);
   /** Per sibling path: its log-weight (RB) and step (PB). */
-  readonly sibs = new Map<NumberState, { lw: number; step: number }>();
+  readonly sibs = new Map<NumberState, SibState>();
   /** Decayed hit rates per reference kind, PB. */
   readonly hr = Float64Array.of(HR_START, HR_START, HR_START, HR_START);
   /** The smallest and largest value entered (valid once n >= 1). */
@@ -171,11 +173,10 @@ const BY_LO = 2;
 const BY_HI = 3;
 const BY_NONE = 4;
 
-/** Where a value lies relative to a centre: its class cell, class and offset within the class. */
-interface Spot {
-  cell: number;
-  c: number;
-  k: number;
+/** A sibling path's learned log-weight (RB) and step (PB). */
+interface SibState {
+  lw: number;
+  step: number;
 }
 
 /** A two-entry table for the decoder's read of the top candidate's symbol. */
@@ -252,7 +253,26 @@ export class NumberCoder {
   private mass = new Float64Array(0);
   private Z = 0;
   private off = 0;
-  private sibOf: (RecordEntry & { s: { lw: number; step: number } })[] = [];
+  /** The step's siblings, oldest first, and each one's state at this path. */
+  private readonly sibE: RecordEntry[] = [];
+  private readonly sibS: SibState[] = [];
+  /** Per component, its log-mass in the component prior (scratch). */
+  private K = new Float64Array(0);
+  /**
+   * Per (weight slot, class cell), the prior-scale mass `massAt` takes, valid where its stamp is
+   * the step's: slots 0..7 the kernels' recency buckets, 8.. the siblings by position.
+   */
+  private kmass = new Float64Array(0);
+  private kstamp = new Float64Array(0);
+  private stamp = 0;
+  /** The centres `findTop` has weighed this step. */
+  private readonly seen = new Set<number>();
+  /** Row sums by centre under declared bounds, for this step's row scale. */
+  private readonly rows = new Map<number, number>();
+  /** Where `spot` put its value: class cell, class and offset within the class. */
+  private spCell = 0;
+  private spC = 0;
+  private spK = 0;
   private readonly hb = new Int32Array(3);
   /** Per class cell, the mass at the row scale `offR`, for a row and the class tables. */
   private readonly E = new Float64Array(NP);
@@ -271,7 +291,18 @@ export class NumberCoder {
   private readonly classes = new Distribution();
   // The posterior at the value, built by `observe`.
   private post = new Float64Array(0);
+  /** Per reference, its log-mass at the value and whether it has one (scratch). */
+  private L = new Float64Array(0);
+  private has = new Uint8Array(0);
   private num = 0;
+  // Learning scratch.
+  private readonly A = new Float64Array(NP);
+  private readonly T = new Float64Array(NP);
+  private readonly stepT = new Float64Array(NR);
+  private readonly stepG = new Float64Array(NR);
+  private readonly numK = new Float64Array(3);
+  private readonly ZK = new Float64Array(3);
+  private readonly hit = new Uint8Array(3);
   /** NOVELTY's posterior in its two parts: the range prior's share m·R and (1 − m)·prior. */
   private novR = 0;
   private novP = 0;
@@ -348,20 +379,29 @@ export class NumberCoder {
     return x;
   }
 
-  /** Where `v`, a safe integer, lies relative to the centre `C`. */
-  private spot(C: number, v: number): Spot {
-    if (v === C) return { cell: P_MU, c: 0, k: 0 };
+  /** Where `v`, a safe integer, lies relative to the centre `C`, into `spCell`, `spC`, `spK`. */
+  private spot(C: number, v: number): void {
+    if (v === C) {
+      this.spCell = P_MU;
+      this.spC = 0;
+      this.spK = 0;
+      return;
+    }
     const up = v > C;
     const dd = up ? v - C : C - v;
     const c = dd >= TWO_53 ? 54 : bitlen(dd);
     // The class's inner edge is a safe integer whenever a safe value lies in it.
-    const k = up ? v - (C + W[c]) : C - W[c] - v;
-    return { cell: P_M + (up ? 0 : NC) + c - 1, c, k };
+    this.spK = up ? v - (C + W[c]) : C - W[c] - v;
+    this.spCell = P_M + (up ? 0 : NC) + c - 1;
+    this.spC = c;
   }
 
-  /** The kernel's log-mass at a spot: μ0, or m±[c] spread over the class's 2^(c − 1) values. */
-  private kern(s: Spot): number {
-    return s.c === 0 ? this.p[P_MU] : this.p[s.cell] - (s.c - 1) * ONE;
+  /**
+   * The kernel's log-mass at class cell `cell` of class `c`: μ0, or m±[c] spread over the class's
+   * 2^(c − 1) values.
+   */
+  private kern(cell: number, c: number): number {
+    return c === 0 ? this.p[P_MU] : this.p[cell] - (c - 1) * ONE;
   }
 
   /**
@@ -396,9 +436,14 @@ export class NumberCoder {
       : exp2Fix(this.p[cell] + this.offR + log2Fix(n) - (c - 1) * ONE);
   }
 
-  /** The row mass of a centre at the row scale: every class cell, clipped by the declared bounds. */
+  /**
+   * The row mass of a centre at the row scale: every class cell, clipped by the declared bounds;
+   * kept per centre for the step.
+   */
   private rowSum(C: number): number {
     if (!this.loSet && !this.hiSet) return this.rowFull;
+    const kept = this.rows.get(C);
+    if (kept !== undefined) return kept;
     let sum = this.E[P_MU];
     for (let side = 0; side < 2; side++) {
       // Classes widen outward, so past the first one outside the bounds every one is.
@@ -408,6 +453,7 @@ export class NumberCoder {
         sum += this.cellMass(C, cell);
       }
     }
+    this.rows.set(C, sum);
     return sum;
   }
 
@@ -446,11 +492,13 @@ export class NumberCoder {
       full += this.E[j];
     }
     this.rowFull = full;
+    this.rows.clear();
 
     const h = st.n < this.o.history ? st.n : this.o.history;
     // The record's latest `history` numbers at other paths, oldest first: a record that took in
     // the numbers of many inner records keeps the component table and its sums bounded.
-    const sibs: RecordEntry[] = [];
+    const sibs = this.sibE;
+    sibs.length = 0;
     for (let i = siblings.length - 1; i >= 0 && sibs.length < this.o.history; i--) {
       if (siblings[i].state !== st) sibs.push(siblings[i]);
     }
@@ -465,9 +513,18 @@ export class NumberCoder {
       this.mass = new Float64Array(n);
       this.prior = new Float64Array(n);
       this.post = new Float64Array(n);
+      this.K = new Float64Array(n);
+      this.L = new Float64Array(n);
+      this.has = new Uint8Array(n);
     }
     this.nc = n;
-    const K = new Float64Array(n);
+    const K = this.K;
+    const cells = (NR + sibs.length) * NCELL;
+    if (this.kmass.length < cells) {
+      this.kmass = new Float64Array(larger(cells, 2 * this.kmass.length));
+      this.kstamp = new Float64Array(this.kmass.length);
+    }
+    this.stamp++;
     let j = 0;
     for (let a = 1; a <= h; a++) {
       const i = st.n - a;
@@ -490,14 +547,15 @@ export class NumberCoder {
       K[j] = this.lw[j];
       j++;
     }
-    this.sibOf = [];
+    const sibS = this.sibS;
+    sibS.length = 0;
     for (const e of sibs) {
       let s = st.sibs.get(e.state);
       if (s === undefined) {
         s = { lw: SIB_START, step: 0 };
         st.sibs.set(e.state, s);
       }
-      this.sibOf.push({ ...e, s });
+      sibS.push(s);
       const C = this.centre(e.value, s.step);
       this.kind[j] = SIBLING;
       this.at[j] = C;
@@ -561,7 +619,8 @@ export class NumberCoder {
         }
         const C = this.at[i];
         const row = this.rowSum(C);
-        const rest = row - this.valueMass(this.spot(C, this.top).cell);
+        this.spot(C, this.top);
+        const rest = row - this.valueMass(this.spCell);
         this.prior[i] = rest > 0 ? exp2Fix(this.lw[i] + log2Fix(rest) - this.offR + this.off) : 0;
       }
     }
@@ -577,15 +636,30 @@ export class NumberCoder {
     d.finish(0);
   }
 
-  /** The prior-scale mass of every reference at value `v` (a centre). */
+  /**
+   * The prior-scale mass of every reference at value `v` (a centre). Within a step a kernel's
+   * log-weight is its recency bucket's and a sibling's its own, and the kernel's log-mass is its
+   * class cell's, so each (slot, cell) mass is one `exp2Fix` argument, worked out once.
+   */
   private massAt(v: number): number {
+    const sib0 = this.refs - this.sibS.length;
+    const kmass = this.kmass;
+    const kstamp = this.kstamp;
+    const stamp = this.stamp;
     let m = 0;
     for (let i = 0; i < this.refs; i++) {
       const kd = this.kind[i];
       if (kd === SPIKE) {
         if (this.at[i] === v) m += this.mass[i];
       } else {
-        m += exp2Fix(this.lw[i] + this.kern(this.spot(this.at[i], v)) + this.off);
+        this.spot(this.at[i], v);
+        const slot = kd === KERNEL ? this.bucket[i] : NR + i - sib0;
+        const at = slot * NCELL + this.spCell - P_MU;
+        if (kstamp[at] !== stamp) {
+          kstamp[at] = stamp;
+          kmass[at] = exp2Fix(this.lw[i] + this.kern(this.spCell, this.spC) + this.off);
+        }
+        m += kmass[at];
       }
     }
     return m;
@@ -595,7 +669,8 @@ export class NumberCoder {
   private findTop(): void {
     let best = -1;
     let top = 0;
-    const seen = new Set<number>();
+    const seen = this.seen;
+    seen.clear();
     for (let i = 0; i < this.refs; i++) {
       if (this.kind[i] === SPIKE) continue;
       const c = this.at[i];
@@ -670,8 +745,9 @@ export class NumberCoder {
     const n = this.nc;
     const refs = this.refs;
     const safe = Number.isSafeInteger(x);
-    const L = new Float64Array(refs);
-    const has = new Uint8Array(refs);
+    const L = this.L;
+    const has = this.has;
+    has.fill(0, 0, refs);
     const nu = this.p[P_NU];
     const lp = this.priorLog(x);
     // NOVELTY's parts: the prior's with weight 1 − m, and with weight m either the uniform over
@@ -700,7 +776,8 @@ export class NumberCoder {
           if (this.at[i] !== x) continue;
           L[i] = this.lw[i];
         } else {
-          L[i] = this.lw[i] + this.kern(this.spot(this.at[i], x));
+          this.spot(this.at[i], x);
+          L[i] = this.lw[i] + this.kern(this.spCell, this.spC);
         }
         has[i] = 1;
         if (L[i] > M) M = L[i];
@@ -740,7 +817,8 @@ export class NumberCoder {
     const d = this.classes;
     d.begin(this.total, false);
     // A centre is a reference's, so the step has a top candidate.
-    const tc = this.spot(C, this.top).cell;
+    this.spot(C, this.top);
+    const tc = this.spCell;
     for (let cell = P_MU; cell < P_NU; cell++) {
       const n = this.span(C, cell);
       if (cell !== tc) {
@@ -756,8 +834,8 @@ export class NumberCoder {
 
   /** The offset of `top` in a centre's class `cell`, or −1 when `top` is not in it. */
   private topIn(C: number, cell: number): number {
-    const s = this.spot(C, this.top);
-    return s.cell === cell ? s.k : -1;
+    this.spot(C, this.top);
+    return this.spCell === cell ? this.spK : -1;
   }
 
   /** Writes `x` as component `j`: the component, then the value under it. */
@@ -776,13 +854,16 @@ export class NumberCoder {
       return;
     }
     const C = this.at[j];
-    const s = this.spot(C, x);
+    this.spot(C, x);
+    // `classTable` and `topIn` spot `top`, so x's spot is read first.
+    const cell = this.spCell;
+    const sk = this.spK;
     const t = this.classTable(C);
-    const ci = t.indexOf(s.cell - P_MU);
+    const ci = t.indexOf(cell - P_MU);
     enc.composeWeighted(t.cum(ci), t.freq(ci), t.total);
-    const tk = this.topIn(C, s.cell);
-    const width = this.span(C, s.cell) - (tk >= 0 ? 1 : 0);
-    const k = tk >= 0 && s.k > tk ? s.k - 1 : s.k;
+    const tk = this.topIn(C, cell);
+    const width = this.span(C, cell) - (tk >= 0 ? 1 : 0);
+    const k = tk >= 0 && sk > tk ? sk - 1 : sk;
     if (width > MAX_SAFE) enc.composeBig(BigInt(k), BigInt(width));
     else enc.compose(k, width);
   }
@@ -913,11 +994,14 @@ export class NumberCoder {
     const qa = (a: number): number => rdiv(shl(shr(a, sp), PB), num);
     const qt = (t: number): number => rdiv(shl(shr(t, sz), PB), Z);
 
-    const A = new Float64Array(NP);
-    const T = new Float64Array(NP);
-    const numK = [0, 0, 0];
-    const ZK = [0, 0, 0];
-    const hit = [false, false, false];
+    const { A, T, numK, ZK, hit, stepT, stepG } = this;
+    A.fill(0);
+    T.fill(0);
+    numK.fill(0);
+    ZK.fill(0);
+    hit.fill(0);
+    stepT.fill(0);
+    stepG.fill(0);
     let kernels = 0;
     // The kernel weights' log-sum, for the class cells' T factorised as (Σ w) · e[cell].
     let lwMax = 0;
@@ -928,8 +1012,6 @@ export class NumberCoder {
       anyK = true;
     }
     let wsum = 0;
-    const stepT = new Float64Array(NR);
-    const stepG = new Float64Array(NR);
     for (let i = 0; i < this.refs; i++) {
       const kd = this.kind[i];
       const post = this.post[i];
@@ -943,8 +1025,9 @@ export class NumberCoder {
         ZK[K_PAST] += mass;
         wsum += exp2Fix(this.lw[i] - lwMax + SB * ONE);
         if (safe) {
-          A[this.spot(this.at[i], x).cell] += post;
-          if (x - this.at[i] <= HIT_D && this.at[i] - x <= HIT_D) hit[K_PAST] = true;
+          this.spot(this.at[i], x);
+          A[this.spCell] += post;
+          if (x - this.at[i] <= HIT_D && this.at[i] - x <= HIT_D) hit[K_PAST] = 1;
         }
       } else if (kd === SPIKE) {
         const b = this.bucket[i];
@@ -954,14 +1037,15 @@ export class NumberCoder {
         T[P_MI] += mass;
         numK[K_SAME] += post;
         ZK[K_SAME] += mass;
-        if (safe && this.at[i] === x) hit[K_SAME] = true;
+        if (safe && this.at[i] === x) hit[K_SAME] = 1;
       } else {
         numK[K_SIB] += post;
         ZK[K_SIB] += mass;
         wsum += exp2Fix(this.lw[i] - lwMax + SB * ONE);
         if (safe) {
-          A[this.spot(this.at[i], x).cell] += post;
-          if (x - this.at[i] <= HIT_D && this.at[i] - x <= HIT_D) hit[K_SIB] = true;
+          this.spot(this.at[i], x);
+          A[this.spCell] += post;
+          if (x - this.at[i] <= HIT_D && this.at[i] - x <= HIT_D) hit[K_SIB] = 1;
         }
       }
     }
@@ -980,17 +1064,18 @@ export class NumberCoder {
     }
 
     // Siblings' weights and steps.
-    const sib0 = this.refs - this.sibOf.length;
+    const sibS = this.sibS;
+    const sib0 = this.refs - sibS.length;
     const rate = c0.rates.step;
-    for (let k = 0; k < this.sibOf.length; k++) {
-      const e = this.sibOf[k];
+    for (let k = 0; k < sibS.length; k++) {
+      const s = sibS[k];
       const i = sib0 + k;
       const g = qa(this.post[i]) - qt(this.mass[i]);
-      e.s.lw = clampi(e.s.lw + smul(eta, g, PB), 0 - cn, cn);
+      s.lw = clampi(s.lw + smul(eta, g, PB), 0 - cn, cn);
       if (safe) {
         const share = div(shl(shr(this.post[i], sp), PB), num);
-        const delta = smul(share, shl(diffOf(x, e.value), PB) - e.s.step, PB);
-        e.s.step = clampi(e.s.step + smul(rate, delta, RB), 0 - STEP_MAX, STEP_MAX);
+        const delta = smul(share, shl(diffOf(x, this.sibE[k].value), PB) - s.step, PB);
+        s.step = clampi(s.step + smul(rate, delta, RB), 0 - STEP_MAX, STEP_MAX);
       }
     }
 
@@ -1010,13 +1095,12 @@ export class NumberCoder {
     const HT = run.numberHit;
     const ch = c0.clamps.hit;
     const dec = c0.decays.hit;
-    const has = [kernels > 0, kernels > 0, this.sibOf.length > 0];
     for (let k = 0; k < 3; k++) {
-      if (!has[k]) continue;
+      if (k === K_SIB ? sibS.length === 0 : kernels === 0) continue;
       const g = qa(numK[k]) - qt(ZK[k]);
       const c = k * 3 + this.hb[k];
       HT[c] = clampi(HT[c] + smul(eta, g, PB), 0 - ch, ch);
-      st.hr[k] = st.hr[k] - shr(st.hr[k], dec) + (hit[k] ? shr(P_ONE, dec) : 0);
+      st.hr[k] = st.hr[k] - shr(st.hr[k], dec) + (hit[k] === 1 ? shr(P_ONE, dec) : 0);
     }
 
     // Steps toward the kernels' targets by responsibility.
