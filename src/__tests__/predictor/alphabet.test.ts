@@ -296,6 +296,21 @@ describe('unicode tables', () => {
     }
   });
 
+  it('give the same answer when asked again, inside and outside the cached range', () => {
+    const cps = [-1, 0, 0x41, 0x61, 0xd800, 0xfffe, 0xffff, 0x10000, 0x10428, 0x10ffff];
+    for (let c = 0; c < 0x10000; c += 7) cps.push(c);
+    for (const c of cps) {
+      const partner = casePartnerCp(c);
+      const ln = isLetterOrNumberCp(c);
+      expect(casePartnerCp(c)).toBe(partner);
+      expect(isLetterOrNumberCp(c)).toBe(ln);
+    }
+    expect(casePartnerCp(0xff21)).toBe(0xff41);
+    expect(casePartnerCp(0xff21)).toBe(0xff41);
+    expect(isLetterOrNumberCp(0xffff)).toBe(false);
+    expect(isLetterOrNumberCp(0x10000)).toBe(true);
+  });
+
   onPinnedUnicode('agree with String.prototype and the regex on the whole of 0..0x3000', () => {
     for (let c = 0; c < 0x3000; c++) {
       expect(casePartnerCp(c)).toBe(referencePartner(c));

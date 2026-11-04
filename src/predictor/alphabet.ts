@@ -15,6 +15,12 @@ const DIGIT_0 = 0x30;
 const DIGIT_9 = 0x39;
 const PARTNER_UNKNOWN = -2;
 const BOUNDARY_UNKNOWN = 2;
+/** Code points below this are answered from the module-level caches. */
+const CACHED_CPS = 0x10000;
+/** `casePartnerCp` of each BMP code point once asked, else PARTNER_UNKNOWN (results are ≥ −1). */
+const PARTNER_CACHE = new Int32Array(CACHED_CPS).fill(PARTNER_UNKNOWN);
+/** `isLetterOrNumberCp` of each BMP code point once asked: 1 false, 2 true, 0 not yet asked. */
+const LN_CACHE = new Uint8Array(CACHED_CPS);
 
 /** The value paired with `key` in a table of alternating [key, value] sorted by key, or -1. */
 function lookup(table: Int32Array, key: number): number {
@@ -32,12 +38,32 @@ function lookup(table: Int32Array, key: number): number {
 
 /** The code point that differs from `cp` only in case, or -1 when the pair is not one-to-one. */
 export function casePartnerCp(cp: number): number {
+  if (cp < 0 || cp >= CACHED_CPS) return searchPartner(cp);
+  let r = PARTNER_CACHE[cp];
+  if (r === PARTNER_UNKNOWN) {
+    r = searchPartner(cp);
+    PARTNER_CACHE[cp] = r;
+  }
+  return r;
+}
+
+function searchPartner(cp: number): number {
   const up = lookup(CASE_PAIRS, cp);
   return up >= 0 ? up : lookup(CASE_PAIRS_BY_UPPER, cp);
 }
 
 /** Whether `cp` matches /[\p{L}\p{N}]/u. */
 export function isLetterOrNumberCp(cp: number): boolean {
+  if (cp < 0 || cp >= CACHED_CPS) return searchLetterOrNumber(cp);
+  let r = LN_CACHE[cp];
+  if (r === 0) {
+    r = searchLetterOrNumber(cp) ? 2 : 1;
+    LN_CACHE[cp] = r;
+  }
+  return r === 2;
+}
+
+function searchLetterOrNumber(cp: number): boolean {
   let lo = 0;
   let hi = shr(LN_RANGES.length, 1) - 1;
   while (lo <= hi) {
