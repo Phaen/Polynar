@@ -332,6 +332,8 @@ export class SymbolPredictor {
   private oscNl = 0;
   private oscDigitMax = 0;
   private oscNlMax = 0;
+  /** 1 for each source whose votes take the outside multiplier this step. */
+  private readonly osc8 = new Uint8Array(NSRC);
 
   constructor(
     private readonly core: MessageCore,
@@ -438,10 +440,7 @@ export class SymbolPredictor {
   }
 
   private oscaled(src: number): boolean {
-    return (
-      this.core.features.outsideScale &&
-      (src === SRC.msg || src === SRC.msgF || src === SRC.value || src === SRC.builtin)
-    );
+    return this.osc8[src] === 1;
   }
 
   /**
@@ -838,6 +837,11 @@ export class SymbolPredictor {
     this.mat = age < 64 ? 0 : age < 512 ? 1 : 2;
     this.oscUnknown = run.oscale[this.mat];
     this.oscKnown = run.oscale[3 + this.mat];
+    const os = f.outsideScale ? 1 : 0;
+    this.osc8[SRC.msg] = os;
+    this.osc8[SRC.msgF] = os;
+    this.osc8[SRC.value] = os;
+    this.osc8[SRC.builtin] = os;
     if (f.levelEvidence) {
       for (let k = 1; k <= K; k++) {
         const bk = levBucket(path.sn[k]);
@@ -901,8 +905,9 @@ export class SymbolPredictor {
     if (this.Lv.length < log.n) this.Lv = new Float64Array(2 * log.n);
     const Lv = this.Lv;
     let M = Lesc;
+    const outside = f.outsideScale;
     for (let g = 0; g < log.segs; g++) {
-      const src = log.src[g];
+      const foldOsc = log.src[g] === MSGF && outside;
       const end = log.end[g];
       for (let i = log.start[g]; i < end; i++) {
         const c = log.count[i];
@@ -912,7 +917,7 @@ export class SymbolPredictor {
         Lv[i] = el;
         let ec = lc + log.eCode[i];
         const s = log.sym[i];
-        if (src === MSGF && f.outsideScale && (s === DIGIT || s === nl)) {
+        if (foldOsc && (s === DIGIT || s === nl)) {
           ec = el + (s === DIGIT ? this.oscDigitMax : this.oscNlMax);
         }
         if (el > M) M = el;
@@ -925,6 +930,9 @@ export class SymbolPredictor {
     let ZL = 0;
     for (let g = 0; g < log.segs; g++) {
       const src = log.src[g];
+      const folded = src === MSGF || src === NODEF;
+      const osc = src === MSGF && outside;
+      const segOsc = this.osc8[src] === 1;
       const end = log.end[g];
       for (let i = log.start[g]; i < end; i++) {
         if (log.count[i] < 1) continue;
@@ -933,8 +941,7 @@ export class SymbolPredictor {
         log.massLearn[i] = ml;
         ZL += ml;
         const s = log.sym[i];
-        if ((src === MSGF || src === NODEF) && (s === DIGIT || s === nl)) {
-          const osc = src === MSGF && f.outsideScale;
+        if (folded && (s === DIGIT || s === nl)) {
           let sum = 0;
           if (s === DIGIT) {
             for (let d = 0; d < 10; d++) {
@@ -959,7 +966,7 @@ export class SymbolPredictor {
           const el0 = log.eLearn[i];
           const m = ec === el0 ? ml : exp2Fix(el - el0 + ec + off);
           log.massCode[i] = m;
-          this.addV(s, m, this.oscaled(src));
+          this.addV(s, m, segOsc);
         }
       }
     }
