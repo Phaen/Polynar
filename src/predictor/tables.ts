@@ -39,8 +39,8 @@ const EMPTY = new Int32Array(0);
  * The follower and ring storage of one table's entries: regions of a power-of-two number of words
  * cut from shared chunks, so an entry costs its words and no typed array of its own. A region is
  * named by the id of its array in `chunks` and its base there, so it fits in two columns. A region
- * an entry outgrows goes back to the free list of its size; rings are never freed. `alloc` leaves
- * the region in `id` and `b`.
+ * an entry outgrows goes back to the free list of its size. `alloc` leaves the region in `id` and
+ * `b`.
  */
 export class Arena {
   /** The chunks and the arrays of their own, by id. */
@@ -120,7 +120,9 @@ const FIRST = 1;
  * indexes its followers by symbol (`slot`). An entry with a ring remembers the last positions
  * that followed it in chunk `ring[x] − 1` from `rb[x]` (newest at `rb + (ri − 1) mod size`); `ri`
  * counts them up to twice the size and then steps back by the size, so it fits a byte (size ≤ 64)
- * and keeps both its residue and its minimum with the size.
+ * and keeps both its residue and its minimum with the size. Below the size, `ri` positions sit at
+ * 0..ri − 1 in a region of the next power of two of `ri` (at most the size), moved to one twice as
+ * large when it fills.
  */
 export class Entries {
   private readonly arena = new Arena();
@@ -252,12 +254,20 @@ export class Entries {
 
   /** Records position `t` in the ring of `size` positions of entry `x`, made on first use. */
   remember(x: number, t: number, size: number): void {
-    if (this.ring[x] === 0) {
-      this.arena.alloc(size);
-      this.ring[x] = this.arena.id + 1;
-      this.rb[x] = this.arena.b;
-    }
     const i = this.ri[x];
+    // Below the size, a power of two of positions fills the region; 0 means no region yet.
+    if (i === 0 || (i < size && POW2[bitlen(i) - 1] === i)) {
+      const arena = this.arena;
+      arena.alloc(i === 0 ? 1 : Math.min(2 * i, size));
+      if (i > 0) {
+        const id = this.ring[x] - 1;
+        const b = this.rb[x];
+        this.chunks[arena.id].set(this.chunks[id].subarray(b, b + i), arena.b);
+        arena.free(id, b, i);
+      }
+      this.ring[x] = arena.id + 1;
+      this.rb[x] = arena.b;
+    }
     this.chunks[this.ring[x] - 1][this.rb[x] + (i % size)] = t;
     this.ri[x] = i + 1 < 2 * size ? i + 1 : i + 1 - size;
   }
@@ -328,22 +338,35 @@ function grow<A extends Int32Array | Uint16Array | Uint8Array | Float64Array>(
   return b;
 }
 
-/** The last positions at one value offset, oldest first through `at`. */
+/** Slots an `OffsetRing` starts with, at most its size. */
+const FIRST_RING = 4;
+
+/**
+ * The last `size` positions at one value offset, oldest first through `at`. Until the buffer
+ * reaches the size, a full buffer doubles (up to the size): it then holds every position pushed,
+ * oldest first from slot 0, so the copy keeps their slots.
+ */
 export class OffsetRing {
-  readonly buf: Int32Array;
+  buf: Int32Array;
   len = 0;
   /** The slot the next position goes to. */
   next = 0;
 
-  constructor(size: number) {
-    this.buf = new Int32Array(size);
+  constructor(readonly size: number) {
+    this.buf = new Int32Array(Math.min(FIRST_RING, size));
   }
 
   push(t: number): void {
-    const size = this.buf.length;
-    this.buf[this.next] = t;
-    this.next = (this.next + 1) % size;
-    if (this.len < size) {
+    let buf = this.buf;
+    if (this.len === buf.length && this.len < this.size) {
+      buf = new Int32Array(Math.min(2 * this.len, this.size));
+      buf.set(this.buf);
+      this.buf = buf;
+      this.next = this.len;
+    }
+    buf[this.next] = t;
+    this.next = (this.next + 1) % buf.length;
+    if (this.len < this.size) {
       this.len++;
     }
   }

@@ -441,6 +441,25 @@ describe('Entries', () => {
     expect(tab.ring[y]).not.toBe(0);
     expect(tab.ri[y]).toBe(1);
   });
+  it('grows a ring from one position to its size, keeping the newest first', () => {
+    for (const size of [1, 2, 3, 5, 8, 13, 64]) {
+      const tab = new Entries(1);
+      const x = tab.make(1, 9);
+      const y = tab.make(1, 10);
+      const seen: number[] = [];
+      for (let t = 1; t <= 3 * size + 2; t++) {
+        tab.remember(x, t, size);
+        tab.remember(y, 1000 + t, size);
+        seen.push(t);
+        const ri = tab.ri[x];
+        const r = tab.chunks[tab.ring[x] - 1];
+        const n = Math.min(ri, size);
+        const got = Array.from({ length: n }, (_, i) => r[tab.rb[x] + ((ri - 1 - i) % size)]);
+        expect(got).toEqual(seen.slice(-n).reverse());
+        expect(ri % size).toBe(t % size);
+      }
+    }
+  });
 });
 
 describe('hashes', () => {
@@ -496,6 +515,22 @@ describe('OffsetRing', () => {
     r.push(15);
     expect(r.len).toBe(3);
     expect(ringContents(r)).toEqual([9, 11, 15]);
+  });
+
+  it('grows its buffer up to its size and keeps the last positions in order', () => {
+    for (const size of [1, 3, 4, 5, 6, 8, 17, 64]) {
+      const r = new OffsetRing(size);
+      expect(r.buf.length).toBe(Math.min(4, size));
+      const seen: number[] = [];
+      for (let t = 1; t <= 3 * size + 5; t++) {
+        r.push(t);
+        seen.push(t);
+        expect(r.len).toBe(Math.min(t, size));
+        expect(ringContents(r)).toEqual(seen.slice(-r.len));
+        expect(r.buf.length).toBeLessThanOrEqual(size);
+      }
+      expect(r.buf.length).toBe(size);
+    }
   });
 });
 
