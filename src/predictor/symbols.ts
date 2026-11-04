@@ -29,6 +29,7 @@ import {
   clampi,
   div,
   exp2Fix,
+  linMass,
   log2Fix,
   mulShr,
   shl,
@@ -310,7 +311,6 @@ export class SymbolPredictor {
   private stepNo = 0;
   private ringNo = 0;
 
-  private Lv: Float64Array = new Float64Array(256);
   private readonly levTerm: Float64Array;
   private readonly levIdx: Int32Array;
 
@@ -927,8 +927,6 @@ export class SymbolPredictor {
     // One block scale for both sides: the largest log-mass of either (spec §5.3).
     const MSGF = SRC.msgF;
     const NODEF = SRC.nodeF;
-    if (this.Lv.length < log.n) this.Lv = new Float64Array(2 * log.n);
-    const Lv = this.Lv;
     let M = Lesc;
     const outside = f.outsideScale;
     for (let g = 0; g < log.segs; g++) {
@@ -939,7 +937,6 @@ export class SymbolPredictor {
         if (c < 1) continue;
         const lc = c < LOG2_SMALL.length ? LOG2_SMALL[c] : log2Fix(c);
         const el = lc + log.eLearn[i];
-        Lv[i] = el;
         let ec = lc + log.eCode[i];
         const s = log.sym[i];
         if (foldOsc && (s === DIGIT || s === nl)) {
@@ -950,8 +947,12 @@ export class SymbolPredictor {
       }
     }
 
-    // Pass B.
-    const off = SB * ONE - M;
+    // Pass B. A vote's mass is floor(count * 2^((e + off) / ONE)). M takes log2Fix(count), which
+    // both tables' floors keep below log2 count by less than log2(1 + 2^-12) + 2^-24, so a mass
+    // exceeds 2^((M + off) / ONE) by a factor below 1 + 2^-11, and one bit of headroom keeps every
+    // mass below 2^SB. The bit costs no precision: the coded side shifts the masses down to HB bits
+    // (bitlen(vmax) - HB) and the learning side does too (learn's s), and HB < SB - 1.
+    const off = (SB - 1) * ONE - M;
     let ZL = 0;
     for (let g = 0; g < log.segs; g++) {
       const src = log.src[g];
@@ -960,9 +961,10 @@ export class SymbolPredictor {
       const segOsc = this.osc8[src] === 1;
       const end = log.end[g];
       for (let i = log.start[g]; i < end; i++) {
-        if (log.count[i] < 1) continue;
-        const el = Lv[i];
-        const ml = exp2Fix(el + off);
+        const c = log.count[i];
+        if (c < 1) continue;
+        const el = log.eLearn[i];
+        const ml = linMass(c, el + off);
         log.massLearn[i] = ml;
         ZL += ml;
         const s = log.sym[i];
@@ -970,22 +972,21 @@ export class SymbolPredictor {
           if (s === DIGIT) {
             for (let d = 0; d < 10; d++) {
               const m = mulShr(
-                osc ? exp2Fix(el + this.oscDigit[d] + off) : ml,
+                osc ? linMass(c, el + this.oscDigit[d] + off) : ml,
                 this.digitShare[d],
                 PB
               );
               this.addV(digits[d], m, osc);
             }
           } else {
-            const mE = mulShr(osc ? exp2Fix(el + this.oscEnd + off) : ml, this.endShare, PB);
-            const mN = mulShr(osc ? exp2Fix(el + this.oscNl + off) : ml, this.nlShare, PB);
+            const mE = mulShr(osc ? linMass(c, el + this.oscEnd + off) : ml, this.endShare, PB);
+            const mN = mulShr(osc ? linMass(c, el + this.oscNl + off) : ml, this.nlShare, PB);
             this.addV(END, mE, osc);
             this.addV(nl, mN, osc);
           }
         } else {
           const ec = log.eCode[i];
-          const el0 = log.eLearn[i];
-          this.addV(s, ec === el0 ? ml : exp2Fix(el - el0 + ec + off), segOsc);
+          this.addV(s, ec === el ? ml : linMass(c, ec + off), segOsc);
         }
       }
     }
