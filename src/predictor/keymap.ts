@@ -6,7 +6,7 @@
 import { div } from './arith';
 
 /** The slots an `IndexMap` starts with: 2^MAP_BITS. */
-const MAP_BITS = 6;
+const MAP_BITS = 4;
 
 /**
  * Entry indices by key, a safe integer: an open-addressing hash table with
