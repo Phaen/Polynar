@@ -52,6 +52,8 @@ export const E_MIN = -48 * ONE;
 /** Index bits of both tables. */
 const TABLE_BITS = 12;
 const TWO_26 = POW2[26];
+const TWO_32 = POW2[32];
+const TWO_53 = POW2[52] * 2;
 
 /** Exact powers of two, 2^0 to 2^-52. */
 const POW2_NEG = new Float64Array(53);
@@ -64,9 +66,8 @@ for (let i = 1; i < POW2_NEG.length; i++) {
 // to CommonJS.
 const EXP2 = EXP2_TABLE;
 const LOG2 = LOG2_TABLE;
-/** 2^-RB and 2^-(RB - TABLE_BITS): the shifts of `exp2Fix` as exact multiplications. */
-const INV_ONE = POW2_NEG[RB];
-const INV_FRAC = POW2_NEG[RB - TABLE_BITS];
+/** From this exponent on the power is 2^53 or more. */
+const E_TOP = 53 * ONE;
 
 /** floor(a / b) for integers |a| < 2^53 and b >= 1. */
 export function div(a: number, b: number): number {
@@ -85,6 +86,12 @@ export function shl(a: number, k: number): number {
 
 /** floor(a * b / 2^k) for 0 <= a < 2^52, 0 <= b < 2^26, 0 <= k <= 52, and a * b / 2^k < 2^53 when k < 26. */
 export function mulShr(a: number, b: number, k: number): number {
+  // 2^53 is a double and rounding is monotone, so the rounded product is below 2^53 exactly when
+  // the true one is, and then it is the true one.
+  const p = a * b;
+  if (p < TWO_53) {
+    return Math.floor(p * POW2_NEG[k]);
+  }
   const a1 = div(a, TWO_26);
   const a0 = a - a1 * TWO_26;
   const x = a1 * b;
@@ -113,10 +120,17 @@ export function bitlen(x: number): number {
 
 /** log2(x) in RB fixed point for an integer 1 <= x < 2^53, defined by `LOG2_TABLE`. */
 export function log2Fix(x: number): number {
+  if (x < TWO_32) {
+    // x is an integer below 2^32, which the 32-bit operators hold exactly (`>>>` reads it unsigned).
+    const k = 31 - Math.clz32(x);
+    return (
+      k * ONE +
+      LOG2[k >= TABLE_BITS ? (x >>> (k - TABLE_BITS)) - 4096 : (x << (TABLE_BITS - k)) - 4096]
+    );
+  }
+  // x >= 2^32 here, so k >= 32 and the mantissa is always cut down.
   const k = bitlen(x) - 1;
-  const frac =
-    k >= TABLE_BITS ? div(x, POW2[k - TABLE_BITS]) - 4096 : x * POW2[TABLE_BITS - k] - 4096;
-  return k * ONE + LOG2[frac];
+  return k * ONE + LOG2[div(x, POW2[k - TABLE_BITS]) - 4096];
 }
 
 /**
@@ -124,19 +138,18 @@ export function log2Fix(x: number): number {
  * e < E_MIN or when the result floors to 0.
  */
 export function exp2Fix(e: number): number {
-  if (e < E_MIN) {
+  // Every table entry is below 2^25 and a negative e shifts it right by at least 25 bits, so the
+  // result floors to 0 for every e < 0, E_MIN included.
+  if (e < 0) {
     return 0;
   }
-  const q = Math.floor(e * INV_ONE);
-  if (q > 52) {
-    throw new RangeError(`exp2Fix: exponent ${q} exceeds 52`);
+  if (e >= E_TOP) {
+    throw new RangeError(`exp2Fix: exponent ${Math.floor(e / ONE)} exceeds 52`);
   }
-  const m = EXP2[Math.floor((e - q * ONE) * INV_FRAC)];
-  if (q >= 24) {
-    return m * POW2[q - 24];
-  }
-  const s = 24 - q;
-  return s > 52 ? 0 : Math.floor(m * POW2_NEG[s]);
+  // e is an integer below 53 * ONE < 2^31 here, so the 32-bit shifts are exact.
+  const q = e >>> RB;
+  const m = EXP2[(e >>> (RB - TABLE_BITS)) & 4095];
+  return q >= 24 ? m * POW2[q - 24] : m >> (24 - q);
 }
 
 /** x / 2^k rounded to nearest, ties upward; 1 <= k <= 52. */

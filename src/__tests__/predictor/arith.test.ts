@@ -48,6 +48,42 @@ const floorDiv = (a: bigint, b: bigint): bigint => {
 const randMagnitude = (rand: () => number, maxBits: number): bigint =>
   randBelow(rand, 1n << BigInt(1 + Math.floor(rand() * maxBits)));
 
+/**
+ * The general formulas behind the 32-bit and small-product paths: floors of exact multiplications
+ * by powers of two, without any shift operator.
+ */
+const reference = {
+  log2Fix(x: number): number {
+    const k = bitlen(x) - 1;
+    const frac = k >= 12 ? Math.floor(x / POW2[k - 12]) - 4096 : x * POW2[12 - k] - 4096;
+    return k * ONE + LOG2_TABLE[frac];
+  },
+  exp2Fix(e: number): number {
+    if (e < E_MIN) {
+      return 0;
+    }
+    const q = Math.floor(e / ONE);
+    const m = EXP2_TABLE[Math.floor((e - q * ONE) / 4096)];
+    if (q >= 24) {
+      return m * POW2[q - 24];
+    }
+    const s = 24 - q;
+    return s > 52 ? 0 : Math.floor(m / POW2[s]);
+  },
+  mulShr(a: number, b: number, k: number): number {
+    const a1 = Math.floor(a / 2 ** 26);
+    const a0 = a - a1 * 2 ** 26;
+    const x = a1 * b;
+    const y = a0 * b;
+    if (k < 26) {
+      return x * POW2[26 - k] + Math.floor(y / POW2[k]);
+    }
+    const s = POW2[k - 26];
+    const q1 = Math.floor(x / s);
+    return q1 + Math.floor(((x - q1 * s) * 2 ** 26 + y) / POW2[k]);
+  },
+};
+
 describe('constants and tables', () => {
   it('fixes the numeric conventions', () => {
     expect([RB, SB, HB, PB]).toEqual([24, 36, 30, 16]);
@@ -165,6 +201,37 @@ describe('mulShr and mulDiv', () => {
     expect(mulShr(a, b, 52)).toBe(2 ** 26 - 2);
   });
 
+  it('matches the general formula below, around and above a product of 2^53', () => {
+    const cmp = (a: number, b: number, k: number): void => {
+      if (mulShr(a, b, k) !== reference.mulShr(a, b, k)) {
+        expect([a, b, k, mulShr(a, b, k)]).toEqual([a, b, k, reference.mulShr(a, b, k)]);
+      }
+    };
+    const rand = mulberry32(11);
+    for (let i = 0; i < 300000; i++) {
+      const b = Number(randMagnitude(rand, 26));
+      const k = 26 + Math.floor(rand() * 27);
+      // Small a, a product near 2^53, and any a in the domain.
+      cmp(Number(randMagnitude(rand, 26)), b, k);
+      if (b > 0) {
+        const near = Math.floor(2 ** 53 / b) + Math.floor(rand() * 64) - 32;
+        if (near >= 0 && near < 2 ** 52) {
+          cmp(near, b, k);
+        }
+      }
+      cmp(Number(randMagnitude(rand, 52)), b, k);
+    }
+    for (const k of [0, 16, 24, 26, 52]) {
+      cmp(2 ** 27, 2 ** 26 - 1, Math.max(k, 1));
+      cmp(2 ** 28, 2 ** 25, 26);
+      cmp(2 ** 28 - 1, 2 ** 25, 26);
+      cmp(2 ** 28 + 1, 2 ** 25, 26);
+    }
+    // 3 * 3002399751580331 is 2^53 + 1, which rounds to 2^53 in a double.
+    check(3002399751580331, 3, 26);
+    check(3002399751580330, 3, 26);
+  });
+
   it('multiplies then divides', () => {
     const rand = mulberry32(4);
     for (let i = 0; i < SAMPLES; i++) {
@@ -241,6 +308,26 @@ describe('log2Fix', () => {
       previous = y;
     }
   });
+
+  it('matches the general formula on both sides of 2^32', () => {
+    const rand = mulberry32(9);
+    for (let i = 0; i < 1000000; i++) {
+      const x = Number(randMagnitude(rand, 53)) + 1;
+      if (log2Fix(x) !== reference.log2Fix(x)) {
+        expect([x, log2Fix(x)]).toEqual([x, reference.log2Fix(x)]);
+      }
+    }
+    for (let k = 0; k <= 52; k++) {
+      for (const x of [POW2[k] - 1, POW2[k], POW2[k] + 1, 2 * POW2[k] - 1]) {
+        if (x >= 1 && x < 2 ** 53) {
+          expect(log2Fix(x)).toBe(reference.log2Fix(x));
+        }
+      }
+    }
+    expect(log2Fix(2 ** 31 - 1)).toBe(30 * ONE + LOG2_TABLE[4095]);
+    expect(log2Fix(2 ** 31)).toBe(31 * ONE);
+    expect(log2Fix(2 ** 32 - 1)).toBe(31 * ONE + LOG2_TABLE[4095]);
+  });
 });
 
 describe('exp2Fix', () => {
@@ -263,6 +350,36 @@ describe('exp2Fix', () => {
     expect(exp2Fix(53 * ONE - 1)).toBe(EXP2_TABLE[4095] * 2 ** 28);
     expect(() => exp2Fix(53 * ONE)).toThrow(RangeError);
     expect(() => exp2Fix(60 * ONE)).toThrow('exceeds 52');
+    expect(() => exp2Fix(2 ** 40)).toThrow('exponent 65536 exceeds 52');
+  });
+
+  it('matches the general formula over the whole domain', () => {
+    const check = (e: number): void => {
+      if (exp2Fix(e) !== reference.exp2Fix(e)) {
+        expect([e, exp2Fix(e)]).toEqual([e, reference.exp2Fix(e)]);
+      }
+    };
+    const rand = mulberry32(10);
+    const span = 53 * ONE - E_MIN;
+    for (let i = 0; i < 1000000; i++) {
+      check(E_MIN + Math.floor(rand() * span));
+    }
+    for (let i = 0; i < 100000; i++) {
+      check(E_MIN - 1 - Math.floor(rand() * 2 ** 40));
+    }
+    for (let q = -49; q <= 52; q++) {
+      for (const d of [0, 1, 4095, 4096, 4097, ONE / 2, ONE - 4096, ONE - 1]) {
+        check(q * ONE + d);
+      }
+    }
+    for (const edge of [E_MIN, 0, 53 * ONE]) {
+      for (let e = edge - 2 ** 20; e < edge + 2 ** 20; e += 4096) {
+        if (e < 53 * ONE) {
+          check(e);
+          check(e - 1);
+        }
+      }
+    }
   });
 
   it('is monotone and within 2^-11 relative error (plus the floor)', () => {
