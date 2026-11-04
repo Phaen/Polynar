@@ -212,4 +212,41 @@ describe('Distribution', () => {
       }
     });
   });
+  it('orders entries by id on every path: insertion, the id sweep and the key sort', () => {
+    const r = rng(41);
+    const d = new Distribution();
+    const spans = [0, 0, 0];
+    for (let step = 0; step < 600; step++) {
+      const m = Math.floor(r() * 160);
+      const dense = r() < 0.5;
+      const lo = Math.floor(r() * 400);
+      const range = dense
+        ? Math.max(1, Math.floor(m * (1 + 3 * r())))
+        : m * 4 + 1 + Math.floor(r() * 5000);
+      const pick = new Set<number>();
+      while (pick.size < Math.min(m, range)) pick.add(lo + Math.floor(r() * range));
+      const entries: [number, number][] = [...pick].map((id) => [id, Math.floor(r() * 2 ** 26)]);
+      const escape = r() < 0.5 ? Math.floor(r() * 2 ** 26) : undefined;
+      const n = entries.length + (escape === undefined ? 0 : 1);
+      if (n === 0) continue;
+      const span = entries.length === 0 ? 0 : Math.max(...pick) - Math.min(...pick) + 1;
+      spans[entries.length <= 16 ? 0 : span <= 4 * entries.length ? 1 : 2]++;
+      const total = 2 ** 16;
+      build(total, entries, escape, d);
+      // The plain rule on entries sorted by id, masses already below 2^27.
+      const sorted = [...entries].sort((x, y) => x[0] - y[0]);
+      const P = sorted.map((e) => e[1]);
+      if (escape !== undefined) P.push(escape);
+      const z = P.reduce((a, b) => a + b, 0);
+      let best = 0;
+      for (let i = 0; i < n; i++) if (P[i] > P[best]) best = i;
+      const f = P.map((p) => (z === 0 ? 1 : 1 + Math.floor((p * (total - n - 1)) / z)));
+      f[best] += total - f.reduce((a, b) => a + b, 0);
+      expect(d.n).toBe(n);
+      for (let i = 0; i < sorted.length; i++) expect(d.idAt(i)).toBe(sorted[i][0]);
+      for (let i = 0; i < n; i++) expect(d.freq(i)).toBe(f[i]);
+      invariants(d);
+    }
+    expect(Math.min(...spans)).toBeGreaterThan(50);
+  });
 });

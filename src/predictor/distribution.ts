@@ -12,6 +12,8 @@ import type { MemberLike } from './types';
 const QB = 27;
 /** Bits of the entry index inside a sort key (entries never exceed total / 2 <= 2^23). */
 const KB = 24;
+/** Entries up to which `finish` sorts by insertion. */
+const SMALL = 16;
 
 export class Distribution implements MemberLike {
   /** The quantisation total of the current step. */
@@ -30,6 +32,10 @@ export class Distribution implements MemberLike {
   private masses = new Float64Array(16);
   private sorted = new Float64Array(16);
   private keys = new Float64Array(16);
+  /** Per id offset from the step's smallest id, the entry index, valid where `slotStep` is `step`. */
+  private slot = new Int32Array(64);
+  private slotStep = new Int32Array(64);
+  private step = 0;
 
   /** Starts a step: no entries, coded with `total` and an ESCAPE entry when `hasEscape`. */
   begin(total: number, hasEscape: boolean): void {
@@ -74,16 +80,20 @@ export class Distribution implements MemberLike {
     if (n === 0 || 2 * n > total) {
       throw new RangeError(`distribution: ${n} entries do not fit a total of ${total}`);
     }
-    const keys = this.keys;
     const ids = this.ids;
     const P = this.sorted;
-    const scale = POW2[KB];
-    for (let i = 0; i < m; i++) keys[i] = ids[i] * scale + i;
-    keys.subarray(0, m).sort();
-    for (let i = 0; i < m; i++) {
-      const id = shr(keys[i], KB);
-      ids[i] = id;
-      P[i] = this.masses[keys[i] - id * scale];
+    let lo = m > 0 ? ids[0] : 0;
+    let hi = lo;
+    for (let i = 1; i < m; i++) {
+      const id = ids[i];
+      if (id < lo) lo = id;
+      if (id > hi) hi = id;
+    }
+    const span = hi - lo + 1;
+    if (m > SMALL && span <= 4 * m) {
+      this.sweepById(m, lo, span);
+    } else {
+      this.sortById(m);
     }
     if (this.hasEscape) {
       ids[m] = ESCAPE;
@@ -107,6 +117,63 @@ export class Distribution implements MemberLike {
     }
     freqs[best] += total - used;
     this.sums();
+  }
+
+  /**
+   * Writes the `m` added entries in id order into `ids` and `sorted`: by insertion up to SMALL
+   * entries, else by sorting keys id · 2^KB + index. Ids are distinct, so no two keys tie.
+   */
+  private sortById(m: number): void {
+    const keys = this.keys;
+    const ids = this.ids;
+    const scale = POW2[KB];
+    for (let i = 0; i < m; i++) keys[i] = ids[i] * scale + i;
+    if (m <= SMALL) {
+      for (let i = 1; i < m; i++) {
+        const k = keys[i];
+        let j = i - 1;
+        while (j >= 0 && keys[j] > k) {
+          keys[j + 1] = keys[j];
+          j--;
+        }
+        keys[j + 1] = k;
+      }
+    } else {
+      keys.subarray(0, m).sort();
+    }
+    for (let i = 0; i < m; i++) {
+      const id = shr(keys[i], KB);
+      ids[i] = id;
+      this.sorted[i] = this.masses[keys[i] - id * scale];
+    }
+  }
+
+  /**
+   * The same order for ids within `span` of `lo`: each added id marks its slot, and an ascending
+   * sweep over the slots reads them back. Ids are distinct, so each slot holds one entry.
+   */
+  private sweepById(m: number, lo: number, span: number): void {
+    if (span > this.slot.length) {
+      let size = this.slot.length * 2;
+      while (size < span) size *= 2;
+      this.slot = new Int32Array(size);
+      this.slotStep = new Int32Array(size);
+    }
+    const st = ++this.step;
+    const { ids, slot, slotStep } = this;
+    for (let i = 0; i < m; i++) {
+      const r = ids[i] - lo;
+      slot[r] = i;
+      slotStep[r] = st;
+    }
+    let j = 0;
+    for (let r = 0; r < span; r++) {
+      if (slotStep[r] === st) {
+        ids[j] = lo + r;
+        this.sorted[j] = this.masses[slot[r]];
+        j++;
+      }
+    }
   }
 
   /**
