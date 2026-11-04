@@ -103,6 +103,12 @@ function sizeClass(words: number): number {
   return bitlen(words - 1);
 }
 
+/**
+ * The largest count `load` stores: a learned count halves when it reaches 2^24, so no count of a
+ * table goes above this, and a vote's linear mass (`linMass`) holds every count.
+ */
+const LOAD_MAX = POW2[24] - 1;
+
 /** Entries the columns of a table start with. */
 const COLUMNS = 128;
 /** Followers the region of the order-0 entry and of a hashed entry start with. */
@@ -213,14 +219,20 @@ export class Entries {
     return c;
   }
 
-  /** Adds `c` to the count of `s` in entry `x` with no position (frozen populations). */
+  /**
+   * Adds `c` to the count of `s` in entry `x` with no position (frozen populations), up to
+   * LOAD_MAX: a declared count above it is LOAD_MAX.
+   */
   load(x: number, s: number, c: number): void {
     let j = this.indexOf(x, s);
     if (j < 0) {
       j = this.append(x, s);
     }
-    this.chunks[this.chunk[x]][this.base[x] + j * STRIDE + 1] += c;
-    this.total[x] += c;
+    const d = this.chunks[this.chunk[x]];
+    const o = this.base[x] + j * STRIDE + 1;
+    const v = Math.min(LOAD_MAX, d[o] + c);
+    this.total[x] += v - d[o];
+    d[o] = v;
   }
 
   /** The last position that followed entry `x`: the latest of its followers. */

@@ -408,6 +408,17 @@ describe('Entries', () => {
     expect(col(tab, x, 'last', 1)[0]).toBe(0);
   });
 
+  it('loads a count up to 2^24 - 1 and no further', () => {
+    const tab = new Entries(1);
+    tab.load(0, 5, 2 ** 24 + 7);
+    tab.load(0, 6, 2 ** 24 - 3);
+    tab.load(0, 6, 5);
+    tab.load(0, 6, 1);
+    expect(tab.count(0, 5)).toBe(2 ** 24 - 1);
+    expect(tab.count(0, 6)).toBe(2 ** 24 - 1);
+    expect(tab.total[0]).toBe(2 ** 25 - 2);
+  });
+
   it('halves every count of every entry, keeping at least 1', () => {
     const tab = new Entries(1);
     const x = tab.make(1, 9);
