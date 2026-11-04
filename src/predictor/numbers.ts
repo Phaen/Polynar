@@ -265,8 +265,24 @@ export class NumberCoder {
   private kmass = new Float64Array(0);
   private kstamp = new Float64Array(0);
   private stamp = 0;
-  /** The centres `findTop` has weighed this step. */
-  private readonly seen = new Set<number>();
+  /**
+   * The step's distinct reference centres, and per centre the summed mass of the spikes at it;
+   * `cid` maps a centre to its index.
+   */
+  private cents = new Float64Array(0);
+  private spikeAt = new Float64Array(0);
+  private ncent = 0;
+  private readonly cid = new Map<number, number>();
+  /**
+   * The step's kernels and siblings grouped by (weight slot, centre), with the group's log-weight
+   * and size: slots as in `kmass`. `gid` maps a kernel's centre index · NR + bucket to its group.
+   */
+  private gSlot = new Int32Array(0);
+  private gAt = new Float64Array(0);
+  private gLw = new Float64Array(0);
+  private gMult = new Float64Array(0);
+  private ng = 0;
+  private readonly gid = new Map<number, number>();
   /** Row sums by centre under declared bounds, for this step's row scale. */
   private readonly rows = new Map<number, number>();
   /** Where `spot` put its value: class cell, class and offset within the class. */
@@ -516,6 +532,12 @@ export class NumberCoder {
       this.K = new Float64Array(n);
       this.L = new Float64Array(n);
       this.has = new Uint8Array(n);
+      this.cents = new Float64Array(n);
+      this.spikeAt = new Float64Array(n);
+      this.gSlot = new Int32Array(n);
+      this.gAt = new Float64Array(n);
+      this.gLw = new Float64Array(n);
+      this.gMult = new Float64Array(n);
     }
     this.nc = n;
     const K = this.K;
@@ -597,6 +619,7 @@ export class NumberCoder {
     this.hasTop = this.refs > 0;
     this.prior.set(this.mass.subarray(0, n));
     if (this.hasTop) {
+      this.group();
       this.findTop();
       // On a miss `top` is out of every component: a reference's prior mass loses top's value
       // mass in its row, which with the class tables below is the prototype's P(x) / (1 − t).
@@ -637,30 +660,69 @@ export class NumberCoder {
   }
 
   /**
-   * The prior-scale mass of every reference at value `v` (a centre). Within a step a kernel's
-   * log-weight is its recency bucket's and a sibling's its own, and the kernel's log-mass is its
-   * class cell's, so each (slot, cell) mass is one `exp2Fix` argument, worked out once.
+   * The step's distinct centres and reference groups for `massAt`: kernels of one recency bucket
+   * and centre share their log-weight and centre, so they add the same mass at any value.
    */
-  private massAt(v: number): number {
+  private group(): void {
+    const cid = this.cid;
+    const gid = this.gid;
+    cid.clear();
+    gid.clear();
+    this.ncent = 0;
+    this.ng = 0;
     const sib0 = this.refs - this.sibS.length;
+    for (let i = 0; i < this.refs; i++) {
+      const kd = this.kind[i];
+      if (kd === SPIKE) continue;
+      const C = this.at[i];
+      let ci = cid.get(C);
+      if (ci === undefined) {
+        ci = this.ncent++;
+        cid.set(C, ci);
+        this.cents[ci] = C;
+        this.spikeAt[ci] = 0;
+      }
+      const key = ci * NR + this.bucket[i];
+      const g = kd === KERNEL ? gid.get(key) : undefined;
+      if (g !== undefined) {
+        this.gMult[g]++;
+        continue;
+      }
+      const ng = this.ng++;
+      if (kd === KERNEL) gid.set(key, ng);
+      this.gSlot[ng] = kd === KERNEL ? this.bucket[i] : NR + i - sib0;
+      this.gAt[ng] = C;
+      this.gLw[ng] = this.lw[i];
+      this.gMult[ng] = 1;
+    }
+    for (let i = 0; i < this.refs; i++) {
+      if (this.kind[i] !== SPIKE) continue;
+      const ci = cid.get(this.at[i]);
+      if (ci !== undefined) this.spikeAt[ci] += this.mass[i];
+    }
+  }
+
+  /**
+   * The prior-scale mass of every reference at the centre `ci`. Within a step a kernel's
+   * log-weight is its recency bucket's and a sibling's its own, and the kernel's log-mass is its
+   * class cell's, so each (slot, cell) mass is one `exp2Fix` argument, worked out once. Every term
+   * is an integer and the masses of a step sum below 2^50 (at most 3 · 4096 + 2 of at most 2^SB),
+   * so a group's size times its term and the sum in any order are exact.
+   */
+  private massAt(ci: number): number {
+    const v = this.cents[ci];
     const kmass = this.kmass;
     const kstamp = this.kstamp;
     const stamp = this.stamp;
-    let m = 0;
-    for (let i = 0; i < this.refs; i++) {
-      const kd = this.kind[i];
-      if (kd === SPIKE) {
-        if (this.at[i] === v) m += this.mass[i];
-      } else {
-        this.spot(this.at[i], v);
-        const slot = kd === KERNEL ? this.bucket[i] : NR + i - sib0;
-        const at = slot * NCELL + this.spCell - P_MU;
-        if (kstamp[at] !== stamp) {
-          kstamp[at] = stamp;
-          kmass[at] = exp2Fix(this.lw[i] + this.kern(this.spCell, this.spC) + this.off);
-        }
-        m += kmass[at];
+    let m = this.spikeAt[ci];
+    for (let g = 0; g < this.ng; g++) {
+      this.spot(this.gAt[g], v);
+      const at = this.gSlot[g] * NCELL + this.spCell - P_MU;
+      if (kstamp[at] !== stamp) {
+        kstamp[at] = stamp;
+        kmass[at] = exp2Fix(this.gLw[g] + this.kern(this.spCell, this.spC) + this.off);
       }
+      m += this.gMult[g] * kmass[at];
     }
     return m;
   }
@@ -669,14 +731,9 @@ export class NumberCoder {
   private findTop(): void {
     let best = -1;
     let top = 0;
-    const seen = this.seen;
-    seen.clear();
-    for (let i = 0; i < this.refs; i++) {
-      if (this.kind[i] === SPIKE) continue;
-      const c = this.at[i];
-      if (seen.has(c)) continue;
-      seen.add(c);
-      const m = this.massAt(c);
+    for (let ci = 0; ci < this.ncent; ci++) {
+      const c = this.cents[ci];
+      const m = this.massAt(ci);
       if (m > best || (m === best && c < top)) {
         best = m;
         top = c;
