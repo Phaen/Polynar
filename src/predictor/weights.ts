@@ -4,13 +4,14 @@
  *
  * Every parameter is an RB fixed-point integer in bits. Updates are additive in the log domain
  * (D4) and rounded to nearest. The learning signal of a hybrid block is the pre-kernel exact-match
- * share: per vote q = A / Sa - T / Z in PB bits (each quotient rounded to nearest), with A the vote's learning mass when it is for the
- * coded symbol (scaled by its fold share) and T its learning mass; the chain rule gives the block
- * gradient G_b[f] = sum of q * x[f] over the block's votes, in PB + RB bits.
+ * share: per feature cell of a block q = A / Sa - T / Z in PB bits (each quotient rounded to
+ * nearest), with A the cell's learning mass for the coded symbol (each vote's scaled by its fold
+ * share) and T its learning mass over the block's votes at the cell; the chain rule gives the
+ * block gradient G_b[f] = sum of q * x[f] over the block's cells, in PB + RB bits.
  */
 
 import { E_MIN, HB, ONE, PB, POW2, RB, bitlen, clampi, div, mulShr, shl, shr } from './arith';
-import { CELL_X } from './features';
+import { CELLS, CELL_X } from './features';
 import { HF, SRC, levels } from './types';
 import type { LoadedPrior, PriorConstants, RunPrior } from './types';
 
@@ -314,6 +315,26 @@ export class VoteLog {
   }
 }
 
+/**
+ * A step's learning masses per (block, cell), k = block * CELLS + cell, valid where `cellStamp[k]`
+ * is the step's stamp, and the k touched. Shared by every log: `learn` runs to completion and
+ * starts each step with a new stamp, so a message allocates none of it.
+ */
+let cellA = new Float64Array(0);
+let cellT = new Float64Array(0);
+let cellStamp = new Float64Array(0);
+let cellTouched = new Int32Array(0);
+let cellStep = 0;
+
+function cellScratch(nk: number): void {
+  if (cellA.length < nk) {
+    cellA = new Float64Array(nk);
+    cellT = new Float64Array(nk);
+    cellStamp = new Float64Array(nk);
+    cellTouched = new Int32Array(nk);
+  }
+}
+
 /** a / b rounded to nearest (ties upward) for 0 <= a < 2^51 and 0 < b < 2^51. */
 export function rdiv(a: number, b: number): number {
   return div(2 * a + b, 2 * b);
@@ -353,15 +374,22 @@ export function learn(
   const sa = Math.max(1, shr(Sa, s));
   const af = log.af >= 0 ? log.af : a;
   const { G, mark, touched, levA, levT, lnA, lnT } = log;
-  let nt = 0;
+  cellScratch(div(run.hybrid.length, HF) * CELLS);
+  const TA = cellA;
+  const TT = cellT;
+  const stamp = cellStamp;
+  const ktouched = cellTouched;
+  const st = ++cellStep;
+  let nk = 0;
   let tauA = 0;
   let tauT = 0;
   const { massLearn, share16, sym, cell } = log;
+  // A cell's sums take floor(m / 2^s) and floor(m * share / 2^(PB + s)) over a subset of the
+  // votes, so both are at most Z / 2^s < 2^HB, and shl by PB keeps them inside rdiv's domain.
   for (let g = 0; g < log.segs; g++) {
     const src = log.src[g];
     const want = src === SRC.msgF || src === SRC.nodeF ? af : a;
-    const b = log.block[g];
-    const o = b * HF;
+    const kb = log.block[g] * CELLS;
     const tau = log.tau[g] === 1;
     const li = log.levIndex[g];
     const ni = log.lognIndex[g];
@@ -374,16 +402,16 @@ export function learn(
       }
       const ms = shr(m, s);
       const hit = sym[i] === want;
-      const q = (hit ? rdiv(shl(mulShr(m, share16[i], PB + s), PB), sa) : 0) - rdiv(shl(ms, PB), z);
-      if (q !== 0) {
-        if (mark[b] === 0) {
-          mark[b] = 1;
-          touched[nt++] = b;
-        }
-        const xo = cell[i] * HF;
-        for (let f = 0; f < HF; f++) {
-          G[o + f] += q * CELL_X[xo + f];
-        }
+      const k = kb + cell[i];
+      if (stamp[k] !== st) {
+        stamp[k] = st;
+        TA[k] = 0;
+        TT[k] = 0;
+        ktouched[nk++] = k;
+      }
+      TT[k] += ms;
+      if (hit) {
+        TA[k] += mulShr(m, share16[i], PB + s);
       }
       if (tau) {
         tauT += ms;
@@ -403,6 +431,24 @@ export function learn(
         if (hit) {
           lnA[ni] += d;
         }
+      }
+    }
+  }
+
+  let nt = 0;
+  for (let j = 0; j < nk; j++) {
+    const k = ktouched[j];
+    const q = grad(TA[k], sa, TT[k], z);
+    if (q !== 0) {
+      const b = div(k, CELLS);
+      if (mark[b] === 0) {
+        mark[b] = 1;
+        touched[nt++] = b;
+      }
+      const o = b * HF;
+      const xo = (k - b * CELLS) * HF;
+      for (let f = 0; f < HF; f++) {
+        G[o + f] += q * CELL_X[xo + f];
       }
     }
   }
