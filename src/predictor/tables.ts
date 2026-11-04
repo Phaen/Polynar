@@ -573,22 +573,35 @@ export class Frozen {
 /** What `frozen()` needs of the session's id table (alphabet.ts `Ids`). */
 export interface IdLookup {
   idOf(cp: number): number;
+  /** The prior the table was seeded from, whose symbols then hold the same ids in every table. */
+  readonly seededFrom?: object | null;
 }
 
-/** The last built-in population of each prior and the ids it was built under. */
-const FROZEN_CACHE = new WeakMap<object, { ids: Int32Array; f: Frozen }>();
+/**
+ * The last built-in population of each prior, the ids it was built under, and whether those are
+ * the ids of a table seeded from that prior.
+ */
+const FROZEN_CACHE = new WeakMap<object, { ids: Int32Array; seeded: boolean; f: Frozen }>();
 
 /**
  * The built-in population of a prior with the session's symbol ids; −1 in the prior is END and
  * −1 − s structure id s. The
  * ids are taken in the same order on every call, so their assignment does not depend on the
  * cache. A population built under the same ids is shared: nothing writes to it but `lookup`,
- * whose `E` and `m` are read within the same step.
+ * whose `E` and `m` are read within the same step. A table seeded from the prior gave every
+ * symbol the prior lists (the only ones its contexts may name) its id in the constructor, so
+ * for such a table the ids are known to match a population built under another such table
+ * without asking for them.
  */
 export function frozen(
   prior: Pick<LoadedPrior, 'builtinSymbols' | 'builtinCounts0' | 'builtinContexts1'>,
   ids: IdLookup
 ): Frozen {
+  const seeded = ids.seededFrom === prior;
+  const hit = FROZEN_CACHE.get(prior);
+  if (hit !== undefined && seeded && hit.seeded) {
+    return hit.f;
+  }
   // −1 is END and −1 − s structure id s; the rest are code points.
   const id = (cp: number): number => (cp === -1 ? END : cp < -1 ? -1 - cp : ids.idOf(cp));
   const symbols = prior.builtinSymbols;
@@ -600,7 +613,6 @@ export function frozen(
     got[w++] = id(prev);
     got[w++] = id(next);
   }
-  const hit = FROZEN_CACHE.get(prior);
   if (hit !== undefined && sameIds(hit.ids, got)) {
     return hit.f;
   }
@@ -621,7 +633,7 @@ export function frozen(
     tab.load(x, got[w++], c);
   }
   f.total = tab.total[0];
-  FROZEN_CACHE.set(prior, { ids: got, f });
+  FROZEN_CACHE.set(prior, { ids: got, seeded, f });
   return f;
 }
 

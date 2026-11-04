@@ -744,4 +744,35 @@ describe('frozen', () => {
     expect(col(g.tab, 0, 'syms', 3)).toEqual([END, 302, 303]);
     expect(frozen(prior, other)).toBe(g);
   });
+
+  it('takes a table seeded from the prior at its word, and checks any other', () => {
+    const own = { ...prior };
+    let asked = 0;
+    const seeded = {
+      idOf: (cp: number): number => {
+        asked++;
+        return ids.get(cp)!;
+      },
+      seededFrom: own,
+    };
+    const f = frozen(own, seeded);
+    expect(asked).toBe(8);
+    expect(frozen(own, seeded)).toBe(f);
+    expect(asked).toBe(8);
+    expect(frozen(own, { ...seeded, seededFrom: prior })).toBe(f);
+    expect(asked).toBe(16);
+    expect(frozen(own, fake)).toBe(f);
+
+    const other = { idOf: (cp: number): number => ids.get(cp)! + 10 };
+    const g = frozen(own, other);
+    expect(g).not.toBe(f);
+    const h = frozen(own, seeded);
+    expect(h).not.toBe(g);
+    expect(col(h.tab, 0, 'syms', 3)).toEqual([END, 292, 293]);
+    expect(frozen(own, seeded)).toBe(h);
+
+    const fresh = { ...prior };
+    expect(frozen(fresh, other)).not.toBe(g);
+    expect(frozen(fresh, { ...other, seededFrom: fresh })).toBe(frozen(fresh, other));
+  });
 });

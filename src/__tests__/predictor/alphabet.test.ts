@@ -89,6 +89,12 @@ describe('assignment order', () => {
     expect(ids.size()).toBe(307);
   });
 
+  it('remembers the prior it was seeded from', () => {
+    const prior = priorWith([97]);
+    expect(new Ids(prior).seededFrom).toBe(prior);
+    expect(new Ids(null).seededFrom).toBeNull();
+  });
+
   it('leaves the structure ids of a prior to their fixed ids', () => {
     const ids = new Ids(priorWith([-2, 97]));
     expect(ids.idOf(97)).toBe(CP_BASE);

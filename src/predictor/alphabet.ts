@@ -55,6 +55,11 @@ export function isLetterOrNumberCp(cp: number): boolean {
  * Lone surrogates are ordinary code points under their code unit value.
  */
 export class Ids {
+  /**
+   * The prior whose symbols took their ids in the constructor; those ids are the same in every
+   * table seeded from it.
+   */
+  readonly seededFrom: LoadedPrior | null;
   private readonly cps: number[] = [];
   private readonly map = new Map<number, number>();
   private partners = new Int32Array(CP_BASE * 2).fill(PARTNER_UNKNOWN);
@@ -63,6 +68,7 @@ export class Ids {
   private readonly boundary = new Int32Array(3);
 
   constructor(prior: LoadedPrior | null) {
+    this.seededFrom = prior;
     for (let id = 0; id < BYTE_BASE; id++) this.cps.push(-1);
     for (let b = 0; b < 256; b++) this.cps.push(b);
     // Structure ids in the prior (negative) have fixed ids already.
