@@ -4,6 +4,7 @@ import { resolve } from '../../predictor/options';
 import { loadedPriors } from '../../predictor/prior';
 import { text as shippedText } from '../../predictor/shipped/text';
 import { Session, session } from '../../predictor/session';
+import { SymbolPredictor } from '../../predictor/symbols';
 import type {
   Bound,
   MarkerPrior,
@@ -289,6 +290,25 @@ describe('string coders', () => {
       { coder: strAt('s', opts(), 'structure'), value: Int32Array.of(1, 5, 7, 2) },
       { coder: strAt('s', opts(), 'structure'), value: Int32Array.of(1, 5, 7, 2) },
     ]);
+  });
+
+  it('replays a known value without learning, in step on both sides', () => {
+    const o = opts();
+    const implied = jest.spyOn(SymbolPredictor.prototype, 'implied');
+    const snaps: unknown[][] = [];
+    const snap = (s: Session): unknown[] => {
+      const run = s.space(o.prior).run;
+      return [run.escape, ...[run.kernel, run.hybrid, run.apm, run.pnov].map((x) => Array.from(x))];
+    };
+    trip(
+      ['abc', 'abc', 'abd', 'abc'].map((w) => ({ coder: strAt('r', o), value: cps(w) })),
+      (s, i) => {
+        if (i === 1) snaps.push(snap(s));
+        if (i === 2) expect(snap(s)).toEqual(snaps[snaps.length - 1]);
+      }
+    );
+    expect(implied).toHaveBeenCalled();
+    implied.mockRestore();
   });
 
   it('writes only the first len symbols', () => {

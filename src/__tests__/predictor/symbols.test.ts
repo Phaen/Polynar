@@ -291,19 +291,30 @@ describe('SymbolPredictor round trips', () => {
     });
   });
 
-  it('lets an implied step learn without coding', () => {
+  it('takes an implied symbol into the populations without learning', () => {
     const o = opts();
     const s = new Session();
     const pred = s.symbols('p', o, 'text');
+    const space = s.space(o.prior);
+    const run = space.run;
+    const snap = (): unknown => [
+      run.escape,
+      ...[run.kernel, run.hybrid, run.apm, run.pnov, run.vfeat, run.oscale, run.lev, run.logn].map(
+        (x) => Array.from(x)
+      ),
+    ];
+    const before = snap();
+    const t0 = pred.context().t;
     const a = s.ids.idOf(0x61);
     pred.beginValue();
     pred.implied(a);
     pred.implied(a);
     pred.endValue();
-    const space = s.space(o.prior);
     expect(space.n).toBe(2);
     expect(space.seen[a]).toBe(1);
     expect(space.distinct).toBe(1);
+    expect(pred.context().t).toBe(t0 + 2);
+    expect(snap()).toEqual(before);
   });
 });
 

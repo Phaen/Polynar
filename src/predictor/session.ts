@@ -46,7 +46,7 @@ export interface SessionOptions {
    * carries it continues from this one's end state.
    */
   readonly carry?: RunPrior;
-  /** Training: called with every symbol a predictor learns, coded or implied, in order. */
+  /** Training: called with every symbol a predictor takes in, coded or implied, in order. */
   readonly trace?: Trace;
 }
 
@@ -678,12 +678,12 @@ class StringCoder implements TextCoder {
     }
   }
 
-  /** The symbols of a value both sides know: every step learns, nothing is coded. */
+  /** The symbols of a value both sides know: taken into the populations, nothing coded or learned. */
   private replay(syms: ArrayLike<number>, ends: Ends): void {
     const pred = this.pred;
     let units = 0;
     for (let k = 0; k < syms.length; k++) {
-      pred.implied(this.idOf(syms[k]), endable(ends, units));
+      pred.implied(this.idOf(syms[k]));
       units += this.unitsOf(syms[k]);
     }
     if (!ends.fixed && units !== ends.max) {

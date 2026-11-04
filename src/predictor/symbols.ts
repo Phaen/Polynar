@@ -185,7 +185,7 @@ export interface MessageCore {
   valueId: number;
   valuePop: Population | null;
   valuesStarted: boolean;
-  /** Training: told every symbol a predictor learns (session.ts `SessionOptions.trace`). */
+  /** Training: told every symbol a predictor takes in (session.ts `SessionOptions.trace`). */
   readonly trace: ((id: number, alphabet: AlphabetKind) => void) | null;
   /**
    * The message's step counter: every predictor's step takes the next number, so a stamp equal
@@ -273,7 +273,7 @@ function lognL(n: number): number {
 
 /**
  * The symbol predictor of one path and alphabet. A step is `distribution()`, then `write` or
- * `read` (or neither, for an implied symbol), then `learn(a)`. Code-point ids must be referenced
+ * `read`, then `learn(a)`; a symbol both sides know is `implied(a)` alone. Code-point ids must be referenced
  * in coding order on both sides: an id is taken with `ids.idOf` only after the step's table is
  * built, as the string coders do.
  */
@@ -1197,7 +1197,6 @@ export class SymbolPredictor {
   /** Learns from coded symbol `a` and moves every population past it (spec §4.4 step 8). */
   learn(a: number): void {
     const core = this.core;
-    if (core.trace !== null) core.trace(a, this.alphabet);
     const f = core.features;
     const ids = core.ids;
     const log = this.log;
@@ -1281,8 +1280,31 @@ export class SymbolPredictor {
     learn(run, log, Sa, this.ZL + this.escL, a, this.deltas, path.n);
     if (this.top >= 0) apmUpdate(run, this.apmO, this.apmFr, a === this.top ? P_ONE : 0);
 
-    // Bookkeeping.
-    if (!seen) {
+    if (f.levelEvidence) {
+      const tab = node.tab;
+      for (let k = 1; k <= node.m; k++)
+        path.sn[k] = decayedMean(path.sn[k], shadowCost(tab, node.E[k], a));
+      const r = node.offRing.get(this.off);
+      if (r !== undefined) {
+        let c = 0;
+        for (let i = 0; i < r.len; i++) if (node.seq[r.at(i)] === a) c++;
+        path.so = decayedMean(path.so, shadowCostOf(tab, a, c, r.len));
+      }
+    }
+    this.advance(a);
+  }
+
+  /**
+   * Moves the state both sides keep in step past `a`: the seen set, every population, the value
+   * features and the counters. Nothing here reads the step's votes.
+   */
+  private advance(a: number): void {
+    const core = this.core;
+    if (core.trace !== null) core.trace(a, this.alphabet);
+    const ids = core.ids;
+    const path = this.path;
+    const node = path.pop;
+    if (!(a < core.seen.length && core.seen[a] === 1)) {
       if (a >= core.seen.length) {
         const s = new Uint8Array(Math.max(a + 1, core.seen.length * 2));
         s.set(core.seen);
@@ -1292,17 +1314,7 @@ export class SymbolPredictor {
       core.distinct++;
     }
     const off = this.off;
-    if (f.levelEvidence) {
-      const tab = node.tab;
-      for (let k = 1; k <= node.m; k++)
-        path.sn[k] = decayedMean(path.sn[k], shadowCost(tab, node.E[k], a));
-      const r = node.offRing.get(off);
-      if (r !== undefined) {
-        let c = 0;
-        for (let i = 0; i < r.len; i++) if (node.seq[r.at(i)] === a) c++;
-        path.so = decayedMean(path.so, shadowCostOf(tab, a, c, r.len));
-      }
-    }
+    const af = ids.foldDigit(a);
     path.sinceNew = node.tab.has(0, a) ? path.sinceNew + 1 : 0;
     if (this.msg !== null) this.msg.update(a, off);
     node.update(a, off);
@@ -1311,7 +1323,7 @@ export class SymbolPredictor {
     if (this.valuePop !== null && this.valuePop !== node) this.valuePop.update(a, off);
     core.b = ids.isBoundary(a) ? 0 : core.b + 1;
     core.n++;
-    if (f.valueFeatures) valueAdvance(path.vfeat, a, off);
+    if (core.features.valueFeatures) valueAdvance(path.vfeat, a, off);
     path.n++;
     if (this.inValue) this.off++;
   }
@@ -1338,9 +1350,11 @@ export class SymbolPredictor {
     return a;
   }
 
-  /** One implied step: both sides know `a`; the table is built and learned from, nothing is coded. */
-  implied(a: number, allowEnd = true): void {
-    this.distribution(allowEnd);
-    this.learn(a);
+  /**
+   * A symbol of a value both sides know: taken into the populations, nothing coded or learned.
+   * The value step already paid for it, so it is no evidence for the step's weights.
+   */
+  implied(a: number): void {
+    this.advance(a);
   }
 }
