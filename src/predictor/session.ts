@@ -163,6 +163,9 @@ export class Space implements MessageCore {
   valueId = -1;
   valuePop: Population | null = null;
   valuesStarted = false;
+  stepNo = 0;
+  memo = new Float64Array(0);
+  memoStamp = new Int32Array(0);
   readonly ids: Ids;
   readonly run: RunPrior;
   private readonly builtin: Frozen;

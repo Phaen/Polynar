@@ -346,6 +346,23 @@ describe('SymbolPredictor tables', () => {
     pred.learn(END);
   });
 
+  it("shares one memo and step counter between a message's predictors", () => {
+    const s = new Session();
+    const o = opts();
+    const a = s.symbols('a', o, 'text');
+    const space = s.space(o.prior);
+    const memo = space.memo;
+    expect(memo.length).toBeGreaterThan(0);
+    const b = s.symbols('b', o, 'bytes');
+    expect(space.memo).toBe(memo);
+    a.distribution();
+    expect(space.stepNo).toBe(1);
+    b.distribution();
+    expect(space.stepNo).toBe(2);
+    b.learn(END);
+    a.learn(END);
+  });
+
   it('gives exact-level counts that sum to the order-0 count per population', () => {
     const [s, pred] = stepped('abracadabra abracadabra');
     pred.distribution();

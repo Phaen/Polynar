@@ -186,6 +186,18 @@ export interface MessageCore {
   valuesStarted: boolean;
   /** Training: told every symbol a predictor learns (session.ts `SessionOptions.trace`). */
   readonly trace: ((id: number, alphabet: AlphabetKind) => void) | null;
+  /**
+   * The message's step counter: every predictor's step takes the next number, so a stamp equal
+   * to a predictor's current step was written in that step.
+   */
+  stepNo: number;
+  /**
+   * The base exponents of the current step by block and feature cell, valid where `memoStamp`
+   * holds the step's number; shared by the message's predictors, each reading only what its
+   * own step wrote.
+   */
+  memo: Float64Array;
+  memoStamp: Int32Array;
 }
 
 /**
@@ -293,8 +305,6 @@ export class SymbolPredictor {
   private ringNo = 0;
 
   private Lv: Float64Array = new Float64Array(256);
-  private readonly memo: Float64Array;
-  private readonly memoStamp: Int32Array;
   private readonly levTerm: Float64Array;
   private readonly levIdx: Int32Array;
 
@@ -355,8 +365,10 @@ export class SymbolPredictor {
     }
     this.text = alphabet === 'text';
     const cells = NSRC * levels(o.order) * CELLS;
-    this.memo = new Float64Array(cells);
-    this.memoStamp = new Int32Array(cells);
+    if (core.memo.length < cells) {
+      core.memo = new Float64Array(cells);
+      core.memoStamp = new Int32Array(cells);
+    }
     this.levTerm = new Float64Array(o.order + 1);
     this.levIdx = new Int32Array(o.order + 1).fill(-1);
   }
@@ -410,8 +422,9 @@ export class SymbolPredictor {
   /** The base exponent of a block at a feature cell, memoised for the step. */
   private base(block: number, cell: number): number {
     const k = block * CELLS + cell;
-    if (this.memoStamp[k] === this.stepNo) {
-      return this.memo[k];
+    const { memo, memoStamp } = this.core;
+    if (memoStamp[k] === this.stepNo) {
+      return memo[k];
     }
     // exponent(run, block, x, delta): every feature is a small integer times ONE, so each RB
     // product is the exact integer product.
@@ -429,8 +442,8 @@ export class SymbolPredictor {
     if (d !== undefined) {
       e += d[0] + r * d[1] + fz * d[2] + depth * d[3] + offAg * d[4] + det * d[5];
     }
-    this.memo[k] = e;
-    this.memoStamp[k] = this.stepNo;
+    memo[k] = e;
+    memoStamp[k] = this.stepNo;
     return e;
   }
 
@@ -469,7 +482,8 @@ export class SymbolPredictor {
     const log = this.log;
     const count = tab.n[x];
     log.reserve(log.n + count);
-    const { pIdx, pN, memo, memoStamp } = this;
+    const { pIdx, pN } = this;
+    const { memo, memoStamp } = this.core;
     const stepNo = this.stepNo;
     const bk = blockOf(src, k, this.K);
     const memoAt = bk * CELLS;
@@ -815,7 +829,7 @@ export class SymbolPredictor {
     const ctx = msg === null ? node : msg;
     const B = this.builtin;
     if (B !== null) B.lookup(ctx.h, ctx.n);
-    this.stepNo++;
+    this.stepNo = ++core.stepNo;
     this.allowEnd = allowEnd;
     this.endSym = endSym;
     this.valuePop = value;
