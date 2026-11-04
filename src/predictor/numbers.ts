@@ -273,6 +273,14 @@ export class NumberCoder {
   private spikeAt = new Float64Array(0);
   private ncent = 0;
   private readonly cid = new Map<number, number>();
+  /** Per kernel or sibling, its centre's index in `cents`. */
+  private cix = new Int32Array(0);
+  /**
+   * Per centre index, its class table, finished for the step whose stamp `tableAt` holds: within
+   * a step a class table depends only on the centre, as `top` and the row scale are the step's.
+   */
+  private readonly tables: Distribution[] = [];
+  private tableAt = new Float64Array(0);
   /**
    * The step's kernels and siblings grouped by (weight slot, centre), with the group's log-weight
    * and size: slots as in `kmass`. `gid` maps a kernel's centre index · NR + bucket to its group.
@@ -533,6 +541,7 @@ export class NumberCoder {
       this.L = new Float64Array(n);
       this.has = new Uint8Array(n);
       this.cents = new Float64Array(n);
+      this.cix = new Int32Array(n);
       this.spikeAt = new Float64Array(n);
       this.gSlot = new Int32Array(n);
       this.gAt = new Float64Array(n);
@@ -682,6 +691,7 @@ export class NumberCoder {
         this.cents[ci] = C;
         this.spikeAt[ci] = 0;
       }
+      this.cix[i] = ci;
       const key = ci * NR + this.bucket[i];
       const g = kd === KERNEL ? gid.get(key) : undefined;
       if (g !== undefined) {
@@ -869,9 +879,22 @@ export class NumberCoder {
     return w;
   }
 
-  /** The class table of a centre: every cell inside the bounds, at the row scale. */
-  private classTable(C: number): Distribution {
-    const d = this.classes;
+  /**
+   * The class table of component `j`'s centre: every cell inside the bounds, at the row scale;
+   * built once per step and centre.
+   */
+  private classTable(j: number): Distribution {
+    const C = this.at[j];
+    const ci = this.cix[j];
+    if (ci >= this.tableAt.length) {
+      const grown = new Float64Array(larger(ci + 1, 2 * this.tableAt.length));
+      grown.set(this.tableAt);
+      this.tableAt = grown;
+    }
+    while (this.tables.length <= ci) this.tables.push(new Distribution());
+    const d = this.tables[ci];
+    if (this.tableAt[ci] === this.stamp) return d;
+    this.tableAt[ci] = this.stamp;
     d.begin(this.total, false);
     // A centre is a reference's, so the step has a top candidate.
     this.spot(C, this.top);
@@ -915,7 +938,7 @@ export class NumberCoder {
     // `classTable` and `topIn` spot `top`, so x's spot is read first.
     const cell = this.spCell;
     const sk = this.spK;
-    const t = this.classTable(C);
+    const t = this.classTable(j);
     const ci = t.indexOf(cell - P_MU);
     enc.composeWeighted(t.cum(ci), t.freq(ci), t.total);
     const tk = this.topIn(C, cell);
@@ -932,7 +955,7 @@ export class NumberCoder {
     if (kd === NOVELTY) return this.unnovelty(dec);
     if (kd === RANGE) return this.unrange(dec);
     const C = this.at[j];
-    const t = this.classTable(C);
+    const t = this.classTable(j);
     const cell = t.idAt(dec.parseMember(t.total, t)) + P_MU;
     const tk = this.topIn(C, cell);
     if (cell === P_MU) return C;
