@@ -152,6 +152,37 @@ export function exp2Fix(e: number): number {
   return q >= 24 ? m * POW2[q - 24] : m >> (24 - q);
 }
 
+/** Below this exponent even the largest count's linear mass floors to 0. */
+const E_LIN_ZERO = -24 * ONE;
+
+/**
+ * floor(c * 2^(e / ONE)) with 2^(e / ONE) read from `EXP2_TABLE` as in `exp2Fix`, for an integer
+ * count 1 <= c <= 2^24 and an integer e; 0 when the result floors to 0. The table's m is below
+ * 2^25, so c * m is below 2^49 and exact, and scaling it by the exact power 2^(q - 24) leaves the
+ * one floor as the only rounding.
+ */
+export function linMass(c: number, e: number): number {
+  // For e < -24 * ONE the scale is at most 2^-49, so c * m * 2^(q - 24) is below 1.
+  if (e < E_LIN_ZERO) {
+    return 0;
+  }
+  if (e >= E_TOP) {
+    throw new RangeError(`linMass: exponent ${Math.floor(e / ONE)} exceeds 52`);
+  }
+  // e is an integer in [-24 * ONE, 53 * ONE), inside 32 bits: `>>` floors q also for a negative
+  // e, and `>>>` reads the fraction's top bits from its two's-complement word.
+  const q = e >> RB;
+  const p = c * EXP2[(e >>> (RB - TABLE_BITS)) & 4095];
+  if (q < 24) {
+    return Math.floor(p * POW2_NEG[24 - q]);
+  }
+  const r = p * POW2[q - 24];
+  if (r >= TWO_53) {
+    throw new RangeError(`linMass: mass ${c} * 2^${Math.floor(e / ONE)} reaches 2^53`);
+  }
+  return r;
+}
+
 /** x / 2^k rounded to nearest, ties upward; 1 <= k <= 52. */
 export function round(x: number, k: number): number {
   return shr(x + POW2[k - 1], k);

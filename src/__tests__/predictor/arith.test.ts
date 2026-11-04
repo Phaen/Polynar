@@ -18,6 +18,7 @@ import {
   clampi,
   div,
   exp2Fix,
+  linMass,
   log2Fix,
   mulDiv,
   mulShr,
@@ -406,6 +407,68 @@ describe('exp2Fix', () => {
       const y = exp2Fix(e);
       expect(y).toBeGreaterThanOrEqual(previous);
       previous = y;
+    }
+  });
+});
+
+describe('linMass', () => {
+  /** floor(c * EXP2_TABLE[frac] * 2^(q - 24)) in BigInt, or null when it reaches 2^53. */
+  const exact = (c: number, e: number): bigint | null => {
+    const q = Math.floor(e / ONE);
+    const m = BigInt(EXP2_TABLE[Math.floor((e - q * ONE) / 4096)]);
+    const p = BigInt(c) * m;
+    const r = q >= 24 ? p << BigInt(q - 24) : p >> BigInt(24 - q);
+    return r >= 1n << 53n ? null : r;
+  };
+  const check = (c: number, e: number): void => {
+    const want = exact(c, e);
+    if (want === null) {
+      expect(() => linMass(c, e)).toThrow(RangeError);
+    } else if (BigInt(linMass(c, e)) !== want) {
+      expect([c, e, linMass(c, e)]).toEqual([c, e, Number(want)]);
+    }
+  };
+
+  it('matches BigInt on random counts and exponents', () => {
+    const rand = mulberry32(11);
+    for (let i = 0; i < 200000; i++) {
+      const c = 1 + Number(randMagnitude(rand, 24));
+      check(c, Math.floor(-30 * ONE + rand() * 83 * ONE));
+    }
+    for (let i = 0; i < 20000; i++) {
+      const c = 1 + Number(randMagnitude(rand, 24));
+      check(c, -Math.floor(rand() * 2 ** 31));
+    }
+  });
+
+  it('holds at the edges of the count and the exponent', () => {
+    for (const c of [1, 2, 3, 4095, 4096, 2 ** 23 + 1, 2 ** 24 - 1, 2 ** 24]) {
+      for (let q = -26; q <= 52; q++) {
+        for (const d of [0, 1, 4095, 4096, ONE / 2, ONE - 4096, ONE - 1]) {
+          check(c, q * ONE + d);
+        }
+      }
+      for (const e of [-1, -4096, -4097, -24 * ONE - 1, -24 * ONE, 0, 1, 53 * ONE - 1]) {
+        check(c, e);
+      }
+    }
+    expect(linMass(2 ** 24, -24 * ONE)).toBe(1);
+    expect(linMass(2 ** 24, -24 * ONE - 1)).toBe(0);
+    expect(linMass(1, -1)).toBe(0);
+    expect(linMass(2 ** 24, -1)).toBe(Math.floor(EXP2_TABLE[4095] / 2));
+    expect(linMass(3, 0)).toBe(3);
+    expect(linMass(1, 52 * ONE)).toBe(2 ** 52);
+    expect(() => linMass(2, 52 * ONE)).toThrow('reaches 2^53');
+    expect(() => linMass(1, 53 * ONE)).toThrow('exponent 53 exceeds 52');
+  });
+
+  it('is exp2Fix for a count of 1', () => {
+    const rand = mulberry32(12);
+    for (let i = 0; i < 100000; i++) {
+      const e = Math.floor(rand() * 53 * ONE);
+      if (linMass(1, e) !== exp2Fix(e)) {
+        expect([e, linMass(1, e)]).toEqual([e, exp2Fix(e)]);
+      }
     }
   });
 });
