@@ -84,7 +84,10 @@ function rnd(seed: number): () => number {
   };
 }
 
-/** Floating re-implementation of the value step from the prototype's formulas (base 2, D4, D6). */
+/**
+ * Floating re-implementation of the value step from the prototype's formulas (base 2, D4, D6, the
+ * follower of the previous value's latest earlier occurrence voting with full features).
+ */
 class FloatStep {
   th: number[];
   dl: number[] | null;
@@ -128,7 +131,13 @@ class FloatStep {
     const wNew = 2 ** (th(cNew) + th(nT) + th(nD));
     const parts: { v: number; w: number; cells: number[] }[] = [];
     const j0 = Math.max(0, n - this.history);
-    for (let j = j0; j < n; j++) {
+    const full: number[] = [];
+    for (let j = j0; j < n; j++) full.push(j);
+    let q = n - 2;
+    while (q >= 0 && this.occ[q].v !== this.occ[n - 1].v) q--;
+    const follower = q >= 0 && q + 1 < j0 ? q + 1 : -1;
+    if (follower >= 0) full.push(follower);
+    for (const j of full) {
       const o = this.occ[j];
       let L = 0;
       while (L < 64 && o.pos - 1 - L >= 1 && seq[t - 1 - L] === seq[o.pos - 1 - L]) L++;
@@ -160,7 +169,7 @@ class FloatStep {
       parts.push({ v: o.v, w: 2 ** e / n, cells });
     }
     const older = new Array<number>(d).fill(0);
-    for (let j = 0; j < j0; j++) older[this.occ[j].v]++;
+    for (let j = 0; j < j0; j++) if (j !== follower) older[this.occ[j].v]++;
     older.forEach((k, v) => {
       if (k > 0) {
         const e = th(VS_L) + th(VS_REC + 7) + th(VS_A) + base;
@@ -538,5 +547,70 @@ describe('record agreement', () => {
     expect(s.current).toBe(0);
     expect(s.pair(a, 0)).toEqual([0, 0]);
     s.leaveRecord();
+  });
+});
+
+describe('the follower of the previous value', () => {
+  const seq = new Int32Array(64);
+
+  /** A value step and its float twin over `keys`; the cost in bits of coding `next` after them. */
+  function after(history: number, keys: string[], next: string): { vs: ValueStep; cost: number } {
+    const vs = new ValueStep(history, 2 ** 24);
+    const fl = new FloatStep(history, false, initialVstep(), false);
+    const vstep = initialVstep();
+    keys.forEach((k, i) => {
+      vs.record(k, 2 * i + 1, -1);
+      fl.record(k, 2 * i + 1, -1);
+    });
+    const t = 2 * keys.length + 1;
+    const d = vs.distribution(seq, t, -1, vstep, null)!;
+    const id = vs.idOf(next);
+    const cost = -Math.log2(d.freq(d.indexOf(id)) / d.total);
+    expect(Math.abs(cost + Math.log2(fl.step(seq, t, -1, next, 0)!))).toBeLessThan(2 ** -10);
+    return { vs, cost };
+  }
+
+  it('is absent on a path with no value or one value', () => {
+    const vs = new ValueStep(1, 65536);
+    expect(vs.follower()).toBe(-1);
+    vs.record('a', 1, -1);
+    expect(vs.follower()).toBe(-1);
+    expect(after(1, ['a'], 'a').vs.follower()).toBe(-1);
+  });
+
+  it('is absent when the previous value has no earlier occurrence', () => {
+    expect(after(1, ['a', 'b', 'c'], 'b').vs.follower()).toBe(-1);
+    expect(after(1, ['a', 'b', 'a', 'c'], 'b').vs.follower()).toBe(-1);
+  });
+
+  it('adds nothing when it lies inside the window, where it already votes', () => {
+    const { vs, cost } = after(8, ['a', 'b', 'a'], 'b');
+    expect(vs.follower()).toBe(-1);
+    // The same past with every occurrence in a wider window prices it the same.
+    expect(after(64, ['a', 'b', 'a'], 'b').cost).toBe(cost);
+  });
+
+  it('votes with full features when it lies before the window', () => {
+    const { vs } = after(1, ['a', 'b', 'c', 'a'], 'b');
+    expect(vs.follower()).toBe(1);
+    // Its value keeps no older mass of its own when that was its one occurrence.
+    after(1, ['a', 'b', 'c', 'a'], 'c');
+    // A value with a second older occurrence keeps the other one there.
+    expect(after(1, ['b', 'a', 'b', 'c', 'a'], 'b').vs.follower()).toBe(2);
+  });
+
+  it('makes the value that followed last time cheaper', () => {
+    const followed = after(1, ['a', 'b', 'c', 'a'], 'b').cost;
+    const not = after(1, ['a', 'c', 'b', 'a'], 'b').cost;
+    expect(followed).toBeLessThan(not);
+  });
+
+  it('applies to declared members as to values', () => {
+    const ms = new MemberStep(3, undefined, 1, 65536);
+    [0, 1, 2, 0].forEach((v, i) => ms.record(v, 2 * i + 1, -1));
+    expect(ms.follower()).toBe(1);
+    const vstep = initialVstep();
+    const d = ms.distribution(seq, 9, -1, vstep, null);
+    expect(d.freq(d.indexOf(1))).toBeGreaterThan(d.freq(d.indexOf(2)));
   });
 });

@@ -121,6 +121,12 @@ function grown(a: Float64Array, cap: number): Float64Array {
   return b;
 }
 
+function grownInt(a: Int32Array, cap: number, fill: number): Int32Array {
+  const b = new Int32Array(cap).fill(fill, a.length);
+  b.set(a);
+  return b;
+}
+
 /**
  * The occurrences of a path's values and the cells they vote through: the part the value step
  * and the restricted member step share. Ids are small integers; `votes` gives each id its mass at
@@ -140,18 +146,22 @@ export abstract class Occurrences {
   protected count: Float64Array;
   /** Occurrences per id that left the history window (and, for members, the declared weights). */
   protected older: Float64Array;
-  /** Ring of the last history + 8 occurrences: value id, message position, list index. */
-  private readonly cap: number;
-  private readonly occV: Int32Array;
-  private readonly occPos: Float64Array;
-  private readonly occList: Int32Array;
+  /** Every occurrence of the path: value id, message position, list index. */
+  private occV: Int32Array;
+  private occPos: Float64Array;
+  private occList: Int32Array;
   /** Per occurrence its record id (−1 outside every record) and its index in that record. */
-  private readonly occRec: Int32Array;
-  private readonly occRi: Int32Array;
+  private occRec: Int32Array;
+  private occRi: Int32Array;
+  /** Per id its latest occurrence and the one before it, −1 for none. */
+  private last: Int32Array;
+  private before: Int32Array;
 
   /** The pending step: per full occurrence its mass and cells, per id its total and older mass. */
   protected pending = false;
   private k = 0;
+  /** Per full entry of the pending step, the occurrence it is. */
+  private readonly occAt: Int32Array;
   private readonly wOcc: Float64Array;
   private readonly cL: Int32Array;
   private readonly cR: Int32Array;
@@ -182,18 +192,37 @@ export abstract class Occurrences {
     this.older = new Float64Array(size);
     this.V = new Float64Array(size);
     this.wOld = new Float64Array(size);
-    this.cap = history + 8;
-    this.occV = new Int32Array(this.cap);
-    this.occPos = new Float64Array(this.cap);
-    this.occList = new Int32Array(this.cap);
-    this.occRec = new Int32Array(this.cap);
-    this.occRi = new Int32Array(this.cap);
-    this.wOcc = new Float64Array(history);
-    this.cAr = new Int32Array(history);
-    this.cL = new Int32Array(history);
-    this.cR = new Int32Array(history);
-    this.cS = new Int32Array(history);
-    this.cN = new Int32Array(history);
+    const cap = history + 8;
+    this.occV = new Int32Array(cap);
+    this.occPos = new Float64Array(cap);
+    this.occList = new Int32Array(cap);
+    this.occRec = new Int32Array(cap);
+    this.occRi = new Int32Array(cap);
+    this.last = new Int32Array(size).fill(-1);
+    this.before = new Int32Array(size).fill(-1);
+    // The window's entries and the follower's.
+    const k = history + 1;
+    this.occAt = new Int32Array(k);
+    this.wOcc = new Float64Array(k);
+    this.cAr = new Int32Array(k);
+    this.cL = new Int32Array(k);
+    this.cR = new Int32Array(k);
+    this.cS = new Int32Array(k);
+    this.cN = new Int32Array(k);
+  }
+
+  /**
+   * The occurrence after the latest earlier occurrence of the path's previous value, where it lies
+   * before the history window, else −1. It is the occurrence the sequence term points at past the
+   * window (D6): the next step gives it the full features, its value's older mass leaving it out.
+   */
+  follower(): number {
+    const n = this.n;
+    if (n === 0) {
+      return -1;
+    }
+    const q = this.before[this.occV[n - 1]];
+    return q >= 0 && q + 1 < n - this.history ? q + 1 : -1;
   }
 
   /** The information of id `v` at the path, RB bits: log2 of the occurrences over its count. */
@@ -205,6 +234,8 @@ export abstract class Occurrences {
   protected grow(size: number): void {
     this.count = grown(this.count, size);
     this.older = grown(this.older, size);
+    this.last = grownInt(this.last, size, -1);
+    this.before = grownInt(this.before, size, -1);
     this.V = new Float64Array(size);
     this.wOld = new Float64Array(size);
   }
@@ -238,23 +269,32 @@ export abstract class Occurrences {
     const cA = VS_A + vsA(0);
     const cur = records === undefined ? -1 : records.current;
     const j0 = n > this.history ? n - this.history : 0;
-    const k = n - j0;
+    let k = n - j0;
+    const occAt = this.occAt;
+    for (let i = 0; i < k; i++) {
+      occAt[i] = j0 + i;
+    }
+    const f = this.follower();
+    let follower = -1;
+    if (f >= 0) {
+      follower = this.occV[f];
+      occAt[k++] = f;
+    }
     const wOcc = this.wOcc;
     let M = eNew;
     for (let i = 0; i < k; i++) {
-      const j = j0 + i;
-      const r = j % this.cap;
-      const p = this.occPos[r];
+      const j = occAt[i];
+      const p = this.occPos[j];
       let L = 0;
       while (L < MAX_L && p - 1 - L >= 1 && seq[t - 1 - L] === seq[p - 1 - L]) {
         L++;
       }
       const cl = VS_L + vsL(L);
       const cr = VS_REC + vsRec(n - j);
-      const rec = this.occRec[r];
+      const rec = this.occRec[j];
       const ca =
         cur >= 0 && rec >= 0 && rec !== cur
-          ? VS_A + vsA((records as RecordView).agreement(rec, this.occRi[r]))
+          ? VS_A + vsA((records as RecordView).agreement(rec, this.occRi[j]))
           : cA;
       let e = th(cl) + th(cr) + th(ca) + base;
       this.cL[i] = cl;
@@ -262,15 +302,11 @@ export abstract class Occurrences {
       this.cAr[i] = ca;
       if (this.sequence) {
         let LV = 0;
-        while (
-          LV < 8 &&
-          j - 1 - LV >= 0 &&
-          this.occV[(j - 1 - LV) % this.cap] === this.occV[(n - 1 - LV) % this.cap]
-        ) {
+        while (LV < 8 && j - 1 - LV >= 0 && this.occV[j - 1 - LV] === this.occV[n - 1 - LV]) {
           LV++;
         }
         const cs = VS_SQ + vsSeq(LV);
-        const lx = this.occList[r];
+        const lx = this.occList[j];
         const cn = listIndex >= 0 && lx >= 0 ? VS_AN + (lx === listIndex ? 1 : 0) : -1;
         e += th(cs) + (cn >= 0 ? th(cn) : 0);
         this.cS[i] = cs;
@@ -285,7 +321,8 @@ export abstract class Occurrences {
     const wOld = this.wOld;
     let entries = k + 1;
     for (let v = 0; v < d; v++) {
-      const o = this.older[v];
+      // The follower votes on its own, so its value's older mass leaves it out.
+      const o = v === follower ? this.older[v] - 1 : this.older[v];
       if (o > 0) {
         const e = eOld + log2Fix(o);
         wOld[v] = e;
@@ -304,11 +341,11 @@ export abstract class Occurrences {
     for (let i = 0; i < k; i++) {
       const w = exp2Fix(wOcc[i] + off);
       wOcc[i] = w;
-      V[this.occV[(j0 + i) % this.cap]] += w;
+      V[this.occV[occAt[i]]] += w;
       Z += w;
     }
     for (let v = 0; v < d; v++) {
-      if (this.older[v] > 0) {
+      if (v === follower ? this.older[v] > 1 : this.older[v] > 0) {
         const w = exp2Fix(wOld[v] + off);
         wOld[v] = w;
         V[v] += w;
@@ -358,10 +395,9 @@ export abstract class Occurrences {
       A[cell] += wa;
     }
     let chosen = wa;
-    const j0 = this.n - this.k;
     for (let i = 0; i < this.k; i++) {
       const w = shr(this.wOcc[i], s);
-      const mine = this.occV[(j0 + i) % this.cap] === choice;
+      const mine = this.occV[this.occAt[i]] === choice;
       add(this.cL[i], w, mine);
       add(this.cR[i], w, mine);
       add(this.cAr[i], w, mine);
@@ -433,17 +469,27 @@ export abstract class Occurrences {
     if (c > this.top) {
       this.top = c;
     }
-    const r = this.n % this.cap;
+    const r = this.n;
+    if (r === this.occV.length) {
+      const cap = 2 * r;
+      this.occV = grownInt(this.occV, cap, 0);
+      this.occPos = grown(this.occPos, cap);
+      this.occList = grownInt(this.occList, cap, 0);
+      this.occRec = grownInt(this.occRec, cap, 0);
+      this.occRi = grownInt(this.occRi, cap, 0);
+    }
     this.occV[r] = id;
     this.occPos[r] = msgPos;
     this.occList[r] = listIndex;
     const [rec, ri] = records === undefined ? NO_PAIR : records.pair(this, id);
     this.occRec[r] = rec;
     this.occRi[r] = ri;
+    this.before[id] = this.last[id];
+    this.last[id] = r;
     this.n++;
     const out = this.n - 1 - this.history;
     if (out >= 0) {
-      this.older[this.occV[out % this.cap]]++;
+      this.older[this.occV[out]]++;
     }
   }
 }
