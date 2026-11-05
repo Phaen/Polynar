@@ -10,7 +10,7 @@ const MAP_BITS = 4;
 
 /**
  * Entry indices by key, a safe integer: an open-addressing hash table with
- * linear probing, kept at most half full, which a hot lookup finds faster
+ * linear probing, kept at most three-quarters full, which a hot lookup finds faster
  * than a Map does. A slot holds 1 + an index, 0 when empty; the keys stay
  * in the caller's key column `keys` (index to key), passed to every call.
  */
@@ -45,7 +45,7 @@ export class IndexMap {
   add(keys: Float64Array, x: number): void {
     this.place(keys[x], x);
     this.size++;
-    if (2 * this.size > this.slots.length) {
+    if (4 * this.size > 3 * this.slots.length) {
       this.grow(keys);
     }
   }

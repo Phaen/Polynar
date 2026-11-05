@@ -24,6 +24,17 @@ describe('IndexMap', () => {
     expect(map.get(keys, 2 ** 32 + 1)).toBe(-1);
   });
 
+  it('doubles its slots past three-quarters full', () => {
+    const keys = Float64Array.from({ length: 13 }, (_, i) => i * 1000003);
+    const map = new IndexMap();
+    const slots = (): number => (map as unknown as { slots: Int32Array }).slots.length;
+    for (let x = 0; x < 12; x++) map.add(keys, x);
+    expect(slots()).toBe(16);
+    map.add(keys, 12);
+    expect(slots()).toBe(32);
+    keys.forEach((key, x) => expect(map.get(keys, key)).toBe(x));
+  });
+
   it.each([1, 2, 3])('matches a Map through growth (seed %p)', (seed) => {
     const rand = mulberry32(seed);
     // Keys from a small pool, half of them far apart in their high bits, so
