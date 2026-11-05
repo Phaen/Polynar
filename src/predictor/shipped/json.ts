@@ -24,7 +24,6 @@ export const json: Prior = {
       lev: 2420441,
       apm: 1311,
       kernel: 2420441,
-      oscale: 2420441,
       pnov: 2420441,
       vstep: 2420441,
       number: 2420441,
@@ -40,7 +39,6 @@ export const json: Prior = {
       vfeat: 145226438,
       lev: 121022032,
       logn: 12102203,
-      oscale: [-242044063, 121022032],
       vstep: 290452876,
       number: 968176253,
       hit: 242044063,
@@ -146,11 +144,6 @@ export const json: Prior = {
       scale: 473104,
       offset: -42253973,
       data: [-128, 105, 97, 127, 123],
-    },
-    oscale: {
-      scale: 210685,
-      offset: -16379668,
-      data: [33, -16, -128, 55, 127, 88],
     },
     lev: {
       scale: 90560,

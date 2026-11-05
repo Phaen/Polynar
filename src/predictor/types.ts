@@ -57,7 +57,6 @@ export interface Prior {
     readonly apm: PriorTable; // 3 * (order + 1) * 24 logits
     readonly pnov: PriorTable; // 32
     readonly vfeat: PriorTable; // 5
-    readonly oscale: PriorTable; // 6
     readonly lev: PriorTable; // 5
     readonly logn: PriorTable; // 8 * (order + 1) + 1
     readonly vstep: PriorTable; // 76
@@ -87,7 +86,6 @@ export interface PriorConstants {
     readonly lev: number;
     readonly apm: number; // PB-bit rate of the confidence maps (0.02 -> 1311)
     readonly kernel: number;
-    readonly oscale: number;
     readonly pnov: number;
     readonly vstep: number;
     readonly number: number;
@@ -100,7 +98,6 @@ export interface PriorConstants {
     readonly vfeat: number;
     readonly lev: number;
     readonly logn: number;
-    readonly oscale: readonly [number, number];
     readonly vstep: number;
     readonly number: number;
     readonly hit: number;
@@ -120,7 +117,6 @@ export interface LoadedPrior {
   readonly apm: Float64Array; // PB-bit probabilities, 3 * (order + 1) * APM_B
   readonly pnov: Float64Array;
   readonly vfeat: Float64Array;
-  readonly oscale: Float64Array;
   readonly lev: Float64Array;
   readonly logn: Float64Array;
   readonly vstep: Float64Array;
@@ -143,7 +139,6 @@ export interface RunPrior {
   readonly apm: Float64Array;
   readonly pnov: Float64Array;
   readonly vfeat: Float64Array;
-  readonly oscale: Float64Array;
   readonly lev: Float64Array;
   readonly logn: Float64Array;
   readonly vstep: Float64Array;

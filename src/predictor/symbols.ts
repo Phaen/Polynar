@@ -1,7 +1,7 @@
 /**
  * The symbol predictor (spec §4.4): one per path and alphabet in a session. A step resolves every
- * voting population, writes each vote to the step's log with its exact-level count and its two
- * exponents (pass A), turns the log-masses into masses at one block scale (pass B), smears them
+ * voting population, writes each vote to the step's log with its exact-level count and its
+ * exponent (pass A), turns the log-masses into masses at one block scale (pass B), smears them
  * through the kernel links into the entries of the coded distribution, quantises it and maps the
  * top entry's share through the confidence map (`distribution`). `write` / `read` code the entry
  * and the escape body; `learn` then updates the run prior, the path's deltas and every population.
@@ -9,13 +9,8 @@
  * Populations vote in the prototype's order: message (source 1), path (0), built-in (2), the
  * digit-folded message (5) and path (6), the current value (3). Sticky votes (source 7) follow the
  * population they come from: the path's same-offset ring and the message's recently broken
- * matches. Learning reads the masses before the kernel, the outside multiplier and the confidence
- * map, as the prototype did; the kernel links, the outside multipliers and the map learn from the
- * coded side's own quantities.
- *
- * Learning masses are scaled by their own largest log-mass, not the coded side's, so that a vote
- * the outside multiplier pushed down stays below 2^SB on the learning side too; every learning
- * quantity is a ratio within one scale.
+ * matches. Learning reads the masses before the kernel and the confidence map, as the prototype
+ * did; the kernel links and the map learn from the coded side's own quantities.
  */
 
 import {
@@ -104,8 +99,6 @@ export interface Features {
   levelEvidence: boolean;
   /** The path's novelty history scales the escape. */
   pathNovelty: boolean;
-  /** Votes from outside the path take the learned outside multiplier. */
-  outsideScale: boolean;
   /** The path's same-offset ring votes. */
   offsetRing: boolean;
   /** The path learns deltas over the shared weights. */
@@ -125,7 +118,6 @@ export function defaultFeatures(): Features {
     valueFeatures: true,
     levelEvidence: true,
     pathNovelty: true,
-    outsideScale: true,
     offsetRing: true,
     deltas: true,
     valueStep: true,
@@ -291,7 +283,6 @@ export class SymbolPredictor {
 
   // Per-symbol scratch, indexed by id.
   private V: Float64Array = new Float64Array(0);
-  private VS: Float64Array = new Float64Array(0);
   private vStamp: Int32Array = new Int32Array(0);
   private pIdx: Int32Array = new Int32Array(0);
   private pN: Int32Array = new Int32Array(0);
@@ -321,10 +312,6 @@ export class SymbolPredictor {
   private valuePop: Population | null = null;
   private deltas: PathDeltas | null = null;
   private G = 0;
-  private mat = 0;
-  /** The outside multiplier's logs this step for a symbol known to the path and for one not. */
-  private oscKnown = 0;
-  private oscUnknown = 0;
   private Lesc = 0;
   private pnovIdx = -1;
   private escC = 0;
@@ -343,20 +330,8 @@ export class SymbolPredictor {
   private readonly digitShare = new Float64Array(10);
   private endShare = 0;
   private nlShare = 0;
-  private readonly oscDigit = new Float64Array(10);
-  private oscEnd = 0;
-  private oscNl = 0;
-  private oscDigitMax = 0;
-  private oscNlMax = 0;
-  /** Pass A's upper bound on the step's largest vote log-mass, either side. */
+  /** Pass A's upper bound on the step's largest vote log-mass. */
   private Mv = -Infinity;
-  /**
-   * What the code side of a folded message vote for a digit or newline can add over its learning
-   * side: the outside multiplier of the split it takes.
-   */
-  private foldX = 0;
-  /** 1 for each source whose votes take the outside multiplier this step. */
-  private readonly osc8 = new Uint8Array(NSRC);
 
   constructor(
     private readonly core: MessageCore,
@@ -424,7 +399,6 @@ export class SymbolPredictor {
       size *= 2;
     }
     this.V = grownF(this.V, size);
-    this.VS = grownF(this.VS, size);
     this.vStamp = grownI(this.vStamp, size);
     this.pIdx = grownI(this.pIdx, size);
     this.pN = grownI(this.pN, size);
@@ -462,15 +436,6 @@ export class SymbolPredictor {
     return e;
   }
 
-  /** The outside multiplier's log for symbol `s`: known to the path or not, by path maturity. */
-  private osc(s: number): number {
-    return this.path.pop.tab.has(0, s) ? this.oscKnown : this.oscUnknown;
-  }
-
-  private oscaled(src: number): boolean {
-    return this.osc8[src] === 1;
-  }
-
   /**
    * The votes of the context entry `x` of `tab` at level `k`, written straight into the log. At
    * level 0 a follower votes with its count; above, with its count clamped to its vote one level
@@ -485,7 +450,6 @@ export class SymbolPredictor {
     k: number,
     cellK: number,
     extra: number,
-    osc: boolean,
     levI: number,
     li: number,
     ll: number,
@@ -502,9 +466,6 @@ export class SymbolPredictor {
     const stepNo = this.stepNo;
     const bk = blockOf(src, k, this.K);
     const memoAt = bk * CELLS;
-    const known = this.path.pop.tab.slot;
-    const oscKnown = this.oscKnown;
-    const oscUnknown = this.oscUnknown;
     const off = this.off;
     const d = tab.data(x);
     const b = tab.base[x];
@@ -513,13 +474,11 @@ export class SymbolPredictor {
     const lSym = log.sym;
     const lCount = log.count;
     const lLearn = log.eLearn;
-    const lCode = log.eCode;
     const lShare = log.share16;
     const lMassL = log.massLearn;
     let i = log.n;
     let maxN = 0;
     let maxL = -Infinity;
-    let maxC = -Infinity;
     for (let j = 0; j < count; j++) {
       const o = b + j * STRIDE;
       const s = d[o];
@@ -538,13 +497,10 @@ export class SymbolPredictor {
       const eL = (memoStamp[mk] === stepNo ? memo[mk] : this.base(bk, cell)) + extra;
       lCell[i] = cell;
       lSym[i] = s;
-      const eC = osc ? eL + (s < known.length && known[s] > 0 ? oscKnown : oscUnknown) : eL;
       lCount[i] = n;
       lLearn[i] = eL;
-      lCode[i] = eC;
       if (n > maxN) maxN = n;
       if (eL > maxL) maxL = eL;
-      if (eC > maxC) maxC = eC;
       lShare[i] = P_ONE;
       lMassL[i] = 0;
       pIdx[s] = i;
@@ -556,7 +512,7 @@ export class SymbolPredictor {
     if (maxN >= 1) {
       // Counts only fall after they are written, so this bounds every vote of the segment.
       const lc = maxN < LOG2_SMALL.length ? LOG2_SMALL[maxN] : log2Fix(maxN);
-      this.noteM(src, lc + maxL, lc + maxC);
+      this.noteM(lc + maxL);
     }
   }
 
@@ -575,14 +531,13 @@ export class SymbolPredictor {
     const log = this.log;
     const frozen = pop === null;
     const isNode = src === SRC.node;
-    const osc = this.oscaled(src);
     const t = frozen ? 0 : pop.t;
     const b = this.core.b;
     const off = this.off;
     const { pIdx } = this;
     const n0 = tab.n[E[0]];
     const cell0 = cellOf(0, frozen, 0, 0, dist(n0));
-    this.levelVotes(tab, E[0], src, 0, cell0, 0, osc, -1, -1, 0, false, t, frozen, false);
+    this.levelVotes(tab, E[0], src, 0, cell0, 0, -1, -1, 0, false, t, frozen, false);
     const depthOn = f.depth;
     const offOn = f.offsetAgreement && !frozen;
     const G = isNode ? this.G : 0;
@@ -596,7 +551,7 @@ export class SymbolPredictor {
         G + (isNode ? this.levTerm[k] : 0) + (frozen ? 0 : lognTerm(this.run.logn[li], total));
       const levI = isNode ? this.levIdx[k] : -1;
       const cellK = cellOf(0, frozen, depth, 0, dist(tab.n[x]));
-      this.levelVotes(tab, x, src, k, cellK, extra, osc, levI, li, ll, isNode, t, frozen, offOn);
+      this.levelVotes(tab, x, src, k, cellK, extra, levI, li, ll, isNode, t, frozen, offOn);
     }
     if (frozen || m !== K || pop.nc === 0) {
       return;
@@ -624,9 +579,8 @@ export class SymbolPredictor {
       const block = blockOf(src, lb, K);
       const cell = cellOf(recOf(t - p), false, depth, offAg, detK);
       const eL = this.base(block, cell) + extraK;
-      const eC = osc ? eL + this.osc(s) : eL;
-      this.noteM(src, eL, eC);
-      log.push(block, cell, s, 1, eL, eC, P_ONE, src, lb, levK, liK, llK, isNode);
+      this.noteM(eL);
+      log.push(block, cell, s, 1, eL, P_ONE, src, lb, levK, liK, llK, isNode);
     }
   }
 
@@ -671,8 +625,8 @@ export class SymbolPredictor {
       const deep = lb >= 1;
       const cell = cellOf(recOf(t - p), false, depth, 1, det);
       const eL = this.base(block, cell) + (deep ? this.G : 0) + lev + ln;
-      this.noteM(SRC.node, eL, eL);
-      this.log.push(block, cell, seq[p], 1, eL, eL, P_ONE, SRC.node, lb, levI, li, ll, deep);
+      this.noteM(eL);
+      this.log.push(block, cell, seq[p], 1, eL, P_ONE, SRC.node, lb, levI, li, ll, deep);
     }
   }
 
@@ -680,7 +634,6 @@ export class SymbolPredictor {
   private mruVotes(pop: Population, src: number): void {
     const K = this.K;
     const t = pop.t;
-    const osc = this.oscaled(src);
     const depthOn = this.core.features.depth;
     for (const d of pop.mru) {
       const p = t - d;
@@ -693,37 +646,26 @@ export class SymbolPredictor {
       const block = blockOf(SRC.sticky, lb, K);
       const cell = cellOf(recOf(d), false, depth, 0, 0);
       const eL = this.base(block, cell);
-      const s = pop.seq[p];
-      const eC = osc ? eL + this.osc(s) : eL;
-      this.noteM(src, eL, eC);
-      this.log.push(block, cell, s, 1, eL, eC, P_ONE, src, lb, -1, -1, 0, false);
+      this.noteM(eL);
+      this.log.push(block, cell, pop.seq[p], 1, eL, P_ONE, src, lb, -1, -1, 0, false);
     }
   }
 
-  /**
-   * Notes the log-masses of a vote, or bounds of a segment's, in pass A's bound `Mv`; a folded
-   * message vote's code side can take `foldX` over its learning side.
-   */
-  private noteM(src: number, eL: number, eC: number): void {
-    const l = src === SRC.msgF ? eL + this.foldX : eL;
-    const v = l > eC ? l : eC;
-    if (v > this.Mv) this.Mv = v;
+  /** Notes the log-mass of a vote, or a bound of a segment's, in pass A's bound `Mv`. */
+  private noteM(e: number): void {
+    if (e > this.Mv) this.Mv = e;
   }
 
-  private addV(s: number, m: number, osc: boolean): void {
+  private addV(s: number, m: number): void {
     if (this.vStamp[s] !== this.stepNo) {
       this.vStamp[s] = this.stepNo;
       this.V[s] = 0;
-      this.VS[s] = 0;
       if (this.nv === this.vList.length) {
         this.vList = grownI(this.vList, this.nv * 2);
       }
       this.vList[this.nv++] = s;
     }
     this.V[s] += m;
-    if (osc) {
-      this.VS[s] += m;
-    }
   }
 
   private vOf(s: number): number {
@@ -864,15 +806,6 @@ export class SymbolPredictor {
       }
     }
     this.deltas = f.deltas ? path.deltas : null;
-    const age = node.t - 1;
-    this.mat = age < 64 ? 0 : age < 512 ? 1 : 2;
-    this.oscUnknown = run.oscale[this.mat];
-    this.oscKnown = run.oscale[3 + this.mat];
-    const os = f.outsideScale ? 1 : 0;
-    this.osc8[SRC.msg] = os;
-    this.osc8[SRC.msgF] = os;
-    this.osc8[SRC.value] = os;
-    this.osc8[SRC.builtin] = os;
     if (f.levelEvidence) {
       for (let k = 1; k <= K; k++) {
         const bk = levBucket(path.sn[k]);
@@ -891,22 +824,9 @@ export class SymbolPredictor {
     const cN = t0.count(0, nl);
     this.endShare = div((1 + cE) * P_ONE, 2 + cE + cN);
     this.nlShare = div((1 + cN) * P_ONE, 2 + cE + cN);
-    if (f.outsideScale) {
-      let mx = -Infinity;
-      for (let d = 0; d < 10; d++) {
-        const v = this.osc(digits[d]);
-        this.oscDigit[d] = v;
-        if (v > mx) mx = v;
-      }
-      this.oscDigitMax = mx;
-      this.oscEnd = this.osc(END);
-      this.oscNl = this.osc(nl);
-      this.oscNlMax = this.oscEnd > this.oscNl ? this.oscEnd : this.oscNl;
-    }
 
     // Pass A.
     this.Mv = -Infinity;
-    this.foldX = f.outsideScale ? Math.max(0, this.oscDigitMax, this.oscNlMax) : 0;
     if (msg !== null) {
       this.sweep(SRC.msg, msg.tab, msg.E, msg.m, msg);
       this.mruVotes(msg, SRC.msg);
@@ -929,15 +849,14 @@ export class SymbolPredictor {
         (n0 <= 4 ? 0 : n0 <= 16 ? 1 : n0 <= 64 ? 2 : 3);
       Lesc += run.pnov[this.pnovIdx];
     }
-    if (f.outsideScale) Lesc += run.oscale[this.mat];
     this.Lesc = Lesc;
 
-    // One block scale for both sides, from a bound on the largest log-mass of either (spec §5.3):
-    // pass A's per-segment maxima of log2Fix(count) and of the exponents, and the escape's.
+    // One block scale for the coded and the learning side, from a bound on the largest log-mass
+    // (spec §5.3): pass A's per-segment maxima of log2Fix(count) and of the exponents, and the
+    // escape's.
     const MSGF = SRC.msgF;
     const NODEF = SRC.nodeF;
     const M = Lesc > this.Mv ? Lesc : this.Mv;
-    const outside = f.outsideScale;
 
     // Pass B. A vote's mass is floor(count * 2^((e + off) / ONE)). M takes log2Fix(count), which
     // both tables' floors keep below log2 count by less than log2(1 + 2^-12) + 2^-24, so a mass
@@ -949,8 +868,6 @@ export class SymbolPredictor {
     for (let g = 0; g < log.segs; g++) {
       const src = log.src[g];
       const folded = src === MSGF || src === NODEF;
-      const osc = src === MSGF && outside;
-      const segOsc = this.osc8[src] === 1;
       const end = log.end[g];
       for (let i = log.start[g]; i < end; i++) {
         const c = log.count[i];
@@ -962,23 +879,13 @@ export class SymbolPredictor {
         const s = log.sym[i];
         if (folded && (s === DIGIT || s === nl)) {
           if (s === DIGIT) {
-            for (let d = 0; d < 10; d++) {
-              const m = mulShr(
-                osc ? linMass(c, el + this.oscDigit[d] + off) : ml,
-                this.digitShare[d],
-                PB
-              );
-              this.addV(digits[d], m, osc);
-            }
+            for (let d = 0; d < 10; d++) this.addV(digits[d], mulShr(ml, this.digitShare[d], PB));
           } else {
-            const mE = mulShr(osc ? linMass(c, el + this.oscEnd + off) : ml, this.endShare, PB);
-            const mN = mulShr(osc ? linMass(c, el + this.oscNl + off) : ml, this.nlShare, PB);
-            this.addV(END, mE, osc);
-            this.addV(nl, mN, osc);
+            this.addV(END, mulShr(ml, this.endShare, PB));
+            this.addV(nl, mulShr(ml, this.nlShare, PB));
           }
         } else {
-          const ec = log.eCode[i];
-          this.addV(s, ec === el ? ml : linMass(c, ec + off), segOsc);
+          this.addV(s, ml);
         }
       }
     }
@@ -995,7 +902,6 @@ export class SymbolPredictor {
       for (let i = 0; i < this.nv; i++) {
         const s = this.vList[i];
         this.V[s] = shr(this.V[s], sh);
-        this.VS[s] = shr(this.VS[s], sh);
       }
       escC = Math.max(1, shr(escC, sh));
     }
@@ -1240,7 +1146,6 @@ export class SymbolPredictor {
     log.eEsc = this.Lesc;
     log.massEsc = this.escL;
     log.pnovIndex = this.pnovIdx;
-    log.oscaleEscIndex = f.outsideScale ? this.mat : -1;
 
     // The kernel side.
     const ladder = this.ladderBits(a);
@@ -1258,25 +1163,6 @@ export class SymbolPredictor {
     }
     log.kernelPa = Pa;
     log.kernelZ = this.Zp;
-    if (f.outsideScale) {
-      for (let i = 0; i < this.nv; i++) {
-        const t = this.vList[i];
-        const vs = this.VS[t];
-        if (vs === 0) continue;
-        const cell = (node.tab.has(0, t) ? 3 : 0) + this.mat;
-        let row = vs;
-        if (this.text) {
-          const cls = this.kCls[t];
-          if (this.kPart[t] >= 0) row += mulShr(vs, this.lc, 24);
-          if (cls === 1 || cls === 3) row += 2 * mulShr(vs, this.lb, 24);
-          if (cls >= 2) row += 9 * mulShr(vs, this.ld, 24);
-        }
-        log.oscaleT[cell] += row;
-        if (t === a) log.oscaleA[cell] += vs;
-      }
-      log.oscaleT[this.mat] += this.escC;
-      if (novel) log.oscaleA[this.mat] += shr(this.escC, ladder);
-    }
     learn(run, log, Sa, this.ZL + this.escL, a, this.deltas, path.n);
     if (this.top >= 0) apmUpdate(run, this.apmO, this.apmFr, a === this.top ? P_ONE : 0);
 

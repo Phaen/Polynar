@@ -34,7 +34,6 @@ function small(order = 1): any {
       apm: zeros(3 * (order + 1) * APM_B),
       pnov: zeros(32),
       vfeat: zeros(5),
-      oscale: zeros(6),
       lev: zeros(5),
       logn: zeros(NSRC * (order + 1) + 1),
       vstep: zeros(76),
@@ -176,7 +175,6 @@ describe('loadPrior', () => {
     rejects((p) => (p.constants.rates.vfeat = [1, 2]), 'constants.rates.vfeat');
     rejects((p) => (p.constants.rates.vfeat = 'abcde'), 'constants.rates.vfeat');
     rejects((p) => (p.constants.rates.vfeat = [1, 2, 3, 4, 0.5]), 'constants.rates.vfeat');
-    rejects((p) => (p.constants.clamps.oscale = [1]), 'constants.clamps.oscale');
     rejects((p) => (p.constants.n0 = 0), 'constants.n0');
     rejects((p) => (p.constants.ladder = [2, 0, 1]), 'constants.ladder');
   });

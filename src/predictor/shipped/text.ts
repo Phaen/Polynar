@@ -24,7 +24,6 @@ export const text: Prior = {
       lev: 726132,
       apm: 1311,
       kernel: 726132,
-      oscale: 726132,
       pnov: 726132,
       vstep: 726132,
       number: 2420441,
@@ -40,7 +39,6 @@ export const text: Prior = {
       vfeat: 145226438,
       lev: 121022032,
       logn: 12102203,
-      oscale: [-242044063, 121022032],
       vstep: 290452876,
       number: 968176253,
       hit: 242044063,
@@ -141,11 +139,6 @@ export const text: Prior = {
       scale: 1,
       offset: 128,
       data: [-128, -128, -128, -128, -128],
-    },
-    oscale: {
-      scale: 224386,
-      offset: -36698039,
-      data: [-120, 54, 83, -128, 102, 127],
     },
     lev: {
       scale: 228707,

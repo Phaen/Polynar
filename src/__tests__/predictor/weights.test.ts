@@ -32,7 +32,6 @@ function constants(): PriorConstants {
       lev: ETA,
       apm: 1311,
       kernel: ETA,
-      oscale: ETA,
       pnov: ETA,
       vstep: ETA,
       number: ETA,
@@ -45,7 +44,6 @@ function constants(): PriorConstants {
       vfeat: bits(6 * LOG2E),
       lev: bits(5 * LOG2E),
       logn: bits(0.5 * LOG2E),
-      oscale: [bits(-10 * LOG2E), bits(5 * LOG2E)],
       vstep: bits(12 * LOG2E),
       number: bits(40 * LOG2E),
       hit: bits(10 * LOG2E),
@@ -67,7 +65,6 @@ function prior(): LoadedPrior {
     apm: fill(3 * (ORDER + 1) * 24, 32768),
     pnov: fill(32, 0),
     vfeat: fill(5, 0),
-    oscale: fill(6, 0),
     lev: fill(5, 0),
     logn: fill(8 * (ORDER + 1) + 1, 0),
     vstep: fill(76, 0),
@@ -119,17 +116,7 @@ describe('newRunPrior', () => {
     const r = newRunPrior(p);
     expect(r.loaded).toBe(p);
     expect(r.escape).toBe(p.escape);
-    for (const k of [
-      'kernel',
-      'hybrid',
-      'apm',
-      'pnov',
-      'vfeat',
-      'oscale',
-      'lev',
-      'logn',
-      'vstep',
-    ] as const) {
+    for (const k of ['kernel', 'hybrid', 'apm', 'pnov', 'vfeat', 'lev', 'logn', 'vstep'] as const) {
       expect(Array.from(r[k])).toEqual(Array.from(p[k]));
       r[k][0] += 1;
       expect(r[k][0]).not.toBe(p[k][0]);
@@ -181,9 +168,7 @@ describe('VoteLog', () => {
   it('grows, keeps votes, and resets', () => {
     const log = new VoteLog(2);
     for (let i = 0; i < 40; i++) {
-      expect(
-        log.push(i, C(X(1)), 100 + i, i, -i, -2 * i, 65536, 1, 2, -1, 3, ONE, i % 2 === 0)
-      ).toBe(i);
+      expect(log.push(i, C(X(1)), 100 + i, i, -i, 65536, 1, 2, -1, 3, ONE, i % 2 === 0)).toBe(i);
     }
     expect(log.n).toBe(40);
     expect(log.segs).toBe(40);
@@ -194,7 +179,6 @@ describe('VoteLog', () => {
     expect(log.sym[0]).toBe(100);
     expect(log.count[5]).toBe(5);
     expect(log.eLearn[5]).toBe(-5);
-    expect(log.eCode[5]).toBe(-10);
     expect(log.tau[0]).toBe(1);
     expect(log.tau[1]).toBe(0);
     expect(log.lognIndex[3]).toBe(3);
@@ -218,8 +202,8 @@ describe('VoteLog', () => {
 
   it('appends a vote to the last segment when its constants match', () => {
     const log = new VoteLog(0);
-    log.push(3, 0, 1, 1, 0, 0, 65536, SRC.node, 1, 2, 4, ONE, true);
-    log.push(3, 1, 2, 1, 0, 0, 65536, SRC.node, 1, 2, 4, ONE, true);
+    log.push(3, 0, 1, 1, 0, 65536, SRC.node, 1, 2, 4, ONE, true);
+    log.push(3, 1, 2, 1, 0, 65536, SRC.node, 1, 2, 4, ONE, true);
     expect(log.segs).toBe(1);
     expect(log.end[0]).toBe(2);
     const variants: [number, number, number, number, number, number, boolean][] = [
@@ -232,7 +216,7 @@ describe('VoteLog', () => {
       [4, SRC.msg, 2, -1, -1, 0, false],
     ];
     for (const [b, src, lev, li, ni, ll, tau] of variants) {
-      log.push(b, 0, 9, 1, 0, 0, 65536, src, lev, li, ni, ll, tau);
+      log.push(b, 0, 9, 1, 0, 65536, src, lev, li, ni, ll, tau);
     }
     expect(log.segs).toBe(1 + variants.length);
     const g = log.open(5, SRC.value, 0, -1, -1, 0, false);
@@ -268,8 +252,8 @@ describe('learn', () => {
     const b = blockOf(SRC.msg, 1, ORDER);
     const x1 = X(2, 0, 1, 1, 0);
     const x2 = X(0, 0, 0, 0, 3);
-    log.push(b, C(x1), 7, 3, 0, 0, 65536, SRC.msg, 1, -1, -1, 0, false);
-    log.push(b, C(x2), 8, 1, 0, 0, 65536, SRC.msg, 1, -1, -1, 0, false);
+    log.push(b, C(x1), 7, 3, 0, 65536, SRC.msg, 1, -1, -1, 0, false);
+    log.push(b, C(x2), 8, 1, 0, 65536, SRC.msg, 1, -1, -1, 0, false);
     log.massLearn[0] = 3000;
     log.massLearn[1] = 1000;
     log.massEsc = 500;
@@ -310,8 +294,8 @@ describe('learn', () => {
     const log = new VoteLog();
     const bb = blockOf(SRC.builtin, 0, ORDER);
     const bn = blockOf(SRC.node, 0, ORDER);
-    log.push(bb, C(X()), 1, 1, 0, 0, 65536, SRC.builtin, 0, -1, -1, 0, false);
-    log.push(bn, C(X()), 2, 1, 0, 0, 65536, SRC.node, 0, -1, -1, 0, false);
+    log.push(bb, C(X()), 1, 1, 0, 65536, SRC.builtin, 0, -1, -1, 0, false);
+    log.push(bn, C(X()), 2, 1, 0, 65536, SRC.node, 0, -1, -1, 0, false);
     log.massLearn[0] = 100;
     log.massLearn[1] = 100;
     const deltas: PathDeltas = new Map();
@@ -335,9 +319,9 @@ describe('learn', () => {
     const bf = blockOf(SRC.msgF, 0, ORDER);
     const bm = blockOf(SRC.msg, 0, ORDER);
     const x = X(1);
-    log.push(bf, C(x), 35, 4, 0, 0, 16384, SRC.msgF, 0, -1, -1, 0, false);
-    log.push(bm, C(x), 35, 4, 0, 0, 65536, SRC.msg, 0, -1, -1, 0, false);
-    log.push(bm, C(x), 48, 4, 0, 0, 65536, SRC.msg, 0, -1, -1, 0, false);
+    log.push(bf, C(x), 35, 4, 0, 16384, SRC.msgF, 0, -1, -1, 0, false);
+    log.push(bm, C(x), 35, 4, 0, 65536, SRC.msg, 0, -1, -1, 0, false);
+    log.push(bm, C(x), 48, 4, 0, 65536, SRC.msg, 0, -1, -1, 0, false);
     log.massLearn[0] = 4000;
     log.massLearn[1] = 0;
     log.massLearn[2] = 1000;
@@ -354,7 +338,7 @@ describe('learn', () => {
     // Without af the folded vote is compared with a itself.
     const run2 = newRunPrior(prior());
     log.reset();
-    log.push(bf, C(x), 48, 4, 0, 0, 65536, SRC.nodeF, 0, -1, -1, 0, false);
+    log.push(bf, C(x), 48, 4, 0, 65536, SRC.nodeF, 0, -1, -1, 0, false);
     log.massLearn[0] = 1000;
     learn(run2, log, 1000, 1000, 48, null, 0);
     // A vote holding all of Sa and Z has gradient 0.
@@ -366,8 +350,8 @@ describe('learn', () => {
     const log = new VoteLog();
     const b = blockOf(SRC.msg, 2, ORDER);
     const x = X(0, 1, 2, 0, 1);
-    log.push(b, C(x), 9, 1, 0, 0, 65536, SRC.msg, 2, -1, -1, 0, false);
-    log.push(b, C(x), 10, 1, 0, 0, 65536, SRC.msg, 2, -1, -1, 0, false);
+    log.push(b, C(x), 9, 1, 0, 65536, SRC.msg, 2, -1, -1, 0, false);
+    log.push(b, C(x), 10, 1, 0, 65536, SRC.msg, 2, -1, -1, 0, false);
     const m1 = 2 ** 36 - 12345;
     const m2 = 2 ** 35 + 777;
     log.massLearn[0] = m1;
@@ -399,8 +383,8 @@ describe('learn', () => {
     const deltas: PathDeltas = new Map();
     for (let step = 0; step < 200; step++) {
       log.reset();
-      log.push(b, C(X(4)), 1, 1, 0, 0, 65536, SRC.node, 0, -1, -1, 0, false);
-      log.push(b + 1, C(X(4)), 2, 1, 0, 0, 65536, SRC.node, 1, -1, -1, 0, false);
+      log.push(b, C(X(4)), 1, 1, 0, 65536, SRC.node, 0, -1, -1, 0, false);
+      log.push(b + 1, C(X(4)), 2, 1, 0, 65536, SRC.node, 1, -1, -1, 0, false);
       log.massLearn[0] = 1;
       log.massLearn[1] = 1000;
       learn(run, log, 1, 1001, 1, deltas, 0, fast);
@@ -409,8 +393,8 @@ describe('learn', () => {
     expect(deltas.get(b)![1]).toBe(c.clamps.delta);
     for (let step = 0; step < 200; step++) {
       log.reset();
-      log.push(b, C(X(4)), 1, 1, 0, 0, 65536, SRC.node, 0, -1, -1, 0, false);
-      log.push(b + 1, C(X(4)), 2, 1, 0, 0, 65536, SRC.node, 1, -1, -1, 0, false);
+      log.push(b, C(X(4)), 1, 1, 0, 65536, SRC.node, 0, -1, -1, 0, false);
+      log.push(b + 1, C(X(4)), 2, 1, 0, 65536, SRC.node, 1, -1, -1, 0, false);
       log.massLearn[0] = 1000;
       log.massLearn[1] = 1;
       learn(run, log, 1, 1001, 2, deltas, 0, fast);
@@ -422,7 +406,7 @@ describe('learn', () => {
   it('learns the escape and pnov from novelty, with clamps', () => {
     const run = newRunPrior(prior());
     const log = new VoteLog();
-    log.push(0, C(X()), 1, 1, 0, 0, 65536, SRC.node, 0, -1, -1, 0, false);
+    log.push(0, C(X()), 1, 1, 0, 65536, SRC.node, 0, -1, -1, 0, false);
     log.massLearn[0] = 1000;
     log.massEsc = 1000;
     log.novel = true;
@@ -451,9 +435,9 @@ describe('learn', () => {
   it('learns the value-feature slopes from the tau votes', () => {
     const run = newRunPrior(prior());
     const log = new VoteLog();
-    log.push(0, C(X()), 1, 1, 0, 0, 65536, SRC.node, 3, -1, -1, 0, true);
-    log.push(0, C(X()), 2, 1, 0, 0, 65536, SRC.node, 3, -1, -1, 0, true);
-    log.push(0, C(X()), 3, 1, 0, 0, 65536, SRC.msg, 3, -1, -1, 0, false);
+    log.push(0, C(X()), 1, 1, 0, 65536, SRC.node, 3, -1, -1, 0, true);
+    log.push(0, C(X()), 2, 1, 0, 65536, SRC.node, 3, -1, -1, 0, true);
+    log.push(0, C(X()), 3, 1, 0, 65536, SRC.msg, 3, -1, -1, 0, false);
     log.massLearn[0] = 3000;
     log.massLearn[1] = 1000;
     log.massLearn[2] = 4000;
@@ -474,7 +458,7 @@ describe('learn', () => {
     // A zero gradient leaves the slopes alone.
     const before = Array.from(run.vfeat);
     log.reset();
-    log.push(0, C(X()), 1, 1, 0, 0, 65536, SRC.node, 3, -1, -1, 0, true);
+    log.push(0, C(X()), 1, 1, 0, 65536, SRC.node, 3, -1, -1, 0, true);
     log.massLearn[0] = 1000;
     log.vx.set([1, 1, 1, 1, 1]);
     learn(run, log, 1000, 1000, 1, null, 0);
@@ -484,8 +468,8 @@ describe('learn', () => {
   it('learns level-evidence cells and log-n slopes', () => {
     const run = newRunPrior(prior());
     const log = new VoteLog();
-    log.push(0, C(X()), 1, 1, 0, 0, 65536, SRC.node, 1, 2, 4, 3 * ONE, false);
-    log.push(0, C(X()), 2, 1, 0, 0, 65536, SRC.node, 1, 2, 4, 5 * ONE, false);
+    log.push(0, C(X()), 1, 1, 0, 65536, SRC.node, 1, 2, 4, 3 * ONE, false);
+    log.push(0, C(X()), 2, 1, 0, 65536, SRC.node, 1, 2, 4, 5 * ONE, false);
     log.massLearn[0] = 2000;
     log.massLearn[1] = 2000;
     learn(run, log, 2000, 8000, 1, null, 0);
@@ -502,42 +486,32 @@ describe('learn', () => {
     expect(log.levA.every((v) => v === 0) && log.lnT.every((v) => v === 0)).toBe(true);
   });
 
-  it('learns kernel links and outside multipliers from the kernel side', () => {
+  it('learns kernel links from the kernel side', () => {
     const run = newRunPrior(prior());
     const log = new VoteLog();
     log.kernelPa = 1000;
     log.kernelZ = 4000;
     log.kernelA.set([500, 0, 0]);
     log.kernelT.set([600, 400, 0]);
-    log.oscaleA.set([0, 300, 0, 0, 0, 0]);
-    log.oscaleT.set([0, 900, 0, 0, 0, 2000]);
     learn(run, log, 1, 4000, 1, null, 0);
     const g0 = rq(500, 1000) - rq(600, 4000);
     expect(run.kernel[0]).toBe(Math.min(0, bits(-2) + refSmul(ETA, g0, PB)));
     expect(run.kernel[1]).toBe(bits(-2) + refSmul(ETA, -rq(400, 4000), PB));
     expect(run.kernel[2]).toBe(bits(-2));
-    const go = rq(300, 1000) - rq(900, 4000);
-    expect(run.oscale[1]).toBe(refSmul(ETA, go, PB));
-    expect(run.oscale[5]).toBe(refSmul(ETA, -32768, PB));
-    expect(run.oscale[0]).toBe(0);
-    // Clamps: the links stay <= 0 and >= E_MIN, the multipliers inside [lo, hi].
+    // Clamps: the links stay <= 0 and >= E_MIN.
     const fast: PriorConstants = {
       ...constants(),
-      rates: { ...constants().rates, kernel: 2 ** 34, oscale: 2 ** 34 },
+      rates: { ...constants().rates, kernel: 2 ** 34 },
     };
     learn(run, log, 1, 4000, 1, null, 0, fast);
     expect(run.kernel[0]).toBe(0);
     expect(run.kernel[1]).toBe(E_MIN);
-    expect(run.oscale[1]).toBe(constants().clamps.oscale[1]);
-    expect(run.oscale[5]).toBe(constants().clamps.oscale[0]);
     // Large kernel masses share one shift; Pa above Z' takes the shift from Pa.
     const run2 = newRunPrior(prior());
     log.kernelPa = 2 ** 45;
     log.kernelZ = 2 ** 44;
     log.kernelA.set([2 ** 44, 0, 0]);
     log.kernelT.set([2 ** 44, 0, 0]);
-    log.oscaleA.fill(0);
-    log.oscaleT.fill(0);
     learn(run2, log, 1, 1, 1, null, 0);
     expect(run2.kernel[0]).toBe(bits(-2) + refSmul(ETA, 32768 - 65536, PB));
   });

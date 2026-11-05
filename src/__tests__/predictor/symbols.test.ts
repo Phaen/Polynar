@@ -285,7 +285,6 @@ describe('SymbolPredictor round trips', () => {
   it('codes when every mass floors to zero and the escape alone is large', () => {
     trip([cps('aab ba'), cps('ab')], {
       setup: (s) => {
-        s.space(loadedPriors.text).run.oscale.fill(-50 * ONE);
         s.space(loadedPriors.text).run.hybrid.fill(-40 * ONE);
       },
     });
@@ -299,8 +298,8 @@ describe('SymbolPredictor round trips', () => {
     const run = space.run;
     const snap = (): unknown => [
       run.escape,
-      ...[run.kernel, run.hybrid, run.apm, run.pnov, run.vfeat, run.oscale, run.lev, run.logn].map(
-        (x) => Array.from(x)
+      ...[run.kernel, run.hybrid, run.apm, run.pnov, run.vfeat, run.lev, run.logn].map((x) =>
+        Array.from(x)
       ),
     ];
     const before = snap();

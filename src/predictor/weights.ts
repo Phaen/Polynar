@@ -31,7 +31,6 @@ export function newRunPrior(loaded: LoadedPrior): RunPrior {
     apm: loaded.apm.slice(),
     pnov: loaded.pnov.slice(),
     vfeat: loaded.vfeat.slice(),
-    oscale: loaded.oscale.slice(),
     lev: loaded.lev.slice(),
     logn: loaded.logn.slice(),
     vstep: loaded.vstep.slice(),
@@ -110,7 +109,6 @@ export class VoteLog {
   /** The exact-level count. */
   count: Float64Array = new Float64Array(0);
   eLearn: Float64Array = new Float64Array(0);
-  eCode: Float64Array = new Float64Array(0);
   /** The fold share credited to the coded symbol, PB; 2^PB when the vote is not split. */
   share16: Float64Array = new Float64Array(0);
   /** Pass B's learning mass at the step's block scale, without the fold share. */
@@ -136,16 +134,13 @@ export class VoteLog {
   massEsc = 0;
   novel = false;
   pnovIndex = -1;
-  oscaleEscIndex = -1;
   /** The path's value features this step (small integers). */
   readonly vx = new Float64Array(5);
-  /** The kernel side (spec §5.4): the coded symbol's smeared mass, the total, and their parts per link and per outside cell. */
+  /** The kernel side (spec §5.4): the coded symbol's smeared mass, the total, and their parts per link. */
   kernelPa = 0;
   kernelZ = 0;
   readonly kernelA = new Float64Array(3);
   readonly kernelT = new Float64Array(3);
-  readonly oscaleA = new Float64Array(6);
-  readonly oscaleT = new Float64Array(6);
 
   /** Learning scratch, sized to the run prior's tables on first use. */
   G: Float64Array = new Float64Array(0);
@@ -176,7 +171,6 @@ export class VoteLog {
     this.sym = grownInt(this.sym, c);
     this.count = grownFloat(this.count, c);
     this.eLearn = grownFloat(this.eLearn, c);
-    this.eCode = grownFloat(this.eCode, c);
     this.share16 = grownFloat(this.share16, c);
     this.massLearn = grownFloat(this.massLearn, c);
     this.cap = c;
@@ -207,14 +201,11 @@ export class VoteLog {
     this.massEsc = 0;
     this.novel = false;
     this.pnovIndex = -1;
-    this.oscaleEscIndex = -1;
     this.vx.fill(0);
     this.kernelPa = 0;
     this.kernelZ = 0;
     this.kernelA.fill(0);
     this.kernelT.fill(0);
-    this.oscaleA.fill(0);
-    this.oscaleT.fill(0);
     this.reserve(capacity);
   }
 
@@ -258,7 +249,6 @@ export class VoteLog {
     sym: number,
     count: number,
     eLearn: number,
-    eCode: number,
     share16: number,
     src: number,
     level: number,
@@ -288,7 +278,6 @@ export class VoteLog {
     this.sym[i] = sym;
     this.count[i] = count;
     this.eLearn[i] = eLearn;
-    this.eCode[i] = eCode;
     this.share16[i] = share16;
     this.massLearn[i] = 0;
     this.n = i + 1;
@@ -353,9 +342,9 @@ export function deltaRate(c: PriorConstants, pathN: number): number {
 /**
  * Learns from one coded symbol `a` (spec §5.7): the hybrid blocks and the path's deltas, the
  * escape, pnov, the value-feature slopes, the level-evidence cells, the log-n slopes, and from the
- * kernel side the link weights and the outside multipliers. `Sa` and `Z` are the step's learning
- * accumulators (Sa = the escape's mass plus the coded symbol's votes when it is novel). Deltas
- * learn on the blocks of every source but the built-in.
+ * kernel side the link weights. `Sa` and `Z` are the step's learning accumulators (Sa = the
+ * escape's mass plus the coded symbol's votes when it is novel). Deltas learn on the blocks of
+ * every source but the built-in.
  */
 export function learn(
   run: RunPrior,
@@ -530,13 +519,6 @@ export function learn(
       const g = grad(shr(log.kernelA[j], ks), pa, shr(log.kernelT[j], ks), kz);
       if (g !== 0) {
         run.kernel[j] = clampi(run.kernel[j] + smul(rates.rates.kernel, g, PB), E_MIN, 0);
-      }
-    }
-    const [lo, hi] = cl.oscale;
-    for (let j = 0; j < 6; j++) {
-      const g = grad(shr(log.oscaleA[j], ks), pa, shr(log.oscaleT[j], ks), kz);
-      if (g !== 0) {
-        run.oscale[j] = clampi(run.oscale[j] + smul(rates.rates.oscale, g, PB), lo, hi);
       }
     }
   }
