@@ -68,8 +68,8 @@ const GATES: Record<SetName, number> = {
   'ints-records': 2440,
   dates: 2125,
   corpus: 89434,
-  // The prototype's 84,610 included companion cells, which the research closed; the formula's
-  // remaining gap sits in events, slack and npm-pkg.
+  // The prototype's 84,610 is priced under two-fold held-out priors, as `schemaHeldOut` is; this
+  // set runs under the shipped prior, which saw every file.
   schema: 86000,
   schemaHeldOut: Infinity,
   corpusPlain: 757000,
