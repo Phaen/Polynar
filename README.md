@@ -236,10 +236,12 @@ A `Date`, lossless to the millisecond by default. Infers `Date`. An invalid date
 
 A UUID string: lowercase `8-4-4-4-12` hex, as `crypto.randomUUID()` gives it; anything else throws a `RangeError`. Infers `string`. The version digit and the variant bits are coded under weights that favour version 4, then 1 and 7, and RFC 4122's variant, and the other 122 bits as they are, so a v4 UUID takes about 16 bytes against 36 as text. In `p.any([p.uuid()])` it takes every string that is a UUID.
 
-| Method                                 | Description                                                                                      |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `.adapt(options?: AdaptOptions)`       | The version and variant adapt to the message; see [Priors that adapt](#priors-that-adapt-adapt). |
-| `.compress(options?: CompressOptions)` | The version and variant learn, as under `.adapt()`; the other bits carry nothing to predict.     |
+In a log of 300 analytics events, the 300 distinct message ids take 15.3 bytes each under `p.uuid().compress()` against 16.0 under `p.any().compress()`, and the 300 user ids, 25 of them distinct, take 1.9 bytes each against 2.0.
+
+| Method                                 | Description                                                                                                                                                      |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.adapt(options?: AdaptOptions)`       | The version and variant adapt to the message; see [Priors that adapt](#priors-that-adapt-adapt).                                                                 |
+| `.compress(options?: CompressOptions)` | A UUID the node wrote before is named from its past values in a few bits; a new one is written as without, its version and variant learning as under `.adapt()`. |
 
 ### `p.null()`
 
