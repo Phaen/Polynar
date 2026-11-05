@@ -1,5 +1,8 @@
 import { Encoder, Decoder } from '../packer';
-import { STRUCT, type CompressOptions } from '../predictor/types';
+import { resolve } from '../predictor/options';
+import { loadedPriors } from '../predictor/prior';
+import { session } from '../predictor/session';
+import { STRUCT, type CompressOptions, type Resolved } from '../predictor/types';
 import type { Kind } from './guards';
 import type { AdaptOptions } from './adaptive';
 import { members, type Members } from './members';
@@ -30,12 +33,17 @@ const RADICES = SPLIT.map((bits) => 2 ** Number(bits));
 export class PUuid extends MethodNode<string> {
   readonly _kinds: readonly Kind[] = ['string'];
   readonly _compress?: CompressOptions;
+  /** Under `.compress()`: the options the value step codes under. */
+  private readonly _resolved?: Resolved;
   private readonly _version: Members;
   private readonly _variant: Members;
 
   constructor(readonly _methods: MethodSet = {}) {
     super();
     this._compress = _methods.compress;
+    if (this._compress !== undefined) {
+      this._resolved = resolve(this._compress, loadedPriors.json, 'p.uuid');
+    }
     // Under `.compress()` the two tables learn; the bits carry nothing to learn.
     const adapt =
       learningOf(_methods) ??
@@ -54,8 +62,9 @@ export class PUuid extends MethodNode<string> {
   }
 
   /**
-   * The version and variant tables learn, as under `.adapt()`, with the
-   * option `separate`; the other bits stay as they are. Not with `.adapt()`.
+   * A UUID the node wrote before is named by the value step; a new one is
+   * spelled as without, the version and variant tables learning as under
+   * `.adapt()`. Not with `.adapt()`.
    */
   compress(options?: CompressOptions): PUuid {
     return this._adapt(options, 'p.uuid');
@@ -73,10 +82,33 @@ export class PUuid extends MethodNode<string> {
     return STR_MARKERS;
   }
 
+  /**
+   * Under `.compress()` a UUID the node wrote before is named by the value step, any other is
+   * spelled as without.
+   */
   _write(enc: Encoder, value: string): void {
     if (typeof value !== 'string' || !SHAPE.test(value)) {
       throw new RangeError(`Value ${describe(value)} is not a lowercase UUID`);
     }
+    if (this._resolved === undefined) {
+      this._spell(enc, value);
+    } else {
+      session(enc)
+        .value(this, this._resolved)
+        .write(enc, value, () => this._spell(enc, value));
+    }
+  }
+
+  _read(dec: Decoder): string {
+    if (this._resolved === undefined) {
+      return this._unspell(dec);
+    }
+    return session(dec)
+      .value(this, this._resolved)
+      .read(dec, () => this._unspell(dec));
+  }
+
+  private _spell(enc: Encoder, value: string): void {
     const hex = value.replace(/-/g, '');
     const version = parseInt(hex[12], 16);
     const nibble = parseInt(hex[16], 16);
@@ -92,7 +124,7 @@ export class PUuid extends MethodNode<string> {
     }
   }
 
-  _read(dec: Decoder): string {
+  private _unspell(dec: Decoder): string {
     const version = this._version.read(dec);
     const variant = this._variant.read(dec);
     let bits = 0n;

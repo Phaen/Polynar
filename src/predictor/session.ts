@@ -28,7 +28,7 @@ import { Population, frozen } from './tables';
 import type { Frozen } from './tables';
 import { END, ESCAPE } from './types';
 import type { AlphabetKind, Ends, LoadedPrior, PathKey, Resolved, RunPrior } from './types';
-import { MemberStep, VSTEP_N } from './values';
+import { MemberStep, VSTEP_N, ValueStep } from './values';
 import type { Occurrences, RecordView } from './values';
 import { newRunPrior } from './weights';
 
@@ -75,6 +75,15 @@ interface Pair {
 export interface NumberAccess {
   write(enc: Encoder, x: number): void;
   read(dec: Decoder): number;
+}
+
+/**
+ * Codes one whole value at a path by its key: `Session.value`. `fresh` writes or reads a value the
+ * value step does not name.
+ */
+export interface ValueAccess {
+  write(enc: Encoder, key: string, fresh: () => void): void;
+  read(dec: Decoder, fresh: () => string): string;
 }
 
 /** Codes one declared member at a path: `Session.step`. */
@@ -127,6 +136,13 @@ interface MemberPath {
   readonly delta: Float64Array;
 }
 
+/** A path's open value step, its deltas over the value-step cells and its values by id. */
+interface ValuePath {
+  readonly step: ValueStep;
+  readonly delta: Float64Array;
+  readonly keys: string[];
+}
+
 /** Per-path state by `PathKey`: a node or key path directly, a node's derived paths under the node. */
 class PathMap<T> {
   private readonly direct = new Map<unknown, T>();
@@ -173,6 +189,7 @@ export class Space implements MessageCore {
   private readonly paths = new PathMap<PathState>();
   private readonly numbers = new PathMap<NumberPath>();
   private readonly members = new PathMap<MemberPath>();
+  private readonly values = new PathMap<ValuePath>();
   private readonly preds = new Map<PathState, Map<AlphabetKind, SymbolPredictor>>();
 
   constructor(
@@ -214,6 +231,15 @@ export class Space implements MessageCore {
     return this.members.get(key, () => ({
       step: new MemberStep(count, weights, o.history, o.quantisation),
       delta: new Float64Array(VSTEP_N),
+    }));
+  }
+
+  /** The open value step of a path that codes no symbols of its own, made on first use. */
+  value(key: PathKey, o: Resolved): ValuePath {
+    return this.values.get(key, () => ({
+      step: new ValueStep(o.history, o.quantisation, this.features.valueSequence),
+      delta: new Float64Array(VSTEP_N),
+      keys: [],
     }));
   }
 
@@ -508,6 +534,56 @@ export class Session implements RecordView {
         });
       },
       read: (dec) => code((d) => d.idAt(dec.parseMember(d.total, d))),
+    };
+  }
+
+  /**
+   * A whole value at a path through the open value step: a past value of the path is named by its
+   * entry, any other value by NEW and then spelled by `fresh` (spec §6.3).
+   */
+  value(path: PathKey, o: Resolved): ValueAccess {
+    const space = this.space(o.prior);
+    const vp = space.value(path, o);
+    const run = space.run;
+    const vs = vp.step;
+    let t0 = 0;
+    let delta: Float64Array | null = null;
+    const table = (): Distribution | null => {
+      if (!this.features.valueStep) return null;
+      const pop = space.positions(path, o);
+      t0 = pop.t;
+      delta = this.features.deltas ? vp.delta : null;
+      return vs.distribution(pop.seq, t0, this.listIndex, run.vstep, delta, this);
+    };
+    const finish = (key: string, stepped: boolean, choice: number): void => {
+      if (stepped) {
+        const id = choice === ESCAPE ? vs.idOf(key) : choice;
+        vs.learn(id, vs.n, run.vstep, delta, run.loaded.constants);
+      }
+      if (vs.record(key, t0, this.listIndex, this) === vp.keys.length) vp.keys.push(key);
+    };
+    return {
+      write: (enc, key, fresh) => {
+        this.checkCommitted();
+        const d = table();
+        let choice = ESCAPE;
+        if (d !== null) {
+          const id = vs.idOf(key);
+          const i = id === ESCAPE ? -1 : d.indexOf(id);
+          if (i >= 0) choice = id;
+          const at = i >= 0 ? i : d.n - 1;
+          enc.composeWeighted(d.cum(at), d.freq(at), d.total);
+        }
+        if (choice === ESCAPE) fresh();
+        finish(key, d !== null, choice);
+      },
+      read: (dec, fresh) => {
+        const d = table();
+        const choice = d === null ? ESCAPE : d.idAt(dec.parseMember(d.total, d));
+        const key = choice === ESCAPE ? fresh() : vp.keys[choice];
+        finish(key, d !== null, choice);
+        return key;
+      },
     };
   }
 

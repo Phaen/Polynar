@@ -85,6 +85,40 @@ describe('p.uuid', () => {
     );
   });
 
+  it('spells the first UUID under .compress() as without', () => {
+    const value = v4s[0];
+    expect(trip(p.uuid().compress(), value)).toBe(value);
+    expect(p.uuid().compress().encode(value)).toEqual(p.uuid().encode(value));
+  });
+
+  it('names a repeated UUID under .compress() in a few bits', () => {
+    const ids = v4s.slice(0, 4);
+    const run = Array.from({ length: 64 }, (_, i) => ids[(i * 7) % 4]);
+    const node = p.array(p.uuid().compress());
+    expect(trip(node, run)).toEqual(run);
+    // Four spelled UUIDs and 60 hits.
+    expect(node.encode(run).length).toBeLessThan(4 * 16 + 20);
+  });
+
+  it('spells a UUID it has not written under .compress() at almost no extra cost', () => {
+    const node = p.array(p.uuid().compress());
+    const mixed = [v4s[0], v4s[1], v4s[0], v4s[2], v4s[1], v4s[3]];
+    expect(trip(node, mixed)).toEqual(mixed);
+    expect(trip(node, v4s)).toEqual(v4s);
+    expect(node.encode(v4s).length).toBeLessThanOrEqual(p.array(p.uuid()).encode(v4s).length);
+  });
+
+  it('names repeated UUIDs under a container’s .compress()', () => {
+    const ids = v4s.slice(0, 3);
+    const rows = Array.from({ length: 30 }, (_, i) => ({ id: ids[i % 3], n: i }));
+    const schema = p.array(p.object({ id: p.uuid(), n: p.int() })).compress();
+    expect(trip(schema, rows)).toEqual(rows);
+    expect(schema.encode(rows).length).toBeLessThan(3 * 16 + 30);
+    const any = p.any([p.uuid()]).compress();
+    expect(trip(any, rows)).toEqual(rows);
+    expect(any.encode(rows).length).toBeLessThan(3 * 16 + 60);
+  });
+
   it.each<[string, () => unknown, string]>([
     ['.adapt() twice', () => p.uuid().adapt().adapt(), 'p.uuid adapt is already set'],
     ['.compress() twice', () => p.uuid().compress().compress(), 'p.uuid compress is already set'],

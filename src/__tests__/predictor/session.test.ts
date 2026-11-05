@@ -401,6 +401,73 @@ describe('Session.step', () => {
   });
 });
 
+describe('Session.value', () => {
+  const WORDS = ['ant', 'bee', 'cat', 'dog', 'eel', 'fox', 'gnu', 'hen'];
+
+  /** Writes `keys` at one path, each new one spelled as its index in WORDS, and reads them back. */
+  function valueTrip(keys: readonly string[], o: Resolved, options = {}): number {
+    const node = {};
+    const enc = new Encoder();
+    const se = session(enc, options);
+    for (const k of keys) {
+      se.value(node, o).write(enc, k, () => enc.compose(WORDS.indexOf(k), WORDS.length));
+    }
+    const bytes = enc.output();
+    const dec = new Decoder(bytes);
+    const sd = session(dec, options);
+    expect(
+      keys.map(() => sd.value(node, o).read(dec, () => WORDS[dec.parse(WORDS.length)]))
+    ).toEqual(keys);
+    dec.finalize();
+    return bytes.length;
+  }
+
+  it('names a value the path had before and spells the first and every new one', () => {
+    const keys = ['cat', 'dog', 'cat', 'cat', 'eel', 'cat', 'dog', 'cat', 'cat', 'cat'];
+    for (const options of [{}, { features: { deltas: false } }]) {
+      expect(valueTrip(keys, opts(), options)).toBeGreaterThan(0);
+      expect(valueTrip(keys, opts({ separate: true }), options)).toBeGreaterThan(0);
+    }
+    const repeats = Array.from({ length: 64 }, () => 'cat');
+    expect(valueTrip(repeats, opts())).toBeLessThan(valueTrip(['cat'], opts()) + 4);
+  });
+
+  it('spells every value without the value step', () => {
+    const keys = ['cat', 'cat', 'cat', 'cat', 'cat', 'cat', 'cat', 'cat'];
+    const off = { features: { valueStep: false } };
+    // Each value is one digit of 8, so eight of them take three bytes.
+    expect(valueTrip(keys, opts(), off)).toBe(3);
+  });
+
+  it('spells a past value left out of a full table as new', () => {
+    const many = Array.from({ length: 2100 }, (_, i) => `k${i}`);
+    const keys = [...many, ...many];
+    const node = {};
+    const o = opts({ quantisation: 4096 });
+    const enc = new Encoder();
+    const se = session(enc);
+    let spelled = 0;
+    for (const k of keys) {
+      se.value(node, o).write(enc, k, () => {
+        spelled++;
+        enc.compose(Number(k.slice(1)), 4096);
+      });
+    }
+    expect(spelled).toBeGreaterThan(many.length);
+    const dec = new Decoder(enc.output());
+    const sd = session(dec);
+    expect(keys.map(() => sd.value(node, o).read(dec, () => `k${dec.parse(4096)}`))).toEqual(keys);
+    dec.finalize();
+  });
+
+  it('refuses to code inside a spelling the encoder tries', () => {
+    const s = new Session({}, { active: true });
+    expect(() => s.value({}, opts()).write(new Encoder(), 'a', () => undefined)).toThrow(
+      /cannot code inside/
+    );
+  });
+});
+
 describe('Session records', () => {
   const PLAIN: PlainNumber = {
     write: (enc, x) => enc.composeTerm(x),
