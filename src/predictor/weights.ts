@@ -112,10 +112,8 @@ export class VoteLog {
   eCode: Float64Array = new Float64Array(0);
   /** The fold share credited to the coded symbol, PB; 2^PB when the vote is not split. */
   share16: Float64Array = new Float64Array(0);
-  /** Pass B's masses at the step's block scale; the learning mass excludes the fold share. */
+  /** Pass B's learning mass at the step's block scale, without the fold share. */
   massLearn: Float64Array = new Float64Array(0);
-  massCode: Float64Array = new Float64Array(0);
-  prev: Int32Array = new Int32Array(0);
 
   /** Segments of the step. */
   segs = 0;
@@ -180,8 +178,6 @@ export class VoteLog {
     this.eCode = grownFloat(this.eCode, c);
     this.share16 = grownFloat(this.share16, c);
     this.massLearn = grownFloat(this.massLearn, c);
-    this.massCode = grownFloat(this.massCode, c);
-    this.prev = grownInt(this.prev, c);
     this.cap = c;
   }
 
@@ -268,8 +264,7 @@ export class VoteLog {
     levIndex: number,
     lognIndex: number,
     lognL: number,
-    tau: boolean,
-    prev: number
+    tau: boolean
   ): number {
     const i = this.n;
     if (i >= this.cap) {
@@ -295,8 +290,6 @@ export class VoteLog {
     this.eCode[i] = eCode;
     this.share16[i] = share16;
     this.massLearn[i] = 0;
-    this.massCode[i] = 0;
-    this.prev[i] = prev;
     this.n = i + 1;
     this.end[g] = i + 1;
     return i;

@@ -501,19 +501,15 @@ export class SymbolPredictor {
     const lCode = log.eCode;
     const lShare = log.share16;
     const lMassL = log.massLearn;
-    const lMassC = log.massCode;
-    const lPrev = log.prev;
     let i = log.n;
     for (let j = 0; j < count; j++) {
       const o = b + j * STRIDE;
       const s = d[o];
       const c = d[o + 1];
       let n = c;
-      let prev = -1;
       if (k > 0) {
         n = c < pN[s] ? c : pN[s];
-        prev = pIdx[s];
-        lCount[prev] -= n;
+        lCount[pIdx[s]] -= n;
       }
       let cell = cellK;
       if (!frozen) {
@@ -529,8 +525,6 @@ export class SymbolPredictor {
       lCode[i] = osc ? eL + (s < known.length && known[s] > 0 ? oscKnown : oscUnknown) : eL;
       lShare[i] = P_ONE;
       lMassL[i] = 0;
-      lMassC[i] = 0;
-      lPrev[i] = prev;
       pIdx[s] = i;
       pN[s] = n;
       i++;
@@ -616,8 +610,7 @@ export class SymbolPredictor {
         levK,
         liK,
         llK,
-        isNode,
-        -1
+        isNode
       );
     }
   }
@@ -663,7 +656,7 @@ export class SymbolPredictor {
       const deep = lb >= 1;
       const cell = cellOf(recOf(t - p), false, depth, 1, det);
       const eL = this.base(block, cell) + (deep ? this.G : 0) + lev + ln;
-      this.log.push(block, cell, seq[p], 1, eL, eL, P_ONE, SRC.node, lb, levI, li, ll, deep, -1);
+      this.log.push(block, cell, seq[p], 1, eL, eL, P_ONE, SRC.node, lb, levI, li, ll, deep);
     }
   }
 
@@ -698,8 +691,7 @@ export class SymbolPredictor {
         -1,
         -1,
         0,
-        false,
-        -1
+        false
       );
     }
   }
@@ -956,7 +948,6 @@ export class SymbolPredictor {
         ZL += ml;
         const s = log.sym[i];
         if (folded && (s === DIGIT || s === nl)) {
-          let sum = 0;
           if (s === DIGIT) {
             for (let d = 0; d < 10; d++) {
               const m = mulShr(
@@ -965,22 +956,17 @@ export class SymbolPredictor {
                 PB
               );
               this.addV(digits[d], m, osc);
-              sum += m;
             }
           } else {
             const mE = mulShr(osc ? exp2Fix(el + this.oscEnd + off) : ml, this.endShare, PB);
             const mN = mulShr(osc ? exp2Fix(el + this.oscNl + off) : ml, this.nlShare, PB);
             this.addV(END, mE, osc);
             this.addV(nl, mN, osc);
-            sum = mE + mN;
           }
-          log.massCode[i] = sum;
         } else {
           const ec = log.eCode[i];
           const el0 = log.eLearn[i];
-          const m = ec === el0 ? ml : exp2Fix(el - el0 + ec + off);
-          log.massCode[i] = m;
-          this.addV(s, m, segOsc);
+          this.addV(s, ec === el0 ? ml : exp2Fix(el - el0 + ec + off), segOsc);
         }
       }
     }
