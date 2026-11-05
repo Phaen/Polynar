@@ -10,6 +10,7 @@ import { p } from '../../nodes';
 import type {
   Bound,
   MarkerPrior,
+  Members,
   PlainNumber,
   Sink,
   Source,
@@ -615,6 +616,7 @@ describe('Session markers', () => {
     target?: object;
     bound?: Bound;
     prior?: MarkerPrior;
+    members?: Members;
   }
 
   /** Codes the marks through `marker`, decodes them, compares symbols and triples; returns the bytes. */
@@ -623,13 +625,15 @@ describe('Session markers', () => {
     const se = session(enc);
     around(se);
     for (const m of marks)
-      se.marker(m.self ?? 'self', o).write(enc, m.sym, m.target, m.bound, m.prior);
+      se.marker(m.self ?? 'self', o).write(enc, m.sym, m.target, m.bound, m.prior, m.members);
     const bytes = enc.output();
     const dec = new Decoder(bytes);
     const sd = session(dec);
     around(sd);
     expect(
-      marks.map((m) => sd.marker(m.self ?? 'self', o).read(dec, m.target, m.bound, m.prior))
+      marks.map((m) =>
+        sd.marker(m.self ?? 'self', o).read(dec, m.target, m.bound, m.prior, m.members)
+      )
     ).toEqual(marks.map((m) => m.sym));
     dec.finalize();
     return bytes;
@@ -719,6 +723,19 @@ describe('Session markers', () => {
     for (const sym of SYMS.slice(0, -1)) sd.marker('self', o).imply(sym);
     expect(sd.marker('self', o).read(dec)).toBe(STRUCT.OBJ_END);
     dec.finalize();
+  });
+
+  it("codes among a node's members and the end its bound admits, cheaper than among all", () => {
+    const bool: Members = { key: {}, set: new Set([STRUCT.TRUE, STRUCT.FALSE]) };
+    const marks: Mark[] = [];
+    for (let i = 0; i < 30; i++) {
+      const bound = { end: STRUCT.ARR_END, allow: i > 0 };
+      marks.push({ sym: i % 3 ? STRUCT.TRUE : STRUCT.FALSE, bound, members: bool });
+    }
+    marks.push({ sym: STRUCT.ARR_END, bound: { end: STRUCT.ARR_END, allow: true }, members: bool });
+    marks.push({ sym: STRUCT.FALSE, members: bool });
+    const open = marks.map(({ sym, bound }) => ({ sym, bound }));
+    expect(tripMarks(marks).length).toBeLessThan(tripMarks(open).length);
   });
 
   it('drops a held symbol on a symbol written for no target', () => {

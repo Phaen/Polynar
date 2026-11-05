@@ -7,7 +7,7 @@
 
 import type { Encoder, Decoder } from '../packer';
 import { session } from '../predictor/session';
-import type { Bound, MarkerPrior } from '../predictor/session';
+import type { Bound, MarkerPrior, Members } from '../predictor/session';
 import { STRUCT } from '../predictor/types';
 import type { Resolved } from '../predictor/types';
 import type { PNode } from './base';
@@ -116,6 +116,12 @@ export function fixedOf(set: ReadonlySet<number> | undefined, bound?: Bound): nu
   return sym;
 }
 
+/** The structure symbols `node` spells first as the members of a step, undefined when any. */
+function membersOf(node: PNode<any>): Members | undefined {
+  const set = node._markers();
+  return set === undefined ? undefined : { key: node, set };
+}
+
 /**
  * Codes `sym`, the first structure symbol of a value of `child`, through the innermost container
  * on the predictor, or at `self` outside every one, and hands it to `child`.
@@ -132,7 +138,7 @@ export function writeMarker(
   if (fixedOf(child._markers(), bound) >= 0) {
     access.imply(sym, child);
   } else {
-    access.write(enc, sym, child, bound, child._markerPrior());
+    access.write(enc, sym, child, bound, child._markerPrior(), membersOf(child));
   }
 }
 
@@ -150,7 +156,7 @@ export function readMarker(
     access.imply(fixed, child);
     return fixed;
   }
-  return access.read(dec, child, bound, child._markerPrior());
+  return access.read(dec, child, bound, child._markerPrior(), membersOf(child));
 }
 
 /**
@@ -167,7 +173,7 @@ export function ownMarker(enc: Encoder, node: PNode<any>, o: Resolved, sym: numb
   if (fixedOf(node._markers()) >= 0) {
     access.imply(sym);
   } else {
-    access.write(enc, sym, undefined, undefined, node._markerPrior());
+    access.write(enc, sym, undefined, undefined, node._markerPrior(), membersOf(node));
   }
   return sym;
 }
@@ -185,5 +191,5 @@ export function readOwnMarker(dec: Decoder, node: PNode<any>, o: Resolved): numb
     access.imply(fixed);
     return fixed;
   }
-  return access.read(dec, undefined, undefined, node._markerPrior());
+  return access.read(dec, undefined, undefined, node._markerPrior(), membersOf(node));
 }

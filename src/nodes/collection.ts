@@ -1,7 +1,7 @@
 import { Encoder, Decoder } from '../packer';
 import { resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
-import { session, type Bound, type Session } from '../predictor/session';
+import { session, type Bound, type Members, type Session } from '../predictor/session';
 import { STRUCT, type CompressOptions, type Ends, type Resolved } from '../predictor/types';
 import { PNode, adapt } from './base';
 import { atPath } from './path';
@@ -24,6 +24,8 @@ import { PString } from './string';
 
 /** A record key's text under `.compress()`: any length, ended by END. */
 const KEY_TEXT: Ends = { min: 0, max: undefined, fixed: false };
+/** A record's step before an entry: its key or, where it may come, the end. */
+const KEY_MEMBERS: Members = { key: {}, set: new Set([STRUCT.KEY]) };
 
 /** The keys of an unordered collection: distinct by construction, so a set of digits. */
 const UNORDERED: Order = { unordered: true, unique: true };
@@ -387,8 +389,9 @@ export class PCollection<T> extends MethodNode<T> {
     }
     if (size !== hi) {
       // The reader loads the key node's declared weights before every symbol, the end included.
-      const prior = this._layout.learnedKey === undefined ? this._keys._markerPrior() : undefined;
-      s.marker(this, o).write(enc, end, undefined, { end, allow: true }, prior);
+      const bound = { end, allow: true };
+      if (this._layout.learnedKey === undefined) writeMarker(enc, this, o, this._keys, end, bound);
+      else s.marker(this, o).write(enc, end, undefined, bound, undefined, KEY_MEMBERS);
     }
   }
 
@@ -402,7 +405,7 @@ export class PCollection<T> extends MethodNode<T> {
     }
     const s = session(enc);
     const access = s.marker(this, o);
-    if (bound.allow) access.write(enc, STRUCT.KEY, undefined, bound);
+    if (bound.allow) access.write(enc, STRUCT.KEY, undefined, bound, undefined, KEY_MEMBERS);
     else access.imply(STRUCT.KEY);
     // A record's entries come from `Object.entries`, whose keys are strings.
     const cps = Array.from(key as string, (ch) => ch.codePointAt(0) as number);
@@ -427,7 +430,7 @@ export class PCollection<T> extends MethodNode<T> {
         } else {
           const access = s.marker(this, o);
           if (!bound.allow) access.imply(STRUCT.KEY);
-          else if (access.read(dec, undefined, bound) === end) break;
+          else if (access.read(dec, undefined, bound, undefined, KEY_MEMBERS) === end) break;
           let text = '';
           for (const cp of s.text(this, o, 'text').read(dec, KEY_TEXT)) {
             text += String.fromCodePoint(cp);

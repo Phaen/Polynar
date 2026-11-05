@@ -271,6 +271,21 @@ function lognL(n: number): number {
   return Math.min(LOGN_MAX, log2Fix(n));
 }
 
+/** A closed alphabet: its ids in coding order and 1 at each of them. */
+export interface Closed {
+  readonly ids: Int32Array;
+  readonly mask: Uint8Array;
+}
+
+/** The closed alphabet of `ids`. */
+export function closedOf(ids: Int32Array): Closed {
+  let top = 0;
+  for (const id of ids) top = Math.max(top, id);
+  const mask = new Uint8Array(top + 1);
+  for (const id of ids) mask[id] = 1;
+  return { ids, mask };
+}
+
 /**
  * The symbol predictor of one path and alphabet. A step is `distribution()`, then `write` or
  * `read`, then `learn(a)`; a symbol both sides know is `implied(a)` alone. Code-point ids must be referenced
@@ -286,7 +301,10 @@ export class SymbolPredictor {
   private readonly text: boolean;
   private off = 0;
   private inValue = false;
-  /** 1 for each id of a closed text alphabet (a charset). */
+  /** The predictor's own closed alphabet (a charset), null when open. */
+  private readonly own: Closed | null;
+  /** The current step's closed alphabet: the predictor's own, or the step's (spec §6.5). */
+  private closed: Int32Array | null = null;
   private inClosed: Uint8Array | null = null;
 
   // Per-symbol scratch, indexed by id.
@@ -350,15 +368,10 @@ export class SymbolPredictor {
     private readonly builtin: Frozen | null,
     private readonly msg: Population | null,
     private readonly msgF: Population | null,
-    private readonly closed: Int32Array | null
+    closed: Int32Array | null
   ) {
     this.K = o.order;
-    if (closed !== null) {
-      let top = 0;
-      for (const id of closed) top = Math.max(top, id);
-      this.inClosed = new Uint8Array(top + 1);
-      for (const id of closed) this.inClosed[id] = 1;
-    }
+    this.own = closed === null ? null : closedOf(closed);
     this.text = alphabet === 'text';
     const cells = NSRC * levels(o.order) * CELLS;
     if (core.memo.length < cells) {
@@ -745,12 +758,15 @@ export class SymbolPredictor {
   }
 
   /**
-   * Members of a closed alphabet allowed at this step, in id order. A structure step bounding a
-   * container end that may not come yet leaves that end out.
+   * Members of the alphabet allowed at this step, in id order (a closed alphabet's in its own
+   * order). A structure step bounding a container end that may not come yet leaves that end out;
+   * a step's closed alphabet holds the end exactly when it may come.
    */
   private memberCount(): number {
-    const size =
-      this.closed !== null ? this.closed.length : this.alphabet === 'bytes' ? 256 : DIGIT - 1;
+    if (this.closed !== null) {
+      return this.closed.length + (this.endSym === END && this.allowEnd ? 1 : 0);
+    }
+    const size = this.alphabet === 'bytes' ? 256 : DIGIT - 1;
     const e = this.endSym === END ? (this.allowEnd ? 1 : 0) : this.allowEnd ? 0 : -1;
     return size + e;
   }
@@ -773,9 +789,11 @@ export class SymbolPredictor {
   /**
    * Builds the step's distribution (spec §4.4 steps 1–6). `endSym` (END unless a structure step
    * bounds a container's end) is an entry only when `allowEnd`; END is none when `endSym` is
-   * another symbol. The table depends on the shared past alone.
+   * another symbol. `only` closes the step's alphabet to its members where the predictor's own
+   * alphabet is open (a declared node's structure symbols). The table depends on the shared past
+   * alone.
    */
-  distribution(allowEnd = true, endSym = END): Distribution {
+  distribution(allowEnd = true, endSym = END, only: Closed | null = null): Distribution {
     const core = this.core;
     const f = core.features;
     const ids = core.ids;
@@ -800,6 +818,9 @@ export class SymbolPredictor {
     this.stepNo = ++core.stepNo;
     this.allowEnd = allowEnd;
     this.endSym = endSym;
+    const closed = only ?? this.own;
+    this.closed = closed === null ? null : closed.ids;
+    this.inClosed = closed === null ? null : closed.mask;
     this.valuePop = value;
     const log = this.log;
     log.reset();
@@ -1224,17 +1245,17 @@ export class SymbolPredictor {
   }
 
   /** One coded step: the table, the symbol and its learning. */
-  code(enc: Sink, a: number, allowEnd = true, endSym = END): void {
-    this.distribution(allowEnd, endSym);
+  code(enc: Sink, a: number, allowEnd = true, endSym = END, only: Closed | null = null): void {
+    this.distribution(allowEnd, endSym, only);
     if (allowEnd && a !== endSym) enc.open();
     this.write(enc, a);
     this.learn(a);
   }
 
   /** One read step. */
-  decode(dec: Source, allowEnd = true, endSym = END): number {
+  decode(dec: Source, allowEnd = true, endSym = END, only: Closed | null = null): number {
     const idle = dec.idle;
-    this.distribution(allowEnd, endSym);
+    this.distribution(allowEnd, endSym, only);
     const a = this.read(dec);
     // Past the input, a read that leaves the state as it was carries nothing: a valid message
     // never spends such a read on anything but the end here (see `Encoder.toDigits`).

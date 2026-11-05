@@ -90,14 +90,14 @@ describe('p.bool compress', () => {
   });
 
   it('takes its weights as prior counts of its symbols', () => {
-    const trues = Array<boolean>(12).fill(true);
+    const falses = Array<boolean>(12).fill(false);
     expect(plain.weights([30, 1]).compress()._markerPrior()?.counts).toEqual([
       [STRUCT.TRUE, 30],
       [STRUCT.FALSE, 1],
     ]);
     const size = (w: [number, number]) =>
-      p.array(plain.weights(w)).length(12).compress().encode(trues, BITS).length;
-    expect(size([30, 1])).toBeLessThan(size([1, 30]));
+      p.array(plain.weights(w)).length(12).compress().encode(falses, BITS).length;
+    expect(size([1, 30])).toBeLessThan(size([30, 1]));
   });
 
   it('takes its weights before or after', () => {

@@ -2,7 +2,7 @@
  * `p.union()`: one member per JS kind, picked by the value's kind.
  */
 
-import { p, PNode, Encoder, Decoder, CorruptInputError } from '../../index';
+import { p, PNode, Encoder, Decoder } from '../../index';
 import { STRUCT } from '../../predictor/types';
 import { mulberry32, trip } from '../support';
 
@@ -230,14 +230,6 @@ describe('p.union compress', () => {
       expect(trip(p.array(node).compress(), values)).toEqual(values);
       expect(trip(node, 'ab')).toBe('ab');
     }
-  });
-
-  it('refuses a structure symbol no member spells on decode', () => {
-    const written = p.union([p.int(), p.string()]).compress().encode(5);
-    const reader = p.union([p.string(), p.bool()]).compress();
-    expect(() => reader.decode(written)).toThrow(
-      new CorruptInputError(`p.union has no member for structure symbol ${STRUCT.INT}`)
-    );
   });
 
   it('adapts its members unless they adapt already', () => {

@@ -5,7 +5,14 @@ import { resolve } from '../../predictor/options';
 import { loadedPriors } from '../../predictor/prior';
 import { Session } from '../../predictor/session';
 import type { Features, SessionOptions, Sink, Source, Table } from '../../predictor/session';
-import { APM_EDGE, SymbolPredictor, defaultFeatures, recOf } from '../../predictor/symbols';
+import {
+  APM_EDGE,
+  SymbolPredictor,
+  closedOf,
+  defaultFeatures,
+  recOf,
+} from '../../predictor/symbols';
+import type { Closed } from '../../predictor/symbols';
 import { BYTE_BASE, CP_BASE, DIGIT, END, STRUCT } from '../../predictor/types';
 import type { CompressOptions, AlphabetKind, Ends, Resolved } from '../../predictor/types';
 
@@ -492,25 +499,39 @@ describe('SymbolPredictor tables', () => {
   });
 });
 
+describe('closedOf', () => {
+  it('marks every id of the alphabet and no other', () => {
+    const c = closedOf(Int32Array.of(5, 2, 9));
+    expect(Array.from(c.ids)).toEqual([5, 2, 9]);
+    expect(Array.from(c.mask)).toEqual([0, 0, 1, 0, 0, 1, 0, 0, 0, 1]);
+    expect(Array.from(closedOf(new Int32Array(0)).mask)).toEqual([0]);
+  });
+});
+
 describe('SymbolPredictor container ends', () => {
-  /** A structure step: the symbol, whether its container may end here, and that container's end. */
-  type Step = [sym: number, allow: boolean, end: number];
+  /**
+   * A structure step: the symbol, whether its container may end here, that container's end, and
+   * the step's closed alphabet.
+   */
+  type Step = [sym: number, allow: boolean, end: number, only?: Closed];
 
   /** Codes the steps through one structure predictor, decodes them, compares symbols and triples. */
-  function steps(list: readonly Step[]): void {
+  function steps(list: readonly Step[]): number {
     const o = opts();
     const enc = new Encoder();
     const sink = new RecSink(enc);
     const pe = new Session().symbols('s', o, 'structure');
-    for (const [sym, allow, end] of list) pe.code(sink, sym, allow, end);
-    const dec = new Decoder(enc.output());
+    for (const [sym, allow, end, only] of list) pe.code(sink, sym, allow, end, only ?? null);
+    const bytes = enc.output();
+    const dec = new Decoder(bytes);
     const source = new RecSource(dec);
     const pd = new Session().symbols('s', o, 'structure');
-    expect(list.map(([, allow, end]) => pd.decode(source, allow, end))).toEqual(
+    expect(list.map(([, allow, end, only]) => pd.decode(source, allow, end, only ?? null))).toEqual(
       list.map(([sym]) => sym)
     );
     dec.finalize();
     expect(source.calls).toEqual(sink.calls);
+    return bytes.length;
   }
 
   const IDS = Array.from({ length: STRUCT.HINT }, (_, i) => i + 1);
@@ -549,5 +570,45 @@ describe('SymbolPredictor container ends', () => {
       list.push([STRUCT.ARR_END, true, STRUCT.ARR_END]);
     }
     steps(list);
+  });
+
+  it("chooses among a step's closed alphabet, with its end only where the end may come", () => {
+    const pair = closedOf(Int32Array.of(STRUCT.TRUE, STRUCT.FALSE));
+    const withEnd = closedOf(Int32Array.of(STRUCT.TRUE, STRUCT.FALSE, STRUCT.ARR_END));
+    const pred = new Session().symbols('s', opts(), 'structure');
+    const enc = new Encoder();
+    let d = pred.distribution(false, STRUCT.ARR_END, pair);
+    expect(d.n).toBeLessThanOrEqual(3);
+    expect(d.indexOf(STRUCT.STR)).toBe(-1);
+    expect(() => pred.write(enc, STRUCT.STR)).toThrow(RangeError);
+    expect(() => pred.write(enc, STRUCT.ARR_END)).toThrow(RangeError);
+    d = pred.distribution(true, STRUCT.ARR_END, withEnd);
+    expect(d.indexOf(STRUCT.STR)).toBe(-1);
+    pred.write(enc, STRUCT.ARR_END);
+    d = pred.distribution(false, END, pair);
+    expect(d.indexOf(END)).toBe(-1);
+  });
+
+  it('codes each member of a closed step, voted or escaped, cheaper than the open alphabet', () => {
+    const pair = closedOf(Int32Array.of(STRUCT.TRUE, STRUCT.FALSE));
+    const withEnd = closedOf(Int32Array.of(STRUCT.TRUE, STRUCT.FALSE, STRUCT.ARR_END));
+    for (const sym of [STRUCT.TRUE, STRUCT.FALSE]) {
+      steps([[sym, false, STRUCT.ARR_END, pair]]);
+      steps([[sym, false, END, pair]]);
+      steps([[sym, true, STRUCT.ARR_END, withEnd]]);
+    }
+    steps([[STRUCT.ARR_END, true, STRUCT.ARR_END, withEnd]]);
+    const list: Step[] = [];
+    for (let n = 0; n < 40; n++) {
+      list.push([
+        n % 5 ? STRUCT.TRUE : STRUCT.FALSE,
+        n > 0,
+        STRUCT.ARR_END,
+        n > 0 ? withEnd : pair,
+      ]);
+    }
+    list.push([STRUCT.ARR_END, true, STRUCT.ARR_END, withEnd]);
+    const open = list.map(([sym, allow, end]): Step => [sym, allow, end]);
+    expect(steps(list)).toBeLessThan(steps(open));
   });
 });

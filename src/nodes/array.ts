@@ -306,14 +306,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
       }
     }
     if (count !== hi) {
-      // The reader loads the item's declared weights before every symbol, the end included.
-      s.marker(this, o).write(
-        enc,
-        STRUCT.ARR_END,
-        undefined,
-        { end: STRUCT.ARR_END, allow: true },
-        item._markerPrior()
-      );
+      writeMarker(enc, this, o, item, STRUCT.ARR_END, { end: STRUCT.ARR_END, allow: true });
     }
   }
 

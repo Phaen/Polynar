@@ -21,8 +21,8 @@ import { div } from './arith';
 import { Ids } from './alphabet';
 import { NumberCoder, NumberState } from './numbers';
 import type { NumberRange, PlainNumber, RecordEntry } from './numbers';
-import { SymbolPredictor, defaultFeatures, newPathState } from './symbols';
-import type { Features, MessageCore, PathState, Sink, Source } from './symbols';
+import { SymbolPredictor, closedOf, defaultFeatures, newPathState } from './symbols';
+import type { Closed, Features, MessageCore, PathState, Sink, Source } from './symbols';
 import type { Distribution } from './distribution';
 import { Population, frozen } from './tables';
 import type { Frozen } from './tables';
@@ -113,13 +113,36 @@ export interface MarkerPrior {
 }
 
 /**
+ * The structure symbols a declared node spells first, `key` naming the set for as long as it
+ * stays the same: a step coded with them chooses among them, and the container end where its bound
+ * admits one.
+ */
+export interface Members {
+  readonly key: object;
+  readonly set: ReadonlySet<number>;
+}
+
+/**
  * Codes a structure symbol (spec §6.5) through the innermost open container's structure
  * predictor, or the caller's own outside every container. `target` is the node the symbol is the
  * first structure symbol of, which then takes it with `Session.take`.
  */
 export interface MarkerAccess {
-  write(enc: Encoder, sym: number, target?: object, bound?: Bound, prior?: MarkerPrior): void;
-  read(dec: Decoder, target?: object, bound?: Bound, prior?: MarkerPrior): number;
+  write(
+    enc: Encoder,
+    sym: number,
+    target?: object,
+    bound?: Bound,
+    prior?: MarkerPrior,
+    members?: Members
+  ): void;
+  read(
+    dec: Decoder,
+    target?: object,
+    bound?: Bound,
+    prior?: MarkerPrior,
+    members?: Members
+  ): number;
   /**
    * Takes `sym`, a structure symbol the schema fixes, on both sides without coding it: the
    * structure populations advance past it as past a coded one, so what follows sees the same
@@ -342,6 +365,8 @@ export class Session implements RecordView {
   /** The last structure symbol coded for a node, until that node takes it. */
   private pendingSym = -1;
   private pendingFor: object | null = null;
+  /** The closed structure alphabets of declared member sets, by set and the end each admits. */
+  private readonly closedSets = new WeakMap<object, Map<number, Closed>>();
   /** The choice nodes whose weights each structure population holds. */
   private readonly loaded = new Map<Population, Set<object>>();
   private readonly carry: RunPrior | undefined;
@@ -639,12 +664,17 @@ export class Session implements RecordView {
     const top = this.scopes[this.scopes.length - 1];
     const at = top === undefined || top === null ? { path, o } : top;
     const pred = this.symbols(at.path, at.o, 'structure');
-    const before = (bound?: Bound, prior?: MarkerPrior): [boolean, number] => {
+    const before = (
+      bound?: Bound,
+      prior?: MarkerPrior,
+      members?: Members
+    ): [boolean, number, Closed | null] => {
       if (prior !== undefined) {
         const space = this.space(at.o.prior);
         this.load(space.pathState(at.path, at.o).pop, prior, space);
       }
-      return bound === undefined ? [false, END] : [bound.allow, bound.end];
+      const only = members === undefined ? null : this.closedOf(members, bound);
+      return bound === undefined ? [false, END, only] : [bound.allow, bound.end, only];
     };
     const after = (sym: number, target: object | undefined, bound: Bound | undefined): void => {
       if (target === undefined || (bound !== undefined && sym === bound.end)) {
@@ -655,15 +685,15 @@ export class Session implements RecordView {
       }
     };
     return {
-      write: (enc, sym, target, bound, prior) => {
+      write: (enc, sym, target, bound, prior, members) => {
         this.checkCommitted();
-        const [allow, end] = before(bound, prior);
-        pred.code(enc, sym, allow, end);
+        const [allow, end, only] = before(bound, prior, members);
+        pred.code(enc, sym, allow, end, only);
         after(sym, target, bound);
       },
-      read: (dec, target, bound, prior) => {
-        const [allow, end] = before(bound, prior);
-        const sym = pred.decode(dec, allow, end);
+      read: (dec, target, bound, prior, members) => {
+        const [allow, end, only] = before(bound, prior, members);
+        const sym = pred.decode(dec, allow, end, only);
         after(sym, target, bound);
         return sym;
       },
@@ -673,6 +703,24 @@ export class Session implements RecordView {
         after(sym, target, undefined);
       },
     };
+  }
+
+  /** The closed alphabet of `members` with the end of `bound` where it admits one, made once. */
+  private closedOf(members: Members, bound: Bound | undefined): Closed {
+    let byEnd = this.closedSets.get(members.key);
+    if (byEnd === undefined) {
+      byEnd = new Map();
+      this.closedSets.set(members.key, byEnd);
+    }
+    const end = bound?.allow === true ? bound.end : -1;
+    let closed = byEnd.get(end);
+    if (closed === undefined) {
+      const ids = new Set(members.set);
+      if (end >= 0) ids.add(end);
+      closed = closedOf(Int32Array.from([...ids].sort((a, b) => a - b)));
+      byEnd.set(end, closed);
+    }
+    return closed;
   }
 
   /** Loads `prior`'s counts into `pop`'s order-0 entry once. */

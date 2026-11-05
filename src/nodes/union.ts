@@ -1,4 +1,4 @@
-import { Encoder, Decoder, CorruptInputError } from '../packer';
+import { Encoder, Decoder } from '../packer';
 import { resolve } from '../predictor/options';
 import { loadedPriors } from '../predictor/prior';
 import { session, type MarkerPrior } from '../predictor/session';
@@ -187,11 +187,10 @@ export class PUnion<T> extends MethodNode<T> {
     if (this._resolved === undefined) {
       return this._members[this._pick.read(dec)]._read(dec);
     }
+    // The symbol was read among the union's own symbols, or among any where a member spells any,
+    // so some member matches it.
     const sym = readOwnMarker(dec, this, this._resolved);
     const matched = this._matching(sym);
-    if (matched.length === 0) {
-      throw new CorruptInputError(`p.union has no member for structure symbol ${sym}`);
-    }
     const pos =
       matched.length === 1 ? matched[0] : matched[this._among(dec, sym, matched).read(dec)];
     const member = this._members[pos];
