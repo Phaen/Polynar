@@ -740,6 +740,10 @@ export class PString extends PNode<string> {
     return this._text.run(unique ? 'unique' : 'sorted');
   }
 
+  _lone(): 'text' | 'bytes' | undefined {
+    return this._learned?.lone();
+  }
+
   _read(dec: Decoder): string {
     return this._learned === undefined ? this._text.read(dec) : this._learned.read(dec);
   }

@@ -5,6 +5,8 @@ import { loadedPriors } from '../../predictor/prior';
 import { text as shippedText } from '../../predictor/shipped/text';
 import { Session, session } from '../../predictor/session';
 import { SymbolPredictor } from '../../predictor/symbols';
+import { Population } from '../../predictor/tables';
+import { p } from '../../nodes';
 import type {
   Bound,
   MarkerPrior,
@@ -151,6 +153,105 @@ describe('session', () => {
     expect(s.listIndex).toBe(1);
     s.leaveList();
     expect(s.listIndex).toBe(-1);
+  });
+});
+
+interface Codec {
+  encode(value: unknown): Uint8Array;
+  decode(bytes: Uint8Array): unknown;
+  _write(enc: Encoder, value: unknown): void;
+  _read(dec: Decoder): unknown;
+}
+
+describe('lone path', () => {
+  const TEXT = 'the lone path takes the message populations as its own; the lone path codes';
+
+  /** Codes TEXT at path 'p' through a session of `enc`; counts resolve and update per population. */
+  function codeAt(enc: Encoder): {
+    s: Session;
+    calls: Map<Population, { resolve: number; update: number }>;
+  } {
+    const calls = new Map<Population, { resolve: number; update: number }>();
+    const at = (pop: Population) => {
+      let c = calls.get(pop);
+      if (c === undefined) {
+        c = { resolve: 0, update: 0 };
+        calls.set(pop, c);
+      }
+      return c;
+    };
+    const origResolve = Population.prototype.resolve;
+    const origUpdate = Population.prototype.update;
+    Population.prototype.resolve = function (this: Population) {
+      at(this).resolve++;
+      origResolve.call(this);
+    };
+    Population.prototype.update = function (this: Population, a: number, off?: number) {
+      at(this).update++;
+      origUpdate.call(this, a, off);
+    };
+    try {
+      const s = session(enc);
+      s.string('p', opts(), 'text').write(enc, cps(TEXT), TEXT.length, OPEN);
+      return { s, calls };
+    } finally {
+      Population.prototype.resolve = origResolve;
+      Population.prototype.update = origUpdate;
+    }
+  }
+
+  it('takes the message populations as its own, each resolved and updated once per step', () => {
+    const plain = codeAt(new Encoder());
+    const enc = new Encoder();
+    enc.root = { _lone: () => 'text' };
+    const lone = codeAt(enc);
+    const o = opts();
+    const ps = lone.s.space(o.prior).pathState('p', o);
+    const msg = lone.s.symbols('p', o, 'text').context();
+    expect(ps.pop).toBe(msg);
+    const plainPs = plain.s.space(o.prior).pathState('p', o);
+    expect(plainPs.pop).not.toBe(plain.s.symbols('p', o, 'text').context());
+    // Each population of the plain session steps as often as the shared one of the lone session.
+    expect(lone.calls.get(ps.pop)).toEqual(plain.calls.get(plainPs.pop));
+    expect(lone.calls.get(ps.popF)).toEqual(plain.calls.get(plainPs.popF));
+    expect(ps.pop.t).toBe(plainPs.pop.t);
+    expect(lone.calls.size).toBe(plain.calls.size - 2);
+  });
+
+  it('keeps the session options it is given', () => {
+    const enc = new Encoder();
+    enc.root = { _lone: () => 'bytes' };
+    expect(session(enc, { valueFromSecond: true }).valueFromSecond).toBe(true);
+    const dec = new Decoder(new Uint8Array(0));
+    dec.root = { _lone: () => undefined };
+    const s = session(dec);
+    const o = opts();
+    expect(s.space(o.prior).pathState('p', o).pop).not.toBe(s.symbols('p', o, 'text').context());
+  });
+
+  it('is named by a compressed string or binary root only', () => {
+    expect(p.string().compress()._lone()).toBe('text');
+    expect(p.binary().compress()._lone()).toBe('bytes');
+    expect(p.string()._lone()).toBeUndefined();
+    expect(p.binary()._lone()).toBeUndefined();
+    expect(p.string().compress({ separate: true })._lone()).toBeUndefined();
+    expect(p.int()._lone()).toBeUndefined();
+    expect(p.object({ a: p.string().compress() })._lone()).toBeUndefined();
+  });
+
+  it('codes the bytes of separate path and message populations', () => {
+    const cases: [Codec, unknown][] = [
+      [p.string().compress() as unknown as Codec, TEXT],
+      [p.binary().compress() as unknown as Codec, new TextEncoder().encode(TEXT)],
+    ];
+    for (const [node, value] of cases) {
+      const enc = new Encoder();
+      node._write(enc, value);
+      const bytes = enc.output();
+      expect(node.encode(value)).toEqual(bytes);
+      expect(node.decode(bytes)).toEqual(value);
+      expect(node._read(new Decoder(bytes))).toEqual(value);
+    }
   });
 });
 

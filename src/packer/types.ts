@@ -57,4 +57,13 @@ export type Radix = number & { readonly [radixBrand]: true };
 export type Base = Radix & { readonly [baseBrand]: true };
 
 /** A weighted symbol's bucket: `[cum, cum + freq)` out of `total` states, as composeWeighted takes it. */
+/** The node a message is the value of, as `PNode.encode` and `decode` record it on their side. */
+export interface MessageRoot {
+  /**
+   * The alphabet of the one predictor path the message is coded at, when the node is that path's
+   * own value and nothing else in the message codes through the predictor; undefined otherwise.
+   */
+  _lone(): 'text' | 'bytes' | undefined;
+}
+
 export type Bucket = readonly [cum: number, freq: number, total: number];

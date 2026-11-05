@@ -13,4 +13,11 @@ export { MessageState, SlotCache } from './state';
 export { CorruptInputError, UnknownVersionError } from './errors';
 export { CharSets } from './constants';
 export { Alphabet, COST_UNITS, ScaledRatio, bitLength, costUnits } from './utils';
-export type { Bucket, Charset, CodecOptions, DecodeOptions, OutputType } from './types';
+export type {
+  Bucket,
+  Charset,
+  CodecOptions,
+  DecodeOptions,
+  MessageRoot,
+  OutputType,
+} from './types';

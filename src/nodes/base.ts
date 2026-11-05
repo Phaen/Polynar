@@ -135,6 +135,11 @@ export abstract class PNode<TOut> {
     return undefined;
   }
 
+  /** As the message's root, see `MessageRoot`: a node other than a compressed string or binary has no lone path. */
+  _lone(): 'text' | 'bytes' | undefined {
+    return undefined;
+  }
+
   /** Validate one value and write its digits. The whole codec for this type. */
   abstract _write(enc: Encoder, value: TOut): void;
 
@@ -147,6 +152,7 @@ export abstract class PNode<TOut> {
   encode(value: TOut, options?: CodecOptions<OutputType>): Uint8Array | string;
   encode(value: TOut, options?: CodecOptions<OutputType>): Uint8Array | string {
     const enc = new Encoder();
+    enc.root = this;
     this._write(enc, value);
     return enc.output(options);
   }
@@ -157,6 +163,7 @@ export abstract class PNode<TOut> {
     options?: DecodeOptions<T> & FormOf<I, T>
   ): TOut {
     const dec = new Decoder(input, options);
+    dec.root = this;
     const value = this._read(dec);
     // The schema is the whole message, so the input must be exactly consumed:
     // leftover digits and trailing padding throw.

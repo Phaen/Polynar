@@ -9,7 +9,7 @@
  * cost, such as a character outside the charset.
  */
 
-import type { DecodeOptions, OutputType, Radix } from './types';
+import type { DecodeOptions, MessageRoot, OutputType, Radix } from './types';
 import {
   TERM_BASE,
   TERM_COUNT_RUN_DIGITS,
@@ -158,6 +158,9 @@ export class Decoder<I extends Uint8Array | string = Uint8Array | string> {
 
   /** No journal: a decoder never rolls back, so its models record nothing. */
   readonly journal: undefined = undefined;
+
+  /** The node the message is the value of, when `PNode.decode` made the decoder. */
+  root: MessageRoot | null = null;
 
   /**
    * Announce `count` items about to be read, right after reading their

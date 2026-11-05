@@ -24,7 +24,7 @@
  * `Decoder.parseMixture`, so the bits the choice took are recovered.
  */
 
-import type { Bucket, CodecOptions, OutputType, Radix } from './types';
+import type { Bucket, CodecOptions, MessageRoot, OutputType, Radix } from './types';
 import {
   TERM_BASE,
   TERM_ESCAPE_MIN,
@@ -230,6 +230,8 @@ export class Encoder {
   private opening = false;
   /** Where the message's state records its changes while a transaction is open. */
   readonly journal = new Journal();
+  /** The node the message is the value of, when `PNode.encode` made the encoder. */
+  root: MessageRoot | null = null;
   private readonly states = new MessageState(this.journal);
   /**
    * The groups opened by `composeSelector`: the selector's slot in the

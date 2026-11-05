@@ -15,7 +15,7 @@
  * step's table, which only the coder can arrange.
  */
 
-import type { Decoder, Encoder } from '../packer';
+import type { Decoder, Encoder, MessageRoot } from '../packer';
 import { CorruptInputError } from '../packer/errors';
 import { div } from './arith';
 import { Ids } from './alphabet';
@@ -48,6 +48,8 @@ export interface SessionOptions {
   readonly carry?: RunPrior;
   /** Training: called with every symbol a predictor takes in, coded or implied, in order. */
   readonly trace?: Trace;
+  /** The alphabet of the message's lone predictor path (`MessageRoot`), whose path and message populations are one. */
+  readonly lone?: 'text' | 'bytes';
 }
 
 /** A symbol id a predictor learned and the alphabet it belongs to. */
@@ -64,6 +66,8 @@ export interface Side {
   state<S>(key: object, init: () => S): S;
   /** Active while the encoder tries a spelling it may take back. */
   readonly journal?: { readonly active: boolean };
+  /** The node the message is the value of, where the side knows it. */
+  readonly root?: MessageRoot | null;
 }
 
 interface Pair {
@@ -197,7 +201,8 @@ export class Space implements MessageCore {
     readonly features: Features,
     readonly valueFromSecond: boolean,
     carry: RunPrior | undefined,
-    readonly trace: Trace | null
+    readonly trace: Trace | null,
+    private readonly lone?: 'text' | 'bytes'
   ) {
     this.ids = new Ids(prior);
     this.run = carry ?? newRunPrior(prior);
@@ -210,7 +215,10 @@ export class Space implements MessageCore {
   }
 
   pathState(key: PathKey, o: Resolved): PathState {
-    return this.paths.get(key, () => newPathState(o, this.features));
+    const lone = this.lone;
+    return this.paths.get(key, () =>
+      newPathState(o, this.features, lone === undefined ? undefined : this.pair(lone, o))
+    );
   }
 
   /** The number state of a path and its coder, made with the range and spelling of first use. */
@@ -332,6 +340,7 @@ export class Session implements RecordView {
   private readonly loaded = new Map<Population, Set<object>>();
   private readonly carry: RunPrior | undefined;
   private readonly trace: Trace | null;
+  private readonly lone: 'text' | 'bytes' | undefined;
 
   constructor(
     options: SessionOptions = {},
@@ -341,6 +350,7 @@ export class Session implements RecordView {
     this.valueFromSecond = options.valueFromSecond === true;
     this.carry = options.carry;
     this.trace = options.trace ?? null;
+    this.lone = options.lone;
   }
 
   /** The space of `prior` (of `carry.loaded` when the session carries a run prior), made on first use. */
@@ -349,7 +359,7 @@ export class Session implements RecordView {
     const p = carry === undefined ? prior : carry.loaded;
     let space = this.spaces.get(p);
     if (space === undefined) {
-      space = new Space(p, this.features, this.valueFromSecond, carry, this.trace);
+      space = new Space(p, this.features, this.valueFromSecond, carry, this.trace, this.lone);
       this.spaces.set(p, space);
       this.first ??= space;
     }
@@ -904,5 +914,13 @@ const SESSION = {};
 
 /** The session of the message a side codes, made on first use. */
 export function session(side: Side, options?: SessionOptions): Session {
-  return side.state(SESSION, () => new Session(options, side.journal));
+  return side.state(SESSION, () => {
+    // A root with a lone path is a compressed string or binary coded as the whole message, off
+    // `separate`: its path is the only one, so that path's predictor alone advances the message
+    // populations of its alphabet, and both start empty with the message and are made with the
+    // path's options. The path's populations would then take the same symbols at the same
+    // offsets as the message's, so they are the message's.
+    const lone = side.root?._lone();
+    return new Session(lone === undefined ? options : { ...options, lone }, side.journal);
+  });
 }

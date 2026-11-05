@@ -226,6 +226,10 @@ export class PBinary<A extends TypedArray> extends PNode<A> {
     }
   }
 
+  _lone(): 'text' | 'bytes' | undefined {
+    return this._learned?.lone();
+  }
+
   _read(dec: Decoder): A {
     return this._learned === undefined ? this._plain.read(dec) : this._learned.read(dec);
   }

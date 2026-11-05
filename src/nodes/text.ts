@@ -8,7 +8,7 @@
  */
 import { Encoder, Decoder, CorruptInputError, COST_UNITS } from '../packer';
 import { session } from '../predictor/session';
-import type { AlphabetKind, Ends, Resolved } from '../predictor/types';
+import type { Ends, Resolved } from '../predictor/types';
 import { Exclusion, readExcluded, staticTable, writeExcluded, type Table } from './excluded';
 import { IndexRange, lengthRange, type LengthBounds } from './lattice';
 import { GAMMA_MAGNITUDE } from './magnitude';
@@ -461,7 +461,7 @@ export class Learned<T> {
     private readonly symbols: Symbols<T>,
     private readonly path: object,
     private readonly options: Resolved,
-    private readonly alphabet: AlphabetKind,
+    private readonly alphabet: 'text' | 'bytes',
     bounds: LengthBounds,
     private readonly members?: Int32Array
   ) {
@@ -498,6 +498,11 @@ export class Learned<T> {
       items.push(digits === undefined ? sym : (digits.get(sym) as number));
     }
     return this.symbols.build(items);
+  }
+
+  /** The alphabet of the node's path when it is a message's lone one (`MessageRoot`): none under `separate`. */
+  lone(): 'text' | 'bytes' | undefined {
+    return this.options.separate ? undefined : this.alphabet;
   }
 
   private coder(side: Encoder | Decoder) {

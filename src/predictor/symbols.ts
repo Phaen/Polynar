@@ -146,10 +146,18 @@ export interface PathState {
   readonly valueSyms: Int32Array[];
 }
 
-export function newPathState(o: Resolved, features: Features): PathState {
+/**
+ * A path's state; `shared`, the message's populations of the path's alphabet, are its own when
+ * the path is the message's lone one (session.ts `session`).
+ */
+export function newPathState(
+  o: Resolved,
+  features: Features,
+  shared?: { readonly msg: Population; readonly msgF: Population }
+): PathState {
   return {
-    pop: new Population(o),
-    popF: new Population(o),
+    pop: shared === undefined ? new Population(o) : shared.msg,
+    popF: shared === undefined ? new Population(o) : shared.msgF,
     sinceNew: 0,
     n: 0,
     deltas: new Map(),
@@ -780,10 +788,11 @@ export class SymbolPredictor {
     const msgF = this.msgF;
     const value = core.valuePop;
     this.ensure(ids.size());
+    // A lone path's populations are the message's: each resolves once.
     if (msg !== null) msg.resolve();
-    node.resolve();
+    if (node !== msg) node.resolve();
     if (msgF !== null) msgF.resolve();
-    nodeF.resolve();
+    if (nodeF !== msgF) nodeF.resolve();
     if (value !== null && value !== node) value.resolve();
     const ctx = msg === null ? node : msg;
     const B = this.builtin;
@@ -1203,9 +1212,9 @@ export class SymbolPredictor {
     const af = ids.foldDigit(a);
     path.sinceNew = node.tab.has(0, a) ? path.sinceNew + 1 : 0;
     if (this.msg !== null) this.msg.update(a, off);
-    node.update(a, off);
+    if (node !== this.msg) node.update(a, off);
     if (this.msgF !== null) this.msgF.update(af, off);
-    path.popF.update(af, off);
+    if (path.popF !== this.msgF) path.popF.update(af, off);
     if (this.valuePop !== null && this.valuePop !== node) this.valuePop.update(a, off);
     core.b = ids.isBoundary(a) ? 0 : core.b + 1;
     core.n++;
