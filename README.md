@@ -32,13 +32,13 @@ The first table is self-describing: keys and types travel with the data. Polynar
 
 | Payload        |         JSON |  MessagePack |     url-safe |   ascii-safe |           binary |
 | -------------- | -----------: | -----------: | -----------: | -----------: | ---------------: |
-| User profile   |  62.8 (64.3) |  44.6 (48.4) |  53.7 (35.1) |  49.5 (32.4) |  40.7 (**26.7**) |
+| User profile   |  62.8 (64.3) |  44.6 (48.4) |  53.7 (34.8) |  49.5 (32.1) |  40.7 (**26.5**) |
 | GPS position   |  32.0 (36.0) |  27.0 (31.0) |  26.8 (23.1) |  24.7 (21.3) |  20.4 (**17.6**) |
-| Chat message   |  95.5 (89.3) |  69.1 (71.1) |  79.2 (55.3) |  72.8 (50.8) |  59.9 (**41.8**) |
-| Sensor reading |  53.8 (55.9) |  39.9 (43.7) |  42.9 (29.7) |  39.5 (27.4) |  32.6 (**22.6**) |
-| Shopping cart  | 124.4 (67.0) |  85.1 (61.9) | 100.6 (35.5) |  92.6 (32.7) |  76.1 (**27.0**) |
-| Status feed    | 521.8 (63.4) | 323.8 (60.4) | 385.0 (26.7) | 354.2 (24.6) | 290.8 (**20.2**) |
-| Lorem ipsum    |   1375 (641) |   1372 (631) |   1596 (700) |   1469 (644) |   1206 (**529**) |
+| Chat message   |  95.5 (89.3) |  69.1 (71.1) |  79.2 (55.3) |  72.8 (51.0) |  59.9 (**41.9**) |
+| Sensor reading |  53.8 (55.9) |  39.9 (43.7) |  42.9 (29.4) |  39.5 (27.2) |  32.6 (**22.4**) |
+| Shopping cart  | 124.4 (67.0) |  85.1 (61.9) | 100.6 (35.5) |  92.6 (32.7) |  76.1 (**26.9**) |
+| Status feed    | 521.8 (63.4) | 323.8 (60.4) | 385.0 (26.8) | 354.2 (24.7) | 290.8 (**20.3**) |
+| Lorem ipsum    |   1375 (641) |   1372 (631) |   1596 (707) |   1469 (651) |   1206 (**535**) |
 
 In the second table both sides share a schema and only the values are written. Protobuf and Avro get the same decimal steps as scaled integers, but only Polynar can use the bounds. Protobuf tags every field and rounds it up to whole bytes, Avro drops the tags but keeps the bytes, and Polynar spends fractional bits.
 
@@ -50,7 +50,7 @@ In the second table both sides share a schema and only the values are written. P
 | Sensor reading |  10.6 (14.6) |   7.2 (11.2) |         5.9 |         5.3 |         **4.6** |
 | Shopping cart  |  37.2 (40.8) |  20.8 (24.8) | 18.5 (15.8) | 17.0 (14.6) | 14.1 (**12.1**) |
 | Status feed    | 102.0 (27.8) | 103.0 (28.1) |  24.0 (9.8) |  22.1 (9.0) |  18.3 (**7.5**) |
-| Lorem ipsum    |   1372 (629) |   1371 (632) |   968 (699) |   891 (643) |   732 (**528**) |
+| Lorem ipsum    |   1372 (629) |   1371 (632) |   968 (702) |   891 (646) |   732 (**531**) |
 
 Polynar's binary output is smaller than every binary format's on every row, plain or compressed, and its url-safe text is smaller than JSON on every row and rivals the binary formats.
 
@@ -374,7 +374,7 @@ Hints are nodes some values are expected to fit: `p.any([p.string().charset(Char
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.compress(options?: CompressOptions)` | Codes the values through the predictor as one stream: each value's kind as a symbol of the structure, an object's keys as text, strings, integers and dates predicted from the values before them at the same key path, other numbers as their shortest text, and the rest as without. Hints are used as under their own `.compress()`. See [The predictor](#the-predictor-compress). |
 
-Under `.compress()` the status feed, a hundred strings from a set of three, averages 20.2 bytes instead of 290.8, the keys of an array of same-shaped objects soon cost next to nothing, and lorem costs less than under `.prose()`. Thirteen real JSON documents (GitHub and npm API responses, GeoJSON, a Slack export and more) take 88.1 kB, where JSON with brotli takes 128.9 kB.
+Under `.compress()` the status feed, a hundred strings from a set of three, averages 20.3 bytes instead of 290.8, the keys of an array of same-shaped objects soon cost next to nothing, and lorem costs less than under `.prose()`. Thirteen real JSON documents (GitHub and npm API responses, GeoJSON, a Slack export and more) take 88.2 kB, where JSON with brotli takes 128.9 kB.
 
 ### Priors: `.weights()`
 
@@ -438,7 +438,7 @@ p.array(p.object({ id: p.int(), name: p.string(), tags: p.array(p.enum(['a', 'b'
 A node below with a `.compress(options)` of its own keeps its options, a node with `.adapt()` keeps its learned prior and the nodes below it stay as they are, and a node used in two places stays one node.
 
 ```typescript
-p.string().compress(); // alice.txt: 43,358 bytes, where brotli takes 51,615
+p.string().compress(); // alice.txt: 43,357 bytes, where brotli takes 51,615
 p.array(p.string().compress()); // a list of strings, each predicted from the ones before it
 p.binary().compress(); // bytes, a closed alphabet of 256
 ```
