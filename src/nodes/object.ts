@@ -94,12 +94,12 @@ export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<In
       return;
     }
     const s = this._open(enc, (s, o) => {
-      if (s.take(this) < 0) s.marker(this, o).write(enc, STRUCT.OBJ_START);
+      if (s.take(this) < 0) s.marker(this, o).imply(STRUCT.OBJ_START);
     });
     try {
       this._fields(enc, value);
       const o = this._resolved;
-      if (o !== undefined) s.marker(this, o).write(enc, STRUCT.OBJ_END);
+      if (o !== undefined) s.marker(this, o).imply(STRUCT.OBJ_END);
     } finally {
       this._close(s);
     }
@@ -110,12 +110,12 @@ export class PObject<S extends Record<string, PNode<any>>> extends MethodNode<In
       return this._unfields(dec);
     }
     const s = this._open(dec, (s, o) => {
-      if (s.take(this) < 0) s.marker(this, o).read(dec);
+      if (s.take(this) < 0) s.marker(this, o).imply(STRUCT.OBJ_START);
     });
     try {
       const value = this._unfields(dec);
       const o = this._resolved;
-      if (o !== undefined) s.marker(this, o).read(dec);
+      if (o !== undefined) s.marker(this, o).imply(STRUCT.OBJ_END);
       return value;
     } finally {
       this._close(s);

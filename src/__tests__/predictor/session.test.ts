@@ -698,6 +698,29 @@ describe('Session markers', () => {
     expect(s.take(other)).toBe(-1);
   });
 
+  it('implies a fixed symbol: nothing coded, the structure history advanced as by a coded one', () => {
+    const coded = new Encoder();
+    const sc = session(coded);
+    for (const sym of SYMS) sc.marker('self', o).write(coded, sym);
+    const implied = new Encoder();
+    const si = session(implied);
+    for (const sym of SYMS.slice(0, -1)) si.marker('self', o).imply(sym);
+    si.marker('self', o).write(implied, STRUCT.OBJ_END);
+    const node = {};
+    si.marker('self', o).imply(STRUCT.STR, node);
+    expect(si.take(node)).toBe(STRUCT.STR);
+    si.marker('self', o).imply(STRUCT.KEY);
+    expect(implied.output().length).toBeLessThan(coded.output().length);
+    expect(si.symbols('self', o, 'structure').context().t).toBe(
+      sc.symbols('self', o, 'structure').context().t + 2
+    );
+    const dec = new Decoder(implied.output());
+    const sd = session(dec);
+    for (const sym of SYMS.slice(0, -1)) sd.marker('self', o).imply(sym);
+    expect(sd.marker('self', o).read(dec)).toBe(STRUCT.OBJ_END);
+    dec.finalize();
+  });
+
   it('drops a held symbol on a symbol written for no target', () => {
     const node = {};
     const enc = new Encoder();

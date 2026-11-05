@@ -234,7 +234,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     }
     const s = session(enc);
     const o = this._resolved;
-    if (o !== undefined && s.take(this) < 0) s.marker(this, o).write(enc, STRUCT.ARR_START);
+    if (o !== undefined && s.take(this) < 0) s.marker(this, o).imply(STRUCT.ARR_START);
     this._enter(s);
     try {
       if (o === undefined) {
@@ -253,7 +253,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     }
     const s = session(dec);
     const o = this._resolved;
-    if (o !== undefined && s.take(this) < 0) s.marker(this, o).read(dec);
+    if (o !== undefined && s.take(this) < 0) s.marker(this, o).imply(STRUCT.ARR_START);
     this._enter(s);
     try {
       return o === undefined ? this._unspell(dec, s) : this._unitems(dec, o, s);

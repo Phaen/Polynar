@@ -5,6 +5,7 @@
 
 import { p, Encoder, Decoder } from '../../index';
 import {
+  fixedOf,
   kindMarker,
   markerOfKind,
   markerPrior,
@@ -157,6 +158,22 @@ describe('markerPrior', () => {
   });
 });
 
+describe('fixedOf', () => {
+  const one = new Set([STRUCT.STR]);
+
+  it('is the one symbol of a single-symbol set where no end may come', () => {
+    expect(fixedOf(one)).toBe(STRUCT.STR);
+    expect(fixedOf(one, { end: STRUCT.ARR_END, allow: false })).toBe(STRUCT.STR);
+  });
+
+  it('is −1 where the schema leaves a choice', () => {
+    expect(fixedOf(one, { end: STRUCT.ARR_END, allow: true })).toBe(-1);
+    expect(fixedOf(new Set([STRUCT.TRUE, STRUCT.FALSE]))).toBe(-1);
+    expect(fixedOf(new Set())).toBe(-1);
+    expect(fixedOf(undefined)).toBe(-1);
+  });
+});
+
 describe('ownMarker', () => {
   const o = resolve({}, loadedPriors.text, 'test');
 
@@ -171,5 +188,14 @@ describe('ownMarker', () => {
     const Schema = p.object({ on: p.bool(), off: p.bool() }).compress();
     const value = { on: true, off: false };
     expect(Schema.decode(Schema.encode(value))).toEqual(value);
+  });
+
+  it('codes nothing for a symbol the node fixes, and reads it back', () => {
+    const node = p.int();
+    const enc = new Encoder();
+    expect(ownMarker(enc, node, o, STRUCT.INT)).toBe(STRUCT.INT);
+    const out = enc.output();
+    expect(out.length).toBe(0);
+    expect(readOwnMarker(new Decoder(out), node, o)).toBe(STRUCT.INT);
   });
 });

@@ -1,7 +1,8 @@
 /**
  * Structure symbols of declared schemas on the predictor (spec §6.5, brief D15 as amended): the
- * first structure symbol of a value's spelling, which the value's parent codes before it, and the
- * declared weights of a choice node as prior counts of its symbols (D19).
+ * first structure symbol of a value's spelling, which the value's parent codes before it (or only
+ * implies, where the schema leaves the value one symbol), and the declared weights of a choice
+ * node as prior counts of its symbols (D19).
  */
 
 import type { Encoder, Decoder } from '../packer';
@@ -104,6 +105,18 @@ export function markerPrior(
 }
 
 /**
+ * The one structure symbol a value of a node spelling `set` first can take where `bound` admits no
+ * end, −1 when the schema leaves a choice.
+ */
+export function fixedOf(set: ReadonlySet<number> | undefined, bound?: Bound): number {
+  if (set === undefined || set.size !== 1 || bound?.allow === true) {
+    return -1;
+  }
+  const [sym] = set;
+  return sym;
+}
+
+/**
  * Codes `sym`, the first structure symbol of a value of `child`, through the innermost container
  * on the predictor, or at `self` outside every one, and hands it to `child`.
  */
@@ -115,7 +128,12 @@ export function writeMarker(
   sym: number,
   bound?: Bound
 ): void {
-  session(enc).marker(self, o).write(enc, sym, child, bound, child._markerPrior());
+  const access = session(enc).marker(self, o);
+  if (fixedOf(child._markers(), bound) >= 0) {
+    access.imply(sym, child);
+  } else {
+    access.write(enc, sym, child, bound, child._markerPrior());
+  }
 }
 
 /** Reads what `writeMarker` wrote, handing it to `child`. */
@@ -126,7 +144,13 @@ export function readMarker(
   child: PNode<any>,
   bound?: Bound
 ): number {
-  return session(dec).marker(self, o).read(dec, child, bound, child._markerPrior());
+  const access = session(dec).marker(self, o);
+  const fixed = fixedOf(child._markers(), bound);
+  if (fixed >= 0) {
+    access.imply(fixed, child);
+    return fixed;
+  }
+  return access.read(dec, child, bound, child._markerPrior());
 }
 
 /**
@@ -139,7 +163,12 @@ export function ownMarker(enc: Encoder, node: PNode<any>, o: Resolved, sym: numb
   if (coded >= 0) {
     return coded;
   }
-  s.marker(node, o).write(enc, sym, undefined, undefined, node._markerPrior());
+  const access = s.marker(node, o);
+  if (fixedOf(node._markers()) >= 0) {
+    access.imply(sym);
+  } else {
+    access.write(enc, sym, undefined, undefined, node._markerPrior());
+  }
   return sym;
 }
 
@@ -150,5 +179,11 @@ export function readOwnMarker(dec: Decoder, node: PNode<any>, o: Resolved): numb
   if (coded >= 0) {
     return coded;
   }
-  return s.marker(node, o).read(dec, undefined, undefined, node._markerPrior());
+  const access = s.marker(node, o);
+  const fixed = fixedOf(node._markers());
+  if (fixed >= 0) {
+    access.imply(fixed);
+    return fixed;
+  }
+  return access.read(dec, undefined, undefined, node._markerPrior());
 }

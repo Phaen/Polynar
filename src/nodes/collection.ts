@@ -302,7 +302,7 @@ export class PCollection<T> extends MethodNode<T> {
     }
     const s = session(enc);
     const o = this._resolved;
-    if (o !== undefined && s.take(this) < 0) s.marker(this, o).write(enc, this._layout.start);
+    if (o !== undefined && s.take(this) < 0) s.marker(this, o).imply(this._layout.start);
     this._enter(s);
     try {
       if (o === undefined) {
@@ -321,7 +321,7 @@ export class PCollection<T> extends MethodNode<T> {
     }
     const s = session(dec);
     const o = this._resolved;
-    if (o !== undefined && s.take(this) < 0) s.marker(this, o).read(dec);
+    if (o !== undefined && s.take(this) < 0) s.marker(this, o).imply(this._layout.start);
     this._enter(s);
     try {
       return o === undefined ? this._unspell(dec, s) : this._unentries(dec, o, s);
@@ -401,7 +401,9 @@ export class PCollection<T> extends MethodNode<T> {
       return;
     }
     const s = session(enc);
-    s.marker(this, o).write(enc, STRUCT.KEY, undefined, bound);
+    const access = s.marker(this, o);
+    if (bound.allow) access.write(enc, STRUCT.KEY, undefined, bound);
+    else access.imply(STRUCT.KEY);
     // A record's entries come from `Object.entries`, whose keys are strings.
     const cps = Array.from(key as string, (ch) => ch.codePointAt(0) as number);
     s.text(this, o, 'text').write(enc, cps, cps.length, KEY_TEXT);
@@ -423,7 +425,9 @@ export class PCollection<T> extends MethodNode<T> {
           if (readMarker(dec, this, o, node, bound) === end) break;
           key = node._read(dec);
         } else {
-          if (s.marker(this, o).read(dec, undefined, bound) === end) break;
+          const access = s.marker(this, o);
+          if (!bound.allow) access.imply(STRUCT.KEY);
+          else if (access.read(dec, undefined, bound) === end) break;
           let text = '';
           for (const cp of s.text(this, o, 'text').read(dec, KEY_TEXT)) {
             text += String.fromCodePoint(cp);

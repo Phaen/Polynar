@@ -1816,7 +1816,7 @@ describe('Decode limit', () => {
         .array(p.object({ a: p.int() }))
         .max(100000)
         .compress(),
-      [{ a: 1 }, { a: 2 }],
+      [{ a: 1 }, { a: 2 }, { a: 300 }, { a: -7 }, { a: 41 }],
     ],
   ] as unknown as [string, PNode<unknown>, unknown][])(
     'throws at once on damaged input to %s on the predictor',

@@ -120,6 +120,12 @@ export interface MarkerPrior {
 export interface MarkerAccess {
   write(enc: Encoder, sym: number, target?: object, bound?: Bound, prior?: MarkerPrior): void;
   read(dec: Decoder, target?: object, bound?: Bound, prior?: MarkerPrior): number;
+  /**
+   * Takes `sym`, a structure symbol the schema fixes, on both sides without coding it: the
+   * structure populations advance past it as past a coded one, so what follows sees the same
+   * history; no table is built and nothing learns.
+   */
+  imply(sym: number, target?: object): void;
 }
 
 /** A container on the predictor: where its children's structure symbols are coded. */
@@ -660,6 +666,11 @@ export class Session implements RecordView {
         const sym = pred.decode(dec, allow, end);
         after(sym, target, bound);
         return sym;
+      },
+      imply: (sym, target) => {
+        this.checkCommitted();
+        pred.implied(sym);
+        after(sym, target, undefined);
       },
     };
   }
