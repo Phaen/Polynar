@@ -37,7 +37,7 @@ The first table is self-describing: keys and types travel with the data. Polynar
 | Chat message   |  95.5 (89.3) |  69.1 (71.1) |  79.2 (55.3) |  72.8 (50.8) |  59.9 (**41.8**) |
 | Sensor reading |  53.8 (55.9) |  39.9 (43.7) |  42.9 (29.7) |  39.5 (27.4) |  32.6 (**22.6**) |
 | Shopping cart  | 124.4 (67.0) |  85.1 (61.9) | 100.6 (35.5) |  92.6 (32.7) |  76.1 (**27.0**) |
-| Status feed    | 521.8 (63.4) | 323.8 (60.4) | 385.0 (28.2) | 354.2 (25.9) | 290.8 (**21.4**) |
+| Status feed    | 521.8 (63.4) | 323.8 (60.4) | 385.0 (26.7) | 354.2 (24.6) | 290.8 (**20.2**) |
 | Lorem ipsum    |   1375 (641) |   1372 (631) |   1596 (700) |   1469 (644) |   1206 (**529**) |
 
 In the second table both sides share a schema and only the values are written. Protobuf and Avro get the same decimal steps as scaled integers, but only Polynar can use the bounds. Protobuf tags every field and rounds it up to whole bytes, Avro drops the tags but keeps the bytes, and Polynar spends fractional bits.
@@ -374,7 +374,7 @@ Hints are nodes some values are expected to fit: `p.any([p.string().charset(Char
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.compress(options?: CompressOptions)` | Codes the values through the predictor as one stream: each value's kind as a symbol of the structure, an object's keys as text, strings, integers and dates predicted from the values before them at the same key path, other numbers as their shortest text, and the rest as without. Hints are used as under their own `.compress()`. See [The predictor](#the-predictor-compress). |
 
-Under `.compress()` the status feed, a hundred strings from a set of three, averages 21.4 bytes instead of 290.8, the keys of an array of same-shaped objects soon cost next to nothing, and lorem costs less than under `.prose()`. Thirteen real JSON documents (GitHub and npm API responses, GeoJSON, a Slack export and more) take 88.2 kB, where JSON with brotli takes 128.9 kB.
+Under `.compress()` the status feed, a hundred strings from a set of three, averages 20.2 bytes instead of 290.8, the keys of an array of same-shaped objects soon cost next to nothing, and lorem costs less than under `.prose()`. Thirteen real JSON documents (GitHub and npm API responses, GeoJSON, a Slack export and more) take 88.1 kB, where JSON with brotli takes 128.9 kB.
 
 ### Priors: `.weights()`
 
