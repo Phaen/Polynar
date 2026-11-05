@@ -125,6 +125,27 @@ describe('.compress() on a container', () => {
     );
   });
 
+  it('keeps a prose string on the text prior where the container brings the shipped JSON one', () => {
+    const prior = (node: unknown) => (node as { _compress: { prior: unknown } })._compress.prior;
+    const shape = (node: unknown) => (node as { _shape: Record<string, unknown> })._shape;
+    const node = p.object({ text: p.string().prose(), name: p.string() });
+    const shipped = shape(node.compress());
+    expect(prior(shipped.text)).toBe(loadedPriors.text.source);
+    expect(prior(shipped.name)).toBe(loadedPriors.json.source);
+    const own = { ...loadedPriors.json.source };
+    expect(prior(shape(node.compress({ prior: own })).text)).toBe(own);
+  });
+
+  it('codes a prose string under the sugar as under its own text-prior compress', () => {
+    const sugar = p.object({ n: p.int(), text: p.string().prose() }).compress();
+    const own = p
+      .object({ n: p.int(), text: p.string().compress({ prior: loadedPriors.text.source }) })
+      .compress();
+    const value = { n: 7, text: 'The build is green again, thanks for the quick fix!' };
+    expect(sugar.encode(value)).toEqual(own.encode(value));
+    expect(sugar.decode(sugar.encode(value))).toEqual(value);
+  });
+
   it('round-trips under the sugar', () => {
     const node = p.array(p.object({ ok: p.bool(), kind: p.enum(['a', 'b']) })).compress();
     const values = Array.from({ length: 30 }, (_, i) => ({

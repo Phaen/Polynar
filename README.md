@@ -181,7 +181,7 @@ The model only sees lowercase words joined by spaces. Each string first names it
 
 The built-in model is English (`ProseModels.english`). Any other is a matrix: `{ alphabet, weights }`, where `weights[row][col]` says how likely the character in column `col` is after the one in row `row`. Rows and columns follow `alphabet`, plus one extra each: the last row is used after a character outside the alphabet, and the last column is the escape for such characters. A string's first character uses the space's row, or the last row if the alphabet has no space. `buildProseModel(corpus, options?)` builds a model from the sample text, lowercased, and returns plain JSON. Characters it sees only once are left out of the alphabet; `{ minCount }` or an explicit `{ alphabet }` changes that.
 
-Under `.compress()` the bounds still hold: a string never ends below the min, and ends at the max without the end symbol. A charset closes the alphabet to its characters. `.prose()` adds nothing there, and a prose model of your own, a length `.weights()` or `.cdf()` throw next to it.
+Under `.compress()` the bounds still hold: a string never ends below the min, and ends at the max without the end symbol. A charset closes the alphabet to its characters. A prose model of your own, a length `.weights()` or `.cdf()` throw next to it. `.prose()` adds nothing to the string's own `.compress()`, but under a container's `.compress()` it keeps the string on the text prior, which would otherwise start from the JSON prior. The string then codes exactly as under `.compress({ prior: Priors.text })`: it is predicted from its own field and the other strings on that prior, not from the rest of the message. On the Chat message that saves 1.2 bytes.
 
 ### `p.binary(type?: TypedArrayClass)`
 
@@ -427,7 +427,7 @@ If your values simply repeat, `.adapt()` is enough: it notices what keeps coming
 
 ### The predictor: `.compress()`
 
-`.compress()` hands a node's values to the similarity predictor. It codes a message as one stream of symbols: the characters of strings and keys, the bytes of binaries, and the structure around them as JSON spells it, where an object or array starts and ends, the kind of every value and whether an optional field is there. Each symbol is predicted from the positions in the message whose context looks like the current one, in the same field, in every other field of the message and in a prior that ships with the package, and it learns as it goes, so text, ids, URLs and keys that resemble what came before cost little. Whole values are predicted as well: a value a field held before costs a few bits, and a number is predicted from the field's past values and the numbers around it. Strings start from a prior trained on English text and binaries from nothing; every other node, and every node under one `.compress()` on a container or `p.any`, starts from a prior trained on JSON documents. What each node codes this way is in its section.
+`.compress()` hands a node's values to the similarity predictor. It codes a message as one stream of symbols: the characters of strings and keys, the bytes of binaries, and the structure around them as JSON spells it, where an object or array starts and ends, the kind of every value and whether an optional field is there. Each symbol is predicted from the positions in the message whose context looks like the current one, in the same field, in every other field of the message and in a prior that ships with the package, and it learns as it goes, so text, ids, URLs and keys that resemble what came before cost little. Whole values are predicted as well: a value a field held before costs a few bits, and a number is predicted from the field's past values and the numbers around it. Strings start from a prior trained on English text and binaries from nothing; every other node, and every node under one `.compress()` on a container or `p.any` except a `.prose()` string, starts from a prior trained on JSON documents. What each node codes this way is in its section.
 
 On `p.object`, `p.array`, `p.map`, `p.record`, `p.set`, `p.optional`, `p.nullable`, `p.union` and `p.tagged` it reaches every node below as well, through `p.lazy` and `p.versioned` too, so one call puts a whole schema on the predictor:
 
@@ -436,6 +436,8 @@ p.array(p.object({ id: p.int(), name: p.string(), tags: p.array(p.enum(['a', 'b'
 ```
 
 A node below with a `.compress(options)` of its own keeps its options, a node with `.adapt()` keeps its learned prior and the nodes below it stay as they are, and a node used in two places stays one node.
+
+A message of one or two values gives the predictor little to learn from, and on a declared schema it still pays a few bits per value to mark what each value is. The Chat message costs 34.4 bytes with `.compress()` on the whole object, 29.0 plain, and 27.1 with `.compress()` on its text field alone, so a small message is best served by `.compress()` on its text fields only.
 
 ```typescript
 p.string().compress(); // alice.txt: 43,357 bytes, where brotli takes 51,615
@@ -462,7 +464,7 @@ The options are part of the schema, as everything else is.
 
 #### Priors
 
-Two priors ship with the package, as `Priors.text` and `Priors.json`. The text prior is trained on the `man bash` page, the string values of thirteen JSON documents (the first 12,000 characters of each) and a list of first names; strings start from it, and binaries take its learned weights without its characters. The JSON prior is trained on those thirteen documents whole, and every other node starts from it. Each holds the weights the predictor learned and how often each character follows another, the 2,500 most frequent pairs.
+Two priors ship with the package, as `Priors.text` and `Priors.json`. The text prior is trained on the `man bash` page, the string values of thirteen JSON documents (the first 12,000 characters of each) and a list of first names; strings start from it, `.prose()` strings under a container's `.compress()` included, and binaries take its learned weights without its characters. The JSON prior is trained on those thirteen documents whole, and every other node starts from it. Each holds the weights the predictor learned and how often each character follows another, the 2,500 most frequent pairs.
 
 `train(node, samples, options?)` makes one from your own data. Each sample is one message of `node`, which needs `.compress()` on itself or somewhere below it, and the result is plain JSON you can store and pass as `.compress({ prior })`; the same samples give the same prior on every engine.
 

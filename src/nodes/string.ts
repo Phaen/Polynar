@@ -656,8 +656,18 @@ export class PString extends PNode<string> {
     return this._with({ ...this._bounds, prior: w });
   }
 
+  /**
+   * A container's `.compress()` reaching the node. Prose keeps the text prior where the container
+   * brings the shipped JSON one, as `.compress({ prior: Priors.text })` on the node would; a prior
+   * of the user's own stays.
+   */
   _adapted(options: CompressOptions): PString {
-    return this._compress !== undefined ? this : this.compress(options);
+    if (this._compress !== undefined) return this;
+    return this.compress(
+      this._prose !== undefined && options.prior === loadedPriors.json.source
+        ? { ...options, prior: loadedPriors.text.source }
+        : options
+    );
   }
 
   _marker(): number {
