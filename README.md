@@ -443,7 +443,7 @@ p.array(p.string().compress()); // a list of strings, each predicted from the on
 p.binary().compress(); // bytes, a closed alphabet of 256
 ```
 
-It is slow next to every other node: about 48 microseconds per character on each side for alice.txt and 32 for the JSON documents, against 0.08 for them under plain `p.any()`, and a 50-character object takes about 1 millisecond. It holds around 1.4 kB of memory per character the message has coded so far, 240 MB by the end of alice.txt. Use it where size matters more than time, on messages of up to a few hundred kilobytes.
+It is slow next to every other node: about 39 microseconds per character on each side for alice.txt and 23 for the JSON documents, against 0.08 for them under plain `p.any()`, and a 50-character object takes about 0.8 milliseconds. It holds around 1.4 kB of memory per character the message has coded so far, 234 MB by the end of alice.txt. Use it where size matters more than time, on messages of up to a few hundred kilobytes.
 
 | Option                  | Description                                                                                                                                                                                                                                  |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

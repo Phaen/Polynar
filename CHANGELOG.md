@@ -20,7 +20,7 @@
 - `.learn()` is now `.adapt()`, with `AdaptOptions` in place of `LearningOptions`; it takes the `{ window, separate }` that `.learning()` took.
 - `.adapt()` and `.compress()` can't both be set on one node. A custom prose model, or a length or count `.weights()` or `.cdf()`, throws next to `.compress()`.
 - Damaged input under `.compress()` throws a `CorruptInputError` as soon as its input runs out inside a string, binary or container, instead of after the decode `limit`.
-- `.compress()` is slow next to every other node: about 48 microseconds per character on each side for English text and 32 for JSON documents, and around 1.4 kB of memory per character a message has coded so far. Plain `p.any()` runs within 2% of its earlier speed.
+- `.compress()` is slow next to every other node: about 39 microseconds per character on each side for English text and 23 for JSON documents, and around 1.4 kB of memory per character a message has coded so far. Plain `p.any()` runs within 2% of its earlier speed.
 - Sizes, under `p.any().compress()` in the README's first table: the user profile 29.5 → 26.5 bytes, the chat message 44.0 → 41.9, the sensor reading 24.3 → 22.4, the shopping cart 28.8 → 26.9 and lorem 570 → 535; the GPS position 15.3 → 17.6 and the status feed 18.6 → 20.3. Lorem under its tuned schema 569 → 531. The thirteen JSON documents 91.7 kB → 88.2 kB.
 
 ### Removed
