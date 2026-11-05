@@ -15,7 +15,7 @@
  * probability the confidence map sharpens; otherwise, or on a miss, the component is coded under
  * the component prior, then the value under the component, and the component is put back through
  * the coder's mixture (`composeMixture` / `parseMixture`) with the posterior at the value as
- * weights. `top` is removed from every component on a miss.
+ * weights, the `TOP_K` heaviest references kept. `top` is removed from every component on a miss.
  *
  * Log-domain quantities are in bits with RB fractional bits; the prototype's natural-log
  * parameters converted once in the prior. Masses are block-scaled per step: the component prior
@@ -65,6 +65,13 @@ const TAIL = NC + 1;
 const NCLS = NC + 2;
 
 const P_ONE = POW2[PB];
+/**
+ * On a miss the encoder writes the value's spelling under every positive-weight component and
+ * rolls it back, so the step costs as much as it has components. The TOP_K heaviest posterior
+ * weights carry nearly all the mass: the rest are dropped from the coded mixture, not from
+ * learning. NOVELTY and RANGE, past the references, are always kept.
+ */
+const TOP_K = 16;
 const TWO_53 = POW2[52] * 2;
 const MAX_SAFE = TWO_53 - 1;
 /** Steps are held in PB fixed point within ±2^50; a difference that teaches them is clamped to ±2^34. */
@@ -221,6 +228,63 @@ function larger(a: number, b: number): number {
   return a > b ? a : b;
 }
 
+/**
+ * Zeroes all but the `k` (≥ 1) heaviest positive entries among `w[0..n)`; among equal weights the
+ * lower index is kept. Entries from `n` on are left as they are. `scratch` holds at least `n`
+ * entries.
+ */
+export function keepHeaviest(w: number[], n: number, k: number, scratch: Float64Array): void {
+  let m = 0;
+  for (let i = 0; i < n; i++) if (w[i] > 0) scratch[m++] = w[i];
+  if (m <= k) return;
+  const t = kthLargest(scratch, m, k);
+  let above = 0;
+  for (let i = 0; i < m; i++) if (scratch[i] > t) above++;
+  // The `k − above` first entries equal to the threshold fill the k.
+  let ties = k - above;
+  for (let i = 0; i < n; i++) {
+    const x = w[i];
+    if (x > t) continue;
+    if (x === t && ties > 0) {
+      ties--;
+      continue;
+    }
+    w[i] = 0;
+  }
+}
+
+/** The `k`-th largest of `a[0..m)`, 1 ≤ k ≤ m, by quickselect; `a` is permuted. */
+function kthLargest(a: Float64Array, m: number, k: number): number {
+  const target = k - 1;
+  let lo = 0;
+  let hi = m - 1;
+  for (;;) {
+    const p = a[shr(lo + hi, 1)];
+    // [lo, lt) above the pivot, [lt, i) equal to it, (gt, hi] below it.
+    let lt = lo;
+    let i = lo;
+    let gt = hi;
+    while (i <= gt) {
+      const x = a[i];
+      if (x > p) {
+        a[i] = a[lt];
+        a[lt] = x;
+        lt++;
+        i++;
+      } else if (x < p) {
+        a[i] = a[gt];
+        a[gt] = x;
+        gt--;
+      } else {
+        i++;
+      }
+    }
+    if (target < lt) hi = lt - 1;
+    else if (target > gt) lo = gt + 1;
+    else return p;
+  }
+}
+
 /** The difference a − b clamped to ±2^34, the reach of a step. */
 function diffOf(a: number, b: number): number {
   return clampi(a - b, 0 - DIFF_MAX, DIFF_MAX);
@@ -319,6 +383,8 @@ export class NumberCoder {
   private L = new Float64Array(0);
   private has = new Uint8Array(0);
   private num = 0;
+  /** The positive reference weights `capped` selects among (scratch). */
+  private sel = new Float64Array(0);
   // Learning scratch.
   private readonly A = new Float64Array(NP);
   private readonly T = new Float64Array(NP);
@@ -380,7 +446,7 @@ export class NumberCoder {
       }
     }
     const weights = this.observe(x);
-    enc.composeMixture(weights, (j) => this.spell(enc, j, x));
+    enc.composeMixture(this.capped(weights), (j) => this.spell(enc, j, x));
     this.learn(x);
   }
 
@@ -398,7 +464,7 @@ export class NumberCoder {
     }
     const j = this.dist.idAt(dec.parseMember(this.dist.total, this.dist));
     const x = this.unspell(dec, j);
-    dec.parseMixture(this.observe(x), j);
+    dec.parseMixture(this.capped(this.observe(x)), j);
     this.learn(x);
     return x;
   }
@@ -876,6 +942,15 @@ export class NumberCoder {
     const nov = this.novR + this.novP;
     this.post[n - 1] = nov > 0 ? nov : 1;
     this.num = num + this.post[n - 1];
+    return w;
+  }
+
+  /** The mixture weights `w` with only the TOP_K heaviest references kept, in place. */
+  private capped(w: number[]): number[] {
+    const refs = this.refs;
+    if (refs <= TOP_K) return w;
+    if (this.sel.length < refs) this.sel = new Float64Array(larger(refs, 2 * this.sel.length));
+    keepHeaviest(w, refs, TOP_K, this.sel);
     return w;
   }
 

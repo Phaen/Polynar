@@ -1,6 +1,7 @@
 import { CorruptInputError, Decoder, Encoder } from '../../packer';
 import type { MemberTable } from '../../packer';
 import { resolve } from '../../predictor/options';
+import { keepHeaviest } from '../../predictor/numbers';
 import { loadedPriors } from '../../predictor/prior';
 import { Session, session } from '../../predictor/session';
 import type { NumberRange, PlainNumber } from '../../predictor/session';
@@ -418,5 +419,55 @@ describe('number predictor on corrupt input', () => {
     expect(s.number(path, o, {}, PLAIN).read(dec)).toBe(2 ** 52);
     const x = s.number(path, o, {}, PLAIN).read(dec);
     expect(x === -(2 ** 52) + 5 || x === -(2 ** 52) + 6).toBe(true);
+  });
+});
+
+describe('keepHeaviest', () => {
+  const keep = (w: number[], n: number, k: number): number[] => {
+    const out = w.slice();
+    keepHeaviest(out, n, k, new Float64Array(n));
+    return out;
+  };
+
+  /** The reference: positives by weight, heaviest first, ties by index, the first k kept. */
+  const bySort = (w: readonly number[], n: number, k: number): number[] => {
+    const idx: number[] = [];
+    for (let i = 0; i < n; i++) if (w[i] > 0) idx.push(i);
+    idx.sort((a, b) => w[b] - w[a] || a - b);
+    const out = w.slice();
+    for (let r = k; r < idx.length; r++) out[idx[r]] = 0;
+    return out;
+  };
+
+  it('leaves fewer than k positives and exactly k as they are', () => {
+    expect(keep([0, 4, 0, 2, 7], 5, 4)).toEqual([0, 4, 0, 2, 7]);
+    expect(keep([3, 0, 1, 2], 4, 3)).toEqual([3, 0, 1, 2]);
+    expect(keep([], 0, 1)).toEqual([]);
+  });
+
+  it('keeps the lower index among weights equal to the k-th', () => {
+    expect(keep([5, 3, 3, 3, 1], 5, 3)).toEqual([5, 3, 3, 0, 0]);
+    expect(keep([1, 3, 0, 3, 5, 3], 6, 2)).toEqual([0, 3, 0, 0, 5, 0]);
+    expect(keep([2, 2, 2, 2], 4, 1)).toEqual([2, 0, 0, 0]);
+    expect(keep([2, 2, 2, 2], 4, 3)).toEqual([2, 2, 2, 0]);
+  });
+
+  it('leaves the entries past n, NOVELTY and RANGE, when they are the lightest', () => {
+    expect(keep([9, 8, 7, 1, 1], 3, 2)).toEqual([9, 8, 0, 1, 1]);
+    expect(keep([1, 9, 8, 7, 0, 1], 4, 1)).toEqual([0, 9, 0, 0, 0, 1]);
+  });
+
+  it('matches the sort over random weights, ties and zeros', () => {
+    const r = rng(41);
+    for (let t = 0; t < 3000; t++) {
+      const n = Math.floor(r() * 200);
+      const tail = Math.floor(r() * 3);
+      const spread = [2, 5, 50, 2 ** 40][t % 4];
+      const w = Array.from({ length: n + tail }, () =>
+        r() < 0.2 ? 0 : 1 + Math.floor(r() * spread)
+      );
+      const k = 1 + Math.floor(r() * 24);
+      expect(keep(w, n, k)).toEqual(bySort(w, n, k));
+    }
   });
 });
