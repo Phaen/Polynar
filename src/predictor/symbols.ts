@@ -736,13 +736,14 @@ export class SymbolPredictor {
     return id < DIGIT;
   }
 
-  private addCand(id: number): void {
+  /** Adds `id` to the step's candidates once when it is a member; returns whether it is. */
+  private addCand(id: number): boolean {
     if (!this.member(id)) {
-      return;
+      return false;
     }
     this.ensure(id + 1);
     if (this.cStamp[id] === this.stepNo) {
-      return;
+      return true;
     }
     this.cStamp[id] = this.stepNo;
     if (this.nc === this.cand.length) {
@@ -750,6 +751,7 @@ export class SymbolPredictor {
       this.candP = grownF(this.candP, this.nc * 2);
     }
     this.cand[this.nc++] = id;
+    return true;
   }
 
   /** The kernel-smeared mass of symbol `s` (spec §5.4); text only. */
@@ -1002,11 +1004,17 @@ export class SymbolPredictor {
       this.lb = Math.min(LAMBDA_MAX, exp2Fix(kn[1] + 24 * ONE));
       this.ld = Math.min(LAMBDA_MAX, exp2Fix(kn[2] + 24 * ONE));
     }
+    // The top symbol is the member of largest mass, the lowest id among equals.
+    let top = -1;
+    let tv = 0;
     for (let i = 0; i < this.nv; i++) {
       const t = this.vList[i];
-      this.addCand(t);
-      if (!this.text) continue;
       const v = this.V[t];
+      if (this.addCand(t) && (v > tv || (v === tv && top >= 0 && t < top))) {
+        top = t;
+        tv = v;
+      }
+      if (!this.text) continue;
       const p = ids.partner(t);
       if (p >= 0) {
         this.addCand(p);
@@ -1041,17 +1049,6 @@ export class SymbolPredictor {
     }
     this.Zp = Zp;
 
-    let top = -1;
-    let tv = 0;
-    for (let i = 0; i < this.nv; i++) {
-      const t = this.vList[i];
-      if (!this.member(t)) continue;
-      const v = this.V[t];
-      if (v > tv || (v === tv && top >= 0 && t < top)) {
-        top = t;
-        tv = v;
-      }
-    }
     this.top = top;
 
     const total = this.o.quantisation;
