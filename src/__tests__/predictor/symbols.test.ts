@@ -1,5 +1,5 @@
 import { Decoder, Encoder } from '../../packer';
-import { ONE, exp2Fix, log2Fix } from '../../predictor/arith';
+import { ONE, exp2Fix, log2Fix, mulShr } from '../../predictor/arith';
 import { casePartnerCp } from '../../predictor/alphabet';
 import { resolve } from '../../predictor/options';
 import { loadedPriors } from '../../predictor/prior';
@@ -336,6 +336,41 @@ describe('SymbolPredictor tables', () => {
     expect(d.indexOf(s.ids.idOf(0x48))).toBeGreaterThanOrEqual(0);
     for (const id of s.ids.digitIds()) expect(d.indexOf(id)).toBeGreaterThanOrEqual(0);
     for (const id of s.ids.boundaryIds()) expect(d.indexOf(id)).toBeGreaterThanOrEqual(0);
+    pred.learn(END);
+  });
+
+  it('smears a voted id from its kept classes and an unvoted one from the ids', () => {
+    const [s, pred] = stepped('Hello there, 42 times.\n');
+    pred.distribution();
+    const p = pred as unknown as {
+      smear(id: number): number;
+      vStamp: Int32Array;
+      V: Float64Array;
+      stepNo: number;
+      lc: number;
+      lb: number;
+      ld: number;
+      Bsum: number;
+      Dsum: number;
+    };
+    const ids = s.ids;
+    const vOf = (id: number): number => (p.vStamp[id] === p.stepNo ? p.V[id] : 0);
+    const plain = (id: number): number => {
+      let P = vOf(id);
+      const q = ids.partner(id);
+      if (q >= 0) P += mulShr(vOf(q), p.lc, 24);
+      if (ids.isBoundaryClass(id)) P += mulShr(p.Bsum - vOf(id), p.lb, 24);
+      if (ids.isDigit(id)) P += mulShr(p.Dsum - vOf(id), p.ld, 24);
+      return P;
+    };
+    const probe = [...ids.digitIds(), ...ids.boundaryIds(), ids.idOf(0x48), ids.idOf(0x65)];
+    for (const id of probe) {
+      expect(p.vStamp[id]).toBe(p.stepNo);
+      expect(p.smear(id)).toBe(plain(id));
+      p.vStamp[id] = -1;
+      expect(p.smear(id)).toBe(plain(id));
+      p.vStamp[id] = p.stepNo;
+    }
     pred.learn(END);
   });
 

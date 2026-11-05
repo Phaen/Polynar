@@ -296,6 +296,12 @@ export class SymbolPredictor {
   private pN: Int32Array = new Int32Array(0);
   private cStamp: Int32Array = new Int32Array(0);
   private rStamp: Int32Array = new Int32Array(0);
+  /**
+   * Of a voted id on a text step (valid where `vStamp` is the step): its case partner, and its
+   * kernel classes as a sum: 1 for the boundary class, 2 for a digit.
+   */
+  private kPart: Int32Array = new Int32Array(0);
+  private kCls: Int32Array = new Int32Array(0);
   private vList: Int32Array = new Int32Array(64);
   private nv = 0;
   private cand: Int32Array = new Int32Array(64);
@@ -417,6 +423,8 @@ export class SymbolPredictor {
     this.pN = grownI(this.pN, size);
     this.cStamp = grownI(this.cStamp, size);
     this.rStamp = grownI(this.rStamp, size);
+    this.kPart = grownI(this.kPart, size);
+    this.kCls = grownI(this.kCls, size);
   }
 
   /** The base exponent of a block at a feature cell, memoised for the step. */
@@ -757,15 +765,24 @@ export class SymbolPredictor {
   /** The kernel-smeared mass of symbol `s` (spec §5.4); text only. */
   private smear(s: number): number {
     const ids = this.core.ids;
-    let P = this.vOf(s);
-    const p = ids.partner(s);
+    let P = 0;
+    let p: number;
+    let cls: number;
+    if (this.vStamp[s] === this.stepNo) {
+      P = this.V[s];
+      p = this.kPart[s];
+      cls = this.kCls[s];
+    } else {
+      p = ids.partner(s);
+      cls = (ids.isBoundaryClass(s) ? 1 : 0) + (ids.isDigit(s) ? 2 : 0);
+    }
     if (p >= 0) {
       P += mulShr(this.vOf(p), this.lc, 24);
     }
-    if (ids.isBoundaryClass(s)) {
+    if (cls === 1 || cls === 3) {
       P += mulShr(this.Bsum - this.vOf(s), this.lb, 24);
     }
-    if (ids.isDigit(s)) {
+    if (cls >= 2) {
       P += mulShr(this.Dsum - this.vOf(s), this.ld, 24);
     }
     return P;
@@ -1016,16 +1033,20 @@ export class SymbolPredictor {
       }
       if (!this.text) continue;
       const p = ids.partner(t);
+      const bc = ids.isBoundaryClass(t);
+      const dg = ids.isDigit(t);
+      this.kPart[t] = p;
+      this.kCls[t] = (bc ? 1 : 0) + (dg ? 2 : 0);
       if (p >= 0) {
         this.addCand(p);
         this.kT[0] += mulShr(v, this.lc, 24);
       }
-      if (ids.isBoundaryClass(t)) {
+      if (bc) {
         anyB = true;
         Bsum += v;
         this.kT[1] += 2 * mulShr(v, this.lb, 24);
       }
-      if (ids.isDigit(t)) {
+      if (dg) {
         anyD = true;
         Dsum += v;
         this.kT[2] += 9 * mulShr(v, this.ld, 24);
@@ -1253,9 +1274,10 @@ export class SymbolPredictor {
         const cell = (node.tab.has(0, t) ? 3 : 0) + this.mat;
         let row = vs;
         if (this.text) {
-          if (ids.partner(t) >= 0) row += mulShr(vs, this.lc, 24);
-          if (ids.isBoundaryClass(t)) row += 2 * mulShr(vs, this.lb, 24);
-          if (ids.isDigit(t)) row += 9 * mulShr(vs, this.ld, 24);
+          const cls = this.kCls[t];
+          if (this.kPart[t] >= 0) row += mulShr(vs, this.lc, 24);
+          if (cls === 1 || cls === 3) row += 2 * mulShr(vs, this.lb, 24);
+          if (cls >= 2) row += 9 * mulShr(vs, this.ld, 24);
         }
         log.oscaleT[cell] += row;
         if (t === a) log.oscaleA[cell] += vs;
