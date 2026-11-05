@@ -347,14 +347,16 @@ export class NumberCoder {
   private tableAt = new Float64Array(0);
   /**
    * The step's kernels and siblings grouped by (weight slot, centre), with the group's log-weight
-   * and size: slots as in `kmass`. `gid` maps a kernel's centre index · NR + bucket to its group.
+   * and size: slots as in `kmass`. `gid` maps a kernel's centre index · NR + bucket to its group
+   * where `gidAt` holds the step's stamp.
    */
   private gSlot = new Int32Array(0);
   private gAt = new Float64Array(0);
   private gLw = new Float64Array(0);
   private gMult = new Float64Array(0);
   private ng = 0;
-  private readonly gid = new Map<number, number>();
+  private gid = new Int32Array(0);
+  private gidAt = new Float64Array(0);
   /** Row sums by centre under declared bounds, for this step's row scale. */
   private readonly rows = new Map<number, number>();
   /** Where `spot` put its value: class cell, class and offset within the class. */
@@ -366,6 +368,8 @@ export class NumberCoder {
   private readonly E = new Float64Array(NP);
   private offR = 0;
   private rowFull = 0;
+  /** log2 of `rowFull`, the row of every centre when no bound is declared. */
+  private lFull = 0;
   /** Per component, its mass in the component prior: a reference's row without `top`. */
   private prior = new Float64Array(0);
   private hasTop = false;
@@ -547,6 +551,11 @@ export class NumberCoder {
     return sum;
   }
 
+  /** log2 of a centre's row mass at the row scale (RB). */
+  private rowLog(C: number): number {
+    return !this.loSet && !this.hiSet ? this.lFull : log2Fix(this.rowSum(C));
+  }
+
   /** The mass of one value of a centre's class `cell` at the row scale. */
   private valueMass(cell: number): number {
     if (cell === P_MU) return this.E[P_MU];
@@ -582,6 +591,7 @@ export class NumberCoder {
       full += this.E[j];
     }
     this.rowFull = full;
+    this.lFull = log2Fix(full);
     this.rows.clear();
 
     const h = st.n < this.o.history ? st.n : this.o.history;
@@ -613,6 +623,8 @@ export class NumberCoder {
       this.gAt = new Float64Array(n);
       this.gLw = new Float64Array(n);
       this.gMult = new Float64Array(n);
+      this.gid = new Int32Array(n * NR);
+      this.gidAt = new Float64Array(n * NR);
     }
     this.nc = n;
     const K = this.K;
@@ -631,7 +643,7 @@ export class NumberCoder {
       this.at[j] = C;
       this.bucket[j] = b;
       this.lw[j] = p[b] + ht0;
-      K[j] = this.lw[j] + log2Fix(this.rowSum(C)) - this.offR;
+      K[j] = this.lw[j] + this.rowLog(C) - this.offR;
       j++;
     }
     for (let a = 1; a <= h; a++) {
@@ -657,7 +669,7 @@ export class NumberCoder {
       this.kind[j] = SIBLING;
       this.at[j] = C;
       this.lw[j] = s.lw + ht2;
-      K[j] = this.lw[j] + log2Fix(this.rowSum(C)) - this.offR;
+      K[j] = this.lw[j] + this.rowLog(C) - this.offR;
       j++;
     }
     if (this.useR) {
@@ -685,7 +697,8 @@ export class NumberCoder {
     this.off = SB * ONE - M;
     let Z = 0;
     for (let i = 0; i < n; i++) {
-      this.mass[i] = exp2Fix(K[i] + this.off);
+      // The kernels and the spikes of a recency bucket follow one another, often at one log-mass.
+      this.mass[i] = i > 0 && K[i] === K[i - 1] ? this.mass[i - 1] : exp2Fix(K[i] + this.off);
       Z += this.mass[i];
     }
     this.Z = Z;
@@ -740,9 +753,8 @@ export class NumberCoder {
    */
   private group(): void {
     const cid = this.cid;
-    const gid = this.gid;
+    const { gid, gidAt, stamp } = this;
     cid.clear();
-    gid.clear();
     this.ncent = 0;
     this.ng = 0;
     const sib0 = this.refs - this.sibS.length;
@@ -759,13 +771,16 @@ export class NumberCoder {
       }
       this.cix[i] = ci;
       const key = ci * NR + this.bucket[i];
-      const g = kd === KERNEL ? gid.get(key) : undefined;
-      if (g !== undefined) {
+      if (kd === KERNEL && gidAt[key] === stamp) {
+        const g = gid[key];
         this.gMult[g]++;
         continue;
       }
       const ng = this.ng++;
-      if (kd === KERNEL) gid.set(key, ng);
+      if (kd === KERNEL) {
+        gid[key] = ng;
+        gidAt[key] = stamp;
+      }
       this.gSlot[ng] = kd === KERNEL ? this.bucket[i] : NR + i - sib0;
       this.gAt[ng] = C;
       this.gLw[ng] = this.lw[i];
@@ -787,18 +802,26 @@ export class NumberCoder {
    */
   private massAt(ci: number): number {
     const v = this.cents[ci];
-    const kmass = this.kmass;
-    const kstamp = this.kstamp;
-    const stamp = this.stamp;
+    const { kmass, kstamp, stamp, gAt, gSlot, gLw, gMult } = this;
+    const off = this.off;
     let m = this.spikeAt[ci];
     for (let g = 0; g < this.ng; g++) {
-      this.spot(this.gAt[g], v);
-      const at = this.gSlot[g] * NCELL + this.spCell - P_MU;
+      // `spot` without the offset: the class and its cell relative to P_MU.
+      const C = gAt[g];
+      let c = 0;
+      let cell = 0;
+      if (v !== C) {
+        const up = v > C;
+        const dd = up ? v - C : C - v;
+        c = dd >= TWO_53 ? 54 : bitlen(dd);
+        cell = P_M - P_MU + (up ? 0 : NC) + c - 1;
+      }
+      const at = gSlot[g] * NCELL + cell;
       if (kstamp[at] !== stamp) {
         kstamp[at] = stamp;
-        kmass[at] = exp2Fix(this.gLw[g] + this.kern(this.spCell, this.spC) + this.off);
+        kmass[at] = exp2Fix(gLw[g] + this.kern(cell + P_MU, c) + off);
       }
-      m += this.gMult[g] * kmass[at];
+      m += gMult[g] * kmass[at];
     }
     return m;
   }

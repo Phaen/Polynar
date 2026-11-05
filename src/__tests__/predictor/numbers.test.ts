@@ -1,7 +1,8 @@
 import { CorruptInputError, Decoder, Encoder } from '../../packer';
 import type { MemberTable } from '../../packer';
+import { exp2Fix, log2Fix } from '../../predictor/arith';
 import { resolve } from '../../predictor/options';
-import { keepHeaviest } from '../../predictor/numbers';
+import { NumberCoder, keepHeaviest } from '../../predictor/numbers';
 import { loadedPriors } from '../../predictor/prior';
 import { Session, session } from '../../predictor/session';
 import type { NumberRange, PlainNumber } from '../../predictor/session';
@@ -469,5 +470,100 @@ describe('keepHeaviest', () => {
       const k = 1 + Math.floor(r() * 24);
       expect(keep(w, n, k)).toEqual(bySort(w, n, k));
     }
+  });
+});
+
+describe('number predictor top search', () => {
+  /** The coder's step internals; kind 1 is a spike. */
+  interface Step {
+    nc: number;
+    refs: number;
+    kind: Int32Array;
+    at: Float64Array;
+    lw: Float64Array;
+    K: Float64Array;
+    mass: Float64Array;
+    off: number;
+    offR: number;
+    ncent: number;
+    cents: Float64Array;
+    spCell: number;
+    spC: number;
+    spot(C: number, v: number): void;
+    kern(cell: number, c: number): number;
+    rowSum(C: number): number;
+    massAt(ci: number): number;
+    findTop(): void;
+  }
+  const proto = NumberCoder.prototype as unknown as Step;
+  const findTop = proto.findTop;
+
+  /** Codes the ops, checking every step's masses against a sum over its references one by one. */
+  function checked(ops: readonly Op[], o: CompressOptions = {}): number {
+    let probes = 0;
+    proto.findTop = function (this: Step): void {
+      for (let i = 0; i < this.nc; i++) {
+        expect(this.mass[i]).toBe(exp2Fix(this.K[i] + this.off));
+        if (i < this.refs && this.kind[i] !== 1) {
+          expect(this.K[i]).toBe(this.lw[i] + log2Fix(this.rowSum(this.at[i])) - this.offR);
+        }
+      }
+      for (let ci = 0; ci < this.ncent; ci++) {
+        const v = this.cents[ci];
+        let m = 0;
+        for (let i = 0; i < this.refs; i++) {
+          if (this.kind[i] === 1) {
+            if (this.at[i] === v) m += this.mass[i];
+            continue;
+          }
+          this.spot(this.at[i], v);
+          m += exp2Fix(this.lw[i] + this.kern(this.spCell, this.spC) + this.off);
+        }
+        expect(this.massAt(ci)).toBe(m);
+        probes++;
+      }
+      findTop.call(this);
+    };
+    try {
+      tripOps(ops, o);
+    } finally {
+      proto.findTop = findTop;
+    }
+    return probes;
+  }
+
+  const at = (values: readonly number[], range: NumberRange = {}): Op[] => {
+    const path = {};
+    return values.map((x) => ({ path, x, range }));
+  };
+
+  it('sums each centre’s mass as its references one by one, unbounded and bounded', () => {
+    const r = rng(61);
+    expect(checked(at(new Array<number>(40).fill(7)))).toBeGreaterThan(0);
+    checked(at(Array.from({ length: 60 }, () => Math.floor(r() * 2 ** 40))), { history: 9 });
+    checked(at(Array.from({ length: 60 }, (_, i) => (i % 2 === 0 ? 10 : 20))));
+    checked(at(Array.from({ length: 60 }, (_, i) => 1000 + 60 * (i - Math.floor(i / 3)))));
+    checked(at([-(2 ** 52), 2 ** 52, -(2 ** 52) + 1, 2 ** 52 - 1, 0]));
+    checked(
+      at(
+        Array.from({ length: 60 }, () => Math.floor(r() * 21)),
+        { lo: 0, hi: 20 }
+      )
+    );
+    checked(
+      at(
+        Array.from({ length: 40 }, () => 5 + Math.floor(r() * 9)),
+        { lo: 5 }
+      )
+    );
+  });
+
+  it('sums each centre’s mass with siblings', () => {
+    const ops: Op[] = [];
+    const a = {};
+    const b = {};
+    for (let i = 0; i < 30; i++)
+      ops.push('enter', { path: a, x: i % 5 }, { path: b, x: 3 }, 'leave');
+    expect(checked(ops)).toBeGreaterThan(0);
   });
 });
