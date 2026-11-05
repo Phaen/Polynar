@@ -438,7 +438,7 @@ p.array(p.object({ id: p.int(), name: p.string(), tags: p.array(p.enum(['a', 'b'
 A node below with a `.compress(options)` of its own keeps its options, a node with `.adapt()` keeps its learned prior and the nodes below it stay as they are, and a node used in two places stays one node.
 
 ```typescript
-p.string().compress(); // alice.txt: 43,364 bytes, where brotli takes 51,615
+p.string().compress(); // alice.txt: 43,358 bytes, where brotli takes 51,615
 p.array(p.string().compress()); // a list of strings, each predicted from the ones before it
 p.binary().compress(); // bytes, a closed alphabet of 256
 ```
