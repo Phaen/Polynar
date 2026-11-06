@@ -439,7 +439,7 @@ p.array(p.object({ id: p.int(), name: p.string(), tags: p.array(p.enum(['a', 'b'
 
 A node below with a `.compress(options)` of its own keeps its options, a node with `.adapt()` keeps its learned prior and the nodes below it stay as they are, and a node used in two places stays one node.
 
-A message of one or two values gives the predictor little to learn from, and on a declared schema it still pays a few bits per value to mark what each value is. The Chat message costs 34.4 bytes with `.compress()` on the whole object, 29.0 plain, and 27.1 with `.compress()` on its text field alone, so a small message is best served by `.compress()` on its text fields only.
+A message of one or two values gives the predictor little to learn from, but what a declared schema already fixes costs it nothing. The Chat message costs 27.1 bytes with `.compress()` on the whole object, 29.0 plain, and 27.1 with `.compress()` on its text field alone, so `.compress()` on the whole of a small message does as well as on its text fields.
 
 ```typescript
 p.string().compress(); // alice.txt: 43,357 bytes, where brotli takes 51,615
