@@ -1,5 +1,5 @@
 import { E_MIN, ONE, PB, RB, div } from '../../predictor/arith';
-import { cellOf } from '../../predictor/features';
+import { CELLS, cellOf } from '../../predictor/features';
 import { HF, NSRC, SRC, levels } from '../../predictor/types';
 import type { LoadedPrior, PriorConstants } from '../../predictor/types';
 import {
@@ -246,6 +246,76 @@ function refBlock(
 }
 
 describe('learn', () => {
+  it('learns the same from a step whose segments come in any order', () => {
+    const r = rnd(11);
+    const int = (n: number): number => Math.floor(r() * n);
+    const L = levels(ORDER);
+    for (let round = 0; round < 40; round++) {
+      const segs = Array.from({ length: 1 + int(12) }, () => {
+        const src = int(NSRC);
+        return {
+          src,
+          level: int(L),
+          lev: int(6) - 1,
+          ln: int(8 * (ORDER + 1) + 2) - 1,
+          lognL: int(16 * ONE),
+          tau: r() < 0.5,
+          votes: Array.from({ length: 1 + int(8) }, () => ({
+            cell: int(CELLS),
+            sym: 1 + int(5),
+            mass: r() < 0.1 ? 0 : int(2 ** 30),
+            share: src === SRC.msgF || src === SRC.nodeF ? int(65537) : 65536,
+          })),
+        };
+      });
+      const a = 1 + int(5);
+      const af = r() < 0.3 ? 1 + int(5) : -1;
+      const pathN = int(1000);
+      const learned = (order: typeof segs) => {
+        const run = newRunPrior(prior());
+        const log = new VoteLog();
+        let Z = 500;
+        let Sa = 1;
+        for (const g of order) {
+          for (const v of g.votes) {
+            const i = log.push(
+              blockOf(g.src, g.level, ORDER),
+              v.cell,
+              v.sym,
+              1,
+              0,
+              v.share,
+              g.src,
+              g.level,
+              g.lev,
+              g.ln,
+              g.lognL,
+              g.tau
+            );
+            log.massLearn[i] = v.mass;
+            Z += v.mass;
+            if (v.sym === a) Sa += v.mass;
+          }
+        }
+        log.af = af;
+        log.massEsc = 500;
+        log.vx.set([1, 2, 0, 1, 3]);
+        const deltas: PathDeltas = new Map();
+        learn(run, log, Sa, Z, a, deltas, pathN);
+        return { run, deltas: [...deltas.entries()].sort((x, y) => x[0] - y[0]) };
+      };
+      const shuffled = segs.slice().reverse();
+      shuffled.push(...shuffled.splice(0, int(shuffled.length)));
+      const one = learned(segs);
+      const two = learned(shuffled);
+      for (const k of ['hybrid', 'logn', 'lev', 'vfeat', 'pnov'] as const) {
+        expect(Array.from(two.run[k])).toEqual(Array.from(one.run[k]));
+      }
+      expect(two.run.escape).toBe(one.run.escape);
+      expect(two.deltas).toEqual(one.deltas);
+    }
+  });
+
   it('updates a block from two votes as computed by hand, with the path delta', () => {
     const run = newRunPrior(prior());
     const log = new VoteLog();

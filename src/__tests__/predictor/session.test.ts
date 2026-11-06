@@ -12,6 +12,7 @@ import type {
   MarkerPrior,
   Members,
   PlainNumber,
+  SessionOptions,
   Sink,
   Source,
   TextCoder,
@@ -234,6 +235,37 @@ describe('lone path', () => {
       expect(node.encode(value)).toEqual(bytes);
       expect(node.decode(bytes)).toEqual(value);
       expect(node._read(new Decoder(bytes))).toEqual(value);
+    }
+  });
+
+  it('learns as separate populations in one read of each shared entry, whichever sources share it', () => {
+    const CAT = 'the cat sat on the mat, '.repeat(12);
+    const variants: [SessionOptions, CompressOptions, string][] = [
+      [{}, {}, TEXT],
+      [{ valueFromSecond: true }, {}, TEXT],
+      [{ features: { tree: false } }, {}, TEXT],
+      [{ features: { depth: false, levelEvidence: false } }, {}, TEXT],
+      // A ring shorter than the candidates: long candidates outnumber their votes one level down.
+      [{}, { window: 16, candidates: 64 }, CAT],
+      // Counts past the small-count table.
+      [{}, { candidates: 0, offsets: 0 }, 'a'.repeat(4500) + 'b'],
+    ];
+    for (const [options, compress, text] of variants) {
+      const coded = (lone: boolean) => {
+        const enc = new Encoder();
+        if (lone) enc.root = { _lone: () => 'text' };
+        const s = session(enc, options);
+        const o = opts(compress);
+        s.string('p', o, 'text').write(enc, cps(text), text.length, OPEN);
+        return { bytes: enc.output(), run: s.space(o.prior).run };
+      };
+      const plain = coded(false);
+      const lone = coded(true);
+      expect(lone.bytes).toEqual(plain.bytes);
+      for (const k of ['hybrid', 'logn', 'lev', 'vfeat', 'pnov', 'kernel', 'apm'] as const) {
+        expect(Array.from(lone.run[k])).toEqual(Array.from(plain.run[k]));
+      }
+      expect(lone.run.escape).toBe(plain.run.escape);
     }
   });
 });

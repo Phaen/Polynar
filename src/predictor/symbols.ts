@@ -323,6 +323,16 @@ export class SymbolPredictor {
   private nc = 0;
   private stepNo = 0;
   private ringNo = 0;
+  /**
+   * The sources of a shared sweep (`sweepShared`) in log order, and per source its block, extra
+   * exponent, level-evidence cell, log-n cell and value-feature flag at the current level.
+   */
+  private readonly shSrc = new Int32Array(3);
+  private readonly shBk = new Int32Array(3);
+  private readonly shExtra = new Float64Array(3);
+  private readonly shLev = new Int32Array(3);
+  private readonly shLi = new Int32Array(3);
+  private readonly shTau = new Uint8Array(3);
 
   private readonly levTerm: Float64Array;
   private readonly levIdx: Int32Array;
@@ -601,6 +611,208 @@ export class SymbolPredictor {
     }
   }
 
+  /**
+   * The votes of the context entry `x` at level `k` for the first `nr` sources of `shSrc`, whose
+   * populations are one (a lone path's, session.ts `session`): each follower is read once and
+   * votes in every source's segment. The segments lie back to back in source order, each in the
+   * entry's order, so a source's vote of the follower at `pIdx[s]` one level down sits `r` entry
+   * counts of that level (`prev`) further on. Otherwise as `levelVotes` on a live population,
+   * without offset agreement: the lone path's population holds one value, coded at offsets that
+   * only grow, so no past position sits at the current offset.
+   */
+  private levelVotesShared(
+    tab: Entries,
+    x: number,
+    nr: number,
+    k: number,
+    prev: number,
+    cellK: number,
+    ll: number,
+    t: number
+  ): void {
+    const log = this.log;
+    const count = tab.n[x];
+    const i0 = log.n;
+    log.reserve(i0 + nr * count);
+    const { pIdx, pN, shBk, shExtra } = this;
+    const { memo, memoStamp } = this.core;
+    const stepNo = this.stepNo;
+    const d = tab.data(x);
+    const b = tab.base[x];
+    for (let r = 0; r < nr; r++) {
+      const g = log.open(
+        shBk[r],
+        this.shSrc[r],
+        k,
+        this.shLev[r],
+        this.shLi[r],
+        ll,
+        this.shTau[r] === 1
+      );
+      log.start[g] = i0 + r * count;
+      log.end[g] = i0 + (r + 1) * count;
+    }
+    const lCell = log.cell;
+    const lSym = log.sym;
+    const lCount = log.count;
+    const lLearn = log.eLearn;
+    const lShare = log.share16;
+    const lMassL = log.massLearn;
+    const three = nr === 3;
+    const bk0 = shBk[0];
+    const bk1 = shBk[1];
+    const bk2 = shBk[2];
+    const m0 = bk0 * CELLS;
+    const m1 = bk1 * CELLS;
+    const m2 = bk2 * CELLS;
+    const x0 = shExtra[0];
+    const x1 = shExtra[1];
+    const x2 = shExtra[2];
+    const i1 = i0 + count;
+    const i2 = i1 + count;
+    let max0 = -Infinity;
+    let max1 = -Infinity;
+    let max2 = -Infinity;
+    let maxN = 0;
+    for (let j = 0; j < count; j++) {
+      const o = b + j * STRIDE;
+      const s = d[o];
+      const c = d[o + 1];
+      let n = c;
+      if (k > 0) {
+        n = c < pN[s] ? c : pN[s];
+        const p = pIdx[s];
+        lCount[p] -= n;
+        lCount[p + prev] -= n;
+        if (three) lCount[p + 2 * prev] -= n;
+      }
+      const cell = cellK + recOf(t - d[o + 2]);
+      if (n > maxN) maxN = n;
+      const e0 = (memoStamp[m0 + cell] === stepNo ? memo[m0 + cell] : this.base(bk0, cell)) + x0;
+      const e1 = (memoStamp[m1 + cell] === stepNo ? memo[m1 + cell] : this.base(bk1, cell)) + x1;
+      if (e0 > max0) max0 = e0;
+      if (e1 > max1) max1 = e1;
+      let i = i0 + j;
+      lCell[i] = cell;
+      lSym[i] = s;
+      lCount[i] = n;
+      lLearn[i] = e0;
+      lShare[i] = P_ONE;
+      lMassL[i] = 0;
+      i = i1 + j;
+      lCell[i] = cell;
+      lSym[i] = s;
+      lCount[i] = n;
+      lLearn[i] = e1;
+      lShare[i] = P_ONE;
+      lMassL[i] = 0;
+      if (three) {
+        const e2 = (memoStamp[m2 + cell] === stepNo ? memo[m2 + cell] : this.base(bk2, cell)) + x2;
+        if (e2 > max2) max2 = e2;
+        i = i2 + j;
+        lCell[i] = cell;
+        lSym[i] = s;
+        lCount[i] = n;
+        lLearn[i] = e2;
+        lShare[i] = P_ONE;
+        lMassL[i] = 0;
+      }
+      pIdx[s] = i0 + j;
+      pN[s] = n;
+    }
+    log.n = i0 + nr * count;
+    if (maxN >= 1) {
+      const lc = maxN < LOG2_SMALL.length ? LOG2_SMALL[maxN] : log2Fix(maxN);
+      const maxL = max0 > max1 ? (max0 > max2 ? max0 : max2) : max1 > max2 ? max1 : max2;
+      this.noteM(lc + maxL);
+    }
+  }
+
+  /**
+   * `sweep` of the first `nr` sources of `shSrc` over their one live population `pop`: every
+   * entry is read once (`levelVotesShared`, which also says why no vote takes offset agreement);
+   * the long candidates then vote per source.
+   */
+  private sweepShared(nr: number, pop: Population): void {
+    const m = pop.m;
+    if (m < 0) {
+      return;
+    }
+    const tab = pop.tab;
+    const E = pop.E;
+    const K = this.K;
+    const f = this.core.features;
+    const log = this.log;
+    const t = pop.t;
+    const b = this.core.b;
+    const off = this.off;
+    const { shSrc, shBk, shExtra, shLev, shLi, shTau } = this;
+    for (let r = 0; r < nr; r++) {
+      shBk[r] = blockOf(shSrc[r], 0, K);
+      shExtra[r] = 0;
+      shLev[r] = -1;
+      shLi[r] = -1;
+      shTau[r] = 0;
+    }
+    const cell0 = cellOf(0, false, 0, 0, dist(tab.n[E[0]]));
+    this.levelVotesShared(tab, E[0], nr, 0, 0, cell0, 0, t);
+    const depthOn = f.depth;
+    for (let k = 1; k <= m; k++) {
+      const x = E[k];
+      const total = tab.total[x];
+      const depth = anchorDepth(k, b, off, Infinity, depthOn);
+      const ll = lognL(total > 1 ? total : 1);
+      for (let r = 0; r < nr; r++) {
+        const src = shSrc[r];
+        const isNode = src === SRC.node;
+        const li = src * (K + 1) + k;
+        shBk[r] = blockOf(src, k, K);
+        shLi[r] = li;
+        shExtra[r] = (isNode ? this.G + this.levTerm[k] : 0) + lognTerm(this.run.logn[li], total);
+        shLev[r] = isNode ? this.levIdx[k] : -1;
+        shTau[r] = isNode ? 1 : 0;
+      }
+      const cellK = cellOf(0, false, depth, 0, dist(tab.n[x]));
+      this.levelVotesShared(tab, x, nr, k, tab.n[E[k - 1]], cellK, ll, t);
+    }
+    if (m !== K || pop.nc === 0) {
+      return;
+    }
+    const totalK = tab.total[E[K]];
+    const countK = tab.n[E[K]];
+    const detK = dist(countK);
+    const llK = lognL(totalK > 1 ? totalK : 1);
+    const { pIdx } = this;
+    for (let r = 0; r < nr; r++) {
+      const src = shSrc[r];
+      const isNode = src === SRC.node;
+      const liK = src * (K + 1) + K;
+      const extraK = (isNode ? this.G + this.levTerm[K] : 0) + lognTerm(this.run.logn[liK], totalK);
+      const levK = isNode ? this.levIdx[K] : -1;
+      const at = r * countK;
+      for (let c = 0; c < pop.nc; c++) {
+        const L = pop.candL[c];
+        if (L <= K) {
+          continue;
+        }
+        const p = pop.cand[c];
+        const s = pop.seq[p];
+        const i = pIdx[s] + at;
+        if (log.count[i] < 1) {
+          continue;
+        }
+        log.count[i] -= 1;
+        const lb = longBucket(L, K);
+        const depth = anchorDepth(L, b, off, Infinity, depthOn);
+        const block = blockOf(src, lb, K);
+        const cell = cellOf(recOf(t - p), false, depth, 0, detK);
+        const eL = this.base(block, cell) + extraK;
+        this.noteM(eL);
+        log.push(block, cell, s, 1, eL, P_ONE, src, lb, levK, liK, llK, isNode);
+      }
+    }
+  }
+
   /** The path's same-offset ring votes (source 7 blocks) with the ring's own evidence and log-n. */
   private ringVotes(node: Population): void {
     const r = node.offRing.get(this.off);
@@ -853,17 +1065,38 @@ export class SymbolPredictor {
 
     // Pass A.
     this.Mv = -Infinity;
-    if (msg !== null) {
-      this.sweep(SRC.msg, msg.tab, msg.E, msg.m, msg);
+    // A lone path's populations are the message's, and its first value's population is the
+    // path's: the sources of one population read its entries once, in a shared sweep. Pass B and
+    // learning sum each vote's integers, so the order of segments leaves them unchanged, and the
+    // message's level-0 votes still come first, so pass B meets the symbols in the same order.
+    const shs = this.shSrc;
+    let valueShared = false;
+    if (msg !== null && node === msg) {
+      shs[0] = SRC.msg;
+      shs[1] = SRC.node;
+      valueShared = value === node;
+      if (valueShared) shs[2] = SRC.value;
+      this.sweepShared(valueShared ? 3 : 2, msg);
       this.mruVotes(msg, SRC.msg);
+    } else {
+      if (msg !== null) {
+        this.sweep(SRC.msg, msg.tab, msg.E, msg.m, msg);
+        this.mruVotes(msg, SRC.msg);
+      }
+      this.sweep(SRC.node, node.tab, node.E, node.m, node);
+      if (msg === null) this.mruVotes(node, SRC.node);
     }
-    this.sweep(SRC.node, node.tab, node.E, node.m, node);
-    if (msg === null) this.mruVotes(node, SRC.node);
     if (f.offsetRing) this.ringVotes(node);
     if (B !== null) this.sweep(SRC.builtin, B.tab, B.E, B.m, null);
-    if (msgF !== null) this.sweep(SRC.msgF, msgF.tab, msgF.E, msgF.m, msgF);
-    this.sweep(SRC.nodeF, nodeF.tab, nodeF.E, nodeF.m, nodeF);
-    if (value !== null) this.sweep(SRC.value, value.tab, value.E, value.m, value);
+    if (msgF !== null && nodeF === msgF) {
+      shs[0] = SRC.msgF;
+      shs[1] = SRC.nodeF;
+      this.sweepShared(2, msgF);
+    } else {
+      if (msgF !== null) this.sweep(SRC.msgF, msgF.tab, msgF.E, msgF.m, msgF);
+      this.sweep(SRC.nodeF, nodeF.tab, nodeF.E, nodeF.m, nodeF);
+    }
+    if (value !== null && !valueShared) this.sweep(SRC.value, value.tab, value.E, value.m, value);
 
     // The escape's log-mass.
     let Lesc = run.escape + log2Fix(core.distinct + 1);
