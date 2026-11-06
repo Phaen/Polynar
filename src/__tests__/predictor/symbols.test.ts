@@ -148,9 +148,8 @@ describe('recOf', () => {
 });
 
 describe('defaultFeatures', () => {
-  it('turns every part on but the value sequence cells', () => {
-    const f = defaultFeatures();
-    for (const [k, v] of Object.entries(f)) expect(v).toBe(k !== 'valueSequence');
+  it('turns every part on', () => {
+    for (const v of Object.values(defaultFeatures())) expect(v).toBe(true);
   });
 });
 
@@ -244,7 +243,7 @@ describe('SymbolPredictor round trips', () => {
     const text = [variedText(700, 5), variedText(300, 5), variedText(700, 5)];
     const names = Object.keys(defaultFeatures()) as (keyof Features)[];
     for (const name of names) {
-      trip(text, { options: { features: { [name]: name === 'valueSequence' } } });
+      trip(text, { options: { features: { [name]: false } } });
     }
     const off: Partial<Features> = {};
     for (const name of names) off[name] = false;

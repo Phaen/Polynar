@@ -137,24 +137,6 @@ describe('session', () => {
     expect(s.symbols([node, 2], o, 'text')).not.toBe(s.symbols([node, 1], o, 'text'));
     expect(s.symbols(node, o, 'text')).not.toBe(s.symbols([node, 1], o, 'text'));
   });
-
-  it('keeps the list index through nested lists', () => {
-    const s = new Session();
-    expect(s.listIndex).toBe(-1);
-    s.leaveList();
-    expect(s.listIndex).toBe(-1);
-    s.enterList();
-    s.nextItem();
-    s.nextItem();
-    expect(s.listIndex).toBe(1);
-    s.enterList();
-    s.nextItem();
-    expect(s.listIndex).toBe(0);
-    s.leaveList();
-    expect(s.listIndex).toBe(1);
-    s.leaveList();
-    expect(s.listIndex).toBe(-1);
-  });
 });
 
 interface Codec {
@@ -268,24 +250,12 @@ describe('string coders', () => {
     trip(items);
   });
 
-  it('codes repeated values in a list with the sequence cells on', () => {
+  it('codes repeated values in a list', () => {
     const items: Item[] = ['a', 'b', 'a', 'b', 'a', 'c', 'a', 'b'].map((w) => ({
       coder: (s: Session) => s.string('v', opts(), 'text'),
       value: cps(w),
     }));
-    const listed = (s: Session, i: number): void => {
-      if (i === 0) s.enterList();
-      s.nextItem();
-    };
-    trip(items, listed);
-    const enc = new Encoder();
-    const s = session(enc, { features: { valueSequence: true } });
-    s.enterList();
-    for (const it of items) {
-      s.nextItem();
-      s.string('v', opts(), 'text').write(enc, it.value, it.value.length, OPEN);
-    }
-    s.leaveList();
+    trip(items);
   });
 
   it('shares the message population between paths', () => {
@@ -479,12 +449,9 @@ describe('Session.step', () => {
     const values = [3, 1, 3, 3, 0];
     const enc = new Encoder();
     const se = session(enc, { features: { deltas: false } });
-    se.enterList();
     for (const v of values) {
-      se.nextItem();
       se.step([{}, 1], o, 4).write(enc, v);
     }
-    se.leaveList();
     expect(enc.output().length).toBeGreaterThan(0);
   });
 

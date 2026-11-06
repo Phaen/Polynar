@@ -238,9 +238,9 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     this._enter(s);
     try {
       if (o === undefined) {
-        this._spell(enc, value, s);
+        this._spell(enc, value);
       } else {
-        this._items(enc, value, o, s);
+        this._items(enc, value, o);
       }
     } finally {
       this._leave(s);
@@ -256,13 +256,13 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     if (o !== undefined && s.take(this) < 0) s.marker(this, o).imply(STRUCT.ARR_START);
     this._enter(s);
     try {
-      return o === undefined ? this._unspell(dec, s) : this._unitems(dec, o, s);
+      return o === undefined ? this._unspell(dec) : this._unitems(dec, o);
     } finally {
       this._leave(s);
     }
   }
 
-  /** Opens the array's list and marker scope. */
+  /** Opens the array's marker scope. */
   private _enter(s: Session): void {
     const o = this._resolved;
     if (o === undefined) {
@@ -270,11 +270,9 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     } else {
       s.enterScope(this, o);
     }
-    s.enterList();
   }
 
   private _leave(s: Session): void {
-    s.leaveList();
     s.leaveScope();
   }
 
@@ -282,7 +280,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
    * Writes the items under `.compress()`, each after its first structure symbol, then the end
    * unless the array is at its max: in order, or ascending where the order is let go.
    */
-  private _items(enc: Encoder, value: TItem[], o: Resolved, s: Session): void {
+  private _items(enc: Encoder, value: TItem[], o: Resolved): void {
     const count = value.length;
     const { lo, hi } = this._count;
     checkIndex(count, lo, hi, () => `Array length ${count}`);
@@ -296,7 +294,6 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     }
     for (let k = 0; k < count; k++) {
       const i = at[k];
-      s.nextItem();
       try {
         const bound = { end: STRUCT.ARR_END, allow: k >= min };
         writeMarker(enc, this, o, item, item._marker(value[i]), bound);
@@ -311,13 +308,12 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
   }
 
   /** Reads the items `_items` wrote. */
-  private _unitems(dec: Decoder, o: Resolved, s: Session): TItem[] {
+  private _unitems(dec: Decoder, o: Resolved): TItem[] {
     const { lo, hi } = this._count;
     const min = lo as number;
     const item = this._item;
     const value: TItem[] = [];
     while (value.length !== hi) {
-      s.nextItem();
       const bound = { end: STRUCT.ARR_END, allow: value.length >= min };
       if (readMarker(dec, this, o, item, bound) === STRUCT.ARR_END) {
         break;
@@ -332,7 +328,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
   }
 
   /** Writes the array in full. */
-  private _spell(enc: Encoder, value: TItem[], s?: Session): void {
+  private _spell(enc: Encoder, value: TItem[]): void {
     const count = value.length;
 
     this._count.write(enc, count, () => `Array length ${count}`);
@@ -341,7 +337,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     if (restricts(this._order)) {
       // checkOrder accepted the item when the order was set.
       if (!ordinal(this._item)) {
-        writeRun(enc, this._item, value, this._order, (i) => i, this._choice, s);
+        writeRun(enc, this._item, value, this._order, (i) => i, this._choice);
         return;
       }
       const { digits } = ordinalDigits(this._item, value, this._order, (i) => i);
@@ -355,7 +351,6 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
     let i = 0;
     try {
       for (; i < count; i++) {
-        s?.nextItem();
         this._item._write(enc, value[i]);
       }
     } catch (error) {
@@ -364,7 +359,7 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
   }
 
   /** Reads an array `_spell` wrote. */
-  private _unspell(dec: Decoder, s?: Session): TItem[] {
+  private _unspell(dec: Decoder): TItem[] {
     const count = this._count.read(dec);
     // No array is longer than 2^32 - 1, so a larger count was never written.
     // Items that take no bits never run out of input to say so themselves.
@@ -385,12 +380,11 @@ export class PArray<TItem> extends MethodNode<TItem[]> {
       return value;
     }
     if (restricts(this._order)) {
-      return readRun(dec, item, count, this._order, this._choice, s) as TItem[];
+      return readRun(dec, item, count, this._order, this._choice) as TItem[];
     }
     let i = 0;
     try {
       for (; i < count; i++) {
-        s?.nextItem();
         value.push(item._read(dec));
       }
     } catch (error) {

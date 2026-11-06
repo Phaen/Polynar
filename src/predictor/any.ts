@@ -190,10 +190,8 @@ function writeItems(
   bound: { end: number; allow: boolean }
 ): void {
   s.enterScope(path, a.o);
-  s.enterList();
   try {
     for (let i = 0; i < items.length; i++) {
-      s.nextItem();
       try {
         writeChild(s, enc, a, path, items[i], `${path}/*`, bound);
       } catch (error) {
@@ -202,7 +200,6 @@ function writeItems(
     }
     s.marker(path, a.o).write(enc, bound.end, undefined, bound);
   } finally {
-    s.leaveList();
     s.leaveScope();
   }
 }
@@ -215,11 +212,9 @@ function writeMap(
   path: string
 ): void {
   s.enterScope(path, a.o);
-  s.enterList();
   try {
     let i = 0;
     for (const [key, item] of value) {
-      s.nextItem();
       s.enterRecord();
       try {
         writeChild(s, enc, a, path, key, `${path}/*`, MAP_END);
@@ -233,7 +228,6 @@ function writeMap(
     }
     s.marker(path, a.o).write(enc, STRUCT.MAP_END, undefined, MAP_END);
   } finally {
-    s.leaveList();
     s.leaveScope();
   }
 }
@@ -345,11 +339,9 @@ function readItems(
   bound: { end: number; allow: boolean }
 ): unknown[] {
   s.enterScope(path, a.o);
-  s.enterList();
   try {
     const items: unknown[] = [];
     for (;;) {
-      s.nextItem();
       let v: unknown;
       try {
         v = readChild(s, dec, a, path, `${path}/*`, bound);
@@ -362,18 +354,15 @@ function readItems(
       items.push(v);
     }
   } finally {
-    s.leaveList();
     s.leaveScope();
   }
 }
 
 function readMap(s: Session, dec: Decoder, a: AnyCoding, path: string): unknown {
   s.enterScope(path, a.o);
-  s.enterList();
   try {
     const out = new Map<unknown, unknown>();
     for (;;) {
-      s.nextItem();
       s.enterRecord();
       try {
         const key = readChild(s, dec, a, path, `${path}/*`, MAP_END);
@@ -389,7 +378,6 @@ function readMap(s: Session, dec: Decoder, a: AnyCoding, path: string): unknown 
       }
     }
   } finally {
-    s.leaveList();
     s.leaveScope();
   }
 }

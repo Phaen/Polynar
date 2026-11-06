@@ -6,14 +6,12 @@ import {
   VSTEP_N,
   VS_A,
   VS_AG,
-  VS_AN,
   VS_L,
   VS_NEW,
   VS_O0,
   VS_REC,
   VS_REP,
   VS_SH,
-  VS_SQ,
   MemberStep,
   ValueStep,
   vsA,
@@ -69,8 +67,6 @@ function initialVstep(): Float64Array {
   ];
   const v = new Float64Array(VSTEP_N);
   ln.forEach((x, i) => (v[i] = bits(x * LOG2E)));
-  v[VS_SQ + 1] = bits(0.4);
-  v[VS_AN + 1] = bits(0.7);
   v[VS_SH + 2] = bits(-0.3);
   v[VS_SH + 9] = bits(0.2);
   return v;
@@ -91,7 +87,7 @@ function rnd(seed: number): () => number {
 class FloatStep {
   th: number[];
   dl: number[] | null;
-  occ: { v: number; pos: number; list: number }[] = [];
+  occ: { v: number; pos: number }[] = [];
   keys = new Map<string, number>();
   count: number[] = [];
   nNew = 0;
@@ -99,7 +95,6 @@ class FloatStep {
   top = 0;
   constructor(
     readonly history: number,
-    readonly sequence: boolean,
     vstep: Float64Array,
     delta: boolean
   ) {
@@ -108,7 +103,7 @@ class FloatStep {
   }
 
   /** P(choice) before learning; then learns. */
-  step(seq: Int32Array, t: number, list: number, key: string, pathN: number): number | null {
+  step(seq: Int32Array, t: number, key: string, pathN: number): number | null {
     const n = this.occ.length;
     if (n === 0) return null;
     const c = constants();
@@ -159,12 +154,6 @@ class FloatStep {
                       ? 6
                       : 7;
       const cells = [VS_L + vsL(L), VS_REC + rec, VS_A];
-      if (this.sequence) {
-        let LV = 0;
-        while (LV < 8 && j - 1 - LV >= 0 && this.occ[j - 1 - LV].v === this.occ[n - 1 - LV].v) LV++;
-        cells.push(VS_SQ + (LV === 0 ? 0 : LV === 1 ? 1 : LV <= 3 ? 2 : LV <= 7 ? 3 : 4));
-        if (list >= 0 && o.list >= 0) cells.push(VS_AN + (o.list === list ? 1 : 0));
-      }
       const e = cells.reduce((s, i) => s + th(i), base);
       parts.push({ v: o.v, w: 2 ** e / n, cells });
     }
@@ -210,7 +199,7 @@ class FloatStep {
     return P;
   }
 
-  record(key: string, pos: number, list: number): void {
+  record(key: string, pos: number): void {
     let v = this.keys.get(key);
     if (v === undefined) {
       v = this.keys.size;
@@ -220,16 +209,16 @@ class FloatStep {
     } else this.reps++;
     this.count[v]++;
     this.top = Math.max(this.top, this.count[v]);
-    this.occ.push({ v, pos, list });
+    this.occ.push({ v, pos });
   }
 }
 
-function run(history: number, sequence: boolean, delta: boolean, seed: number, steps: number) {
+function run(history: number, delta: boolean, seed: number, steps: number) {
   const r = rnd(seed);
   const vstep = initialVstep();
   const deltaArr = delta ? new Float64Array(VSTEP_N) : null;
-  const vs = new ValueStep(history, 2 ** 24, sequence);
-  const fl = new FloatStep(history, sequence, vstep, delta);
+  const vs = new ValueStep(history, 2 ** 24);
+  const fl = new FloatStep(history, vstep, delta);
   const seq = new Int32Array(steps * 8 + 8);
   let t = 1;
   let worst = 0;
@@ -240,10 +229,9 @@ function run(history: number, sequence: boolean, delta: boolean, seed: number, s
     if (r() < 0.3) seq[t++] = 600 + Math.floor(r() * 2);
     const v = Math.floor(r() * r() * 10);
     const key = `v${v}`;
-    const list = r() < 0.2 ? -1 : i % 3;
     const pathN = 3 * i;
-    const dist = vs.distribution(seq, t, list, vstep, deltaArr);
-    const P = fl.step(seq, t, list, key, pathN);
+    const dist = vs.distribution(seq, t, vstep, deltaArr);
+    const P = fl.step(seq, t, key, pathN);
     if (dist === null) {
       expect(P).toBeNull();
       expect(i).toBe(0);
@@ -260,8 +248,8 @@ function run(history: number, sequence: boolean, delta: boolean, seed: number, s
       total += cost;
       vs.learn(id, pathN, vstep, deltaArr, c);
     }
-    expect(vs.record(key, t, list)).toBe(vs.idOf(key));
-    fl.record(key, t, list);
+    expect(vs.record(key, t)).toBe(vs.idOf(key));
+    fl.record(key, t);
     seq[t++] = 300 + v;
     seq[t++] = 400 + (v % 3);
     seq[t++] = 0;
@@ -294,24 +282,24 @@ describe('ValueStep', () => {
   it('has no step before the first value and learns nothing without one', () => {
     const vs = new ValueStep(4, 65536);
     const vstep = initialVstep();
-    expect(vs.distribution(new Int32Array(4), 1, -1, vstep, null)).toBeNull();
+    expect(vs.distribution(new Int32Array(4), 1, vstep, null)).toBeNull();
     const before = Array.from(vstep);
     vs.learn(ESCAPE, 0, vstep, null, constants());
     expect(Array.from(vstep)).toEqual(before);
     expect(vs.idOf('a')).toBe(ESCAPE);
-    expect(vs.record('a', 1, -1)).toBe(0);
-    expect(vs.record('b', 3, -1)).toBe(1);
-    expect(vs.record('a', 5, -1)).toBe(0);
+    expect(vs.record('a', 1)).toBe(0);
+    expect(vs.record('b', 3)).toBe(1);
+    expect(vs.record('a', 5)).toBe(0);
     expect([vs.n, vs.nNew, vs.reps, vs.top, vs.distinct]).toEqual([3, 2, 1, 2, 2]);
     // Recording clears a pending step.
-    expect(vs.distribution(new Int32Array(8), 7, -1, vstep, null)).not.toBeNull();
-    vs.record('c', 7, -1);
+    expect(vs.distribution(new Int32Array(8), 7, vstep, null)).not.toBeNull();
+    vs.record('c', 7);
     vs.learn(0, 0, vstep, null, constants());
     expect(Array.from(vstep)).toEqual(before);
   });
 
   it('tracks a floating re-implementation within 2^-10 bits per step', () => {
-    const a = run(64, false, true, 5, 200);
+    const a = run(64, true, 5, 200);
     expect(a.worst).toBeLessThan(2 ** -10);
     for (let i = 0; i < VSTEP_N; i++) {
       expect(Math.abs(a.vstep[i] / ONE - a.fl.th[i])).toBeLessThan(1e-3);
@@ -319,13 +307,12 @@ describe('ValueStep', () => {
     }
   });
 
-  it('tracks it with a short history (older occurrences) and the sequence cells', () => {
-    const b = run(8, true, false, 9, 200);
+  it('tracks it with a short history (older occurrences)', () => {
+    const b = run(8, false, 9, 200);
     expect(b.worst).toBeLessThan(2 ** -10);
     for (let i = 0; i < VSTEP_N; i++) {
       expect(Math.abs(b.vstep[i] / ONE - b.fl.th[i])).toBeLessThan(1e-3);
     }
-    expect(b.vstep[VS_SQ + 1]).not.toBe(bits(0.4));
     expect(b.vstep[VS_REC + 7]).not.toBe(initialVstep()[VS_REC + 7]);
   });
 
@@ -334,9 +321,9 @@ describe('ValueStep', () => {
     const vstep = initialVstep();
     const delta = new Float64Array(VSTEP_N);
     const seq = new Int32Array([0, 5, 6, 0, 5, 6, 0, 5]);
-    vs.record('x', 1, -1);
-    vs.record('y', 4, -1);
-    const d = vs.distribution(seq, 7, -1, vstep, delta)!;
+    vs.record('x', 1);
+    vs.record('y', 4);
+    const d = vs.distribution(seq, 7, vstep, delta)!;
     expect(d.n).toBe(3);
     expect(d.idAt(0)).toBe(0);
     expect(d.idAt(2)).toBe(ESCAPE);
@@ -366,25 +353,12 @@ describe('ValueStep', () => {
     expect(vstep[VS_O0]).toBe(before[VS_O0]);
     expect(vstep[VS_AG]).toBe(before[VS_AG]);
     // A chosen past value pulls its cells up.
-    vs.record('z', 7, -1);
-    const d2 = vs.distribution(seq, 7, -1, vstep, null)!;
+    vs.record('z', 7);
+    const d2 = vs.distribution(seq, 7, vstep, null)!;
     expect(d2.n).toBe(4);
     const l3 = vstep[VS_L + 3];
     vs.learn(vs.idOf('y'), 11, vstep, null, constants());
     expect(vstep[VS_L + 3]).toBeGreaterThan(l3);
-  });
-
-  it('reaches every sequence bucket on a run of one value', () => {
-    const vs = new ValueStep(64, 65536, true);
-    const vstep = initialVstep();
-    const seq = new Int32Array(64);
-    for (let i = 0; i < 12; i++) vs.record(i === 0 ? 'b' : 'a', 2 * i + 1, i);
-    expect(vs.distribution(seq, 30, 4, vstep, null)).not.toBeNull();
-    const before = Array.from(vstep);
-    vs.learn(vs.idOf('a'), 0, vstep, null, constants());
-    for (let b = 0; b < 5; b++) expect(vstep[VS_SQ + b]).not.toBe(before[VS_SQ + b]);
-    expect(vstep[VS_AN]).not.toBe(before[VS_AN]);
-    expect(vstep[VS_AN + 1]).not.toBe(before[VS_AN + 1]);
   });
 
   it('leaves the lowest-mass values out when the table would exceed half the quantisation', () => {
@@ -392,10 +366,10 @@ describe('ValueStep', () => {
     const vstep = initialVstep();
     const seq = new Int32Array(8);
     // 'k3' occurs twice, so among the equal older values it is never dropped.
-    vs.record('k3', 1, -1);
-    for (let i = 0; i < 2100; i++) vs.record(`k${i}`, 1, -1);
+    vs.record('k3', 1);
+    for (let i = 0; i < 2100; i++) vs.record(`k${i}`, 1);
     expect(vs.distinct).toBe(2100);
-    const d = vs.distribution(seq, 2, -1, vstep, null)!;
+    const d = vs.distribution(seq, 2, vstep, null)!;
     expect(d.n).toBe(2048);
     let sum = 0;
     for (let i = 0; i < d.n; i++) sum += d.freq(i);
@@ -411,9 +385,9 @@ describe('ValueStep', () => {
     // The same past gives the same table.
     const ids = Array.from({ length: d.n }, (_, i) => d.idAt(i));
     const vs2 = new ValueStep(64, 4096);
-    vs2.record('k3', 1, -1);
-    for (let i = 0; i < 2100; i++) vs2.record(`k${i}`, 1, -1);
-    const d2 = vs2.distribution(seq, 2, -1, initialVstep(), null)!;
+    vs2.record('k3', 1);
+    for (let i = 0; i < 2100; i++) vs2.record(`k${i}`, 1);
+    const d2 = vs2.distribution(seq, 2, initialVstep(), null)!;
     expect(Array.from({ length: d2.n }, (_, i) => d2.idAt(i))).toEqual(ids);
     // A dropped value still learns as itself.
     const before = vstep[VS_REC + 7];
@@ -426,10 +400,10 @@ describe('ValueStep', () => {
     const vstep = initialVstep();
     const seq = new Int32Array(4);
     const N = 70000;
-    for (let i = 0; i < N; i++) vs.record(`k${i}`, 1, -1);
+    for (let i = 0; i < N; i++) vs.record(`k${i}`, 1);
     expect(vs.distinct).toBe(N);
     expect(vs.idOf('k69999')).toBe(N - 1);
-    const d = vs.distribution(seq, 2, -1, vstep, null)!;
+    const d = vs.distribution(seq, 2, vstep, null)!;
     expect(d.n).toBe(N + 1);
     let sum = 0;
     for (let i = 0; i < d.n; i++) sum += d.freq(i);
@@ -449,7 +423,7 @@ describe('MemberStep', () => {
 
   it('takes the declared weights as prior counts', () => {
     const ms = new MemberStep(3, [1, 6, 1], 64, 65536);
-    const f = freqs(ms.distribution(seq, 1, -1, initialVstep(), null));
+    const f = freqs(ms.distribution(seq, 1, initialVstep(), null));
     expect(f.get(1)).toBeGreaterThan(f.get(0)!);
     // Unseen members share NEW's mass evenly, the remainder to the lowest.
     expect(f.get(0)! - f.get(2)!).toBeGreaterThanOrEqual(0);
@@ -460,7 +434,7 @@ describe('MemberStep', () => {
     const ms = new MemberStep(3, [1, 0, 1], 64, 65536);
     expect(ms.has(1)).toBe(false);
     expect(ms.has(2)).toBe(true);
-    const d = ms.distribution(seq, 1, -1, initialVstep(), null);
+    const d = ms.distribution(seq, 1, initialVstep(), null);
     expect(d.n).toBe(2);
     expect(d.indexOf(1)).toBe(-1);
   });
@@ -470,9 +444,9 @@ describe('MemberStep', () => {
     const vstep = initialVstep();
     let t = 1;
     const step = (v: number): Map<number, number> => {
-      const f = freqs(ms.distribution(seq, t, -1, vstep, null));
+      const f = freqs(ms.distribution(seq, t, vstep, null));
       ms.learn(v, ms.n, vstep, null, constants());
-      ms.record(v, t++, -1);
+      ms.record(v, t++);
       return f;
     };
     step(0);
@@ -491,7 +465,7 @@ describe('record agreement', () => {
 
   /** The odds of value 0 over value 1 in `b`'s next step, with the session's records or without. */
   const odds = (b: ValueStep, records?: Session): number => {
-    const d = b.distribution(seq, 20, -1, initialVstep(), null, records) as NonNullable<
+    const d = b.distribution(seq, 20, initialVstep(), null, records) as NonNullable<
       ReturnType<ValueStep['distribution']>
     >;
     return d.freq(d.indexOf(0)) / d.freq(d.indexOf(1));
@@ -501,8 +475,8 @@ describe('record agreement', () => {
   const fill = (s: Session, a: ValueStep, b: ValueStep, rows: [string, string?][]): void => {
     rows.forEach(([x, y], i) => {
       s.enterRecord();
-      a.record(x, 2 * i + 1, -1, s);
-      if (y !== undefined) b.record(y, 2 * i + 2, -1, s);
+      a.record(x, 2 * i + 1, s);
+      if (y !== undefined) b.record(y, 2 * i + 2, s);
       s.leaveRecord();
     });
   };
@@ -513,7 +487,7 @@ describe('record agreement', () => {
     const b = new ValueStep(64, 65536);
     fill(s, a, b, [['rare', 'x'], ['often', 'y'], ['often'], ['often'], ['often']]);
     s.enterRecord();
-    a.record('rare', 11, -1, s);
+    a.record('rare', 11, s);
     expect(odds(b, s)).toBeGreaterThan(odds(b));
     s.leaveRecord();
   });
@@ -528,7 +502,7 @@ describe('record agreement', () => {
     ]);
     expect(odds(b, s)).toBe(odds(b));
     s.enterRecord();
-    a.record('same', 5, -1, s);
+    a.record('same', 5, s);
     expect(odds(b, s)).toBe(odds(b));
     s.leaveRecord();
   });
@@ -541,7 +515,7 @@ describe('record agreement', () => {
     s.enterRecord();
     s.enterRecord();
     expect(s.current).toBe(1);
-    a.record('x', 1, -1, s);
+    a.record('x', 1, s);
     expect(s.pair(a, 0)).toEqual([1, 1]);
     s.leaveRecord();
     expect(s.current).toBe(0);
@@ -556,24 +530,24 @@ describe('the follower of the previous value', () => {
   /** A value step and its float twin over `keys`; the cost in bits of coding `next` after them. */
   function after(history: number, keys: string[], next: string): { vs: ValueStep; cost: number } {
     const vs = new ValueStep(history, 2 ** 24);
-    const fl = new FloatStep(history, false, initialVstep(), false);
+    const fl = new FloatStep(history, initialVstep(), false);
     const vstep = initialVstep();
     keys.forEach((k, i) => {
-      vs.record(k, 2 * i + 1, -1);
-      fl.record(k, 2 * i + 1, -1);
+      vs.record(k, 2 * i + 1);
+      fl.record(k, 2 * i + 1);
     });
     const t = 2 * keys.length + 1;
-    const d = vs.distribution(seq, t, -1, vstep, null)!;
+    const d = vs.distribution(seq, t, vstep, null)!;
     const id = vs.idOf(next);
     const cost = -Math.log2(d.freq(d.indexOf(id)) / d.total);
-    expect(Math.abs(cost + Math.log2(fl.step(seq, t, -1, next, 0)!))).toBeLessThan(2 ** -10);
+    expect(Math.abs(cost + Math.log2(fl.step(seq, t, next, 0)!))).toBeLessThan(2 ** -10);
     return { vs, cost };
   }
 
   it('is absent on a path with no value or one value', () => {
     const vs = new ValueStep(1, 65536);
     expect(vs.follower()).toBe(-1);
-    vs.record('a', 1, -1);
+    vs.record('a', 1);
     expect(vs.follower()).toBe(-1);
     expect(after(1, ['a'], 'a').vs.follower()).toBe(-1);
   });
@@ -607,10 +581,10 @@ describe('the follower of the previous value', () => {
 
   it('applies to declared members as to values', () => {
     const ms = new MemberStep(3, undefined, 1, 65536);
-    [0, 1, 2, 0].forEach((v, i) => ms.record(v, 2 * i + 1, -1));
+    [0, 1, 2, 0].forEach((v, i) => ms.record(v, 2 * i + 1));
     expect(ms.follower()).toBe(1);
     const vstep = initialVstep();
-    const d = ms.distribution(seq, 9, -1, vstep, null);
+    const d = ms.distribution(seq, 9, vstep, null);
     expect(d.freq(d.indexOf(1))).toBeGreaterThan(d.freq(d.indexOf(2)));
   });
 });

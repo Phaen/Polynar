@@ -83,8 +83,8 @@ export interface Source {
 }
 
 /**
- * The switches of the engine's parts; all on by default except `valueSequence` (phase 4). The
- * measurement switches them one at a time to isolate D1.
+ * The switches of the engine's parts, all on by default. The measurement switches them one at a time
+ * to isolate D1.
  */
 export interface Features {
   /** The current value's population votes (source 3). */
@@ -105,8 +105,6 @@ export interface Features {
   deltas: boolean;
   /** Whole past values of the path vote before a string value. */
   valueStep: boolean;
-  /** The value step's sequence and list cells. */
-  valueSequence: boolean;
 }
 
 /** Every switch at its default. */
@@ -121,7 +119,6 @@ export function defaultFeatures(): Features {
     offsetRing: true,
     deltas: true,
     valueStep: true,
-    valueSequence: false,
   };
 }
 
@@ -152,7 +149,6 @@ export interface PathState {
  */
 export function newPathState(
   o: Resolved,
-  features: Features,
   shared?: { readonly msg: Population; readonly msgF: Population }
 ): PathState {
   return {
@@ -162,7 +158,7 @@ export function newPathState(
     n: 0,
     deltas: new Map(),
     vsDelta: new Float64Array(VSTEP_N),
-    values: new ValueStep(o.history, o.quantisation, features.valueSequence),
+    values: new ValueStep(o.history, o.quantisation),
     vfeat: valueState(o.history),
     sn: new Float64Array(o.order + 1),
     so: 0,

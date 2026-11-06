@@ -23,10 +23,9 @@ import type { Ends } from '../src/predictor/types';
 export const SET_NAMES = ['alice', 'prose', 'chat', 'names'] as const;
 export type SetName = (typeof SET_NAMES)[number];
 
-/** One message: its strings as code points, and whether they are the items of one list. */
+/** One message: its strings as code points. */
 export interface Message {
   readonly strings: readonly Int32Array[];
-  readonly list: boolean;
 }
 
 // From examples/size-comparison.ts.
@@ -118,7 +117,7 @@ function strings(v: unknown, out: string[]): string[] {
 export function messages(set: SetName, alice: string, corpus: string): Message[] {
   switch (set) {
     case 'alice':
-      return [{ strings: [codePoints(readFileSync(alice, 'utf8'))], list: false }];
+      return [{ strings: [codePoints(readFileSync(alice, 'utf8'))] }];
     case 'prose': {
       const files = readdirSync(corpus)
         .filter((f) => f.endsWith('.json'))
@@ -128,12 +127,12 @@ export function messages(set: SetName, alice: string, corpus: string): Message[]
         const all = strings(JSON.parse(readFileSync(join(corpus, f), 'utf8')), []);
         for (const s of all) if (s.length > 40 && s.includes(' ')) out.push(codePoints(s));
       }
-      return [{ strings: out, list: true }];
+      return [{ strings: out }];
     }
     case 'chat':
-      return SENTENCES.map((s) => ({ strings: [codePoints(s)], list: false }));
+      return SENTENCES.map((s) => ({ strings: [codePoints(s)] }));
     case 'names':
-      return profileNames().map((s) => ({ strings: [codePoints(s)], list: false }));
+      return profileNames().map((s) => ({ strings: [codePoints(s)] }));
   }
 }
 
@@ -145,12 +144,9 @@ const PATH = {};
 export function writeMessage(enc: Encoder, sink: Sink, m: Message, options: SessionOptions): void {
   const s = session(enc, options);
   const o = resolve({}, loadedPriors.text, 'predictor-sets');
-  if (m.list) s.enterList();
   for (const str of m.strings) {
-    if (m.list) s.nextItem();
     s.string(PATH, o, 'text').write(sink, str, str.length, ENDS);
   }
-  if (m.list) s.leaveList();
 }
 
 /** Reads a message back and throws unless every string equals the one written. */
@@ -162,15 +158,12 @@ export function readMessage(
 ): void {
   const s = session(dec, options);
   const o = resolve({}, loadedPriors.text, 'predictor-sets');
-  if (m.list) s.enterList();
   m.strings.forEach((str, i) => {
-    if (m.list) s.nextItem();
     const got = s.string(PATH, o, 'text').read(source, ENDS);
     if (got.length !== str.length || got.some((cp, j) => cp !== str[j])) {
       throw new Error(`round trip failed at string ${i}`);
     }
   });
-  if (m.list) s.leaveList();
 }
 
 /** The number sets of the phase-3 gate, coded through `Session.number`. */
@@ -180,11 +173,10 @@ export type NumberSetName = (typeof NUMBER_SETS)[number];
 /** One step of a number message: a number at a key path, or a record opening or closing. */
 export type NumberOp = { readonly path: string; readonly value: number } | 'enter' | 'leave';
 
-/** One message of numbers; `list` when they are the items of one list (a single path). */
+/** One message of numbers. */
 export interface NumberMessage {
   readonly name: string;
   readonly ops: readonly NumberOp[];
-  readonly list: boolean;
   /** Dates only: the values count seconds, not milliseconds. */
   readonly seconds?: boolean;
 }
@@ -253,7 +245,7 @@ export function numberMessages(set: NumberSetName, corpus: string): NumberMessag
         },
         (open) => ops.push(open ? 'enter' : 'leave')
       );
-      out.push({ name: f, ops, list: false });
+      out.push({ name: f, ops });
     } else if (set === 'ints') {
       const seqs = new Map<string, NumberOp[]>();
       walkJson(
@@ -267,7 +259,7 @@ export function numberMessages(set: NumberSetName, corpus: string): NumberMessag
         },
         () => undefined
       );
-      for (const [path, ops] of seqs) out.push({ name: `${f} ${path}`, ops, list: true });
+      for (const [path, ops] of seqs) out.push({ name: `${f} ${path}`, ops });
     } else {
       for (const [file, field] of DATE_FIELDS) {
         if (file !== f) continue;
@@ -282,7 +274,7 @@ export function numberMessages(set: NumberSetName, corpus: string): NumberMessag
         );
         const seconds = ms.every((t) => t % 1000 === 0);
         const ops = ms.map((t) => ({ path: field, value: seconds ? t / 1000 : t }));
-        out.push({ name: `${f} ${field}`, ops, list: true, seconds });
+        out.push({ name: `${f} ${field}`, ops, seconds });
       }
     }
   }
@@ -314,31 +306,25 @@ const PLAIN: PlainNumber = {
 export function writeNumbers(enc: Encoder, m: NumberMessage, options: SessionOptions = {}): void {
   const s = session(enc, options);
   const o = resolve({}, loadedPriors.text, 'predictor-sets');
-  if (m.list) s.enterList();
   for (const op of m.ops) {
     if (op === 'enter') s.enterRecord();
     else if (op === 'leave') s.leaveRecord();
     else {
-      if (m.list) s.nextItem();
       s.number(numberPath(op.path), o, {}, PLAIN).write(enc, op.value);
     }
   }
-  if (m.list) s.leaveList();
 }
 
 /** Reads a number message back and throws unless every number equals the one written. */
 export function readNumbers(dec: Decoder, m: NumberMessage, options: SessionOptions = {}): void {
   const s = session(dec, options);
   const o = resolve({}, loadedPriors.text, 'predictor-sets');
-  if (m.list) s.enterList();
   m.ops.forEach((op, i) => {
     if (op === 'enter') s.enterRecord();
     else if (op === 'leave') s.leaveRecord();
     else {
-      if (m.list) s.nextItem();
       const got = s.number(numberPath(op.path), o, {}, PLAIN).read(dec);
       if (got !== op.value) throw new Error(`round trip failed at ${m.name} op ${i}`);
     }
   });
-  if (m.list) s.leaveList();
 }

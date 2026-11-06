@@ -308,7 +308,7 @@ export class PCollection<T> extends MethodNode<T> {
     this._enter(s);
     try {
       if (o === undefined) {
-        this._spell(enc, value, s);
+        this._spell(enc, value);
       } else {
         this._entries(enc, value, o, s);
       }
@@ -326,13 +326,13 @@ export class PCollection<T> extends MethodNode<T> {
     if (o !== undefined && s.take(this) < 0) s.marker(this, o).imply(this._layout.start);
     this._enter(s);
     try {
-      return o === undefined ? this._unspell(dec, s) : this._unentries(dec, o, s);
+      return o === undefined ? this._unspell(dec) : this._unentries(dec, o, s);
     } finally {
       this._leave(s);
     }
   }
 
-  /** Opens the collection's list and marker scope. */
+  /** Opens the collection's marker scope. */
   private _enter(s: Session): void {
     const o = this._resolved;
     if (o === undefined) {
@@ -340,11 +340,9 @@ export class PCollection<T> extends MethodNode<T> {
     } else {
       s.enterScope(this, o);
     }
-    s.enterList();
   }
 
   private _leave(s: Session): void {
-    s.leaveList();
     s.leaveScope();
   }
 
@@ -370,7 +368,6 @@ export class PCollection<T> extends MethodNode<T> {
     for (let k = 0; k < at.length; k++) {
       const j = at[k];
       const [key, item] = entries[j];
-      s.nextItem();
       const bound = { end, allow: k >= min };
       try {
         this._writeKey(enc, key, o, bound);
@@ -419,7 +416,6 @@ export class PCollection<T> extends MethodNode<T> {
     const min = lo as number;
     const entries = new Map<unknown, unknown>();
     for (let i = 0; i !== hi; i++) {
-      s.nextItem();
       const bound = { end, allow: i >= min };
       let key: unknown;
       try {
@@ -453,7 +449,7 @@ export class PCollection<T> extends MethodNode<T> {
   }
 
   /** Writes the collection in full. */
-  private _spell(enc: Encoder, value: T, s?: Session): void {
+  private _spell(enc: Encoder, value: T): void {
     const { name } = this._layout;
     const size = this._layout.size(value);
     this._count.write(enc, size, () => `${name} size ${size}`);
@@ -469,7 +465,7 @@ export class PCollection<T> extends MethodNode<T> {
         writeOrdinal(enc, ordered.digits, this._keys._radix as number, UNORDERED);
         at = ordered.at;
       } else {
-        at = writeRun(enc, this._keys, keys, UNORDERED, segment, undefined, s);
+        at = writeRun(enc, this._keys, keys, UNORDERED, segment, undefined);
       }
       for (const j of at) {
         try {
@@ -482,7 +478,6 @@ export class PCollection<T> extends MethodNode<T> {
     }
     let i = 0;
     for (const [key, item] of this._layout.entries(value)) {
-      s?.nextItem();
       try {
         this._keys._write(enc, key);
       } catch (error) {
@@ -498,7 +493,7 @@ export class PCollection<T> extends MethodNode<T> {
   }
 
   /** Reads a collection `_spell` wrote. */
-  private _unspell(dec: Decoder, s?: Session): T {
+  private _unspell(dec: Decoder): T {
     const count = this._count.read(dec);
     this._count.learn(dec, count);
     dec.charge(count);
@@ -506,7 +501,7 @@ export class PCollection<T> extends MethodNode<T> {
     if (this._unordered !== undefined) {
       const keys = this._keys;
       if (!ordinal(keys)) {
-        for (const key of readRun(dec, keys, count, UNORDERED, undefined, s)) {
+        for (const key of readRun(dec, keys, count, UNORDERED, undefined)) {
           entries.set(key, this._value?._read(dec));
         }
         return this._layout.build(entries);
@@ -518,7 +513,6 @@ export class PCollection<T> extends MethodNode<T> {
       return this._layout.build(entries);
     }
     for (let i = 0; i < count; i++) {
-      s?.nextItem();
       let key: unknown;
       try {
         key = this._keys._read(dec);

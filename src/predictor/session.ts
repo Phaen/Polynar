@@ -246,7 +246,7 @@ export class Space implements MessageCore {
   pathState(key: PathKey, o: Resolved): PathState {
     const lone = this.lone;
     return this.paths.get(key, () =>
-      newPathState(o, this.features, lone === undefined ? undefined : this.pair(lone, o))
+      newPathState(o, lone === undefined ? undefined : this.pair(lone, o))
     );
   }
 
@@ -274,7 +274,7 @@ export class Space implements MessageCore {
   /** The open value step of a path that codes no symbols of its own, made on first use. */
   value(key: PathKey, o: Resolved): ValuePath {
     return this.values.get(key, () => ({
-      step: new ValueStep(o.history, o.quantisation, this.features.valueSequence),
+      step: new ValueStep(o.history, o.quantisation),
       delta: new Float64Array(VSTEP_N),
       keys: [],
     }));
@@ -348,9 +348,6 @@ interface RecordPairs {
 export class Session implements RecordView {
   readonly features: Features;
   readonly valueFromSecond: boolean;
-  /** The current item's index in the innermost list, −1 outside a list. */
-  listIndex = -1;
-  private readonly lists: number[] = [];
   /** The open records, innermost last: the numbers coded in each so far. */
   private readonly records: RecordEntry[][] = [];
   /** Every record's value-step pairs, by record id. */
@@ -556,10 +553,10 @@ export class Session implements RecordView {
       const t0 = pop.t;
       const delta = this.features.deltas ? mp.delta : null;
       const ms = mp.step;
-      const d = ms.distribution(pop.seq, t0, this.listIndex, run.vstep, delta, this);
+      const d = ms.distribution(pop.seq, t0, run.vstep, delta, this);
       const v = member(d);
       ms.learn(v, ms.n, run.vstep, delta, run.loaded.constants);
-      ms.record(v, t0, this.listIndex, this);
+      ms.record(v, t0, this);
       return v;
     };
     return {
@@ -594,14 +591,14 @@ export class Session implements RecordView {
       const pop = space.positions(path, o);
       t0 = pop.t;
       delta = this.features.deltas ? vp.delta : null;
-      return vs.distribution(pop.seq, t0, this.listIndex, run.vstep, delta, this);
+      return vs.distribution(pop.seq, t0, run.vstep, delta, this);
     };
     const finish = (key: string, stepped: boolean, choice: number): void => {
       if (stepped) {
         const id = choice === ESCAPE ? vs.idOf(key) : choice;
         vs.learn(id, vs.n, run.vstep, delta, run.loaded.constants);
       }
-      if (vs.record(key, t0, this.listIndex, this) === vp.keys.length) vp.keys.push(key);
+      if (vs.record(key, t0, this) === vp.keys.length) vp.keys.push(key);
     };
     return {
       write: (enc, key, fresh) => {
@@ -745,20 +742,6 @@ export class Session implements RecordView {
     // Every count is at least 1 and `to` at least `total`, so none scales to 0.
     for (const [sym, c] of prior.counts) pop.tab.load(0, sym, div(c * to, total));
   }
-
-  enterList(): void {
-    this.lists.push(this.listIndex);
-    this.listIndex = -1;
-  }
-
-  nextItem(): void {
-    this.listIndex++;
-  }
-
-  leaveList(): void {
-    const prev = this.lists.pop();
-    this.listIndex = prev === undefined ? -1 : prev;
-  }
 }
 
 /** The key of a value in the value step: its symbols joined by ','. */
@@ -858,7 +841,7 @@ class StringCoder implements TextCoder {
         run.loaded.constants
       );
     }
-    const id = values.record(key, t0, this.s.listIndex, this.s);
+    const id = values.record(key, t0, this.s);
     if (id === ps.valueSyms.length) {
       ps.valueSyms.push(Int32Array.from(syms));
     }
@@ -881,7 +864,7 @@ class StringCoder implements TextCoder {
       t0 = ctx.t;
       const run = this.space.run;
       const delta = this.s.features.deltas ? ps.vsDelta : null;
-      const d = ps.values.distribution(ctx.seq, t0, this.s.listIndex, run.vstep, delta, this.s);
+      const d = ps.values.distribution(ctx.seq, t0, run.vstep, delta, this.s);
       if (d !== null) {
         choice = ps.values.idOf(keyOf(value, len));
         let i = choice === ESCAPE ? -1 : d.indexOf(choice);
@@ -927,7 +910,7 @@ class StringCoder implements TextCoder {
       t0 = ctx.t;
       const run = this.space.run;
       const delta = this.s.features.deltas ? ps.vsDelta : null;
-      const d = ps.values.distribution(ctx.seq, t0, this.s.listIndex, run.vstep, delta, this.s);
+      const d = ps.values.distribution(ctx.seq, t0, run.vstep, delta, this.s);
       if (d !== null) {
         choice = d.idAt(dec.parseMember(d.total, d));
         stepped = true;

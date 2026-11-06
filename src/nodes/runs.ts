@@ -15,7 +15,6 @@ import type { PNode, Run } from './base';
 import { atPath, describe } from './path';
 import { arrangementDigits, arrangementRanks, type Order } from './ordinal';
 import type { Members } from './members';
-import type { Session } from '../predictor/session';
 
 /** The two spellings of distinct values in their own order, the plain one winning a tie. */
 const PLAIN = 0;
@@ -80,8 +79,7 @@ export function writeRun(
   values: readonly unknown[],
   order: Order,
   segment: (i: number) => string | number,
-  choice?: Members,
-  list?: Session
+  choice?: Members
 ): number[] {
   // A node on the predictor codes inside no try, so its values go one by one: ascending, or
   // in their own order where they keep it (spec D11).
@@ -102,7 +100,6 @@ export function writeRun(
   };
   if (compress) {
     for (const i of at) {
-      list?.nextItem();
       spell((value) => node._write(enc, value), i);
     }
     return at;
@@ -136,13 +133,11 @@ export function readRun(
   node: PNode<any>,
   count: number,
   order: Order,
-  choice?: Members,
-  list?: Session
+  choice?: Members
 ): unknown[] {
   const values: unknown[] = [];
   if (node._compress !== undefined) {
     for (let k = 0; k < count; k++) {
-      list?.nextItem();
       values.push(node._read(dec));
     }
     return values;

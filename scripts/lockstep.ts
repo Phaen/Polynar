@@ -111,7 +111,7 @@ function fixtures(): string[] {
   for (const s of FIXTURE_STRINGS) {
     const enc = new DigestEncoder();
     enc.h = h;
-    writeMessage(enc, enc, { strings: [codePoints(s)], list: false }, {});
+    writeMessage(enc, enc, { strings: [codePoints(s)] }, {});
     h = enc.h;
   }
   const strings = (h >>> 0).toString(16).padStart(8, '0');
