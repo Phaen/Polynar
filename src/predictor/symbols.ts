@@ -25,6 +25,7 @@ import {
   div,
   exp2Fix,
   linMass,
+  mulDiv,
   log2Fix,
   mulShr,
   shl,
@@ -53,7 +54,7 @@ import {
 import type { ValueState } from './features';
 import { Population, STRIDE } from './tables';
 import type { Entries, Frozen } from './tables';
-import { APM_B, BYTE_BASE, CP_BASE, DIGIT, END, HF, NSRC, SRC, levels } from './types';
+import { APM_B, BYTE_BASE, CP_BASE, DIGIT, END, HF, NSRC, SRC, STRUCT, levels } from './types';
 import type { AlphabetKind, Resolved, RunPrior } from './types';
 import { ValueStep, VSTEP_N } from './values';
 import { VoteLog, apmShare, apmUpdate, blockOf, learn } from './weights';
@@ -134,6 +135,10 @@ export interface PathState {
   readonly deltas: PathDeltas;
   /** The path's deltas over the value step's cells. */
   readonly vsDelta: Float64Array;
+  /** The path's deltas over the end-rate cells, one per `itemBucket`. */
+  readonly endDelta: Float64Array;
+  /** Item steps of the path's open container so far. */
+  items: number;
   readonly values: ValueStep;
   readonly vfeat: ValueState;
   /** Level-evidence scores of the path's levels 1..order, and of its same-offset ring. */
@@ -158,6 +163,8 @@ export function newPathState(
     n: 0,
     deltas: new Map(),
     vsDelta: new Float64Array(VSTEP_N),
+    endDelta: new Float64Array(ITEM_BUCKETS),
+    items: 0,
     values: new ValueStep(o.history, o.quantisation),
     vfeat: valueState(o.history),
     sn: new Float64Array(o.order + 1),
@@ -227,6 +234,42 @@ export const APM_EDGE = Int32Array.of(
   65492,
   65514
 );
+
+/**
+ * The end rate of an item step: the end that closes an array, set or map after n items
+ * takes at least the share r = c / (n + 2) * 2^delta, delta the path's end-rate cell of n's
+ * bucket. log2 of c = 1/2, the share before anything is learned, in RB.
+ */
+const END_C = -ONE;
+/** The end-rate cells' learning rate: 2 per unit of the log-loss gradient, as a shift from PB to RB. */
+const END_ETA = RB - PB + 1;
+/** An end-rate delta stays within ±8 bits. */
+const END_CLAMP = 8 * ONE;
+/** The end-rate cells per path. */
+export const ITEM_BUCKETS = 8;
+
+/** The end-rate cell of an item step after `n` items (8): up to 1, 2, 4, ..., 64, more. */
+export function itemBucket(n: number): number {
+  return n <= 1
+    ? 0
+    : n <= 2
+      ? 1
+      : n <= 4
+        ? 2
+        : n <= 8
+          ? 3
+          : n <= 16
+            ? 4
+            : n <= 32
+              ? 5
+              : n <= 64
+                ? 6
+                : 7;
+}
+
+/** Whether `sym` ends a container of items: an array, a set or a map. */
+const itemEnd = (sym: number): boolean =>
+  sym === STRUCT.ARR_END || sym === STRUCT.SET_END || sym === STRUCT.MAP_END;
 
 /** The escape ladder's bands: U+0000–007F, U+0080–07FF, the rest. */
 const BAND_LO = [0, 128, 2048];
@@ -364,6 +407,11 @@ export class SymbolPredictor {
   private nlShare = 0;
   /** Pass A's upper bound on the step's largest vote log-mass. */
   private Mv = -Infinity;
+  /** The pending end-rate step: its bucket (−1 for none), r, the end's share before and after, in PB. */
+  private eB = -1;
+  private eR = 0;
+  private ePe = 0;
+  private eQ = 0;
 
   constructor(
     private readonly core: MessageCore,
@@ -1264,7 +1312,51 @@ export class SymbolPredictor {
       this.apmFr = fr;
       d.rescaleTop(d.indexOf(top), shr(s16 + 3 * apmShare(run, o, fr), 2));
     }
+    this.eB = -1;
+    if (allowEnd && itemEnd(endSym)) this.endRate(d, endSym);
     return d;
+  }
+
+  /**
+   * Mixes the end rate into an item step's table: the end's share p becomes p + r (1 − p), the
+   * other entries keep their proportions in the rest. It comes after the confidence map, which
+   * would otherwise read the end's mass as a weaker top and map it back: a long run of items is a
+   * context the map has seen right almost every time, and the end that breaks it is the one symbol
+   * the map cannot know is due.
+   */
+  private endRate(d: Distribution, endSym: number): void {
+    const ie = d.indexOf(endSym);
+    if (ie < 0) return;
+    const path = this.path;
+    const n = path.items;
+    const b = itemBucket(n);
+    const e = path.endDelta[b] + END_C - log2Fix(n + 2) + PB * ONE;
+    const r = Math.min(shr(P_ONE, 1), exp2Fix(e));
+    if (r === 0) return;
+    const pe = mulDiv(d.freq(ie), P_ONE, d.total);
+    d.rescaleTop(ie, pe + mulShr(r, P_ONE - pe, PB));
+    this.eB = b;
+    this.eR = r;
+    this.ePe = pe;
+    this.eQ = Math.max(1, mulDiv(d.freq(ie), P_ONE, d.total));
+  }
+
+  /**
+   * Moves the pending end-rate cell by the log-loss gradient of the coded symbol `a` (the end:
+   * −(1 − p) r / q, q the end's share after the mix; anything else: r / (1 − r)), then counts the
+   * item step: the end starts the path's next container from 0 items.
+   */
+  private learnEnd(a: number, endSym: number): void {
+    if (!itemEnd(endSym)) return;
+    const b = this.eB;
+    if (b >= 0) {
+      this.eB = -1;
+      const r = this.eR;
+      const g = a === endSym ? -div((P_ONE - this.ePe) * r, this.eQ) : div(r * P_ONE, P_ONE - r);
+      const dl = this.path.endDelta;
+      dl[b] = clampi(dl[b] - shl(g, END_ETA), -END_CLAMP, END_CLAMP);
+    }
+    this.path.items = a === endSym ? 0 : this.path.items + 1;
   }
 
   /**
@@ -1479,6 +1571,7 @@ export class SymbolPredictor {
     if (allowEnd && a !== endSym) enc.open();
     this.write(enc, a);
     this.learn(a);
+    this.learnEnd(a, endSym);
   }
 
   /** One read step. */
@@ -1492,6 +1585,7 @@ export class SymbolPredictor {
       throw new CorruptInputError('Input ran out inside a value that only its end may close');
     }
     this.learn(a);
+    this.learnEnd(a, endSym);
     return a;
   }
 
@@ -1500,6 +1594,7 @@ export class SymbolPredictor {
    * The value step already paid for it, so it is no evidence for the step's weights.
    */
   implied(a: number): void {
+    if (itemEnd(a)) this.path.items = 0;
     this.advance(a);
   }
 }

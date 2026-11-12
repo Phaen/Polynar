@@ -21,7 +21,7 @@
 - `.adapt()` and `.compress()` can't both be set on one node. A custom prose model, or a length or count `.weights()` or `.cdf()`, throws next to `.compress()`.
 - Damaged input under `.compress()` throws a `CorruptInputError` as soon as its input runs out inside a string, binary or container, instead of after the decode `limit`.
 - `.compress()` is slow next to every other node: about 39 microseconds per character on each side for English text and 23 for JSON documents, and around 1.4 kB of memory per character a message has coded so far. Plain `p.any()` runs within 2% of its earlier speed.
-- Sizes, under `p.any().compress()` in the README's first table: the user profile 29.5 → 25.6 bytes, the chat message 44.0 → 40.5, the sensor reading 24.3 → 21.4, the shopping cart 28.8 → 26.3 and lorem 570 → 535; the GPS position 15.3 → 15.5 and the status feed 18.6 → 19.8. Lorem under its tuned schema 569 → 531. The thirteen JSON documents 91.7 kB → 88.1 kB.
+- Sizes, under `p.any().compress()` in the README's first table: the user profile 29.5 → 25.6 bytes, the chat message 44.0 → 40.5, the sensor reading 24.3 → 21.4, the shopping cart 28.8 → 25.7 and lorem 570 → 535; the GPS position 15.3 → 15.5 and the status feed 18.6 → 19.3. Lorem under its tuned schema 569 → 531. The thirteen JSON documents 91.7 kB → 88.0 kB.
 
 ### Removed
 

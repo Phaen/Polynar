@@ -8,8 +8,10 @@ import type { Features, SessionOptions, Sink, Source, Table } from '../../predic
 import {
   APM_EDGE,
   SymbolPredictor,
+  ITEM_BUCKETS,
   closedOf,
   defaultFeatures,
+  itemBucket,
   recOf,
 } from '../../predictor/symbols';
 import type { Closed } from '../../predictor/symbols';
@@ -609,5 +611,89 @@ describe('SymbolPredictor container ends', () => {
     list.push([STRUCT.ARR_END, true, STRUCT.ARR_END, withEnd]);
     const open = list.map(([sym, allow, end]): Step => [sym, allow, end]);
     expect(steps(list)).toBeLessThan(steps(open));
+  });
+});
+
+describe('itemBucket', () => {
+  it('buckets the items so far by doubling, 64 and up together', () => {
+    const at = [0, 1, 2, 3, 4, 5, 8, 9, 16, 17, 32, 33, 64, 65, 1e6];
+    expect(at.map(itemBucket)).toEqual([0, 0, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7]);
+    expect(itemBucket(1e6)).toBe(ITEM_BUCKETS - 1);
+  });
+});
+
+describe('SymbolPredictor end rate', () => {
+  // The JSON prior's built-in votes give every container end an entry from the first step.
+  const o = resolve({}, loadedPriors.json, 'test');
+  /** A structure predictor at path 's' and that path's state. */
+  function fresh() {
+    const s = new Session();
+    const pred = s.symbols('s', o, 'structure');
+    return { s, pred, path: s.space(o.prior).pathState('s', o) };
+  }
+  /** The share of `sym` in the step's table. */
+  const share = (pred: SymbolPredictor, sym: number): number =>
+    pred.dist.freq(pred.dist.indexOf(sym)) / pred.dist.total;
+
+  it('gives the end of an item step at least c / (n + 2) before anything is learned', () => {
+    const { pred } = fresh();
+    pred.distribution(true, STRUCT.ARR_END);
+    expect(share(pred, STRUCT.ARR_END)).toBeGreaterThanOrEqual(0.24);
+  });
+
+  it.each([STRUCT.SET_END, STRUCT.MAP_END])(
+    'leaves end %i to the escape where no vote gives it an entry, and still counts the item',
+    (end) => {
+      const { pred, path } = fresh();
+      pred.distribution(true, end);
+      expect(pred.dist.indexOf(end)).toBe(-1);
+      pred.code(new RecSink(new Encoder()), STRUCT.STR, true, end);
+      expect(path.items).toBe(1);
+      expect(Array.from(path.endDelta)).toEqual(new Array(ITEM_BUCKETS).fill(0));
+    }
+  );
+
+  it('leaves an end that may not come yet, and an object end, to the votes', () => {
+    const { pred, path } = fresh();
+    pred.distribution(false, STRUCT.ARR_END);
+    expect(pred.dist.indexOf(STRUCT.ARR_END)).toBe(-1);
+    pred.code(new RecSink(new Encoder()), STRUCT.KEY, true, STRUCT.OBJ_END);
+    expect(path.items).toBe(0);
+    expect(Array.from(path.endDelta)).toEqual(new Array(ITEM_BUCKETS).fill(0));
+  });
+
+  it('counts item steps, lowers the cell on every item and raises it at the end', () => {
+    const { pred, path } = fresh();
+    const sink = new RecSink(new Encoder());
+    pred.code(sink, STRUCT.STR, true, STRUCT.ARR_END);
+    expect(path.items).toBe(1);
+    expect(path.endDelta[0]).toBeLessThan(0);
+    const low = path.endDelta[0];
+    pred.code(sink, STRUCT.ARR_END, true, STRUCT.ARR_END);
+    expect(path.items).toBe(0);
+    expect(path.endDelta[0]).toBeGreaterThan(low);
+  });
+
+  it('keeps a long run of items from pinning its end at one unit', () => {
+    const { pred } = fresh();
+    const sink = new RecSink(new Encoder());
+    for (let k = 0; k < 100; k++) pred.code(sink, STRUCT.STR, true, STRUCT.ARR_END);
+    pred.distribution(true, STRUCT.ARR_END);
+    expect(pred.dist.freq(pred.dist.indexOf(STRUCT.ARR_END))).toBeGreaterThan(8);
+  });
+
+  it('adds nothing once the rate floors to 0, and starts again from 0 items at an implied end', () => {
+    const { pred, path } = fresh();
+    const sink = new RecSink(new Encoder());
+    for (let k = 0; k < 200; k++) pred.code(sink, STRUCT.STR, true, STRUCT.ARR_END);
+    path.endDelta.fill(-8 * ONE);
+    const before = Array.from(path.endDelta);
+    pred.code(sink, STRUCT.STR, true, STRUCT.ARR_END);
+    expect(Array.from(path.endDelta)).toEqual(before);
+    expect(path.items).toBe(201);
+    pred.implied(STRUCT.ARR_END);
+    expect(path.items).toBe(0);
+    pred.implied(STRUCT.STR);
+    expect(path.items).toBe(0);
   });
 });
