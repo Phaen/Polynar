@@ -32,12 +32,12 @@ The first table is self-describing: keys and types travel with the data. Polynar
 
 | Payload        |         JSON |  MessagePack |     url-safe |   ascii-safe |           binary |
 | -------------- | -----------: | -----------: | -----------: | -----------: | ---------------: |
-| User profile   |  62.8 (64.3) |  44.6 (48.4) |  53.7 (34.8) |  49.5 (32.1) |  40.7 (**26.5**) |
-| GPS position   |  32.0 (36.0) |  27.0 (31.0) |  26.8 (21.9) |  24.7 (20.2) |  20.4 (**16.7**) |
-| Chat message   |  95.5 (89.3) |  69.1 (71.1) |  79.2 (55.3) |  72.8 (51.0) |  59.9 (**41.9**) |
-| Sensor reading |  53.8 (55.9) |  39.9 (43.7) |  42.9 (29.2) |  39.5 (26.9) |  32.6 (**22.1**) |
-| Shopping cart  | 124.4 (67.0) |  85.1 (61.9) | 100.6 (35.5) |  92.6 (32.7) |  76.1 (**26.9**) |
-| Status feed    | 521.8 (63.4) | 323.8 (60.4) | 385.0 (26.8) | 354.2 (24.7) | 290.8 (**20.3**) |
+| User profile   |  62.8 (64.3) |  44.6 (48.4) |  53.7 (33.7) |  49.5 (31.0) |  40.7 (**25.6**) |
+| GPS position   |  32.0 (36.0) |  27.0 (31.0) |  26.8 (20.3) |  24.7 (18.7) |  20.4 (**15.5**) |
+| Chat message   |  95.5 (89.3) |  69.1 (71.1) |  79.2 (53.4) |  72.8 (49.3) |  59.9 (**40.5**) |
+| Sensor reading |  53.8 (55.9) |  39.9 (43.7) |  42.9 (28.1) |  39.5 (25.9) |  32.6 (**21.4**) |
+| Shopping cart  | 124.4 (67.0) |  85.1 (61.9) | 100.6 (34.6) |  92.6 (31.9) |  76.1 (**26.3**) |
+| Status feed    | 521.8 (63.4) | 323.8 (60.4) | 385.0 (26.0) | 354.2 (23.9) | 290.8 (**19.8**) |
 | Lorem ipsum    |   1375 (641) |   1372 (631) |   1596 (707) |   1469 (651) |   1206 (**535**) |
 
 In the second table both sides share a schema and only the values are written. Protobuf and Avro get the same decimal steps as scaled integers, but only Polynar can use the bounds. Protobuf tags every field and rounds it up to whole bytes, Avro drops the tags but keeps the bytes, and Polynar spends fractional bits.
@@ -376,7 +376,7 @@ Hints are nodes some values are expected to fit: `p.any([p.string().charset(Char
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.compress(options?: CompressOptions)` | Codes the values through the predictor as one stream: each value's kind as a symbol of the structure, an object's keys as text, strings, integers and dates predicted from the values before them at the same key path, other numbers as their shortest text, and the rest as without. Hints are used as under their own `.compress()`. See [The predictor](#the-predictor-compress). |
 
-Under `.compress()` the status feed, a hundred strings from a set of three, averages 20.3 bytes instead of 290.8, the keys of an array of same-shaped objects soon cost next to nothing, and lorem costs less than under `.prose()`. Thirteen real JSON documents (GitHub and npm API responses, GeoJSON, a Slack export and more) take 88.2 kB, where JSON with brotli takes 128.9 kB.
+Under `.compress()` the status feed, a hundred strings from a set of three, averages 19.8 bytes instead of 290.8, the keys of an array of same-shaped objects soon cost next to nothing, and lorem costs less than under `.prose()`. Thirteen real JSON documents (GitHub and npm API responses, GeoJSON, a Slack export and more) take 88.1 kB, where JSON with brotli takes 128.9 kB.
 
 ### Priors: `.weights()`
 

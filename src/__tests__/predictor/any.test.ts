@@ -3,8 +3,8 @@
  * with the node's own coding.
  */
 
-import { p, Encoder, CorruptInputError, type PAny } from '../../index';
-import { walkAny, type AnyCoding } from '../../predictor/any';
+import { p, Decoder, Encoder, CorruptInputError, type PAny } from '../../index';
+import { readAny, walkAny, type AnyCoding } from '../../predictor/any';
 import { session } from '../../predictor/session';
 import { STRUCT } from '../../predictor/types';
 
@@ -51,31 +51,26 @@ describe('p.any().compress() stream', () => {
     }
   });
 
-  it('rejects a structure symbol no value starts with', () => {
+  it('refuses a structure symbol no value starts with at every step a value starts', () => {
     const node = p.any().compress();
     const coding = codingOf(node);
-    const bytes = forge(coding, 0, {
-      symbol: () => STRUCT.KEY,
-      bodies: new Map([[STRUCT.KEY, { write: () => undefined, read: () => undefined }]]),
-    });
-    expect(() => node.decode(bytes)).toThrow(
-      new CorruptInputError(`p.any read structure symbol ${STRUCT.KEY} where a value belongs`)
-    );
+    for (const value of [0, [0], { a: 0 }, new Map([[0, 0]]), new Set([0])]) {
+      expect(() =>
+        forge(coding, value, {
+          symbol: (enc, v) => (typeof v === 'number' ? STRUCT.KEY : coding.symbol(enc, v)),
+          bodies: new Map([[STRUCT.KEY, { write: () => undefined, read: () => undefined }]]),
+        })
+      ).toThrow(`symbol ${STRUCT.KEY} is not in the structure alphabet`);
+    }
   });
 
-  it('rejects a structure symbol other than a key or the end inside an object', () => {
-    const node = p.any().compress();
-    const { o } = codingOf(node);
-    const enc = new Encoder();
-    const s = session(enc);
-    s.marker('', o).write(enc, STRUCT.OBJ_START);
-    s.enterScope('', o);
-    s.enterRecord();
-    s.marker('', o).write(enc, STRUCT.TRUE, undefined, { end: STRUCT.OBJ_END, allow: true });
-    s.leaveRecord();
-    s.leaveScope();
-    expect(() => node.decode(enc.output())).toThrow(
-      new CorruptInputError(`p.any read structure symbol ${STRUCT.TRUE} where a key belongs`)
+  it('rejects a structure symbol no value starts with, handed on by a parent step', () => {
+    const coding = codingOf(p.any().compress());
+    const dec = new Decoder(new Uint8Array(0));
+    const s = session(dec);
+    s.give(STRUCT.KEY, coding.node);
+    expect(() => readAny(s, dec, coding)).toThrow(
+      new CorruptInputError(`p.any read structure symbol ${STRUCT.KEY} where a value belongs`)
     );
   });
 
@@ -111,17 +106,14 @@ describe('p.any().compress() without Float16Array', () => {
       jest.isolateModules(() => {
         /* eslint-disable @typescript-eslint/no-require-imports */
         const index = require('../../index') as typeof import('../../index');
-        const sessions =
-          require('../../predictor/session') as typeof import('../../predictor/session');
         /* eslint-enable @typescript-eslint/no-require-imports */
         const node = index.p.any().compress();
-        const { o } = codingOf(node);
-        const enc = new index.Encoder();
-        sessions
-          .session(enc)
-          .marker('', o)
-          .write(enc, STRUCT.TYPED_0 + 11);
-        expect(() => node.decode(enc.output())).toThrow(
+        const tag = STRUCT.TYPED_0 + 11;
+        const bytes = forge(codingOf(node), 0, {
+          symbol: () => tag,
+          bodies: new Map([[tag, { write: () => undefined, read: () => undefined }]]),
+        });
+        expect(() => node.decode(bytes)).toThrow(
           new TypeError('p.any read a Float16Array, which this environment lacks')
         );
       });

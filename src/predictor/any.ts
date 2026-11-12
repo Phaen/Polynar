@@ -10,7 +10,7 @@
 
 import type { Decoder, Encoder } from '../packer';
 import { CorruptInputError } from '../packer/errors';
-import type { PlainNumber, Session } from './session';
+import type { Members, PlainNumber, Session } from './session';
 import { STRUCT } from './types';
 import type { Ends, Resolved } from './types';
 
@@ -52,6 +52,38 @@ const ARR_END = { end: STRUCT.ARR_END, allow: true };
 const SET_END = { end: STRUCT.SET_END, allow: true };
 const MAP_END = { end: STRUCT.MAP_END, allow: true };
 
+/** The first structure symbols of a value, HINT aside. */
+const VALUE_SYMBOLS = [
+  STRUCT.OBJ_START,
+  STRUCT.ARR_START,
+  STRUCT.STR,
+  STRUCT.INT,
+  STRUCT.NUM,
+  STRUCT.TRUE,
+  STRUCT.FALSE,
+  STRUCT.NULL,
+  STRUCT.UNDEFINED,
+  STRUCT.DATE,
+  STRUCT.BIGINT,
+  STRUCT.REGEXP,
+  STRUCT.MAP_START,
+  STRUCT.SET_START,
+  STRUCT.BUFFER,
+  STRUCT.DATAVIEW,
+  ...Array.from({ length: 12 }, (_, i) => STRUCT.TYPED_0 + i),
+];
+
+/**
+ * The grammar's closed alphabets: where a value starts, only a value's first symbols (HINT when
+ * the node has hints) and the end the step's bound admits; where a key starts, KEY and OBJ_END.
+ */
+const VALUE: Members = { key: {}, set: new Set(VALUE_SYMBOLS) };
+const VALUE_HINTED: Members = { key: {}, set: new Set([...VALUE_SYMBOLS, STRUCT.HINT]) };
+const KEY: Members = { key: {}, set: new Set([STRUCT.KEY]) };
+
+/** The closed alphabet of a value's first structure symbol under `a`. */
+const valueOf = (a: AnyCoding): Members => (a.hints > 0 ? VALUE_HINTED : VALUE);
+
 /** The code points of `text`, a lone surrogate as its code unit. */
 const codePoints = (text: string): number[] =>
   Array.from(text, (ch) => ch.codePointAt(0) as number);
@@ -71,7 +103,7 @@ export function walkAny(s: Session, enc: Encoder, a: AnyCoding, value: unknown):
   let sym = s.take(a.node);
   if (sym < 0) {
     sym = a.symbol(enc, value);
-    s.marker('', a.o).write(enc, sym);
+    s.marker('', a.o).write(enc, sym, undefined, undefined, undefined, valueOf(a));
   }
   writeBody(s, enc, a, value, '', sym);
 }
@@ -80,7 +112,7 @@ export function walkAny(s: Session, enc: Encoder, a: AnyCoding, value: unknown):
 export function readAny(s: Session, dec: Decoder, a: AnyCoding): unknown {
   let sym = s.take(a.node);
   if (sym < 0) {
-    sym = s.marker('', a.o).read(dec);
+    sym = s.marker('', a.o).read(dec, undefined, undefined, undefined, valueOf(a));
   }
   return readBody(s, dec, a, '', sym);
 }
@@ -96,7 +128,7 @@ function writeChild(
   bound?: { end: number; allow: boolean }
 ): void {
   const sym = a.symbol(enc, child);
-  s.marker(path, a.o).write(enc, sym, undefined, bound);
+  s.marker(path, a.o).write(enc, sym, undefined, bound, undefined, valueOf(a));
   writeBody(s, enc, a, child, childPath, sym);
 }
 
@@ -166,7 +198,7 @@ function writeObject(
   try {
     for (const key of Object.keys(value)) {
       try {
-        s.marker(path, a.o).write(enc, STRUCT.KEY, undefined, OBJ_END);
+        s.marker(path, a.o).write(enc, STRUCT.KEY, undefined, OBJ_END, undefined, KEY);
         const cps = codePoints(key);
         s.text(path, a.o, 'text').write(enc, cps, cps.length, TEXT);
         writeChild(s, enc, a, path, value[key], `${path}/${key}`);
@@ -174,7 +206,7 @@ function writeObject(
         throw a.at(error, key);
       }
     }
-    s.marker(path, a.o).write(enc, STRUCT.OBJ_END, undefined, OBJ_END);
+    s.marker(path, a.o).write(enc, STRUCT.OBJ_END, undefined, OBJ_END, undefined, KEY);
   } finally {
     s.leaveRecord();
     s.leaveScope();
@@ -198,7 +230,7 @@ function writeItems(
         throw a.at(error, i);
       }
     }
-    s.marker(path, a.o).write(enc, bound.end, undefined, bound);
+    s.marker(path, a.o).write(enc, bound.end, undefined, bound, undefined, valueOf(a));
   } finally {
     s.leaveScope();
   }
@@ -226,7 +258,7 @@ function writeMap(
       }
       i++;
     }
-    s.marker(path, a.o).write(enc, STRUCT.MAP_END, undefined, MAP_END);
+    s.marker(path, a.o).write(enc, STRUCT.MAP_END, undefined, MAP_END, undefined, valueOf(a));
   } finally {
     s.leaveScope();
   }
@@ -241,7 +273,7 @@ function readChild(
   childPath: string,
   bound?: { end: number; allow: boolean }
 ): unknown {
-  const sym = s.marker(path, a.o).read(dec, undefined, bound);
+  const sym = s.marker(path, a.o).read(dec, undefined, bound, undefined, valueOf(a));
   if (bound !== undefined && sym === bound.end) {
     return END_READ;
   }
@@ -290,6 +322,7 @@ function readBody(s: Session, dec: Decoder, a: AnyCoding, path: string, sym: num
     case STRUCT.MAP_START:
       return a.nest(dec, () => readMap(s, dec, a, path));
   }
+  // A symbol a parent's step coded and handed on reaches here unchecked.
   const body = a.bodies.get(sym);
   if (body === undefined) {
     throw new CorruptInputError(`p.any read structure symbol ${sym} where a value belongs`);
@@ -303,12 +336,10 @@ function readObject(s: Session, dec: Decoder, a: AnyCoding, path: string): unkno
   try {
     const out: Record<string, unknown> = {};
     for (;;) {
-      const sym = s.marker(path, a.o).read(dec, undefined, OBJ_END);
+      const sym = s.marker(path, a.o).read(dec, undefined, OBJ_END, undefined, KEY);
+      // The step's closed alphabet is KEY and OBJ_END.
       if (sym === STRUCT.OBJ_END) {
         return out;
-      }
-      if (sym !== STRUCT.KEY) {
-        throw new CorruptInputError(`p.any read structure symbol ${sym} where a key belongs`);
       }
       const key = fromCodePoints(s.text(path, a.o, 'text').read(dec, TEXT));
       let v: unknown;
