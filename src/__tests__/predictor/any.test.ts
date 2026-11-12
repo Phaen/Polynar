@@ -19,7 +19,7 @@ function forge(coding: AnyCoding, value: unknown, overrides: Partial<AnyCoding>)
 }
 
 describe('p.any().compress() stream', () => {
-  it.each(['1.0', '0x10', '1e3', '+1', ' 1'])(
+  it.each(['1.0', '01', '1e3', '+1', '1.', '-'])(
     'rejects number text %j, which is no number spelled shortest',
     (text) => {
       const node = p.any().compress();
@@ -29,6 +29,11 @@ describe('p.any().compress() stream', () => {
       );
     }
   );
+
+  it('refuses to write number text outside the symbols a number can hold', () => {
+    const node = p.any().compress();
+    expect(() => forge(codingOf(node), '0x10', { symbol: () => STRUCT.NUM })).toThrow(RangeError);
+  });
 
   it('rejects a safe integer spelled as number text, which travels as INT', () => {
     const node = p.any().compress();

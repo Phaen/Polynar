@@ -203,6 +203,12 @@ class PathMap<T> {
   }
 }
 
+/**
+ * Every symbol a number's own text can hold: the digits, the point, the signs, the exponent's `e`,
+ * and the letters of `Infinity` and `NaN`.
+ */
+const NUMBER_SYMBOLS = '0123456789.-e+InfityNa';
+
 /** The predictors of one prior in a message: its ids, populations, run prior and paths. */
 export class Space implements MessageCore {
   seen = new Uint8Array(512);
@@ -224,6 +230,7 @@ export class Space implements MessageCore {
   private readonly members = new PathMap<MemberPath>();
   private readonly values = new PathMap<ValuePath>();
   private readonly preds = new Map<PathState, Map<AlphabetKind, SymbolPredictor>>();
+  private grammar: Closed | null = null;
 
   constructor(
     prior: LoadedPrior,
@@ -236,6 +243,20 @@ export class Space implements MessageCore {
     this.ids = new Ids(prior);
     this.run = carry ?? newRunPrior(prior);
     this.builtin = frozen(prior, this.ids);
+  }
+
+  /**
+   * The closed alphabet of a number's own text, its ids taken on first use, which both sides
+   * reach at the same point of the message.
+   */
+  numberGrammar(): Closed {
+    if (this.grammar === null) {
+      const ids = Int32Array.from(NUMBER_SYMBOLS, (ch) =>
+        this.ids.idOf(ch.codePointAt(0) as number)
+      );
+      this.grammar = closedOf(ids);
+    }
+    return this.grammar;
   }
 
   /** The built-in population's order-0 count of symbol id `sym`. */
@@ -419,6 +440,23 @@ export class Session implements RecordView {
   /** A value's symbols and END at a path, without the value step (key text). */
   text(path: PathKey, o: Resolved, alphabet: AlphabetKind, members?: ArrayLike<number>): TextCoder {
     return this.coder(path, o, alphabet, members, false);
+  }
+
+  /**
+   * A number's own text at a path, without the value step: every step closed to the symbols a
+   * number's text can hold.
+   */
+  numberText(path: PathKey, o: Resolved): TextCoder {
+    const space = this.space(o.prior);
+    const pred = space.symbols(path, o, 'text');
+    return new StringCoder(
+      this,
+      space,
+      pred,
+      space.pathState(path, o),
+      false,
+      space.numberGrammar()
+    );
   }
 
   /** A string value at a path: the value step, then its symbols and END. */
@@ -767,7 +805,9 @@ class StringCoder implements TextCoder {
     private readonly space: Space,
     private readonly pred: SymbolPredictor,
     private readonly ps: PathState,
-    private readonly withStep: boolean
+    private readonly withStep: boolean,
+    /** The closed alphabet of every step, null when the steps follow the predictor's own. */
+    private readonly only: Closed | null = null
   ) {}
 
   private idOf(sym: number): number {
@@ -881,14 +921,14 @@ class StringCoder implements TextCoder {
     } else {
       let units = 0;
       for (let k = 0; k < len; k++) {
-        pred.distribution(endable(ends, units));
+        pred.distribution(endable(ends, units), END, this.only);
         const a = this.idOf(value[k]);
         pred.write(enc, a);
         pred.learn(a);
         units += this.unitsOf(value[k]);
       }
       if (!ends.fixed && units !== ends.max) {
-        pred.code(enc, END);
+        pred.code(enc, END, true, END, this.only);
       }
     }
     if (this.stepOn()) {
@@ -925,7 +965,7 @@ class StringCoder implements TextCoder {
       const max = ends.max === undefined ? Infinity : ends.max;
       let units = 0;
       while (units < max) {
-        const a = pred.decode(dec, endable(ends, units));
+        const a = pred.decode(dec, endable(ends, units), END, this.only);
         if (a === END) {
           break;
         }

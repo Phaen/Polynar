@@ -359,6 +359,27 @@ describe('string coders', () => {
     expect(() => c.write(new Encoder(), Int32Array.of(1, 2, 3), 3, pairs)).toThrow(RangeError);
   });
 
+  it("closes a number's text to the symbols a number's text can hold", () => {
+    const num: Coder = (s) => s.numberText('n', opts());
+    trip([
+      { coder: num, value: cps('-12.5') },
+      { coder: num, value: cps('1.25e-7') },
+      { coder: num, value: cps('-Infinity') },
+      { coder: num, value: cps('NaN') },
+      { coder: strAt('n'), value: cps('xyz') },
+      { coder: num, value: cps('1e+21') },
+    ]);
+    const s = new Session();
+    const grammar = s.space(opts().prior).numberGrammar();
+    expect(s.space(opts().prior).numberGrammar()).toBe(grammar);
+    expect(Array.from(grammar.ids, (id) => String.fromCodePoint(s.ids.cpOf(id))).join('')).toBe(
+      '0123456789.-e+InfityNa'
+    );
+    expect(() => s.numberText('n', opts()).write(new Encoder(), cps('0x1'), 3, OPEN)).toThrow(
+      RangeError
+    );
+  });
+
   it('closes a text alphabet to its members, escaping the unseen ones by rank', () => {
     const cjk = cps('一丁七万丈三');
     const closed: Coder = (s) => s.string('c', opts(), 'text', cjk);

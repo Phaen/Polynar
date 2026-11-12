@@ -123,7 +123,7 @@ function writeBody(
       return;
     case STRUCT.NUM: {
       const cps = codePoints(numberText(value as number));
-      s.text(path, o, 'text').write(enc, cps, cps.length, TEXT);
+      s.numberText(path, o).write(enc, cps, cps.length, TEXT);
       return;
     }
     case STRUCT.TRUE:
@@ -261,7 +261,7 @@ function readBody(s: Session, dec: Decoder, a: AnyCoding, path: string, sym: num
     case STRUCT.DATE:
       return new Date(s.number(path, o, {}, a.int).read(dec));
     case STRUCT.NUM: {
-      const text = fromCodePoints(s.text(path, o, 'text').read(dec, TEXT));
+      const text = fromCodePoints(s.numberText(path, o).read(dec, TEXT));
       const x = Number(text);
       // The encoder writes a number's own text, so any other text was never written.
       if (numberText(x) !== text || (Number.isSafeInteger(x) && !Object.is(x, -0))) {
